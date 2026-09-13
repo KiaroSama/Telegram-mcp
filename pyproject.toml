@@ -172,6 +172,7 @@ source = [
     "telegram_mcp.session_files",
     "telegram_mcp.tdlib",
     "telegram_mcp.tdlib_registry",
+    "telegram_mcp.tdlib_identity",
     "telegram_mcp.settings",
     "telegram_mcp.syscalls",
     "telegram_mcp.singleton",

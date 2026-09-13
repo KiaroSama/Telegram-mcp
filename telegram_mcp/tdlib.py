@@ -578,8 +578,15 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
     Returns the state reached. ``authorizationStateReady`` is the only success.
     The password is never logged, stored, or passed on a command line.
     """
+    from telegram_mcp import tdlib_identity as identity
+
     try:
         return await _attempt_login(label, telethon_client, password, ask_password)
+    except identity.IdentityMismatch:
+        # Two real accounts and no way to tell which was meant. Never recovered
+        # from automatically: the database is the evidence, and the old recovery
+        # path would have deleted it.
+        raise
     except (TDLibError, RuntimeError) as error:
         if not _authorisation_is_dead(error):
             raise
@@ -590,11 +597,26 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
         # which no amount of logging in again can fix, and each attempt costs a
         # real login.
         #
-        # Discarding it loses nothing that still works. It is not the secret-chat
-        # HISTORY being thrown away either: those keys were tied to the same dead
-        # authorisation and Telegram has already forgotten them.
-        _discard_database(label)
-        return await _attempt_login(label, telethon_client, password, ask_password)
+        # Moved aside, not deleted. The bytes may hold secret-chat keys that
+        # cannot be re-derived, and the diagnosis above is a guess about
+        # Telegram's answer rather than a fact about the file. `rmtree` with
+        # `ignore_errors=True` was worse than either: a directory still held
+        # open reported success while deleting nothing at all.
+        kept_at = identity.quarantine_database(label, why=str(error))
+        try:
+            # ONE retry. A dead authorisation that survives a fresh database is
+            # not a stale database, and quarantining again would spend another
+            # real login to learn the same thing.
+            return await _attempt_login(label, telethon_client, password, ask_password)
+        except (TDLibError, RuntimeError) as second:
+            if _authorisation_is_dead(second):
+                raise RuntimeError(
+                    f"Telegram still refuses the authorisation for account '{label}' after a "
+                    f"fresh database was started. The previous one was not deleted - it is at "
+                    f"{kept_at}. Sign the account in again from the Telegram app, then retry; "
+                    "nothing here will keep requesting authorisations on its own."
+                ) from second
+            raise
 
 
 def _authorisation_is_dead(error: Exception) -> bool:
@@ -610,18 +632,17 @@ def _authorisation_is_dead(error: Exception) -> bool:
     )
 
 
-def _discard_database(label: str) -> None:
-    """Delete one account's TDLib database so the next login starts clean."""
-    import shutil
-
-    shutil.rmtree(database_dir_for(label), ignore_errors=True)
-
-
 async def _attempt_login(label, telethon_client, password, ask_password) -> str:
+    from telegram_mcp import tdlib_identity as identity
+
     client = TDLibClient(label)
     try:
         state = await client.start()
         if state == "authorizationStateReady":
+            # Before the caller does ANYTHING with this client. A ready database
+            # under a reused label is signed in as the previous owner, and every
+            # call made through it would run as them.
+            await identity.verify_owner(label, client, telethon_client)
             return state
 
         if state == "authorizationStateWaitPhoneNumber":
@@ -636,6 +657,13 @@ async def _attempt_login(label, telethon_client, password, ask_password) -> str:
             await client.request({"@type": "checkAuthenticationPassword", "password": secret})
             state = await client._settle()
 
+        if state == "authorizationStateReady":
+            # The other way a reused label signs in as the wrong person: a
+            # database an interrupted run left at WaitPassword belongs to
+            # WHOEVER started that run, and finishing it here completes THEIR
+            # login. Checked on every path that reaches Ready, not only the one
+            # that was already there.
+            await identity.verify_owner(label, client, telethon_client)
         return state
     finally:
         await client.close()
