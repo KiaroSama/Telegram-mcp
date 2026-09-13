@@ -886,6 +886,7 @@ telegram_mcp/paging.py        # one limit rule for every list and search tool
 telegram_mcp/aliases.py       # calling a contact what the operator calls them
 telegram_mcp/alias_store.py   # that name on disk: addressing, locking, protection
 telegram_mcp/runner.py        # application startup
+telegram_mcp/tdlib_registry.py # which TDLib client serves an account, and closing them
 telegram_mcp/tools/           # tool modules grouped by domain
 telegram_mcp/message_view.py  # deep structured message view
 telegram_mcp/visual/          # Telegram Desktop capture and image/frame helpers

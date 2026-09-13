@@ -17,6 +17,7 @@ import json
 import pytest
 
 from telegram_mcp import tdlib
+from telegram_mcp import tdlib_registry as tdlib_reg
 
 
 class FakeTdjson:
@@ -324,7 +325,7 @@ async def test_an_account_without_a_login_is_refused_with_the_command_to_fix_it(
 ):
     """Returning a running-but-unauthorised client would fail later, on whichever
     call happened to come first, with a message about that call instead."""
-    monkeypatch.setattr(tdlib, "_by_account", {})
+    monkeypatch.setattr(tdlib_reg, "_by_account", {})
     monkeypatch.setattr(tdlib, "database_dir_for", lambda account: tmp_path / account)
 
     class Unauthorised(tdlib.TDLibClient):
@@ -335,13 +336,13 @@ async def test_an_account_without_a_login_is_refused_with_the_command_to_fix_it(
         async def close(self):
             return None
 
-    monkeypatch.setattr(tdlib, "TDLibClient", Unauthorised)
+    monkeypatch.setattr(tdlib_reg, "TDLibClient", Unauthorised)
 
     with pytest.raises(tdlib.NotSignedIn) as raised:
-        await tdlib.secret_client("kgb_verifier")
+        await tdlib_reg.secret_client("kgb_verifier")
 
     assert "secret_chat_login.py kgb_verifier" in str(raised.value)
-    assert tdlib._by_account == {}, "an unusable client was cached"
+    assert tdlib_reg._by_account == {}, "an unusable client was cached"
 
 
 @pytest.mark.asyncio
@@ -349,7 +350,7 @@ async def test_a_started_client_is_reused_rather_than_started_again(fake, tmp_pa
     """Starting one opens a database and reconnects. Paying that per tool call
     would also mean several TDLib clients for one account, each with its own
     view of the same secret chats."""
-    monkeypatch.setattr(tdlib, "_by_account", {})
+    monkeypatch.setattr(tdlib_reg, "_by_account", {})
     starts = []
 
     class Ready(tdlib.TDLibClient):
@@ -359,11 +360,11 @@ async def test_a_started_client_is_reused_rather_than_started_again(fake, tmp_pa
             self.authorization_state = "authorizationStateReady"
             return self.authorization_state
 
-    monkeypatch.setattr(tdlib, "TDLibClient", Ready)
+    monkeypatch.setattr(tdlib_reg, "TDLibClient", Ready)
     monkeypatch.setattr(tdlib, "database_dir_for", lambda account: tmp_path / account)
 
-    first = await tdlib.secret_client("acct")
-    second = await tdlib.secret_client("acct")
+    first = await tdlib_reg.secret_client("acct")
+    second = await tdlib_reg.secret_client("acct")
 
     assert first is second
     assert starts == ["acct"]
