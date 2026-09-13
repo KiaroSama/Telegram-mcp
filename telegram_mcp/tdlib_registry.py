@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import TYPE_CHECKING, List, Tuple
 
 from telegram_mcp.safe_log import log_event
@@ -47,6 +48,15 @@ _READY = "authorizationStateReady"
 
 _by_account: dict[str, TDLibClient] = {}
 _by_account_lock = asyncio.Lock()
+
+# Set once shutdown starts. A new client against a database currently being
+# flushed is never right, and the previous answer - clearing the registry before
+# awaiting the closes - actively invited one.
+_closing: bool = False
+
+# How long every close gets, together. One client that will not finish must not
+# consume the whole exit path, and the accounts after it still need their turn.
+_CLOSE_ALL_BUDGET = 60.0
 
 # account -> the Telethon client object this TDLib client was proved against.
 # Object identity IS the generation: a re-login or a reload replaces the object,
@@ -87,6 +97,9 @@ async def secret_client(account: str) -> TDLibClient:
     # Imported here, not at module scope: `connection` reaches this module
     # through `tdlib`, and naming it at the top closes the cycle.
     from telegram_mcp.connection import get_client
+
+    if _closing:
+        raise NotSignedIn(account, "the server is shutting down")
 
     # The Telethon half of the SAME label, which is what the database has to
     # agree with. Checking the database against its own recorded metadata only
@@ -137,36 +150,65 @@ async def secret_client(account: str) -> TDLibClient:
         return client
 
 
-async def close_all() -> List[Tuple[str, Exception]]:
+async def close_all(budget: float = _CLOSE_ALL_BUDGET) -> List[Tuple[str, Exception]]:
     """Shut every started client down, flushing its database.
 
     Returns the accounts whose close failed, so shutdown can say so. Every
-    client is attempted: a `for` loop over `await close()` abandoned the rest
-    after the first refusal and never cleared the registry, which is the shape
-    that loses exactly the keys this function exists to flush.
-    """
-    async with _by_account_lock:
-        # Taken and cleared under the lock, so a caller arriving mid-shutdown
-        # builds a fresh client rather than waiting on one being closed.
-        closing = list(_by_account.items())
-        _by_account.clear()
-        _verified_against.clear()
+    client is attempted within one total budget: a `for` loop over
+    `await close()` abandoned the rest after the first refusal, which is the
+    shape that loses exactly the keys this function exists to flush.
 
+    Two things this does NOT do any more:
+
+    * **Clear the registry first.** Taking and clearing under the lock left a
+      window in which `secret_client` saw an empty registry and started a SECOND
+      native client against a database the first was still checkpointing. The
+      latch below closes that instead, and an entry is dropped only once its
+      client has confirmed it closed.
+    * **Let a cancellation abandon the remainder.** Clients whose close never
+      ran stay registered and stay owned, so a later attempt - or the report
+      this returns - still knows about them.
+    """
+    global _closing
+    _closing = True
     failures: List[Tuple[str, Exception]] = []
-    for account, client in closing:
-        try:
-            await client.close()
-        except Exception as error:
-            failures.append((account, error))
-            log_event(
-                logging.ERROR,
-                "a TDLib client did not close cleanly; its unflushed keys may be lost",
-                error=error,
-            )
+    try:
+        async with _by_account_lock:
+            pending = list(_by_account.items())
+
+        deadline = time.monotonic() + budget
+        for account, client in pending:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                failures.append(
+                    (account, TimeoutError("the shutdown budget ran out before this account"))
+                )
+                continue
+            try:
+                await asyncio.wait_for(asyncio.shield(client.close()), timeout=left)
+            except Exception as error:
+                # RETAINED on failure: a client that did not confirm it closed
+                # still holds its database, and forgetting it here is how the
+                # next start came to run against one mid-checkpoint.
+                failures.append((account, error))
+                log_event(
+                    logging.ERROR,
+                    "a TDLib client did not close cleanly; its unflushed keys may be lost",
+                    error=error,
+                )
+                continue
+            async with _by_account_lock:
+                _by_account.pop(account, None)
+                _verified_against.pop(account, None)
+    finally:
+        # The latch stays SET. Once shutdown has begun, a new native client
+        # against a database being flushed is never the right answer.
+        pass
     return failures
 
 
 __all__ = [
+    "_CLOSE_ALL_BUDGET",
     "_DEAD_AUTH_STATES",
     "_READY",
     "_verified_against",

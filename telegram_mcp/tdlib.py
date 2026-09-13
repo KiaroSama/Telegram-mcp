@@ -87,6 +87,12 @@ class NotSignedIn(RuntimeError):
         self.state = state
 
 
+# How long one client gets to reach `authorizationStateClosed`. Generous: what
+# is being waited for is a database checkpoint whose loss takes secret-chat
+# history with it. Bounded all the same - shutdown cannot hang on it.
+_CLOSE_TIMEOUT = 20.0
+
+
 class TDLibError(RuntimeError):
     """An `error` object from TDLib, carrying Telegram's own code and text."""
 
@@ -246,6 +252,10 @@ class TDLibClient:
         self.updates: asyncio.Queue = asyncio.Queue(maxsize=1000)
         self._td = _tdjson()
         self._client_id: Optional[int] = None
+        # Set when TDLib reports `authorizationStateClosed`, which is the
+        # documented completion signal for `close` - the request's own reply
+        # only says it arrived. Created lazily: there may be no loop yet.
+        self._closed: Optional[asyncio.Event] = None
         self._pending: dict[str, asyncio.Future] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._state_changed: Optional[asyncio.Event] = None
@@ -315,22 +325,68 @@ class TDLibClient:
             except asyncio.TimeoutError:
                 continue
 
-    async def close(self) -> None:
-        """Shut the client down so TDLib flushes its database.
+    async def close(self, timeout: float = _CLOSE_TIMEOUT) -> None:
+        """Shut the client down and WAIT until TDLib says it is closed.
 
         Skipping this risks losing the secret-chat keys written since the last
         flush, which cannot be re-derived -- the messages they decrypt are gone
-        with them.
+        with them. Which is why waiting for the right signal matters: the answer
+        to the `close` REQUEST is an acknowledgement that the request arrived.
+        TDLib's own documentation names `authorizationStateClosed` as the moment
+        the work is finished, and that is what this waits for.
+
+        The old version took the request's `ok` for completion, suppressed every
+        failure and unregistered on the spot - so a close that had not happened
+        was reported as one, the dispatch entry went while the native client was
+        still checkpointing, and the caller went on to move the database aside.
+
+        Raises on timeout or refusal, and keeps its registration when it does:
+        the caller has to be able to tell "closed" from "asked to close".
         """
         if self._client_id is None:
             return
+        closed = self._closed_event()
         try:
-            await self.request({"@type": "close"}, timeout=10)
+            await self.request({"@type": "close"}, timeout=timeout)
         except (TDLibError, TimeoutError):
+            # The request itself failed. TDLib may still be closing, so the
+            # wait below is still the question worth asking.
             pass
+        try:
+            await asyncio.wait_for(closed.wait(), timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError) as error:
+            # NOT unregistered. A client whose close cannot be confirmed is
+            # still holding its database, and dropping the handle here is how
+            # the next caller came to start a second one against it.
+            raise TimeoutError(
+                f"TDLib did not reach authorizationStateClosed within {timeout:.0f}s "
+                f"for account {self.account!r}; its database is still in use."
+            ) from error
         with _clients_lock:
             _clients.pop(self._client_id, None)
         self._client_id = None
+        self._settle_pending(
+            RuntimeError(f"the TDLib client for {self.account!r} closed while this was in flight")
+        )
+
+    def _closed_event(self) -> "asyncio.Event":
+        """The event `_on_authorization` sets when TDLib reports Closed."""
+        if self._closed is None:
+            self._closed = asyncio.Event()
+        if self.authorization_state == "authorizationStateClosed":
+            self._closed.set()
+        return self._closed
+
+    def _settle_pending(self, error: BaseException) -> None:
+        """Fail every request still waiting, rather than leaving it forever.
+
+        A closed client can never answer, so a pending future is a caller that
+        waits out its own timeout for a reply that was never coming.
+        """
+        for future in list(self._pending.values()):
+            if not future.done():
+                future.set_exception(error)
+        self._pending.clear()
 
     # -- request / response -----------------------------------------------
 
@@ -414,6 +470,10 @@ class TDLibClient:
         self.authorization_link = state.get("link")
         if self.authorization_state == "authorizationStateWaitTdlibParameters":
             self._send(self._parameters())
+        if self.authorization_state == "authorizationStateClosed" and self._closed is not None:
+            # The completion signal, per TDLib's own documentation. `close`
+            # answering `ok` only says the request arrived.
+            self._closed.set()
         if self._state_changed is not None:
             self._state_changed.set()
 
@@ -602,7 +662,9 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
         # Telegram's answer rather than a fact about the file. `rmtree` with
         # `ignore_errors=True` was worse than either: a directory still held
         # open reported success while deleting nothing at all.
-        kept_at = identity.quarantine_database(label, why=str(error))
+        kept_at = identity.quarantine_database(
+            label, why=str(error), closed=_close_confirmed.get(label, False)
+        )
         try:
             # ONE retry. A dead authorisation that survives a fresh database is
             # not a stale database, and quarantining again would spend another
@@ -630,6 +692,25 @@ def _authorisation_is_dead(error: Exception) -> bool:
     return any(
         name in text for name in ("AUTH_KEY_UNREGISTERED", "SESSION_REVOKED", "SESSION_EXPIRED")
     )
+
+
+# label -> whether the last `_attempt_login` saw its client reach Closed. Read
+# by the recovery path, which may not move a database aside on any weaker
+# evidence: a rename succeeding is a Windows accident, not a closure check.
+_close_confirmed: dict = {}
+
+
+async def _closed_cleanly(client) -> bool:
+    try:
+        await client.close()
+    except Exception as error:
+        log_event(
+            logging.WARNING,
+            "a TDLib client did not confirm it closed",
+            error=error,
+        )
+        return False
+    return True
 
 
 async def _attempt_login(label, telethon_client, password, ask_password) -> str:
@@ -666,4 +747,9 @@ async def _attempt_login(label, telethon_client, password, ask_password) -> str:
             await identity.verify_owner(label, client, telethon_client)
         return state
     finally:
-        await client.close()
+        # Recorded rather than swallowed. The recovery path below may want to
+        # move this database aside, and it may only do that once something has
+        # CONFIRMED the client let go of it. A close that raised - and now it
+        # can, because it waits for the documented completion signal - must not
+        # mask the failure being reported either.
+        _close_confirmed[label] = await _closed_cleanly(client)

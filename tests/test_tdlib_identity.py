@@ -174,7 +174,7 @@ def test_a_dead_database_is_moved_aside_not_deleted(_state):
     is a guess about Telegram's answer, not a fact about the file."""
     directory = _database(_state, "work", b"keys worth keeping")
 
-    kept = identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
+    kept = identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED", closed=True)
 
     assert not directory.exists(), "the active name was not freed for a fresh database"
     assert (kept / "td.binlog").read_bytes() == b"keys worth keeping"
@@ -193,22 +193,22 @@ def test_a_locked_database_is_reported_not_silently_left(_state, monkeypatch):
     monkeypatch.setattr(identity, "_RELEASE_POLL_SECONDS", 0.001)
 
     with pytest.raises(identity.QuarantineFailed, match="still holds the database open"):
-        identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
+        identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED", closed=True)
 
     assert identity.database_dir_for("work").exists(), "it was destroyed after all"
 
 
 def test_quarantining_nothing_is_an_error(_state):
     with pytest.raises(identity.QuarantineFailed, match="no TDLib database"):
-        identity.quarantine_database("absent", why="AUTH_KEY_UNREGISTERED")
+        identity.quarantine_database("absent", why="AUTH_KEY_UNREGISTERED", closed=True)
 
 
 def test_two_quarantines_in_the_same_second_both_survive(_state):
     _database(_state, "work", b"first")
-    first = identity.quarantine_database("work", why="one")
+    first = identity.quarantine_database("work", why="one", closed=True)
     _database(_state, "work", b"second")
 
-    second = identity.quarantine_database("work", why="two")
+    second = identity.quarantine_database("work", why="two", closed=True)
 
     assert first != second
     assert (first / "td.binlog").read_bytes() == b"first"
@@ -413,7 +413,7 @@ def test_a_rename_waits_for_the_previous_holder_to_let_go(_state, monkeypatch):
     monkeypatch.setattr(identity.os, "replace", _busy_at_first)
     monkeypatch.setattr(identity, "_RELEASE_POLL_SECONDS", 0.001)
 
-    kept = identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
+    kept = identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED", closed=True)
 
     assert len(attempts) == 3, "it gave up on the first refusal"
     assert (kept / "td.binlog").exists()
@@ -431,6 +431,6 @@ def test_a_holder_that_never_lets_go_is_still_reported(_state, monkeypatch):
     monkeypatch.setattr(identity, "_RELEASE_POLL_SECONDS", 0.001)
 
     with pytest.raises(identity.QuarantineFailed, match="still holds the database open"):
-        identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
+        identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED", closed=True)
 
     assert identity.database_dir_for("work").exists(), "it was destroyed after all"

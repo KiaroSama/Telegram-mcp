@@ -73,6 +73,9 @@ def _empty_registry(monkeypatch):
     monkeypatch.setattr(reg, "_by_account", {})
     monkeypatch.setattr(reg, "_verified_against", {})
     monkeypatch.setattr(reg, "_by_account_lock", asyncio.Lock())
+    # `close_all` latches for the life of a shutdown, which is right in
+    # production and has to be undone between tests.
+    monkeypatch.setattr(reg, "_closing", False)
     monkeypatch.setattr(conn, "clients", {"acc": _TelethonHalf()})
     monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
 
@@ -253,7 +256,11 @@ async def test_one_client_refusing_to_close_does_not_strand_the_rest():
 
     assert willing.closed == 1, "the second client was never closed"
     assert [account for account, _ in failures] == ["first"]
-    assert reg._by_account == {}, "the registry was left holding closed clients"
+    assert "second" not in reg._by_account, "a closed client was left in the registry"
+    # The one that refused is RETAINED on purpose. It still holds its database,
+    # and forgetting it here is how the next start came to run against one
+    # mid-checkpoint - the registry being empty was never the goal.
+    assert reg._by_account.get("first") is stubborn
 
 
 @pytest.mark.asyncio
