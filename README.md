@@ -944,6 +944,22 @@ Get-ChildItem tests -Filter 'test_*.ps1' | ForEach-Object { pwsh -NoProfile -Fil
 CI discovers them the same way rather than from a list — a hardcoded list is how a suite
 outlived the script it tested.
 
+**A matrix leg proves its label.** `uv run` reads `.python-version` and resolves the
+project's own pin, so a job that installed 3.11 and then ran `uv run pytest` tested 3.13
+and reported a pass for an interpreter it never touched — with the matrix showing green
+across four names and two versions. Every job now exports `UV_PYTHON` as the exact
+executable `setup-python` installed, and `scripts/ci_record.py` asserts `sys.version_info`
+from inside the resolved environment before pytest starts. It runs again afterwards to
+record what actually happened: interpreter, platform, commit, `uv.lock` digest, and the
+case and skip counts out of the JUnit report — a leg that collected nothing fails there
+rather than passing quietly.
+
+**The lockfile is checked, not assumed.** A separate job runs `uv lock --check` and then
+`git diff --exit-code` over `uv.lock` and `pyproject.toml`; every other job invokes
+`uv run --locked`, so a manifest the lock no longer describes fails instead of being
+silently re-resolved. The uv binary itself is pinned in the workflows, because an
+unpinned resolver is one more dependency of every result below it.
+
 Run formatting checks:
 
 ```bash

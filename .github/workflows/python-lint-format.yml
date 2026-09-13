@@ -26,6 +26,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
+          # The resolver itself is a dependency of every result below. Pinned so
+          # a uv release cannot change what CI resolved without a commit saying so.
+          version: "0.12.8"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -33,7 +36,7 @@ jobs:
       # them overrode .flake8, and the last two contradicted pyproject's black config
       # by checking a 99-column codebase at 88 columns and then discarding the result.
       - name: Lint with Flake8
-        run: uv run flake8 . --count --show-source --statistics
+        run: uv run --locked flake8 . --count --show-source --statistics
 
       - name: Check formatting with Black
-        run: uv run black --check .
+        run: uv run --locked black --check .
