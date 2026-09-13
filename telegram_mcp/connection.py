@@ -54,6 +54,11 @@ from telegram_mcp.log_setup import (  # noqa: F401  (re-exported)
 )
 from telegram_mcp.singleton import try_lock_exclusive
 
+# What a client must satisfy before this process serves from it. Startup had
+# these checks and a reload did not, so the same server enforced two different
+# rules depending on when an account appeared.
+from telegram_mcp import admission as _admission
+
 # Whether the socket in front of you still works, and bringing it back when it
 # does not. A different question from which accounts exist, so it lives next
 # door; re-exported because `__all__` publishes these and `runtime` star-imports
@@ -458,6 +463,10 @@ def refresh_accounts() -> list:
     keep = {label: client for label, client in clients.items() if not _replaced(label, digests)}
     try:
         rebuilt = _discover_accounts(env, reuse=keep)
+        # The same check startup runs, before anything is published: two labels
+        # sharing one session is one auth key used twice, which Telegram answers
+        # by invalidating it for both. A reload could publish exactly that.
+        _admission.reject_duplicate_sessions(rebuilt)
     except Exception as error:
         # A `.env` that no longer describes a valid account set - a duplicate
         # label, an unusable one, or none at all - leaves the WORKING clients in
@@ -478,6 +487,7 @@ def refresh_accounts() -> list:
         label for label in set(rebuilt) & set(clients) if _replaced(label, digests)
     )
     for label in set(clients) - set(rebuilt):
+        _admission.forget(label)
         _retire(clients.pop(label))
     for label, client in rebuilt.items():
         if label in clients and not _replaced(label, digests):
@@ -489,10 +499,15 @@ def refresh_accounts() -> list:
     _env_stamp, _env_digests = stamp, digests
     # Identity, not label: a re-login keeps the label and replaces the object, and
     # a listener that only watched labels left the new client with no handler.
-    _notify_clients_changed(
-        {label for label, cl in clients.items() if before.get(label) is not cl},
-        set(before) - set(clients),
-    )
+    added = {label: cl for label, cl in clients.items() if before.get(label) is not cl}
+    # A hot-added client has taken no session lock. Admission needs an event loop
+    # and this function is synchronous, so it is queued for the first async use
+    # rather than skipped - which is how a reload came to connect a session that
+    # no lock protected.
+    for label in added:
+        _admission.forget(label)
+    _admission.mark_awaiting_admission(added)
+    _notify_clients_changed(set(added), set(before) - set(clients))
     return sorted(set(changed))
 
 
