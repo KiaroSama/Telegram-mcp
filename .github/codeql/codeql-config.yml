@@ -1,0 +1,17 @@
+# What CodeQL looks at, and the one thing it must not.
+#
+# `tests/` is excluded, and the reason is specific rather than convenience: eight
+# of the fourteen alerts from the first `security-extended` run were
+# `py/overly-permissive-file` inside the suites that PROVE the file-permission
+# hardening works. `test_owner_only.py` and `test_session_hardening.py` create a
+# world-readable session file on purpose and assert the server refuses to start
+# on it. Flagging that as a vulnerability is flagging the test for reproducing
+# the bug - and fourteen standing "high" alerts that everyone learns to scroll
+# past is worse than none, because the next real one arrives into that habit.
+#
+# Production code stays in scope in full, including `scripts/`: those run on the
+# owner's machine with the owner's credentials.
+name: "telegram-mcp CodeQL"
+
+paths-ignore:
+  - tests

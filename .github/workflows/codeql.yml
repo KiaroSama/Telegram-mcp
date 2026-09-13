@@ -52,6 +52,8 @@ jobs:
         with:
           languages: python
           build-mode: none
+          # Scopes the analysis; see the file for why `tests/` is out.
+          config-file: ./.github/codeql/codeql-config.yml
           # security-extended over the default: this is a credential-handling,
           # subprocess-spawning, path-resolving server, and the default suite
           # leaves out most of the path and command-injection queries.
