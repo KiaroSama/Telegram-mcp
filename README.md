@@ -984,6 +984,14 @@ record what actually happened: interpreter, platform, commit, `uv.lock` digest, 
 case and skip counts out of the JUnit report — a leg that collected nothing fails there
 rather than passing quietly.
 
+**The legs must agree on how many cases exist.** A dropped test file is identical to
+success in every number except the collected count: nothing goes red, the total is simply
+short, and one worker failing to start reads exactly like a clean run. Every leg runs the
+same suite on the same commit, so each writes its count to an artifact and a job refuses a
+run whose legs disagree. Cross-leg agreement rather than a stored baseline, deliberately —
+it carries no state between runs and has no number to maintain, so adding tests never
+breaks it and losing a file on one leg always does.
+
 **The lockfile is checked, not assumed.** A separate job runs `uv lock --check` and then
 `git diff --exit-code` over `uv.lock` and `pyproject.toml`; every other job invokes
 `uv run --locked`, so a manifest the lock no longer describes fails instead of being
