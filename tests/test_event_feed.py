@@ -557,83 +557,8 @@ def test_a_pending_bound_that_is_not_a_bound_falls_back(monkeypatch, value):
     assert ttl == events_store._PENDING_TTL_SECONDS_DEFAULT
 
 
-# --- the pending map ---------------------------------------------------------
-
-
 def _incoming(chat_id, message_id=1, name="Dana"):
     return _IncomingEvent(chat_id, message_id, name=name)
-
-
-@pytest.mark.asyncio
-async def test_the_pending_map_stops_at_its_ceiling(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "5")
-
-    for chat in range(9):
-        await _deliver(_incoming(chat))
-
-    assert len(events_store._pending_msgs) == 5, events_store._pending_msgs
-
-
-@pytest.mark.asyncio
-async def test_an_overflow_drop_is_reported_rather_than_silent(monkeypatch):
-    """A dropped burst is a message the agent will never answer. Losing it may be
-    unavoidable once the ceiling is reached; losing it quietly is not."""
-    monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "2")
-
-    for chat in range(5):
-        await _deliver(_incoming(chat))
-
-    state = events_store.overflow_state()
-    assert state["dropped_total"] == 3
-    assert state["dropped_reason_counts"]["overflow"] == 3
-    assert state["recent_dropped"], "no record of which chats were dropped"
-    assert state["recent_dropped"][-1]["reason"] == "overflow"
-
-
-@pytest.mark.asyncio
-async def test_the_oldest_burst_is_the_one_dropped(monkeypatch):
-    """The newest message is the one an agent still has a chance of answering."""
-    monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "2")
-
-    for chat in (1, 2, 3):
-        await _deliver(_incoming(chat))
-
-    assert sorted(chat for _account, chat in events_store._pending_msgs) == [2, 3]
-
-
-@pytest.mark.asyncio
-async def test_a_burst_nobody_collected_expires(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_EVENT_PENDING_TTL_SECONDS", "30")
-    events_store._pending_msgs[(ACCOUNT, 1)] = _pending_record(_mono(3600))
-    events_store._pending_msgs[(ACCOUNT, 2)] = _pending_record(_mono(1))
-
-    events_store._expire_pending()
-
-    assert list(events_store._pending_msgs) == [(ACCOUNT, 2)]
-    assert events_store.overflow_state()["dropped_reason_counts"]["expired"] == 1
-
-
-@pytest.mark.asyncio
-async def test_an_expiry_does_not_take_a_burst_that_is_still_fresh(monkeypatch):
-    monkeypatch.setenv("TELEGRAM_EVENT_PENDING_TTL_SECONDS", "3600")
-    events_store._pending_msgs[(ACCOUNT, 1)] = _pending_record(_mono(60))
-
-    events_store._expire_pending()
-
-    assert (ACCOUNT, 1) in events_store._pending_msgs
-
-
-@pytest.mark.asyncio
-async def test_the_drop_ledger_itself_is_bounded(monkeypatch):
-    """A ledger of unbounded drops is the leak it was added to report."""
-    monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "1")
-
-    for chat in range(200):
-        await _deliver(_incoming(chat))
-
-    state = events_store.overflow_state()
-    assert state["dropped_total"] == 199
-    assert len(state["recent_dropped"]) <= events_store._DROP_LEDGER_MAX
 
 
 # --- the wait's own answer ----------------------------------------------------

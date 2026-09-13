@@ -27,6 +27,83 @@ jobs:
       - name: Build Docker image
         run: docker build --file Dockerfile --tag telegram-mcp:ci .
 
+  # The acceptance M10 is actually about: not "does the image build" but "does
+  # the account survive being replaced". Only `/data` was declared persistent and
+  # only the Telethon session pointed there, so `state_dir()` - and with it every
+  # TDLib database, the identity note beside each one, any quarantined database,
+  # the alias store and the event feed - lived in the container's own filesystem
+  # and went with it. Losing a TDLib database is not a re-login: its secret-chat
+  # keys cannot be re-derived.
+  #
+  # Here rather than on a developer's machine because that is where Docker is.
+  # Nothing signs in: the state is fixture bytes, and what is proved is that the
+  # same bytes are still there through a container the volume outlived.
+  docker_persistence:
+    name: State Survives A Container Replacement
+    runs-on: ubuntu-latest
+    needs: docker_build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Build the image
+        run: docker build --file Dockerfile --tag telegram-mcp:persistence .
+
+      - name: The image resolves its state under the mount
+        run: |
+          set -euo pipefail
+          resolved=$(docker run --rm --entrypoint python telegram-mcp:persistence -c             "from telegram_mcp.settings import state_dir; print(state_dir())")
+          echo "state_dir() -> $resolved"
+          case "$resolved" in
+            /data/*) ;;
+            *) echo "state_dir() resolved to $resolved, which no volume covers"; exit 1 ;;
+          esac
+
+      - name: The non-root account can write it, privately
+        run: |
+          set -euo pipefail
+          docker volume create tgstate >/dev/null
+          docker run --rm -v tgstate:/data --entrypoint sh telegram-mcp:persistence -c '
+            set -e
+            test "$(id -un)" != root || { echo "running as root"; exit 1; }
+            mkdir -p /data/state/telegram-mcp/tdlib/work
+            echo "keys that cannot be re-derived" > /data/state/telegram-mcp/tdlib/work/td.binlog
+            echo "{\"user_id\": 4242}" > /data/state/telegram-mcp/tdlib/work/owner.json
+            echo "alias fixture" > /data/state/telegram-mcp/aliases.json
+            perms=$(stat -c %a /data/state)
+            echo "/data/state mode: $perms"
+            test "$perms" = "700" || { echo "state directory is not private"; exit 1; }
+          '
+
+      - name: Replace the container; the volume stays
+        run: |
+          set -euo pipefail
+          docker rmi -f telegram-mcp:persistence
+          docker build --file Dockerfile --tag telegram-mcp:persistence .
+
+      - name: The bytes are still there
+        run: |
+          set -euo pipefail
+          docker run --rm -v tgstate:/data --entrypoint sh telegram-mcp:persistence -c '
+            set -e
+            test -f /data/state/telegram-mcp/tdlib/work/td.binlog || { echo "the TDLib database did not survive"; exit 1; }
+            grep -q "cannot be re-derived" /data/state/telegram-mcp/tdlib/work/td.binlog
+            grep -q 4242 /data/state/telegram-mcp/tdlib/work/owner.json
+            grep -q "alias fixture" /data/state/telegram-mcp/aliases.json
+            echo "every fixture survived the replacement"
+          '
+
+      - name: A deployment that overrides the location still wins
+        run: |
+          set -euo pipefail
+          resolved=$(docker run --rm -e XDG_STATE_HOME=/data/elsewhere --entrypoint python             telegram-mcp:persistence -c "from telegram_mcp.settings import state_dir; print(state_dir())")
+          echo "overridden state_dir() -> $resolved"
+          test "$resolved" = "/data/elsewhere/telegram-mcp"
+
+      - name: Remove the volume
+        if: always()
+        run: docker volume rm -f tgstate || true
+
   docker_compose:
     name: Build & Validate Docker Compose
     runs-on: ubuntu-latest
