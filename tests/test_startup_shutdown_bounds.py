@@ -104,7 +104,11 @@ async def test_retiring_a_client_stops_the_warm_it_owns():
     task = warm._dialog_warms[client]
 
     retirement.retire(client)
-    await asyncio.sleep(0)
+    # Waited for, not assumed. `task.cancel()` REQUESTS a cancellation; how many
+    # loop turns it takes to be delivered is an implementation detail that
+    # differs between interpreter versions, and asserting after exactly one made
+    # this pass on 3.12-3.14 and fail on 3.11.
+    await asyncio.wait({task}, timeout=2)
 
     assert task.cancelled() or task.done(), "the warm outlived the client it was warming"
     waiter.cancel()
