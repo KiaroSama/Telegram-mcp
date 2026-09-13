@@ -354,6 +354,9 @@ async def test_a_started_client_is_reused_rather_than_started_again(fake, tmp_pa
 
     monkeypatch.setattr(tdlib_reg, "_by_account", {})
     monkeypatch.setattr(tdlib_reg, "_verified_against", {})
+    # `close_all` latches for the life of a shutdown, which is right in
+    # production and has to be undone between tests.
+    monkeypatch.setattr(tdlib_reg, "_closing", False)
     # `secret_client` compares the database against the ACTIVE session, so the
     # Telethon half of the same label has to exist for the call to mean anything.
     monkeypatch.setattr(conn, "clients", {"acct": _Session(7)})

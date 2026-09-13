@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -111,12 +112,24 @@ def record_identity(label: str, user_id: int) -> None:
         # directory. Nothing to bind here.
         return
     path = identity_path(label)
-    temporary = path.with_name(path.name + ".tmp")
+    # A UNIQUE name, created exclusively, never following a link. The previous
+    # `owner.json.tmp` was predictable and opened with ordinary semantics, so a
+    # symlink planted at that path in a writable state directory was followed
+    # and its target overwritten with this file's contents. O_EXCL means the
+    # open fails outright if anything is already there; O_NOFOLLOW (where the
+    # platform has it) means a link is never traversed.
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    payload = json.dumps({"user_id": user_id, "label": label, "recorded_at": time.time()})
     try:
-        temporary.write_text(
-            json.dumps({"user_id": user_id, "label": label, "recorded_at": time.time()}),
-            encoding="utf-8",
-        )
+        handle = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as writer:
+                writer.write(payload)
+        except BaseException:
+            os.close(handle)
+            raise
         _restrict(temporary)
         os.replace(temporary, path)
     except OSError as error:
@@ -214,8 +227,16 @@ def _rename_when_released(source: Path, target: Path) -> Optional[OSError]:
             time.sleep(_RELEASE_POLL_SECONDS)
 
 
-def quarantine_database(label: str, why: str) -> Path:
-    """Move a dead database aside. Never delete it.
+def quarantine_database(label: str, why: str, closed: bool = False) -> Path:
+    """Move a dead database aside, once its client has confirmed it closed.
+
+    ``closed`` is the caller's statement that the TDLib client for this label
+    reached ``authorizationStateClosed``. It is required because the rename does
+    not prove it: on Windows a directory with an open handle cannot be renamed,
+    which reads like a closure check and is really a platform accident - on
+    POSIX the same rename succeeds immediately with the database still open,
+    file descriptors and all. A quarantine taken on that basis moves a live
+    database out from under a running client.
 
     ``shutil.rmtree(..., ignore_errors=True)`` was three separate mistakes in one
     call: the bytes were gone with no copy, a directory still held open reported
@@ -227,6 +248,12 @@ def quarantine_database(label: str, why: str) -> Path:
     Raises ``QuarantineFailed`` rather than returning quietly: the caller is
     about to start a fresh login on the strength of this having happened.
     """
+    if not closed:
+        raise QuarantineFailed(
+            f"refusing to move the TDLib database for '{label}' aside: its client has "
+            "not confirmed it closed. A rename succeeding is not that confirmation - on "
+            "POSIX it succeeds with the database still open. Close the client first."
+        )
     source = database_dir_for(label)
     if not source.exists():
         raise QuarantineFailed(
