@@ -29,6 +29,7 @@ from telegram_mcp import paging, runner
 from telegram_mcp.runtime import ValidationError
 from telegram_mcp.singleton import SessionLock
 from telegram_mcp.tools import events, events_store
+from telegram_mcp.tools import feed_lifecycle as lifecycle
 
 # One list, used against every timing argument: what a caller must never be able
 # to turn into an unbounded wait.
@@ -66,19 +67,21 @@ async def _bounded(coroutine, seconds: float = 5.0):
 
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch, tmp_path):
-    # The map and the ledger are owned by events_store; the feed task and its
-    # settings by events. Patching either through the wrong module rebinds a
-    # name nothing reads and leaves the real state seeded from the last test.
+    # The map and the ledger are owned by events_store; the consumer task and
+    # its settings by feed_lifecycle; the activity event by events. Patching any
+    # of them through the wrong module rebinds a name nothing reads and leaves
+    # the real state seeded from the last test.
     monkeypatch.setattr(events_store, "_pending_msgs", {})
-    monkeypatch.setattr(events, "_feed_task", None)
     monkeypatch.setattr(events, "_activity_event", None)
-    monkeypatch.setattr(events, "_feed_settle_ms", 6000)
-    monkeypatch.setattr(events, "_feed_autostart_done", False)
+    monkeypatch.setattr(lifecycle, "_task", None)
+    monkeypatch.setattr(lifecycle, "_stopping", None)
+    monkeypatch.setattr(lifecycle, "_settle_ms", 6000)
+    monkeypatch.setattr(lifecycle, "_autostart_done", False)
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_FILE", str(tmp_path / "feed.jsonl"))
     yield
-    task = events._feed_task
-    if task is not None:
-        task.cancel()
+    for task in (lifecycle._task, lifecycle._stopping):
+        if task is not None:
+            task.cancel()
 
 
 # --- the shared validator ----------------------------------------------------

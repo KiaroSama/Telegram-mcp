@@ -11,6 +11,44 @@ permissions:
   contents: read
 
 jobs:
+  # Before anything resolves: is uv.lock still a lockfile FOR this pyproject?
+  # Docker builds with `--frozen`, which installs whatever the lock says even
+  # when the manifest has moved on - so a stale lock used to build and test
+  # green while the declared dependencies said something else. `--check` is the
+  # opposite question, and it is the one that catches drift.
+  lock:
+    name: Lockfile Matches The Manifest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Point uv at the interpreter this job installed
+        shell: bash
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.12.8"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Refuse a lock that no longer matches pyproject
+        run: uv lock --check
+
+      # `--locked` on every other job makes a rewrite impossible rather than
+      # merely unlikely; this proves the file on disk is the file CI resolved.
+      - name: Prove no step rewrote the lock
+        run: git diff --exit-code -- uv.lock pyproject.toml
+
   test:
     name: Pytest With Coverage
     runs-on: ubuntu-latest
@@ -31,16 +69,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.13', '3.14']
+        python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
       - name: Check out repository code
         uses: actions/checkout@v7
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+
+      # Without this, `uv run` reads .python-version and resolves the project's
+      # own pin - so a leg labelled 3.11 installed 3.11, ran 3.13 and reported a
+      # pass for an interpreter it never touched. UV_PYTHON names the exact
+      # executable this leg installed, not a version range uv may satisfy some
+      # other way.
+      - name: Point uv at the interpreter this leg installed
+        shell: bash
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
 
       # Without the cache every push re-resolves and re-downloads the whole tree -
       # telethon, pillow, regex, plus the native rlottie wheel - once per job, on
@@ -49,6 +97,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
+          # The resolver itself is a dependency of every result below. Pinned so
+          # a uv release cannot change what CI resolved without a commit saying so.
+          version: "0.12.8"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -56,6 +107,13 @@ jobs:
       # floor is a claim about the project and no single runner can execute the
       # whole project: telegram_mcp.visual.capture is Win32 and cannot run here.
       # The `coverage` job applies the floor once, to the combined data.
+      # Before pytest, from inside the resolved environment. A leg that cannot
+      # prove its own label is worth less than no leg, because it also hides the
+      # gap it leaves in the matrix.
+      - name: Prove this leg is running the interpreter it is named after
+        run: uv run --locked python scripts/ci_record.py --label "py${{ matrix.python-version }}"
+          --require "${{ matrix.python-version }}"
+
       - name: Run tests with coverage
         env:
           TELEGRAM_API_ID: "12345"
@@ -63,8 +121,16 @@ jobs:
           TELEGRAM_SESSION_NAME: "test_session"
           COVERAGE_FILE: .coverage.linux-py${{ matrix.python-version }}
         run: >
-          uv run python scripts/run_tests_guarded.py --
+          uv run --locked python scripts/run_tests_guarded.py --
           --cov --cov-report=term-missing --cov-fail-under=0
+          --junitxml=junit-linux-py${{ matrix.python-version }}.xml
+
+      # Counts, not a green tick: a leg that collected nothing passed too.
+      - name: Record what this leg actually ran
+        if: always()
+        run: uv run --locked python scripts/ci_record.py --label "py${{ matrix.python-version }}"
+          --require "${{ matrix.python-version }}"
+          --junit "junit-linux-py${{ matrix.python-version }}.xml"
 
       - name: Upload this leg's coverage data
         uses: actions/upload-artifact@v7
@@ -100,19 +166,33 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
+      # The same pin as the matrix job, for the same reason: this leg is named
+      # after 3.11 and must not quietly resolve the project's own.
+      - name: Point uv at the interpreter this leg installed
+        shell: bash
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
+          # The resolver itself is a dependency of every result below. Pinned so
+          # a uv release cannot change what CI resolved without a commit saying so.
+          version: "0.12.8"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
+      - name: Prove this leg is running the interpreter it is named after
+        run: uv run --locked --extra lottie python scripts/ci_record.py
+          --label "lottie-${{ matrix.os }}" --require "3.11"
+
       - name: Fail if the lottie extra did not install
         run: >
-          uv run --extra lottie python -c
+          uv run --locked --extra lottie python -c
           "from telegram_mcp.visual.frames import lottie_available;
           assert lottie_available(), 'rlottie-python is missing: the .tgs tests would silently skip'"
 
@@ -130,8 +210,15 @@ jobs:
           TELEGRAM_SESSION_NAME: "test_session"
           COVERAGE_FILE: .coverage.lottie-${{ matrix.os }}
         run: >
-          uv run --extra lottie python scripts/run_tests_guarded.py --
+          uv run --locked --extra lottie python scripts/run_tests_guarded.py --
           -q --cov --cov-report= --cov-fail-under=0
+          --junitxml=junit-lottie-${{ matrix.os }}.xml
+
+      - name: Record what this leg actually ran
+        if: always()
+        run: uv run --locked --extra lottie python scripts/ci_record.py
+          --label "lottie-${{ matrix.os }}" --require "3.11"
+          --junit "junit-lottie-${{ matrix.os }}.xml"
 
       - name: Upload this leg's coverage data
         uses: actions/upload-artifact@v7
@@ -211,6 +298,9 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v10.0.1
         with:
+          # The resolver itself is a dependency of every result below. Pinned so
+          # a uv release cannot change what CI resolved without a commit saying so.
+          version: "0.12.8"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
@@ -232,9 +322,9 @@ jobs:
 
       - name: Combine the platforms and apply the floor
         run: |
-          uv run python -m coverage combine coverage-data
-          uv run python -m coverage report
-          uv run python -m coverage xml
+          uv run --locked python -m coverage combine coverage-data
+          uv run --locked python -m coverage report
+          uv run --locked python -m coverage xml
 
       - name: Upload the combined report
         if: always()
