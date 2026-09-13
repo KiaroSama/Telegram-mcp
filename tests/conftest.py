@@ -4,9 +4,60 @@ import os
 
 import pytest
 
+
+# The suite describes the CODE, never the machine it runs on.
+#
+# Startup discovery now resolves the `.env` the way the reload path always did -
+# `find_dotenv(usecwd=True)` - so on a developer's own checkout it finds THEIR
+# configuration. Before, the two disagreed about which file they meant, and the
+# tests were quietly relying on startup finding nothing.
+#
+# What that dependence costs is not hypothetical: with a real `.env` present the
+# registry holds that person's accounts, every non-readonly tool becomes
+# multi-account and refuses a call with no `account`, and a hundred tests fail on
+# one machine and pass on another. It also points the suite at live logins.
+#
+# Stubbed at module scope because `telegram_mcp.connection` builds its registry
+# at IMPORT time, which happens while the first test module is collected - a
+# fixture would be far too late.
+def _no_dotenv_for_tests(*_args, **_kwargs):
+    return ""
+
+
+import dotenv  # noqa: E402
+
+dotenv.find_dotenv = _no_dotenv_for_tests
+dotenv.main.find_dotenv = _no_dotenv_for_tests
+
 os.environ.setdefault("TELEGRAM_API_ID", "12345")
 os.environ.setdefault("TELEGRAM_API_HASH", "dummy_hash")
 os.environ.setdefault("TELEGRAM_SESSION_NAME", "test_session")
+for _name in list(os.environ):
+    # Any account the developer's environment supplies, out of the way too: a
+    # test that means to configure two accounts says so itself.
+    if _name.startswith(("TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME_")):
+        del os.environ[_name]
+
+
+@pytest.fixture(autouse=True)
+def _tdlib_not_shutting_down():
+    """Clear the shutdown latch between tests.
+
+    `tdlib_registry.close_all()` sets `_closing` and deliberately never clears
+    it: once a shutdown has begun, starting a new native client against a
+    database being flushed is never right. That is correct for a process and
+    poisonous for a test session, where one suite calling `close_all` left every
+    later `secret_client` in any file answering "the server is shutting down" -
+    which CI found and a local run, in a different order, did not.
+
+    Autouse and here rather than in each suite, because the leak is a property
+    of the module rather than of any one test file.
+    """
+    from telegram_mcp import tdlib_registry
+
+    tdlib_registry._closing = False
+    yield
+    tdlib_registry._closing = False
 
 
 @pytest.fixture
