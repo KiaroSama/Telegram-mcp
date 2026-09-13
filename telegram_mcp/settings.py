@@ -18,6 +18,26 @@ from typing import Optional
 
 from dotenv import load_dotenv
 
+# Which environment variables name an account. Here rather than in
+# `account_config` because provenance has to be captured on the line below this
+# one, and this module is the bottom of the import graph.
+ACCOUNT_PREFIXES = ("TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME")
+
+# BEFORE `load_dotenv`, and that ordering is the whole point.
+#
+# Provenance is "did the PROCESS supply this, or the file?", and it is decidable
+# exactly once: the moment dotenv runs, the two are merged beyond separating.
+# Deciding it afterwards by asking which keys are absent from the file gets the
+# overlapping case backwards - a key set in BOTH was read as file-managed, so a
+# process value of `external-B` served every call while the reload view reported
+# the file's `file-A`, and deleting that line from the file dropped the genuine
+# external account as well.
+#
+# `load_dotenv()` does not override, so a key present here is the one in force.
+PROCESS_ACCOUNT_VARS: dict = {
+    key: value for key, value in os.environ.items() if key.startswith(ACCOUNT_PREFIXES) and value
+}
+
 # Loaded HERE, not by whoever imports this. These values are read at import time, and
 # this module now sits at the bottom of the import graph - `main.py` reaches it through
 # `file_roots` before `runtime` has run a line, so relying on `runtime` to have called
