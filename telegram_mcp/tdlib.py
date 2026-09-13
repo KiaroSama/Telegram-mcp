@@ -348,8 +348,13 @@ class TDLibClient:
         extra = str(next(_extra_ids))
         future = self._loop.create_future()
         self._pending[extra] = future
-        self._send({**obj, "@extra": extra})
         try:
+            # INSIDE the try. `_send` serialises to JSON and calls into the
+            # native library, and either can raise - an unencodable argument, a
+            # library error - at which point the entry registered a line above
+            # was orphaned for the life of a client that lives as long as the
+            # server, because only the await was ever guarded.
+            self._send({**obj, "@extra": extra})
             result = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(f"TDLib did not answer {obj['@type']} within {timeout:.0f}s")
@@ -360,7 +365,12 @@ class TDLibClient:
             # a sibling in a gather that failed) left its future here for the life
             # of a client that lives as long as the server. Same leak the timeout
             # branch was already written to prevent, through the other door.
-            self._pending.pop(extra, None)
+            abandoned = self._pending.pop(extra, None)
+            # A future nobody will ever resolve: the send failed, so no reply
+            # carrying this `@extra` is coming. Left pending it warns at
+            # interpreter exit and hides the real error behind the noise.
+            if abandoned is not None and not abandoned.done():
+                abandoned.cancel()
         if result.get("@type") == "error":
             raise TDLibError(result.get("code", 0), result.get("message", "unknown error"))
         return result
@@ -453,45 +463,6 @@ class TDLibClient:
 # database, reconnects, and re-fetches state. A tool call must not pay that.
 # --------------------------------------------------------------------------
 
-_by_account: dict[str, TDLibClient] = {}
-_by_account_lock = asyncio.Lock()
-
-
-async def secret_client(account: str) -> TDLibClient:
-    """The account's started TDLib client.
-
-    Raises `NotSignedIn` rather than returning a half-usable client: every
-    secret-chat operation needs a real authorisation, and a client that is
-    merely running would fail later with a message about whatever call happened
-    to come first.
-    """
-    async with _by_account_lock:
-        existing = _by_account.get(account)
-        if existing is not None and existing._client_id is not None:
-            return existing
-
-        client = TDLibClient(account)
-        state = await client.start()
-        if state != "authorizationStateReady":
-            await client.close()
-            raise NotSignedIn(account, state)
-        _by_account[account] = client
-        return client
-
-
-async def close_all() -> None:
-    """Shut every started client down, flushing its database.
-
-    Called on server shutdown. TDLib writes secret-chat keys lazily, and a key
-    lost on exit takes its chat's history with it -- there is no way to
-    re-derive one.
-    """
-    async with _by_account_lock:
-        for client in list(_by_account.values()):
-            await client.close()
-        _by_account.clear()
-
-
 # --------------------------------------------------------------------------
 # Authorising TDLib from the Telethon login that already exists.
 #
@@ -507,6 +478,18 @@ async def close_all() -> None:
 # part is the protocol and cannot be removed -- but it is no longer a second
 # code.
 # --------------------------------------------------------------------------
+
+
+# The account -> client registry moved next door: which client is alive and
+# whether it can still serve is a lifecycle question, not a protocol one.
+# Imported BELOW the class rather than at the top, because that module imports
+# `TDLibClient` from here - the name has to exist before it is loaded.
+from telegram_mcp.tdlib_registry import (  # noqa: E402,F401  (re-exported)
+    _by_account,
+    _by_account_lock,
+    close_all,
+    secret_client,
+)
 
 
 def login_token(link: str) -> bytes:
