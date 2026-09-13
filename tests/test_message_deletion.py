@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from telethon.tl.types import Channel
+from telethon.tl.types import Channel, PeerUser, User
 
 from telegram_mcp.tools import messages_delete as mod
 
@@ -41,6 +41,17 @@ class _Client:
         index = min(len(self.requests) - 1, len(self.offsets) - 1)
         return SimpleNamespace(offset=self.offsets[index], pts_count=self.pts_counts[index])
 
+    async def get_messages(self, entity, ids=None):
+        # Single deletion runs the same peer preflight bulk does now: outside a
+        # channel the request carries no peer, so the id has to be proved to
+        # belong to THIS chat before anything irreversible happens.
+        wanted = ids if isinstance(ids, list) else [ids]
+        found = [
+            SimpleNamespace(id=one, peer_id=PeerUser(user_id=entity.id), message="")
+            for one in wanted
+        ]
+        return found if isinstance(ids, list) else found[0]
+
     async def delete_messages(self, entity, message_ids, revoke=True):
         self.deleted.append((entity, message_ids, revoke))
         return [SimpleNamespace(pts_count=1)]
@@ -50,12 +61,21 @@ class _Client:
 def _wire(monkeypatch):
     def wire(client):
         monkeypatch.setattr(mod, "get_client", lambda account=None: client)
+        # `with_account` refreshes before routing now, so a test that does not
+        # pin the registry reads the machine's real `.env` and the tool refuses
+        # for being multi-account. The wired client IS the registry here.
+        from telegram_mcp import connection as conn
+
+        monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
+        monkeypatch.setattr(conn, "clients", {"default": client})
 
         async def _ensure(_client):
             return None
 
         async def _resolve(chat_id, _client):
-            return SimpleNamespace(id=chat_id)
+            # A real peer type, because single deletion now runs the same
+            # preflight bulk does and that asks Telethon for the peer id.
+            return User(id=chat_id, is_self=False, access_hash=1, first_name="a person")
 
         monkeypatch.setattr(mod, "ensure_connected", _ensure)
         monkeypatch.setattr(mod, "resolve_entity", _resolve)
@@ -73,8 +93,13 @@ async def test_a_positive_offset_is_repeated_until_the_server_says_zero(_wire):
     result = await mod.delete_chat_history(1, account="a")
 
     assert len(client.requests) == 3, "the continuation offset was ignored"
-    assert "63" in result, "the per-call counts were not aggregated"
     assert "cleared" in result
+    # NOT 63. That was the sum of `pts_count`, which counts the update events a
+    # deletion produced rather than the messages it removed - the number that
+    # turned a synthetic 777 counter into "777 messages deleted". Telegram does
+    # not report a message count, so none is claimed.
+    assert "63" not in result
+    assert "3 pass(es)" in result
 
 
 @pytest.mark.asyncio
@@ -184,8 +209,12 @@ async def test_progress_made_before_a_hung_call_is_reported_honestly(_wire, monk
 
     result = await asyncio.wait_for(mod.delete_chat_history(1, account="a"), timeout=5)
 
-    assert "12" in result, "the messages that were deleted went unreported"
     assert "incomplete" in result.lower()
+    # The honest form of "progress was made": say so, and say the count is not
+    # knowable, rather than quoting `pts_count` as if it were one.
+    assert "12" not in result
+    assert "Messages WERE deleted" in result
+    assert "does not say how many" in result
 
 
 @pytest.mark.asyncio
