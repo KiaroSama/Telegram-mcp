@@ -9,6 +9,7 @@ These tests cover the two ways that goes quiet: the wrong interpreter, and a
 leg that collected no case at all.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -106,3 +107,94 @@ def test_the_record_reaches_the_step_summary(tmp_path, monkeypatch):
     ci_record.main(["--label", "written-down"])
 
     assert "written-down" in summary.read_text(encoding="utf-8")
+
+
+def _record(directory, name, collected, skipped=0, label=None, python="3.13"):
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.json").write_text(
+        json.dumps(
+            {
+                "label": label or name,
+                "python": python,
+                "collected": collected,
+                "skipped": skipped,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_legs_that_agree_on_the_case_count_pass(tmp_path, capsys):
+    _record(tmp_path, "py3.11", 2834, skipped=67)
+    _record(tmp_path, "py3.13", 2834, skipped=67)
+    _record(tmp_path, "lottie-windows", 2834, skipped=23)
+
+    assert ci_record.main(["--compare", str(tmp_path)]) == 0
+    assert "every leg collected 2834" in capsys.readouterr().out
+
+
+def test_one_leg_short_by_a_single_file_fails(tmp_path, capsys):
+    """The defect this exists for. Nothing is red; the total is simply short, and
+    `2831 passed` reads exactly like `2834 passed` unless something compares them."""
+    _record(tmp_path, "py3.11", 2834)
+    _record(tmp_path, "py3.13", 2831)
+    _record(tmp_path, "lottie-windows", 2834)
+
+    assert ci_record.main(["--compare", str(tmp_path)]) == 1
+    said = capsys.readouterr().out
+    assert "disagree on how many cases exist" in said
+    assert "[2831, 2834]" in said
+
+
+def test_skips_may_differ_between_legs(tmp_path):
+    """The Windows lottie leg has the renderer, so it skips fewer. That is the
+    suite working, not a lost file, and it must not fail the gate."""
+    _record(tmp_path, "py3.11", 2834, skipped=67)
+    _record(tmp_path, "lottie-windows", 2834, skipped=23)
+
+    assert ci_record.main(["--compare", str(tmp_path)]) == 0
+
+
+def test_a_single_record_is_not_a_comparison(tmp_path, capsys):
+    _record(tmp_path, "py3.11", 2834)
+
+    assert ci_record.main(["--compare", str(tmp_path)]) == 1
+    assert "nothing to compare" in capsys.readouterr().out
+
+
+def test_an_unreadable_record_fails_rather_than_being_skipped(tmp_path, capsys):
+    _record(tmp_path, "py3.11", 2834)
+    (tmp_path / "broken.json").write_text("not json", encoding="utf-8")
+
+    assert ci_record.main(["--compare", str(tmp_path)]) == 1
+    assert "could not read" in capsys.readouterr().out
+
+
+def test_a_leg_writes_the_record_the_comparison_reads(tmp_path, monkeypatch):
+    """The two halves must fit: what `--emit` writes is what `--compare` parses."""
+    report = _junit(tmp_path / "junit.xml", tests=2834, skipped=67)
+    monkeypatch.setenv("RUNNER_OS", "Linux")
+    monkeypatch.setenv("GITHUB_SHA", "abc123def456")
+
+    assert (
+        ci_record.main(
+            ["--label", "py3.13", "--junit", str(report), "--emit", str(tmp_path / "r/one.json")]
+        )
+        == 0
+    )
+
+    written = json.loads((tmp_path / "r/one.json").read_text(encoding="utf-8"))
+    assert written["collected"] == 2834 and written["skipped"] == 67
+    assert written["label"] == "py3.13" and written["platform"] == "Linux"
+
+    _record(tmp_path / "r", "two", 2834)
+    assert ci_record.main(["--compare", str(tmp_path / "r")]) == 0
+
+
+def test_nothing_is_emitted_for_a_report_that_could_not_be_read(tmp_path):
+    """A record written from a failed read would enter the comparison as a fact."""
+    broken = tmp_path / "junit.xml"
+    broken.write_text("not xml", encoding="utf-8")
+
+    assert ci_record.main(["--junit", str(broken), "--emit", str(tmp_path / "r/one.json")]) == 1
+    assert not (tmp_path / "r/one.json").exists()

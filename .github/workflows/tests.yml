@@ -125,12 +125,21 @@ jobs:
           --cov --cov-report=term-missing --cov-fail-under=0
           --junitxml=junit-linux-py${{ matrix.python-version }}.xml
 
-      # Counts, not a green tick: a leg that collected nothing passed too.
+      # Counts, not a green tick: a leg that collected nothing passed too, and a
+      # leg that lost ONE file is short by a number nothing else reports.
       - name: Record what this leg actually ran
         if: always()
         run: uv run --locked python scripts/ci_record.py --label "py${{ matrix.python-version }}"
           --require "${{ matrix.python-version }}"
           --junit "junit-linux-py${{ matrix.python-version }}.xml"
+          --emit "cases/cases-linux-py${{ matrix.python-version }}.json"
+
+      - name: Upload this leg's case record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: case-record-linux-py${{ matrix.python-version }}
+          path: cases/cases-linux-py${{ matrix.python-version }}.json
 
       - name: Upload this leg's coverage data
         uses: actions/upload-artifact@v7
@@ -219,6 +228,14 @@ jobs:
         run: uv run --locked --extra lottie python scripts/ci_record.py
           --label "lottie-${{ matrix.os }}" --require "3.11"
           --junit "junit-lottie-${{ matrix.os }}.xml"
+          --emit "cases/cases-lottie-${{ matrix.os }}.json"
+
+      - name: Upload this leg's case record
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: case-record-lottie-${{ matrix.os }}
+          path: cases/cases-lottie-${{ matrix.os }}.json
 
       - name: Upload this leg's coverage data
         uses: actions/upload-artifact@v7
@@ -265,6 +282,40 @@ jobs:
           }
           if ($failed.Count -gt 0) { throw "PowerShell suites failed: $($failed -join '; ')" }
           Write-Host "All $($suites.Count) PowerShell suite(s) passed."
+
+  # Every leg ran the same suite on the same commit, so they must agree on how
+  # many cases exist. A dropped file is identical to success in every other
+  # number - nothing goes red, the total is simply short.
+  #
+  # Deliberately not a stored baseline: cross-leg agreement needs no state
+  # carried between runs and no number to maintain, so adding tests never breaks
+  # it and losing a file on one leg always does.
+  case_counts:
+    name: Every Leg Collected The Same Cases
+    runs-on: ubuntu-latest
+    needs: [test, lottie]
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # Every record is named after its own leg, so merge-multiple cannot lose
+      # one to a basename collision - the same rule the coverage data files follow.
+      - name: Collect every leg's case record
+        uses: actions/download-artifact@v8
+        with:
+          pattern: case-record-*
+          path: case-records
+          merge-multiple: true
+
+      - name: Refuse a run whose legs disagree on what exists
+        run: python scripts/ci_record.py --compare case-records
 
   # The floor, applied once, to everything that ran.
   #
