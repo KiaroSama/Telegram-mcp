@@ -32,6 +32,47 @@ __all__ = [
 ]
 
 
+# `messages.deleteMessages` caps one call at 100 ids.
+_DELETE_CHUNK = 100
+
+
+async def _ids_that_live_here(cl, entity, message_ids):
+    """Split `message_ids` into (here, missing, elsewhere) for a NON-channel chat.
+
+    Outside a channel the request carries no peer at all - Telethon's own
+    documentation warns that these ids are account-global - so an id copied from
+    another conversation deletes a message THERE while the caller names this
+    chat, irreversibly and with no error. The only way to tell them apart is to
+    look the ids up first and compare the peer each message reports against the
+    one the caller asked for.
+    """
+    here, missing, elsewhere = [], [], []
+    wanted = telethon_utils.get_peer_id(entity)
+    for start in range(0, len(message_ids), _DELETE_CHUNK):
+        batch = message_ids[start : start + _DELETE_CHUNK]
+        found = await cl.get_messages(entity, ids=batch)
+        for asked, message in zip(batch, found):
+            if message is None:
+                missing.append(asked)
+            elif telethon_utils.get_peer_id(message.peer_id) != wanted:
+                elsewhere.append(asked)
+            else:
+                here.append(asked)
+    return here, missing, elsewhere
+
+
+def _wrong_chat_refusal(elsewhere, chat_id):
+    shown = ", ".join(str(i) for i in elsewhere[:10])
+    more = "" if len(elsewhere) <= 10 else f" (and {len(elsewhere) - 10} more)"
+    return (
+        f"Refusing to delete: {len(elsewhere)} of the ids given are not in chat "
+        f"{chat_id} - {shown}{more}. Outside a channel Telegram treats a message "
+        "id as account-global, so deleting these would remove messages from a "
+        "different conversation and could not be undone. Re-read the ids from "
+        "this chat."
+    )
+
+
 _DELETE_HISTORY_MAX_PASSES = 20
 
 
@@ -57,12 +98,24 @@ async def delete_message(
         revoke: Pass True to delete the message for EVERYONE in the chat, wherever
             Telegram still permits it. The default removes it from this account's
             view only, because that is the one of the two that can be lived with
-            if it was the wrong message. Ignored for channels, which always delete
-            for everyone.
+            if it was the wrong message. A channel has no per-account copy, so
+            there `revoke=False` is REFUSED rather than quietly widened - pass
+            True to mean it.
     """
     try:
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
+        if isinstance(entity, Channel) and not revoke:
+            # Refused BEFORE the call, not silently widened. `revoke=False` asks
+            # for a deletion only this account sees; a channel has no such thing,
+            # and going ahead would remove the post for every subscriber while
+            # the caller believed they were tidying their own view.
+            return (
+                f"Refusing to delete message {message_id} from chat {chat_id}: "
+                "revoke=False asks for a deletion only you see, and a channel has "
+                "no per-account copy - removing it there removes it for every "
+                "subscriber. Pass revoke=True to say that is what you mean."
+            )
         # Telethon's friendly method defaults to revoke=True, and so did this,
         # which made the least alarming-sounding call the most destructive one on
         # offer: an agent tidying its own view took the message out of the
@@ -213,25 +266,52 @@ async def delete_messages_bulk(
         message_ids: List of message IDs to delete.
         revoke: If True, delete for both parties (default True). Ignored for channels.
 
-    Outside channels Telegram treats a message id as account-global, not scoped
+    Outside a channel Telegram treats a message id as account-global, not scoped
     to a chat: `messages.DeleteMessagesRequest` carries no peer field at all. So
-    in a private chat or a basic group these ids are NOT restricted to `chat_id`
-    - pass ids you read from this same chat.
+    the ids are checked against this chat BEFORE anything is deleted, and any
+    that live in another conversation make the whole call refuse.
     """
     try:
         cl = get_client(account)
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
+        # Order-preserving dedupe: the same id twice is one deletion, and a
+        # duplicate would otherwise inflate every number reported below.
+        wanted = list(dict.fromkeys(message_ids))
+        notes = []
+
         if isinstance(entity, Channel):
-            result = await cl(
-                functions.channels.DeleteMessagesRequest(channel=entity, id=message_ids)
-            )
+            # A channel request carries the peer, so an id from elsewhere simply
+            # is not found here - there is nothing to guard against.
+            targets = wanted
         else:
-            result = await cl(
-                functions.messages.DeleteMessagesRequest(id=message_ids, revoke=revoke)
-            )
-        pts_count = getattr(result, "pts_count", 0)
-        return f"Deleted {pts_count} of {len(message_ids)} messages from chat {chat_id}."
+            targets, missing, elsewhere = await _ids_that_live_here(cl, entity, wanted)
+            if elsewhere:
+                return _wrong_chat_refusal(elsewhere, chat_id)
+            if missing:
+                notes.append(f"{len(missing)} id(s) were already gone or never existed here")
+            if not targets:
+                return (
+                    f"Nothing to delete in chat {chat_id}: none of the "
+                    f"{len(wanted)} id(s) given is a message in this chat."
+                )
+
+        sent = 0
+        for start in range(0, len(targets), _DELETE_CHUNK):
+            batch = targets[start : start + _DELETE_CHUNK]
+            if isinstance(entity, Channel):
+                await cl(functions.channels.DeleteMessagesRequest(channel=entity, id=batch))
+            else:
+                await cl(functions.messages.DeleteMessagesRequest(id=batch, revoke=revoke))
+            sent += len(batch)
+
+        # NOT `pts_count`. That field counts the update events the deletion
+        # produced, which is not a count of messages removed - reporting it as
+        # one produced sentences like "Deleted 7 of 2 messages". Telegram does
+        # not say how many it removed, so no number is claimed that it did not
+        # give: what is reported is what was ASKED for and accepted.
+        report = f"Deletion accepted for {sent} message(s) in chat {chat_id}."
+        return report if not notes else report + " " + "; ".join(notes) + "."
     except telethon.errors.rpcerrorlist.MessageIdInvalidError:
         return "Cannot delete messages: one or more message IDs are invalid."
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
