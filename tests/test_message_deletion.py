@@ -246,9 +246,183 @@ async def test_a_channel_deletion_is_not_reported_as_private(_wire, monkeypatch)
 
     monkeypatch.setattr(mod, "resolve_entity", _resolve_channel)
 
-    said = await mod.delete_message(-1001129051609, 973, account="a")
+    said = await mod.delete_message(-1001129051609, 973, revoke=True, account="a")
 
     assert client.deleted[-1][1] == 973, "the delete itself must still have been issued"
     assert "you only" not in said, "a channel post is never deleted for you alone"
     assert "both parties" not in said, "a channel has subscribers, not two parties"
     assert "for everyone" in said
+
+
+# --- the ids are checked against this chat before anything is removed -------
+
+
+class _PeerClient(_Client):
+    """Answers `get_messages` with scripted per-id peers, and records the sends."""
+
+    def __init__(self, peers, entity_peer=1):
+        super().__init__()
+        self.peers = peers  # id -> peer marker, or None for "not found"
+        self.entity_peer = entity_peer
+        self.sent_ids = []
+
+    async def get_messages(self, entity, ids):
+        return [
+            None if self.peers.get(i) is None else SimpleNamespace(peer_id=self.peers[i])
+            for i in ids
+        ]
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        self.sent_ids.extend(getattr(request, "id", []))
+        return SimpleNamespace(pts_count=99, offset=0)
+
+
+@pytest.fixture
+def _peers(monkeypatch):
+    """`get_peer_id` is identity here so the test can use plain markers."""
+    monkeypatch.setattr(mod.telethon_utils, "get_peer_id", lambda peer: peer)
+
+    def wire(client, entity_peer=1):
+        monkeypatch.setattr(mod, "get_client", lambda account=None: client)
+
+        async def _ensure(_client):
+            return None
+
+        async def _resolve(chat_id, _client):
+            return entity_peer
+
+        monkeypatch.setattr(mod, "ensure_connected", _ensure)
+        monkeypatch.setattr(mod, "resolve_entity", _resolve)
+        return client
+
+    return wire
+
+
+@pytest.mark.asyncio
+async def test_an_id_from_another_conversation_is_refused_before_any_delete(_peers):
+    """`messages.deleteMessages` carries NO peer, so an id copied from another
+    chat deletes a message THERE while the caller names this one - irreversibly
+    and with no error."""
+    client = _peers(_PeerClient({5: 1, 6: 2}))
+
+    said = await mod.delete_messages_bulk(1, [5, 6], account="a")
+
+    assert "Refusing" in said
+    assert "6" in said
+    assert client.sent_ids == [], "it deleted anyway"
+
+
+@pytest.mark.asyncio
+async def test_ids_that_are_all_in_this_chat_are_deleted(_peers):
+    client = _peers(_PeerClient({5: 1, 6: 1}))
+
+    said = await mod.delete_messages_bulk(1, [5, 6], account="a")
+
+    assert client.sent_ids == [5, 6]
+    assert "2 message(s)" in said
+
+
+@pytest.mark.asyncio
+async def test_a_repeated_id_is_one_deletion_not_two(_peers):
+    client = _peers(_PeerClient({5: 1}))
+
+    said = await mod.delete_messages_bulk(1, [5, 5, 5], account="a")
+
+    assert client.sent_ids == [5]
+    assert "1 message(s)" in said
+
+
+@pytest.mark.asyncio
+async def test_a_missing_id_is_reported_rather_than_counted(_peers):
+    client = _peers(_PeerClient({5: 1, 7: None}))
+
+    said = await mod.delete_messages_bulk(1, [5, 7], account="a")
+
+    assert client.sent_ids == [5]
+    assert "already gone" in said
+
+
+@pytest.mark.asyncio
+async def test_no_count_is_claimed_that_telegram_did_not_give(_peers):
+    """`pts_count` counts update events, not messages removed. Reported as a
+    deletion count it produced sentences like "Deleted 7 of 2 messages"."""
+    client = _peers(_PeerClient({5: 1, 6: 1}))
+
+    said = await mod.delete_messages_bulk(1, [5, 6], account="a")
+
+    assert client.sent_ids == [5, 6], "the deletion itself must still have happened"
+    assert "99" not in said, "the update counter was reported as a deletion count"
+
+
+@pytest.mark.asyncio
+async def test_more_than_a_hundred_ids_are_sent_in_chunks(_peers):
+    ids = list(range(1, 151))
+    client = _peers(_PeerClient({i: 1 for i in ids}))
+
+    await mod.delete_messages_bulk(1, ids, account="a")
+
+    assert [len(getattr(r, "id", [])) for r in client.requests] == [100, 50]
+    assert client.sent_ids == ids
+
+
+@pytest.mark.asyncio
+async def test_a_channel_needs_no_preflight(_peers, monkeypatch):
+    """A channel request carries the peer, so an id from elsewhere is simply not
+    found there - and `get_messages` must not be called at all."""
+    channel = Channel(
+        id=7,
+        title="c",
+        photo=None,
+        date=datetime.datetime.now(datetime.timezone.utc),
+        broadcast=True,
+    )
+    client = _PeerClient({})
+
+    async def _boom(entity, ids):
+        raise AssertionError("a channel delete must not run the account-global preflight")
+
+    client.get_messages = _boom
+    monkeypatch.setattr(mod, "get_client", lambda account=None: client)
+
+    async def _ensure(_client):
+        return None
+
+    async def _resolve(chat_id, _client):
+        return channel
+
+    monkeypatch.setattr(mod, "ensure_connected", _ensure)
+    monkeypatch.setattr(mod, "resolve_entity", _resolve)
+
+    said = await mod.delete_messages_bulk(-100, [5, 6], account="a")
+
+    assert client.sent_ids == [5, 6]
+    assert "2 message(s)" in said
+
+
+# --- a channel has no deletion that only you see ----------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_private_deletion_is_refused_in_a_channel_rather_than_widened(_wire, monkeypatch):
+    """`revoke=False` asks for something a channel does not have. Going ahead
+    would remove the post for every subscriber while the caller believed they
+    were tidying their own view."""
+    client = _wire(_Client())
+
+    async def _resolve_channel(chat_id, _client):
+        return Channel(
+            id=chat_id,
+            title="a channel",
+            photo=None,
+            date=datetime.datetime.now(datetime.timezone.utc),
+            broadcast=True,
+        )
+
+    monkeypatch.setattr(mod, "resolve_entity", _resolve_channel)
+
+    said = await mod.delete_message(-1001129051609, 973, account="a")
+
+    assert "Refusing" in said
+    assert "revoke=True" in said
+    assert client.deleted == [], "it deleted for everyone anyway"
