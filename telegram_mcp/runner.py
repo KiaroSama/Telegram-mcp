@@ -351,9 +351,22 @@ async def _main() -> None:
             )
         sys.exit(1)
     finally:
+        # BOUNDED, and that is the whole point of the deadline. This gather was
+        # unbounded, so a single client whose disconnect never returned held
+        # shutdown here forever - and everything below it, including the TDLib
+        # flush whose loss is unrecoverable, simply never ran. One stalled
+        # cleanup must not be able to suppress the others.
         try:
-            await asyncio.gather(
-                *(cl.disconnect() for cl in clients.values()), return_exceptions=True
+            await asyncio.wait_for(
+                asyncio.gather(
+                    *(cl.disconnect() for cl in clients.values()), return_exceptions=True
+                ),
+                timeout=_DISCONNECT_ALL_SECONDS,
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            startup_note(
+                f"Some accounts did not disconnect within {_DISCONNECT_ALL_SECONDS:.0f}s; "
+                "continuing with shutdown so TDLib is still flushed."
             )
         except Exception:
             pass
@@ -393,7 +406,26 @@ async def _main() -> None:
                 )
         except Exception as exc:
             startup_note(f"Waiting for retired clients failed: {_startup_text(exc)}")
+
+        # A lease whose release is waiting on a socket to close. Draining before
+        # the sweep below means those releases happen in the right order rather
+        # than being cancelled by the loop shutting down underneath them.
+        try:
+            unreleased = await _admission.drain_releases()
+            if unreleased:
+                startup_note(
+                    f"{unreleased} session lease release(s) were still waiting on a socket; "
+                    "releasing them anyway so this process can exit."
+                )
+        except Exception as exc:
+            startup_note(f"Waiting for session lease releases failed: {_startup_text(exc)}")
         _admission.release_all()
+
+
+# How long shutdown waits for every account to disconnect before moving on. The
+# step after it flushes TDLib, whose loss is unrecoverable, so this one cannot be
+# allowed to hold the exit path open indefinitely.
+_DISCONNECT_ALL_SECONDS = 15.0
 
 
 # How long shutdown waits for TDLib to flush and close. Generous, because the

@@ -307,6 +307,21 @@ def _discover_accounts(
     reuse = reuse or {}
     environment = os.environ if env is None else env
     accounts: dict[str, TelegramClient] = {}
+    try:
+        return _build_accounts(environment, reuse, accounts)
+    except BaseException:
+        # Every client THIS call constructed, disposed. A failure part-way -
+        # an unusable label further down the list, or a pool with no free slot -
+        # left the ones already built holding their session files open with
+        # nothing referencing them, once per reload.
+        for label, client in accounts.items():
+            if reuse.get(label) is not client:
+                _retire(client)
+        raise
+
+
+def _build_accounts(environment, reuse, accounts):
+    """The construction itself. Separated so its failure has a single handler."""
 
     prefix_str = "TELEGRAM_SESSION_STRING_"
     prefix_name = "TELEGRAM_SESSION_NAME_"
@@ -516,13 +531,15 @@ def refresh_accounts() -> list:
         label for label in set(rebuilt) & set(clients) if _replaced(label, digests)
     )
     for label in set(clients) - set(rebuilt):
-        _admission.forget(label)
-        _retire(clients.pop(label))
+        # The disconnect is handed to admission so the lease is released when the
+        # socket is actually down. Releasing first is the window another process
+        # needs to claim a session this one is still connected to.
+        _admission.forget(label, closing=_retire(clients.pop(label)))
     for label, client in rebuilt.items():
         if label in clients and not _replaced(label, digests):
             continue
         if label in clients:
-            _retire(clients[label])
+            _admission.forget(label, closing=_retire(clients[label]))
         clients[label] = client
 
     _env_stamp, _env_digests, _last_rejection = stamp, digests, None
@@ -533,9 +550,28 @@ def refresh_accounts() -> list:
     # and this function is synchronous, so it is queued for the first async use
     # rather than skipped - which is how a reload came to connect a session that
     # no lock protected.
-    for label in added:
+    for label, client in added.items():
+        # The same session under a new label keeps the lease it already holds;
+        # releasing and re-taking it would be a gap for a change that never
+        # touched the session.
+        moved = next(
+            (
+                old
+                for old, lease in _admission._leases.items()
+                if lease.client is client and old != label
+            ),
+            None,
+        )
+        if moved is not None and _admission.transfer_lease(moved, label, client):
+            continue
         _admission.forget(label)
-    _admission.mark_awaiting_admission(added)
+    still_pending = {
+        label: client for label, client in added.items() if label not in _admission.session_locks
+    }
+    # Started NOW rather than on the first async API call. A server that only
+    # waits for incoming events never makes one, so a hot-added account sat
+    # published and unadmitted for as long as nobody used a tool.
+    _admission.begin_admission(still_pending)
     _notify_clients_changed(set(added), set(before) - set(clients))
     return sorted(set(changed))
 
@@ -617,6 +653,13 @@ def with_account(readonly=False):
         @wraps(fn)
         async def wrapper(*args, **kwargs):
             account = kwargs.get("account")
+
+            # BEFORE the mode decision, not after. `is_multi_mode()` reads the
+            # registry, and the registry only moves when something refreshes it -
+            # so a second account added while the server ran was invisible here,
+            # and a write with no `account` was refused for being single-mode
+            # right up until some other call happened to refresh first.
+            refresh_accounts()
 
             # Explicit account OR single-mode -> call once
             if account is not None or not is_multi_mode():

@@ -33,8 +33,14 @@ async def _awaited(awaitable):
     await awaitable
 
 
-def retire(client) -> None:
-    """Close a client this process no longer serves.
+def retire(client):
+    """Close a client this process no longer serves, and hand back its progress.
+
+    Returns the task closing the socket, or ``None`` when there is nothing left
+    to wait for - already closed, closed synchronously here, or a disconnect
+    that refused outright. The caller needs that distinction: a session lease
+    released while the socket it protects is still going down is exactly the
+    window a second process needs to claim the same session.
 
     ``get_client`` is synchronous and is called both from inside the server's
     loop and from plain code, so there are two cases and the first version
@@ -51,9 +57,9 @@ def retire(client) -> None:
     try:
         closing = client.disconnect()
     except Exception:
-        return
+        return None
     if closing is None:  # Telethon already closed it synchronously
-        return
+        return None
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -62,12 +68,12 @@ def retire(client) -> None:
         try:
             task = asyncio.ensure_future(closing)
         except Exception:
-            return
+            return None
         # Tracked, because dropping the handle is how a session lock came to be
         # released while the socket under it was still closing.
         _retiring.add(task)
         task.add_done_callback(_retiring.discard)
-        return
+        return task
     try:
         asyncio.run(closing if asyncio.iscoroutine(closing) else _awaited(closing))
     except Exception:
@@ -75,6 +81,8 @@ def retire(client) -> None:
             closing.close()  # at least do not leave a pending coroutine
         except Exception:
             pass
+    # Closed (or failed to) right here, so there is nothing left to wait on.
+    return None
 
 
 async def drain_retirements(timeout: float = None) -> int:
