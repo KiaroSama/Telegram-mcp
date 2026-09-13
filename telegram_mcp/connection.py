@@ -78,15 +78,17 @@ from telegram_mcp.reconnect import (  # noqa: F401  (re-exported)
 # `runtime` star-imports this one and the tests patch these names here.
 from telegram_mcp.account_config import (  # noqa: F401  (re-exported)
     _ACCOUNT_PREFIXES,
-    _EXTERNAL_ACCOUNT_VARS,
     _account_digest,
     _account_digest_bytes,
     _accounts_from_disk,
     _current_digests,
     _env_file,
     _env_fingerprint,
-    _external_account_vars,
 )
+
+# One reading of the configuration, so the clients built, the fingerprint
+# recorded and the digests marked active cannot describe different revisions.
+from telegram_mcp.account_snapshot import Snapshot, read_snapshot
 
 # Retiring a client outlives the synchronous call that starts it, so it owns a
 # module of its own. Re-exported: `__all__` publishes these and `runtime`
@@ -386,8 +388,14 @@ def _discover_accounts(
     return accounts
 
 
+# ONE read, and everything below is decided from it. Three separate reads let
+# an edit that landed between them be recorded as the active revision with no
+# client ever built for it - after which the next reload compared the new file
+# against itself, found nothing to do, and the old client went on serving.
+_boot: Snapshot = read_snapshot()
+
 try:
-    clients: dict[str, TelegramClient] = _discover_accounts()
+    clients: dict[str, TelegramClient] = _discover_accounts(_boot.env)
 except NoAccountsConfigured as _no_accounts:
     # Startup with nothing configured cannot proceed, and says so in one line
     # rather than a traceback - the behaviour this replaced, kept verbatim.
@@ -395,15 +403,17 @@ except NoAccountsConfigured as _no_accounts:
     sys.exit(1)
 
 
-_env_stamp: tuple = _env_fingerprint(_env_file())
-# The baseline IS the startup configuration, established from the same view
-# `refresh_accounts` will compare against. Starting empty meant the first
-# refresh had nothing to diff, so it adopted whatever was on disk and applied
-# none of it: an edit landing between startup discovery and that first call was
-# recorded as active while the old client kept serving. The window is small and
-# entirely real - the account manager writes `.env` and the next tool call is
-# the first refresh.
-_env_digests: dict = _current_digests(_accounts_from_disk())
+# The revision this process has SEEN, and the revision that is ACTIVE. Both come
+# from `_boot`, so they describe the configuration the clients above were built
+# from and nothing else. They are separate names because a revision can be seen
+# and refused: the stamp moves so a broken file is not re-parsed on every call,
+# while the digests stay on the generation still serving.
+_env_stamp: tuple = _boot.stamp
+_env_digests: dict = _boot.digests
+
+# The last revision that was read and refused, for the status tools to report. A
+# reload that quietly did nothing is indistinguishable from one that worked.
+_last_rejection: Optional[tuple] = None
 
 
 # Told after every change to `clients`. A registry of callbacks rather than a
@@ -445,28 +455,32 @@ def refresh_accounts() -> list:
     revoking the login rather than like stale state here. Re-logging in an
     existing account produced the same thing.
 
-    Cost on the common path is one `os.stat`. The file is only parsed, and
-    clients only rebuilt, when that stamp actually moves.
+    Cost on the common path is reading a few kilobytes and hashing them. The
+    file is only PARSED into clients, and clients only rebuilt, when that hash
+    actually moves.
 
     Returns the labels that changed, so a caller can say what happened.
     """
-    global _env_stamp, _env_digests
+    global _env_stamp, _env_digests, _last_rejection
 
-    path = _env_file()
-    stamp = _env_fingerprint(path)
-    if stamp == _env_stamp:
-        return []
-
+    # ONE read. Fingerprinting the file and then parsing it again is two
+    # readings of something being rewritten underneath, and the pair could
+    # describe different revisions - the stamp recording an edit whose accounts
+    # were never built, after which the next call saw nothing left to do.
     try:
-        env = _accounts_from_disk()
-        digests = _current_digests(env)
+        snapshot = read_snapshot()
     except Exception:
         # A half-written `.env` - the account manager backs up and rewrites, so
         # there IS a window - must not take the running server down. The next
-        # call sees a new stamp and tries again.
+        # call reads again.
         return []
 
+    if snapshot.stamp == _env_stamp:
+        return []
+    stamp, env, digests = snapshot.stamp, snapshot.env, snapshot.digests
+
     if digests == _env_digests:
+        # The file moved but no account did - a comment, an unrelated setting.
         _env_stamp = stamp
         return []
 
@@ -489,7 +503,12 @@ def refresh_accounts() -> list:
             error=error,
             accounts=len(clients),
         )
+        # SEEN, not applied: the stamp moves so a broken file is not re-parsed on
+        # every call, while the active digests stay on the generation still
+        # serving. The rejection is recorded rather than only logged, because a
+        # reload that quietly did nothing looks exactly like one that worked.
         _env_stamp = stamp
+        _last_rejection = (stamp, f"{type(error).__name__}: {error}")
         return []
 
     before = dict(clients)
@@ -506,7 +525,7 @@ def refresh_accounts() -> list:
             _retire(clients[label])
         clients[label] = client
 
-    _env_stamp, _env_digests = stamp, digests
+    _env_stamp, _env_digests, _last_rejection = stamp, digests, None
     # Identity, not label: a re-login keeps the label and replaces the object, and
     # a listener that only watched labels left the new client with no handler.
     added = {label: cl for label, cl in clients.items() if before.get(label) is not cl}
