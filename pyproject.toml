@@ -42,7 +42,7 @@ dependencies = [
     "regex>=2026.9.3",
     "python-json-logger>=4.2.0",
     "qrcode>=8.2",
-    "telethon>=1.44.0",
+    "telethon>=1.45.0",
     # Telegram's own client library. Required rather than optional because two
     # things here have no other route: secret chats (Telethon never implemented
     # MTProto 2.0) and the admin rights newer than the TL layer Telethon
