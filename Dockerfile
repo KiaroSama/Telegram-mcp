@@ -24,19 +24,30 @@ ENV PYTHONUNBUFFERED=1
 # used to install from the pip requirements file, which carries floors and not
 # pins, so two images built from the same commit a week apart held different
 # dependency trees, and a compromised release of Pillow or Telethon landed in
-# the container with no commit and no lockfile diff. --frozen fails loudly when
-# uv.lock and pyproject.toml disagree, which is the behaviour you want: a
-# manifest edit without a re-lock should break the image build rather than
-# quietly resolve something new.
+# the container with no commit and no lockfile diff.
+#
+# --locked, NOT --frozen. The comment that used to sit here said --frozen "fails
+# loudly when uv.lock and pyproject.toml disagree"; it does not. --frozen means
+# "install what the lock says and do not re-resolve", which is exactly how a
+# manifest edited without a re-lock built a green image from a dependency set
+# nobody had reviewed. --locked asserts the lock still describes this pyproject
+# and fails when it does not, which is what that comment was promising.
 # --no-install-project installs the dependencies only. main.py is run as a
 # script from /app, so the project is never imported from site-packages, and
 # building it here would need README.md, LICENSE and NOTICE in the context for
 # nothing.
 # UV_PYTHON_DOWNLOADS=never keeps uv on the base image's own interpreter instead
 # of fetching a second managed CPython into an image chosen for being minimal.
+# UV_PYTHON names the base image's interpreter outright rather than leaving uv to
+# pick one: with DOWNLOADS=never there is only one to find today, but "there is
+# only one" is a property of the image, not a promise about it.
 ENV UV_PYTHON_DOWNLOADS=never
+ENV UV_PYTHON=/usr/local/bin/python3
 COPY pyproject.toml uv.lock ./
-RUN pip install --no-cache-dir uv && uv sync --frozen --no-dev --no-install-project
+# uv itself is pinned. An unpinned resolver is a dependency of every version
+# resolved below it, and the one input to this image that was still "whatever
+# PyPI served that day" - the very thing the lockfile exists to stop.
+RUN pip install --no-cache-dir uv==0.12.8 && uv sync --locked --no-dev --no-install-project
 
 # uv puts the environment in /app/.venv, so putting it first on PATH is what makes
 # the bare `python` in CMD below the interpreter holding the locked dependencies.

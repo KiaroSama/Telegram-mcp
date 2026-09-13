@@ -15,6 +15,7 @@ image builds or runs — only a real `docker build` shows that, and CI is where 
 happens.
 """
 
+import re
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -96,6 +97,35 @@ def test_the_image_installs_from_the_lockfile():
     assert "requirements.txt" not in dockerfile, (
         "Dockerfile installs from requirements.txt again. That file carries floors only, "
         "so two images built from one commit a week apart hold different trees."
+    )
+
+
+def test_the_image_refuses_a_lock_that_no_longer_matches_the_manifest():
+    """`--frozen` is not the check its old comment claimed it was.
+
+    Measured against real Docker with a manifest edited and not re-locked:
+    `uv sync --frozen` exits 0 and installs the stale set, `uv sync --locked`
+    exits 1 with "To update the lockfile, run `uv lock`". So a dependency added
+    to pyproject.toml without a re-lock built a green image from a tree nobody
+    had reviewed - the exact drift uv.lock is in this repository to prevent.
+    """
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "uv sync --locked" in dockerfile, (
+        "the image no longer asserts that uv.lock still describes pyproject.toml. "
+        "--frozen installs a stale lock without complaint; --locked is the check."
+    )
+    assert "uv sync --frozen" not in dockerfile
+
+
+def test_the_resolver_itself_is_pinned():
+    """An unpinned uv is a dependency of every version it resolves, and the one
+    input to this image that was still whatever PyPI served that day."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert re.search(r"pip install[^\n]*\buv==\d+\.\d+", dockerfile), (
+        "uv is installed unpinned in the image, so a uv release can change what "
+        "the build resolves with no commit saying so."
     )
 
 
