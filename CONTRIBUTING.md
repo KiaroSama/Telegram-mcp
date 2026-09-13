@@ -42,6 +42,12 @@ re-resolved into something nobody reviewed:
 uv lock
 ```
 
+**Adding or removing a CI leg means updating `.github/expected-legs.txt`.** It names
+the six legs a run must produce and the interpreter each is for, and a test holds it
+against the workflow's own matrix - so a matrix entry added without it fails, rather
+than producing a leg nothing checks. The same file is what stops two legs of six
+agreeing with each other and being mistaken for a complete run.
+
 **Adding or removing a test FILE means updating `.github/expected-suites.txt`** in the
 same commit. It holds one integer — how many `tests/test_*.py` this repository tracks —
 and it is what stops a suite being deleted everywhere at once without anyone noticing:
