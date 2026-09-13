@@ -42,6 +42,13 @@ re-resolved into something nobody reviewed:
 uv lock
 ```
 
+**Every CI leg must collect the same number of cases.** A dropped test file is identical
+to success in every other number, so the six legs are compared against each other rather
+than against a stored baseline. SKIPPING differs between them by design - the Windows leg
+has the `lottie` renderer and skips fewer - and is not gated. COLLECTING differently is:
+if you gate a test file at module level so it is not collected on some platforms, prefer
+`@pytest.mark.skipif` on the tests, which keeps them counted everywhere.
+
 The launchers have their own PowerShell suites, which pytest does not see. On Windows:
 
 ```powershell
