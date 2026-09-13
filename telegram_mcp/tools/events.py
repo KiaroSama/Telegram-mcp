@@ -30,6 +30,7 @@ from telegram_mcp.paging import LIMITS, bounded, bounded_number, bounded_slice
 from telegram_mcp.runtime import *
 from telegram_mcp.safe_log import log_event  # mcp, clients, ToolAnnotations, log_and_format_error
 from telegram_mcp.tools import events_store as store
+from telegram_mcp.tools import feed_lifecycle as lifecycle
 
 _activity_event: Optional[asyncio.Event] = None
 
@@ -38,14 +39,10 @@ _activity_event: Optional[asyncio.Event] = None
 # JSONL lines to the feed file, so an external watcher (e.g. Claude Code's
 # Monitor on `tail -f`) can wake an agent per event instead of the agent
 # holding a blocking wait_for_settled_message call open.
-_feed_task: Optional[asyncio.Task] = None
-_feed_settle_ms: int = 6000
-_feed_autostart_done: bool = False
-
-# How long a cancelled consumer gets to actually stop before the caller is told
-# it did not. Cancellation is a request, and returning before it lands leaves the
-# task holding the feed file open under a caller who believes it is closed.
-_FEED_STOP_TIMEOUT_SECONDS = 5.0
+# The consumer's lifecycle - how many there are, which one is registered, and
+# who owns one that will not stop - lives in `feed_lifecycle`. It is a different
+# question from what the consumer does, and interleaving the two is how three of
+# them came to run at once.
 
 
 def _get_activity_event() -> asyncio.Event:
@@ -114,8 +111,22 @@ def _burst_summary(key: tuple[str, int], rec: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def feed_enabled() -> bool:
-    return _feed_task is not None and not _feed_task.done()
+feed_enabled = lifecycle.feed_enabled
+
+
+def incoming_feed_state() -> Dict[str, Any]:
+    """The feed's full state, including whether the env autostart is still armed.
+
+    Autostart is this module's business - it fires from the Telethon handler -
+    so the flag is computed here and the rest comes from the lifecycle module.
+    """
+    return lifecycle.incoming_feed_state(
+        autostart_pending=(
+            not lifecycle.autostart_done()
+            and not lifecycle.feed_enabled()
+            and _parse_bool_env(os.getenv("TELEGRAM_EVENT_FEED"), False)
+        )
+    )
 
 
 async def _feed_loop(settle_ms: int) -> None:
@@ -151,38 +162,6 @@ async def _feed_loop(settle_ms: int) -> None:
             await asyncio.sleep(1.0)
 
 
-def _start_feed(settle_ms: int) -> None:
-    global _feed_task, _feed_settle_ms, _feed_autostart_done
-    _feed_settle_ms = settle_ms
-    # Any explicit or implicit start consumes the env autostart, so a later
-    # disable_incoming_feed cannot be resurrected by the next incoming message.
-    _feed_autostart_done = True
-    _feed_task = asyncio.get_running_loop().create_task(_feed_loop(settle_ms))
-
-
-async def _stop_feed(task: asyncio.Task) -> bool:
-    """Cancel the consumer and WAIT for it, bounded. True when it actually stopped.
-
-    `task.cancel()` schedules a cancellation; it does not perform one. Returning
-    at that point told the caller the feed was off while the task was still
-    running, still holding the feed file open and still consuming settled bursts
-    that `wait_for_settled_message` was about to be told it could have.
-
-    `asyncio.wait` rather than `await task`: awaiting a cancelled task re-raises
-    the CancelledError here, and swallowing that is how a cancellation aimed at
-    the caller gets eaten by mistake.
-    """
-    task.cancel()
-    done, _still_running = await asyncio.wait({task}, timeout=_FEED_STOP_TIMEOUT_SECONDS)
-    if not done:
-        log_event(
-            logging.WARNING,
-            "event-feed-stop-timeout",
-            seconds=_FEED_STOP_TIMEOUT_SECONDS,
-        )
-    return bool(done)
-
-
 def _maybe_autostart_feed() -> None:
     """Start the feed on first incoming event if TELEGRAM_EVENT_FEED is truthy.
 
@@ -190,7 +169,7 @@ def _maybe_autostart_feed() -> None:
     execute on the server's event loop (import time has no running loop).
     One-shot: never restarts a feed the user explicitly disabled.
     """
-    if _feed_autostart_done or feed_enabled():
+    if lifecycle.autostart_done() or lifecycle.feed_enabled():
         return
     if _parse_bool_env(os.getenv("TELEGRAM_EVENT_FEED"), False):
         try:
@@ -198,7 +177,9 @@ def _maybe_autostart_feed() -> None:
         except OSError as error:
             log_event(logging.ERROR, "cannot create the event feed file", error=error)
             return
-        _start_feed(_feed_settle_ms)
+        # Refuses rather than queues if a consumer is running or still stopping:
+        # a convenience start is never worth a second consumer.
+        lifecycle.start_now(_feed_loop)
 
 
 async def _on_new_incoming(account: str, event) -> None:
@@ -544,13 +525,15 @@ async def enable_incoming_feed(settle_ms: int = 6000) -> str:
         # Validate the feed file before starting the consumer, so a bad path
         # (missing dir, read-only mount) fails cleanly with no orphan task.
         store._touch_feed_file()
-        if feed_enabled():
-            if settle_ms == _feed_settle_ms:
-                return json.dumps(incoming_feed_state(), ensure_ascii=False)
-            # Awaited, so the replacement consumer is never briefly the second
-            # one racing for the same settled bursts.
-            await _stop_feed(_feed_task)
-        _start_feed(settle_ms)
+        # One transition at a time, and no replacement until the previous
+        # consumer has confirmed it stopped. Both are the lifecycle module's
+        # job; what is decided here is only what to say about the answer.
+        outcome = await lifecycle.enable(settle_ms, _feed_loop)
+        if not outcome["ok"]:
+            return json.dumps(
+                dict(incoming_feed_state(), enabled_now=False, refused=outcome["reason"]),
+                ensure_ascii=False,
+            )
         return json.dumps(incoming_feed_state(), ensure_ascii=False)
     except Exception as e:
         return log_and_format_error("enable_incoming_feed", e)
@@ -560,18 +543,20 @@ async def enable_incoming_feed(settle_ms: int = 6000) -> str:
 async def disable_incoming_feed() -> str:
     """Disable the incoming event feed (stops writing to the feed file)."""
     try:
-        global _feed_task
-        if not feed_enabled():
+        outcome = await lifecycle.disable()
+        if outcome["ok"]:
+            return "Incoming feed disabled."
+        if outcome["reason"] == "not-enabled":
             return "Incoming feed is not enabled."
-        task, _feed_task = _feed_task, None
-        if not await _stop_feed(task):
-            return (
-                "Incoming feed asked to stop, but the consumer was still running "
-                f"{_FEED_STOP_TIMEOUT_SECONDS:.0f}s later. It is no longer the registered "
-                "feed and will stop on its own; until it does it may still consume a "
-                "settled burst. Check the server log."
-            )
-        return "Incoming feed disabled."
+        # Still held, not forgotten: the task stays owned as the stopping one, so
+        # nothing starts a replacement on top of a consumer that is still taking
+        # bursts, and a later call can see it finish.
+        return (
+            "Incoming feed asked to stop, but the consumer was still running "
+            f"{lifecycle._FEED_STOP_TIMEOUT_SECONDS:.0f}s later. It is still held as the "
+            "stopping consumer - until it ends it may consume a settled burst, and no "
+            "replacement will be started. Call incoming_feed_status to see when it stops."
+        )
     except Exception as e:
         return log_and_format_error("disable_incoming_feed", e)
 
@@ -584,121 +569,6 @@ async def incoming_feed_status() -> str:
         return json.dumps(incoming_feed_state(), ensure_ascii=False)
     except Exception as e:
         return log_and_format_error("incoming_feed_status", e)
-
-
-# How often the Windows watcher looks for new bytes. `Get-Content -Wait` is the
-# obvious answer and the wrong one: it follows the DESCRIPTOR, so after the
-# `os.replace` in _rotate_feed_if_needed it goes on reading the rotated
-# generation for ever and never sees another event. Following the NAME means
-# re-opening it, which means polling; 500ms is far below a human-visible delay
-# and costs one stat per interval.
-_WATCH_POLL_MS = 500
-
-
-def _watch_script(path, contains: Optional[str] = None) -> str:
-    """A rotation-aware PowerShell tail for ``path``, optionally filtered.
-
-    Rotation is detected by CONTINUITY, not by length. Reading the length alone
-    only caught a replacement shorter than the offset already read: a fresh
-    generation that grew back past that mark inside one poll interval was seeked
-    into, and everything it had written first was never emitted.
-
-    So the first 64 bytes are read on every poll and compared with what they were
-    last time; a change means a different file and the offset goes back to zero,
-    whatever the new length is. The creation stamp cannot do this job on Windows:
-    NTFS tunneling gives a name recreated within about fifteen seconds the OLD
-    stamp, and fifteen seconds is far longer than a rotation takes. The bytes
-    themselves have no such memory.
-
-    Opened with FileShare.ReadWrite so watching never blocks the feed from
-    writing or from replacing the file underneath.
-    """
-    quoted = str(path).replace("'", "''")
-    emit = "$line" if contains is None else f"if($line -like '*{contains}*'){{$line}}"
-    return (
-        f"$p='{quoted}';$o=[long]0;$head='';"
-        "while($true){"
-        "if(Test-Path -LiteralPath $p){"
-        "$len=(Get-Item -LiteralPath $p).Length;"
-        "if($len -lt $o){$o=[long]0};"
-        "if($len -gt $o){"
-        "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,"
-        "[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete);"
-        "try{"
-        # Continuity, checked against the file's own first bytes. Creation time
-        # cannot do this on Windows: NTFS tunneling hands a name recreated within
-        # about fifteen seconds the OLD creation stamp, which is exactly the
-        # interval a rotation happens in.
-        "$b=New-Object byte[] 64;$n=$f.Read($b,0,64);"
-        "$h=[Convert]::ToBase64String($b,0,$n);"
-        "if($h -ne $head){$head=$h;$o=[long]0};"
-        "[void]$f.Seek($o,[IO.SeekOrigin]::Begin);"
-        "$r=New-Object IO.StreamReader($f,[Text.Encoding]::UTF8);"
-        "while($null -ne ($line=$r.ReadLine())){" + emit + "};"
-        "$o=$f.Position}finally{$f.Dispose()}}}"
-        f"Start-Sleep -Milliseconds {_WATCH_POLL_MS}" + "}"
-    )
-
-
-def _watch_command(path, contains: Optional[str] = None) -> str:
-    """The watcher to arm, in the shell this host actually has.
-
-    `tail -F` and `grep --line-buffered` are not commands on a Windows host, so
-    reporting them there described a monitor nobody could start.
-
-    On Windows the script goes in as `-EncodedCommand`, base64 of UTF-16LE.
-    Wrapping it in outer double quotes did not survive being pasted into
-    PowerShell: `$p`, `$o` and the rest were expanded by THE SHELL THE USER RAN
-    IT FROM before the child ever parsed them, so the watcher started with empty
-    variables - or with whatever those names happened to hold in that session.
-    Encoded, no shell has anything left to substitute. The readable form is
-    published beside it as `watch_script`, because a command nobody can read is
-    a command nobody should be asked to trust.
-    """
-    if os.name == "nt":
-        encoded = base64.b64encode(_watch_script(path, contains).encode("utf-16-le")).decode(
-            "ascii"
-        )
-        return f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
-    # -F survives rotation/truncation and waits for a not-yet-created file.
-    follow = f"tail -n 0 -F {shlex.quote(str(path))}"
-    if contains is None:
-        return follow
-    return f"{follow} | grep --line-buffered {shlex.quote(contains)}"
-
-
-def incoming_feed_state() -> Dict[str, Any]:
-    path = store.feed_file_path()
-    max_bytes, max_age = store.feed_retention()
-    max_pending, pending_ttl = store.pending_bounds()
-    return {
-        "enabled": feed_enabled(),
-        "feed_file": str(path),
-        "settle_ms": _feed_settle_ms,
-        "rotated_file": str(store._rotated_feed_path(path)),
-        "max_bytes": max_bytes,
-        "max_age_seconds": max_age,
-        "retention_note": (
-            "The feed rotates at max_bytes and keeps one previous generation, deleted "
-            "once it is older than max_age_seconds. Disk use is bounded by roughly "
-            "twice max_bytes. watch_command follows the NAME rather than the open "
-            "file, so it keeps reading across a rotation."
-        ),
-        "max_pending_chats": max_pending,
-        "pending_ttl_seconds": pending_ttl,
-        "pending_chats": len(store._pending_msgs),
-        **store.overflow_state(),
-        "watch_command": _watch_command(path),
-        "watch_script": _watch_script(path),
-        "watch_command_for_one_chat": _watch_command(path, '"chat_id": <ID>'),
-        "watch_script_for_one_chat": _watch_script(path, '"chat_id": <ID>'),
-        "watch_shell": "powershell" if os.name == "nt" else "sh",
-        "autostart_pending": (
-            not _feed_autostart_done
-            and not feed_enabled()
-            and _parse_bool_env(os.getenv("TELEGRAM_EVENT_FEED"), False)
-        ),
-    }
 
 
 # Wire up the listener as soon as this module is imported (alongside tool registration).
