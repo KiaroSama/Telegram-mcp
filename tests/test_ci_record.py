@@ -19,6 +19,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import ci_record  # noqa: E402
 
+# DERIVED, never restated. A leg's record carries the lockfile it resolved
+# from, and `--compare` refuses a set whose legs name different ones - so a
+# literal here stops matching the real `uv.lock` the moment any dependency
+# moves, and the failure reads as a broken comparison rather than as the stale
+# fixture it is. `lock_digest` itself is covered separately, just below.
+REPO_LOCK = ci_record.lock_digest(Path(__file__).resolve().parents[1] / "uv.lock")
+
 
 def _junit(path: Path, tests, failures=0, errors=0, skipped=0) -> Path:
     path.write_text(
@@ -123,7 +130,7 @@ def _record(directory, name, collected, skipped=0, label=None, python="3.13.15")
                 "python": python,
                 "platform": "Linux",
                 "commit": "abc123def456",
-                "lock": "1a04e5340789",
+                "lock": REPO_LOCK,
                 "collected": collected,
                 "failures": 0,
                 "errors": 0,
@@ -353,7 +360,7 @@ def _leg(directory, label, python="3.13.15", collected=2859, skipped=67, **over)
         "python": python,
         "platform": "Linux",
         "commit": "abc123def456",
-        "lock": "1a04e5340789",
+        "lock": REPO_LOCK,
         "collected": collected,
         "failures": 0,
         "errors": 0,
@@ -399,7 +406,7 @@ def test_a_duplicated_label_is_refused(tmp_path):
                 "python": "3.13.15",
                 "platform": "Linux",
                 "commit": "abc123def456",
-                "lock": "1a04e5340789",
+                "lock": REPO_LOCK,
                 "collected": 2859,
                 "failures": 0,
                 "errors": 0,
