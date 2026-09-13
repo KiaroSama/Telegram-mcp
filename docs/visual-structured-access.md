@@ -88,7 +88,7 @@ clip because the first and last frames of a video are frequently black. Media la
 `iter_download` streams the media and stops at the first chunk past the cap, so the advertised
 size stays a free early refusal — it can be absent or wrong, and then only the transfer limit is
 real. There is no unbounded path left: `iter_download` is part of the Telethon floor this project
-requires (`telethon>=1.44.0`), so the download-then-measure fallback that used to sit behind it has
+requires (`telethon>=1.45.0`), so the download-then-measure fallback that used to sit behind it has
 been removed rather than kept as untestable dead code. Use `download_media` for anything bigger.
 `get_media_frames(-1001234567890, 5533, count=6)`
 
