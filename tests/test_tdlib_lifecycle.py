@@ -45,10 +45,36 @@ class _FakeClient:
         self._client_id = None
 
 
+class _TelethonHalf:
+    """The Telethon client for the same label.
+
+    `secret_client` compares the database against the ACTIVE session now, so a
+    test that supplies only the TDLib half is describing a configuration that
+    cannot occur: a TDLib client exists for an account `.env` configures.
+    """
+
+    def __init__(self, user_id=7):
+        self.user_id = user_id
+
+    async def get_me(self):
+        return type("Me", (), {"id": self.user_id})()
+
+
+def _connection_clients():
+    from telegram_mcp import connection as conn
+
+    return conn.clients
+
+
 @pytest.fixture(autouse=True)
 def _empty_registry(monkeypatch):
+    from telegram_mcp import connection as conn
+
     monkeypatch.setattr(reg, "_by_account", {})
+    monkeypatch.setattr(reg, "_verified_against", {})
     monkeypatch.setattr(reg, "_by_account_lock", asyncio.Lock())
+    monkeypatch.setattr(conn, "clients", {"acc": _TelethonHalf()})
+    monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
 
 
 # --- R13: a send that fails must not leave its future behind ----------------
@@ -148,6 +174,9 @@ async def test_a_client_that_died_on_its_own_is_not_handed_back(state, monkeypat
 async def test_a_healthy_cached_client_is_reused():
     alive = _FakeClient()
     reg._by_account["acc"] = alive
+    # Cached AND proved against the generation in force: the cache alone is not
+    # what makes a client reusable any more.
+    reg._verified_against["acc"] = _connection_clients()["acc"]
 
     assert await reg.secret_client("acc") is alive
     assert alive.closed == 0

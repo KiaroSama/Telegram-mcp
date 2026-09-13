@@ -32,6 +32,8 @@ if TYPE_CHECKING:  # pragma: no cover - for readers and type checkers only
     from telegram_mcp.tdlib import TDLibClient
 
 # States in which a client still holds a `_client_id` but can no longer serve.
+# Kept as a name because it reads in the log lines and the tests, but it is no
+# longer what decides usability - see `_is_usable`.
 _DEAD_AUTH_STATES = frozenset(
     {
         "authorizationStateClosed",
@@ -40,12 +42,28 @@ _DEAD_AUTH_STATES = frozenset(
     }
 )
 
+# The one state in which a client can serve a secret-chat call.
+_READY = "authorizationStateReady"
+
 _by_account: dict[str, TDLibClient] = {}
 _by_account_lock = asyncio.Lock()
 
+# account -> the Telethon client object this TDLib client was proved against.
+# Object identity IS the generation: a re-login or a reload replaces the object,
+# and that is exactly when the proof has to be redone.
+_verified_against: dict[str, object] = {}
+
 
 def _is_usable(client: TDLibClient) -> bool:
-    return client._client_id is not None and client.authorization_state not in _DEAD_AUTH_STATES
+    """Ready, and nothing else.
+
+    This was "not in a small set of dead states", which is a different and much
+    weaker claim: `authorizationStateWaitPassword`, `WaitCode` and any state
+    this list has never heard of all passed it. A cached client sitting at
+    WaitPassword was handed to a secret-chat tool, which then failed with a
+    message about whichever call happened to come first.
+    """
+    return client._client_id is not None and client.authorization_state == _READY
 
 
 async def _close_quietly(client: TDLibClient, why: str) -> None:
@@ -66,15 +84,26 @@ async def secret_client(account: str) -> TDLibClient:
     """
     from telegram_mcp.tdlib import NotSignedIn, TDLibClient
 
+    # Imported here, not at module scope: `connection` reaches this module
+    # through `tdlib`, and naming it at the top closes the cycle.
+    from telegram_mcp.connection import get_client
+
+    # The Telethon half of the SAME label, which is what the database has to
+    # agree with. Checking the database against its own recorded metadata only
+    # proves it has not changed its mind about itself.
+    telethon = get_client(account)
+
     async with _by_account_lock:
         existing = _by_account.get(account)
         if existing is not None:
-            if _is_usable(existing):
+            if _is_usable(existing) and _verified_against.get(account) is telethon:
                 return existing
-            # Not merely stale - dead. Dropped first so a failure to close it
-            # cannot leave the corpse in the cache for the next caller.
+            # Not merely stale - dead, or belonging to a generation that has
+            # since been replaced. Dropped first so a failure to close it cannot
+            # leave the corpse in the cache for the next caller.
             _by_account.pop(account, None)
-            await _close_quietly(existing, "it was found closed or logging out")
+            _verified_against.pop(account, None)
+            await _close_quietly(existing, "it was unusable or from a replaced generation")
 
         client = TDLibClient(account)
         try:
@@ -94,16 +123,17 @@ async def secret_client(account: str) -> TDLibClient:
         from telegram_mcp import tdlib_identity
 
         try:
-            # Against the binding recorded when this database was last proved,
-            # since there is no Telethon session in hand here. A label reused for
-            # another account reaches this path without ever going through the
-            # login tool, and every secret-chat call made through the client
-            # would run as the previous owner.
-            await tdlib_identity.verify_owner(account, client, None)
+            # Against the ACTIVE Telethon session, not against the database's own
+            # recorded metadata. Comparing a database with the note beside it only
+            # proves it has not changed its mind about itself: a label reused for
+            # another account has an old database AND an old note, they agree
+            # perfectly, and every secret-chat call runs as the previous owner.
+            await tdlib_identity.verify_owner(account, client, telethon)
         except BaseException:
             await _close_quietly(client, "an identity that did not match")
             raise
         _by_account[account] = client
+        _verified_against[account] = telethon
         return client
 
 
@@ -120,6 +150,7 @@ async def close_all() -> List[Tuple[str, Exception]]:
         # builds a fresh client rather than waiting on one being closed.
         closing = list(_by_account.items())
         _by_account.clear()
+        _verified_against.clear()
 
     failures: List[Tuple[str, Exception]] = []
     for account, client in closing:
@@ -137,6 +168,8 @@ async def close_all() -> List[Tuple[str, Exception]]:
 
 __all__ = [
     "_DEAD_AUTH_STATES",
+    "_READY",
+    "_verified_against",
     "_by_account",
     "_by_account_lock",
     "_is_usable",
