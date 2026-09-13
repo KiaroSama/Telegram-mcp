@@ -84,6 +84,12 @@ def case_counts(junit: Path) -> Tuple[int, int, int, int]:
     return total, failures, errors, skipped
 
 
+# Listing tracked files is a local index read; a minute is far past any of it and
+# still bounded, which is what `tests/test_secret_scan_gate.py` requires of every
+# subprocess under `scripts/`.
+_GIT_TIMEOUT_SECONDS = 60
+
+
 class SuiteError(RuntimeError):
     """The tracked suite list could not be established - not the same as empty."""
 
@@ -95,7 +101,12 @@ def tracked_suites() -> List[str]:
     is not a suite this repository owns, and a tracked file missing from disk is
     a problem the walk would never see.
     """
-    result = subprocess.run(["git", "ls-files", "tests/test_*.py"], capture_output=True, text=True)
+    result = subprocess.run(
+        ["git", "ls-files", "tests/test_*.py"],
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT_SECONDS,
+    )
     if result.returncode != 0:
         raise SuiteError(f"git ls-files failed: {result.stderr.strip() or 'no output'}")
     names = [
@@ -118,10 +129,21 @@ def expected_suite_count(path: Path) -> int:
 
 
 def silent_suites(junit: Path, tracked: List[str]) -> List[str]:
-    """Tracked suites that contributed no case to this report."""
+    """Tracked suites that contributed no case to this report.
+
+    A classname is the module for a bare function and `module.Class` for a method,
+    so a suite has spoken if any classname IS its module or starts with it plus a
+    dot. Matching the whole string called `tests/test_sanitize.py` silent on the
+    first CI run - 34 passing tests, every one inside a class - and a false
+    positive is how a real finding gets scrolled past.
+    """
     root = ET.parse(junit).getroot()
-    spoke = {case.get("classname", "").split("::")[0] for case in root.iter("testcase")}
-    return [name for name in tracked if name not in spoke]
+    spoke = {case.get("classname", "") for case in root.iter("testcase")}
+    return [
+        name
+        for name in tracked
+        if not any(said == name or said.startswith(name + ".") for said in spoke)
+    ]
 
 
 def write_record(path: Path, record: dict) -> None:
