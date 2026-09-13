@@ -1,0 +1,11 @@
+# How many `tests/test_*.py` files this repository tracks.
+#
+# Cross-leg agreement catches a suite LOST on one leg, because the legs then
+# disagree. It cannot catch a file deleted everywhere at once: every leg
+# collects the same smaller number and the run is green. This integer is the
+# other half - removing a suite fails CI until the removal is declared here,
+# in the same commit, where a reviewer sees it.
+#
+# Adding tests to an existing file changes nothing. Only adding or removing a
+# FILE touches this line, which is rare and always deliberate.
+145
