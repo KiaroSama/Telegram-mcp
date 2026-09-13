@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from telegram_mcp.tools import events, events_store
+from telegram_mcp.tools import feed_lifecycle as lifecycle
 
 # `os.chmod` on Windows toggles only the read-only flag: it cannot clear the read bit
 # and `st_mode` never reports 0o600, so these assert the platform rather than the code.
@@ -43,14 +44,16 @@ def _pending_record(last_ts, count=2, name="Client"):
 
 @pytest.fixture(autouse=True)
 def _clean_state(monkeypatch, tmp_path):
-    # The map and the ledger are owned by events_store; the feed task and its
-    # settings by events. Patching either through the wrong module rebinds a
-    # name nothing reads and leaves the real state seeded from the last test.
+    # The map and the ledger are owned by events_store; the consumer task and
+    # its settings by feed_lifecycle; the activity event by events. Patching any
+    # of them through the wrong module rebinds a name nothing reads and leaves
+    # the real state seeded from the last test.
     monkeypatch.setattr(events_store, "_pending_msgs", {})
-    monkeypatch.setattr(events, "_feed_task", None)
     monkeypatch.setattr(events, "_activity_event", None)
-    monkeypatch.setattr(events, "_feed_settle_ms", 6000)
-    monkeypatch.setattr(events, "_feed_autostart_done", False)
+    monkeypatch.setattr(lifecycle, "_task", None)
+    monkeypatch.setattr(lifecycle, "_stopping", None)
+    monkeypatch.setattr(lifecycle, "_settle_ms", 6000)
+    monkeypatch.setattr(lifecycle, "_autostart_done", False)
     monkeypatch.setattr(events_store, "_dropped", events_store._new_drop_ledger())
     for name in (
         "TELEGRAM_EVENT_FEED",
@@ -62,9 +65,9 @@ def _clean_state(monkeypatch, tmp_path):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_FILE", str(tmp_path / "feed.jsonl"))
     yield
-    task = events._feed_task
-    if task is not None:
-        task.cancel()
+    for task in (lifecycle._task, lifecycle._stopping):
+        if task is not None:
+            task.cancel()
 
 
 def test_scan_settled_picks_quiet_chat():
@@ -90,7 +93,7 @@ def test_burst_summary_sanitizes_name():
 @pytest.mark.asyncio
 async def test_feed_writes_settled_burst_and_consumes_it():
     events_store._pending_msgs[(ACCOUNT, 42)] = _pending_record(_mono(1.0))
-    events._start_feed(settle_ms=100)
+    lifecycle.start_now(events._feed_loop, 100)
 
     for _ in range(50):
         await asyncio.sleep(0.02)
@@ -109,7 +112,7 @@ async def test_feed_writes_settled_burst_and_consumes_it():
 @pytest.mark.asyncio
 async def test_feed_debounces_until_quiet():
     events_store._pending_msgs[(ACCOUNT, 42)] = _pending_record(_mono())  # just active
-    events._start_feed(settle_ms=300)
+    lifecycle.start_now(events._feed_loop, 300)
 
     await asyncio.sleep(0.1)
     assert (ACCOUNT, 42) in events_store._pending_msgs  # not settled yet
@@ -199,7 +202,7 @@ async def test_autostart_stays_off_without_env():
 @pytest.mark.asyncio
 async def test_write_failure_retains_burst(monkeypatch, tmp_path):
     events_store._pending_msgs[(ACCOUNT, 42)] = _pending_record(_mono(1.0))
-    events._start_feed(settle_ms=100)
+    lifecycle.start_now(events._feed_loop, 100)
     # Break the path after the task has started.
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_FILE", str(tmp_path / "missing" / "feed.jsonl"))
 
@@ -251,7 +254,7 @@ async def test_rotated_world_readable_file_is_tightened_on_write():
     path.touch()
     os.chmod(path, 0o644)
     events_store._pending_msgs[(ACCOUNT, 42)] = _pending_record(_mono(1.0))
-    events._start_feed(settle_ms=50)
+    lifecycle.start_now(events._feed_loop, 50)
 
     for _ in range(50):
         await asyncio.sleep(0.02)
@@ -467,7 +470,7 @@ def _rotated_path():
 @pytest.mark.asyncio
 async def test_the_feed_rotates_instead_of_growing_without_end(monkeypatch):
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_MAX_BYTES", "400")
-    events._start_feed(settle_ms=20)
+    lifecycle.start_now(events._feed_loop, 20)
 
     for chat in range(12):
         assert await _queue_burst(chat), f"consumer stalled on chat {chat}"
@@ -485,7 +488,7 @@ async def test_rotation_keeps_one_generation_and_no_more(monkeypatch):
     """Two files is a bound; a numbered series is the same unbounded growth with
     more filenames."""
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_MAX_BYTES", "300")
-    events._start_feed(settle_ms=20)
+    lifecycle.start_now(events._feed_loop, 20)
 
     for chat in range(20):
         assert await _queue_burst(chat), f"consumer stalled on chat {chat}"
@@ -678,8 +681,8 @@ async def test_the_wait_reports_what_was_dropped_while_it_was_not_looking(monkey
 async def test_disabling_the_feed_awaits_the_task_it_cancelled():
     """Cancellation is a request. Returning before it lands leaves the consumer
     holding the feed file open while the caller is told it stopped."""
-    events._start_feed(settle_ms=50)
-    task = events._feed_task
+    lifecycle.start_now(events._feed_loop, 50)
+    task = lifecycle._task
 
     assert await events.disable_incoming_feed() == "Incoming feed disabled."
 
@@ -689,12 +692,12 @@ async def test_disabling_the_feed_awaits_the_task_it_cancelled():
 @pytest.mark.asyncio
 async def test_restarting_with_a_new_settle_awaits_the_old_task():
     await events.enable_incoming_feed(settle_ms=100)
-    first = events._feed_task
+    first = lifecycle._task
 
     await events.enable_incoming_feed(settle_ms=200)
 
     assert first.done(), "the previous consumer was left running"
-    assert events._feed_task is not first
+    assert lifecycle._task is not first
     assert events.feed_enabled()
 
 
@@ -745,7 +748,7 @@ async def test_a_rotated_generation_is_restricted_too(monkeypatch):
     """Rotation renames the file the restriction was applied to and creates a new
     one; restricting only the first leaves the older half of the history open."""
     monkeypatch.setenv("TELEGRAM_EVENT_FEED_MAX_BYTES", "300")
-    events._start_feed(settle_ms=20)
+    lifecycle.start_now(events._feed_loop, 20)
 
     for chat in range(12):
         assert await _queue_burst(chat), f"consumer stalled on chat {chat}"
@@ -777,13 +780,19 @@ def test_every_file_the_feed_creates_goes_through_the_restriction_seam(monkeypat
 
 def test_an_existing_feed_file_from_a_previous_run_is_appended_to_not_replaced():
     """A restart must not lose the history, and must not leave the old file's
-    permissions as it found them either."""
+    permissions as it found them either.
+
+    The timestamps are REAL. Age retention reads the first record's `ts`, so a
+    fixture written at the epoch is a file whose oldest record is decades past
+    the budget - correctly rotated away, and nothing to do with restarting.
+    """
+    now = time.time()
     path = events_store.feed_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"ts": 1, "chat_id": 5}\n', encoding="utf-8")
+    path.write_text(json.dumps({"ts": now, "chat_id": 5}) + "\n", encoding="utf-8")
 
     with events_store._open_feed_append() as handle:
-        handle.write('{"ts": 2, "chat_id": 6}\n')
+        handle.write(json.dumps({"ts": now, "chat_id": 6}) + "\n")
 
     assert len(path.read_text(encoding="utf-8").strip().splitlines()) == 2
     assert _owner_only(path)
