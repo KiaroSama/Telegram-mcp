@@ -61,11 +61,23 @@ COPY telegram_mcp ./telegram_mcp
 # Sessions live OUTSIDE /app so a persistence mount cannot cover the application.
 # Created here, before the user switch, so the bind-mount target already exists
 # and is owned by the account that has to write the session database.
-RUN mkdir -p /data
+#
+# `/data/state` is the second half, and without it the volume was persisting
+# only one of the two things worth persisting. `state_dir()` resolves under
+# `XDG_STATE_HOME`, which defaulted to the container user's home - so the
+# Telethon session survived a container replacement while the TDLib databases,
+# the identity notes beside them, any quarantined database, the alias store and
+# the event feed all went with the old container. Losing a TDLib database is not
+# a re-login: it takes the secret-chat keys, and those cannot be re-derived.
+RUN mkdir -p /data /data/state
 
 # Create a non-root user and switch to it
 RUN adduser --disabled-password --gecos "" appuser && chown -R appuser:appuser /app /data
 USER appuser
+
+# Private: the state directory holds session files and TDLib databases, each of
+# which IS the account to whoever can read it.
+RUN chmod 700 /data/state
 
 VOLUME ["/data"]
 
@@ -77,6 +89,10 @@ ENV TELEGRAM_API_HASH=""
 # Default session path. Absolute and under /data on purpose: a bare filename
 # would land in WORKDIR and be lost on every container replacement.
 ENV TELEGRAM_SESSION_NAME="/data/telegram_mcp_session"
+# Everything `state_dir()` resolves - TDLib databases, owner.json, quarantined
+# databases, the alias store, the event feed, the error log - lands under the
+# mounted volume rather than in the container's own filesystem.
+ENV XDG_STATE_HOME="/data/state"
 # Or provide the session string directly
 ENV TELEGRAM_SESSION_STRING=""
 

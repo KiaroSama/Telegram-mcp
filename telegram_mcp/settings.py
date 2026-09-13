@@ -114,6 +114,36 @@ def state_dir() -> Path:
     return Path(base) / "telegram-mcp"
 
 
+def stranded_state_dir() -> Optional[Path]:
+    """A previous state directory that still holds data the new one does not.
+
+    Deployments that pointed `XDG_STATE_HOME` somewhere new - the container
+    image now sets it to `/data/state`, under the mounted volume - leave
+    whatever was in the old location exactly where it was. That is the right
+    thing to do with it: a TDLib database is not re-creatable, because its
+    secret-chat keys cannot be re-derived, so nothing here moves or deletes one.
+
+    What must not happen is the server quietly signing in afresh beside it and
+    the operator never learning the old one existed. Returning the path is how
+    the startup path can say so.
+    """
+    current = state_dir()
+    legacy = Path.home() / ".local" / "state" / "telegram-mcp"
+    if legacy == current:
+        return None
+    try:
+        if not any(legacy.iterdir()):
+            return None
+    except OSError:
+        return None
+    try:
+        if current.exists() and any(current.iterdir()):
+            return None  # the new location is in use; nothing is being missed
+    except OSError:
+        pass
+    return legacy
+
+
 def parse_bool_env(value: Optional[str], default: bool) -> bool:
     """A permissive truthy read: unset means `default`, and only the obvious words win.
 

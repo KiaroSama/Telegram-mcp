@@ -14,7 +14,7 @@ from telegram_mcp import admission as _admission
 from telegram_mcp.connection import _BURNED_SESSION_MESSAGE, harden_env_file, parse_port
 from telegram_mcp.paging import bounded_number
 from telegram_mcp.safe_log import safe_exception
-from telegram_mcp.settings import StartupMessage
+from telegram_mcp.settings import StartupMessage, state_dir, stranded_state_dir
 from telegram_mcp.runtime import *
 from telegram_mcp.singleton import (
     DEFAULT_GRACE_SECONDS,
@@ -333,6 +333,20 @@ async def _main() -> None:
     try:
         labels = ", ".join(clients.keys())
         _reject_duplicate_sessions(clients)
+        # Said before anything signs in. A deployment whose state directory moved -
+        # the container image now points XDG_STATE_HOME at the mounted volume -
+        # would otherwise start a fresh TDLib authorisation beside an existing
+        # database and never mention it, and that database's secret-chat keys
+        # cannot be re-derived once the old container is gone.
+        stranded = stranded_state_dir()
+        if stranded is not None:
+            startup_note(
+                f"State from an earlier location is still at {stranded} and this process "
+                f"is using {state_dir()}. Nothing has been moved or deleted. If that older "
+                "directory holds TDLib databases, copy it across BEFORE replacing this "
+                "container - a lost database takes its secret-chat keys with it."
+            )
+
         startup_note(f"Starting {len(clients)} Telegram client(s) ({labels})...")
         await asyncio.gather(
             *(_connect_authorized_client(label, cl) for label, cl in clients.items())
