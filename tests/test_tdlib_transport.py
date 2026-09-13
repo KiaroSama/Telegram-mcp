@@ -336,7 +336,7 @@ async def test_an_account_without_a_login_is_refused_with_the_command_to_fix_it(
         async def close(self):
             return None
 
-    monkeypatch.setattr(tdlib_reg, "TDLibClient", Unauthorised)
+    monkeypatch.setattr(tdlib, "TDLibClient", Unauthorised)
 
     with pytest.raises(tdlib.NotSignedIn) as raised:
         await tdlib_reg.secret_client("kgb_verifier")
@@ -360,7 +360,13 @@ async def test_a_started_client_is_reused_rather_than_started_again(fake, tmp_pa
             self.authorization_state = "authorizationStateReady"
             return self.authorization_state
 
-    monkeypatch.setattr(tdlib_reg, "TDLibClient", Ready)
+        async def request(self, obj, timeout=30.0):
+            # No native client behind this one, so the transport cannot serve
+            # the identity check `secret_client` makes before caching.
+            assert obj["@type"] == "getMe"
+            return {"@type": "user", "id": 7}
+
+    monkeypatch.setattr(tdlib, "TDLibClient", Ready)
     monkeypatch.setattr(tdlib, "database_dir_for", lambda account: tmp_path / account)
 
     first = await tdlib_reg.secret_client("acct")
@@ -524,12 +530,23 @@ async def test_authorising_a_client_that_is_not_waiting_for_a_login_is_refused(f
 # owner's words were "do you want my account locked?".
 
 
+class _Session:
+    """The Telethon half, which the login now compares the database against."""
+
+    def __init__(self, user_id=7):
+        self.user_id = user_id
+
+    async def get_me(self):
+        return type("Me", (), {"id": self.user_id})()
+
+
 class _StubClient:
     """Stands in for TDLibClient with a scripted sequence of states."""
 
-    def __init__(self, states, start_state):
+    def __init__(self, states, start_state, user_id=7):
         self._states = list(states)
         self.authorization_state = start_state
+        self.user_id = user_id
         self.requests = []
         self.closed = False
 
@@ -538,6 +555,8 @@ class _StubClient:
 
     async def request(self, obj, timeout=30.0):
         self.requests.append(obj)
+        if obj["@type"] == "getMe":
+            return {"@type": "user", "id": self.user_id}
         return {"@type": "ok"}
 
     async def _settle(self, timeout=60.0, ignore=frozenset()):
@@ -569,7 +588,7 @@ async def test_a_supplied_password_is_used_and_nothing_is_asked(stub):
     asked = []
 
     state = await tdlib.complete_login(
-        "acct", object(), password="hunter2", ask_password=lambda: asked.append(1)
+        "acct", _Session(), password="hunter2", ask_password=lambda: asked.append(1)
     )
 
     assert state == "authorizationStateReady"
@@ -585,7 +604,7 @@ async def test_a_database_left_waiting_for_a_password_does_not_start_over(stub):
     the client's current state skips straight to the password."""
     client = stub("authorizationStateWaitPassword", ["authorizationStateReady"])
 
-    await tdlib.complete_login("acct", object(), password="pw")
+    await tdlib.complete_login("acct", _Session(), password="pw")
 
     assert "requestQrCodeAuthentication" not in client.types(), "it published another token"
 
@@ -594,10 +613,13 @@ async def test_a_database_left_waiting_for_a_password_does_not_start_over(stub):
 async def test_an_account_already_signed_in_is_left_alone(stub):
     client = stub("authorizationStateReady")
 
-    state = await tdlib.complete_login("acct", object(), password="pw")
+    state = await tdlib.complete_login("acct", _Session(), password="pw")
 
     assert state == "authorizationStateReady"
-    assert client.requests == [], "it touched an account that was already finished"
+    # `getMe` and nothing else: asking whose database this is costs no login and
+    # is what keeps a reused label from serving the previous owner. Any other
+    # request here would be a login step against an account already finished.
+    assert client.types() == ["getMe"], "it touched an account that was already finished"
 
 
 @pytest.mark.asyncio
@@ -606,7 +628,7 @@ async def test_without_a_password_or_a_way_to_ask_it_reports_rather_than_hangs(s
     stdin nobody is reading."""
     client = stub("authorizationStateWaitPassword")
 
-    state = await tdlib.complete_login("acct", object())
+    state = await tdlib.complete_login("acct", _Session())
 
     assert state == "authorizationStateWaitPassword"
     assert "checkAuthenticationPassword" not in client.types()
@@ -621,7 +643,7 @@ async def test_the_client_is_closed_even_when_the_login_fails(stub):
         raise RuntimeError("no password available")
 
     with pytest.raises(RuntimeError):
-        await tdlib.complete_login("acct", object(), ask_password=_boom)
+        await tdlib.complete_login("acct", _Session(), ask_password=_boom)
 
     assert client.closed, "the TDLib client was left open"
 
@@ -657,6 +679,9 @@ async def test_the_label_is_used_as_given_and_never_re_resolved(monkeypatch, tmp
         async def start(self):
             return "authorizationStateReady"
 
+        async def request(self, obj, timeout=30.0):
+            return {"@type": "user", "id": 7}
+
         async def close(self):
             pass
 
@@ -666,7 +691,9 @@ async def test_the_label_is_used_as_given_and_never_re_resolved(monkeypatch, tmp
 
     monkeypatch.setattr(tdlib, "TDLibClient", _capture)
 
-    state = await tdlib.complete_login("kgb_verifier", object())
+    monkeypatch.setattr(tdlib, "database_dir_for", lambda label: tmp_path / label)
+
+    state = await tdlib.complete_login("kgb_verifier", _Session())
 
     assert state == "authorizationStateReady"
     assert seen["label"] == "kgb_verifier", "the caller's own label was not the one used"
@@ -683,72 +710,9 @@ async def test_the_label_is_used_as_given_and_never_re_resolved(monkeypatch, tmp
 # amount of logging in again can clear.
 
 
-@pytest.mark.asyncio
-async def test_a_forgotten_authorisation_is_discarded_and_retried(monkeypatch, tmp_path):
-    attempts = []
-    wiped = []
-
-    async def _attempt(label, telethon_client, password, ask_password):
-        attempts.append(label)
-        if len(attempts) == 1:
-            raise tdlib.TDLibError(401, "AUTH_KEY_UNREGISTERED")
-        return "authorizationStateReady"
-
-    monkeypatch.setattr(tdlib, "_attempt_login", _attempt)
-    monkeypatch.setattr(tdlib, "_discard_database", lambda label: wiped.append(label))
-
-    state = await tdlib.complete_login("kgb_verifier", object(), password="pw")
-
-    assert state == "authorizationStateReady"
-    assert wiped == ["kgb_verifier"], "the dead database was not discarded"
-    assert len(attempts) == 2, "it did not try again on a clean database"
-
-
-@pytest.mark.asyncio
-async def test_an_ordinary_refusal_never_destroys_the_database(monkeypatch):
-    """The dangerous direction. A wrong password, a flood wait, a network blip -
-    none of those mean the stored authorisation is dead, and wiping on them would
-    throw away a working login (and, with it, secret-chat keys that cannot be
-    re-derived)."""
-    wiped = []
-
-    async def _attempt(label, telethon_client, password, ask_password):
-        raise tdlib.TDLibError(400, "PASSWORD_HASH_INVALID")
-
-    monkeypatch.setattr(tdlib, "_attempt_login", _attempt)
-    monkeypatch.setattr(tdlib, "_discard_database", lambda label: wiped.append(label))
-
-    with pytest.raises(tdlib.TDLibError):
-        await tdlib.complete_login("kgb_verifier", object(), password="wrong")
-
-    assert wiped == [], "an ordinary refusal destroyed the database"
-
-
-@pytest.mark.asyncio
-async def test_a_second_failure_is_reported_rather_than_looping(monkeypatch):
-    """One retry, not a loop: if the clean database fails too, the problem is not
-    the database and retrying costs another login."""
-    attempts = []
-
-    async def _attempt(label, telethon_client, password, ask_password):
-        attempts.append(label)
-        raise tdlib.TDLibError(401, "AUTH_KEY_UNREGISTERED")
-
-    monkeypatch.setattr(tdlib, "_attempt_login", _attempt)
-    monkeypatch.setattr(tdlib, "_discard_database", lambda label: None)
-
-    with pytest.raises(tdlib.TDLibError):
-        await tdlib.complete_login("kgb_verifier", object(), password="pw")
-
-    assert len(attempts) == 2, "it retried more than once"
-
-
-def test_discarding_a_database_removes_the_whole_directory(monkeypatch, tmp_path):
-    database = tmp_path / "tdlib" / "kgb_verifier"
-    (database / "files").mkdir(parents=True)
-    (database / "td.binlog").write_bytes(b"stale")
-
-    monkeypatch.setattr(tdlib, "database_dir_for", lambda label: database)
-    tdlib._discard_database("kgb_verifier")
-
-    assert not database.exists(), "the dead database survived"
+# The login-recovery contract moved, and so did its tests. A dead authorisation
+# is no longer answered by deleting the database - it is quarantined, and the
+# identity of the account it belongs to is checked before it is used at all.
+# `tests/test_tdlib_identity.py` owns both, including the three cases that used
+# to live here: one quarantine then one retry, an ordinary refusal changing
+# nothing, and a second failure stopping rather than looping.
