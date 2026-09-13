@@ -357,6 +357,19 @@ def apply_retention() -> None:
     _rotate_feed_if_needed(feed_file_path())
 
 
+class FeedWriteRefused(OSError):
+    """The feed cannot be appended to without breaking its own size bound.
+
+    Raised rather than logged-and-continued. Rotation failing is recorded and the
+    append used to proceed regardless, so a rename that kept failing - a handle
+    held open, a permission problem - turned the advertised "roughly twice
+    max_bytes" into no bound at all while the status kept reporting one.
+
+    The consumer treats this as backpressure: the burst is NOT acknowledged and
+    NOT discarded, so it is still there when the next attempt succeeds.
+    """
+
+
 def _open_feed_append():
     """Append-open the feed file, owner-only — it holds private contact metadata.
 
@@ -370,6 +383,20 @@ def _open_feed_append():
         # typo fails loudly instead of scattering directories.
         path.parent.mkdir(parents=True, exist_ok=True)
     _rotate_feed_if_needed(path)
+    # Checked AFTER the rotation attempt: if the file is still over its ceiling
+    # because the rotation could not happen, appending to it is how the bound
+    # stops being one.
+    max_bytes, _max_age = feed_retention()
+    try:
+        oversized = path.stat().st_size >= max_bytes
+    except OSError:
+        oversized = False
+    if oversized and _last_rotation_error is not None:
+        raise FeedWriteRefused(
+            f"{path} is at or past its {max_bytes}-byte ceiling and could not be "
+            f"rotated ({_last_rotation_error}). Refusing to append: the burst is kept "
+            "rather than written or dropped. Free the rotated name and it resumes."
+        )
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         _restrict_to_owner(path, fd)
@@ -388,6 +415,7 @@ def _touch_feed_file() -> None:
 # with events.py's rather than overlapping it: `tools/__init__.py` star-imports
 # both, and a name exported twice is one module silently shadowing the other.
 __all__ = [
+    "FeedWriteRefused",
     "apply_retention",
     "feed_file_path",
     "feed_retention",

@@ -386,3 +386,154 @@ def test_the_status_reports_the_state_and_the_retention_contract(monkeypatch):
     assert state["rotation_error"] is None
     assert state["consumer_error"] is None
     assert "oldest record" in state["retention_note"]
+
+
+# --- generations, backpressure and an idle server ------------------------------
+
+
+class _Sender:
+    bot = False
+    is_self = False
+    username = "someone"
+    first_name = "Someone"
+
+
+class _Event:
+    """An incoming message whose `get_sender()` the test controls."""
+
+    is_private = True
+    chat_id = 4242
+
+    def __init__(self, released=None):
+        self.message = type("M", (), {"id": 7})()
+        self.released = released
+
+    async def get_sender(self):
+        if self.released is not None:
+            await self.released.wait()
+        return _Sender()
+
+
+@pytest.mark.asyncio
+async def test_a_handler_suspended_across_a_replacement_writes_nothing(monkeypatch):
+    """Detaching a handler stops NEW events; it cannot reach into one already
+    suspended at `get_sender()`. That call goes to the network, so the gap is
+    long enough for a reload - and on the far side the old handler went on
+    writing pending state under a label that now means a different login."""
+    from telegram_mcp.tools import events as mod
+    from telegram_mcp.tools import events_store as store_mod
+
+    old_client = object()
+    monkeypatch.setattr(mod, "clients", {"work": old_client})
+    monkeypatch.setattr(store_mod, "_pending_msgs", {})
+    released = asyncio.Event()
+
+    handling = asyncio.ensure_future(mod._on_new_incoming("work", old_client, _Event(released)))
+    await asyncio.sleep(0)
+
+    # The reload lands while the handler is suspended.
+    mod.clients["work"] = object()
+    released.set()
+    await handling
+
+    assert store_mod._pending_msgs == {}, "a replaced generation recreated pending state"
+
+
+@pytest.mark.asyncio
+async def test_a_handler_for_the_current_generation_still_records(monkeypatch):
+    from telegram_mcp.tools import events as mod
+    from telegram_mcp.tools import events_store as store_mod
+
+    client = object()
+    monkeypatch.setattr(mod, "clients", {"work": client})
+    monkeypatch.setattr(store_mod, "_pending_msgs", {})
+
+    await mod._on_new_incoming("work", client, _Event())
+
+    assert ("work", 4242) in store_mod._pending_msgs
+
+
+def test_an_append_is_refused_rather_than_breaking_the_size_bound(monkeypatch, tmp_path):
+    """Rotation failing was recorded and the append proceeded anyway, so a
+    rename that kept failing turned "roughly twice max_bytes" into no bound at
+    all while the status went on reporting one."""
+    monkeypatch.setenv("TELEGRAM_EVENT_FEED_MAX_BYTES", "50")
+    path = store.feed_file_path()
+    _write_feed(path, ts=time.time(), records=4, pad=60)
+
+    def _refuse(src, dst):
+        raise OSError("the rotated name is held open")
+
+    monkeypatch.setattr(store.os, "replace", _refuse)
+
+    with pytest.raises(store.FeedWriteRefused):
+        store._open_feed_append()
+
+
+def test_an_append_is_allowed_once_rotation_works_again(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_EVENT_FEED_MAX_BYTES", "50")
+    path = store.feed_file_path()
+    _write_feed(path, ts=time.time(), records=4, pad=60)
+
+    store._open_feed_append().close()
+
+    assert store.rotation_error() is None
+
+
+def test_a_feed_within_its_ceiling_is_never_refused(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_EVENT_FEED_MAX_BYTES", "100000")
+    _write_feed(store.feed_file_path(), ts=time.time())
+
+    store._open_feed_append().close()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_write_keeps_the_burst_rather_than_dropping_it(monkeypatch):
+    """Backpressure: the burst is not acknowledged and not discarded, so it is
+    still there when the feed can take it again."""
+    from telegram_mcp.tools import events as mod
+
+    monkeypatch.setattr(mod, "_WRITE_REFUSED_BACKOFF_SECONDS", 0.01)
+    monkeypatch.setattr(
+        store,
+        "_open_feed_append",
+        lambda: (_ for _ in ()).throw(store.FeedWriteRefused("full")),
+    )
+    monkeypatch.setattr(store, "_pending_msgs", {("a", 1): {"last_ts": 0.0}})
+    monkeypatch.setattr(mod, "_scan_settled", lambda *a, **k: (("a", 1), None))
+    monkeypatch.setattr(mod, "_burst_summary", lambda key, rec: {"event": True, "chat_id": 1})
+    monkeypatch.setattr(store, "_expire_pending", lambda: None)
+
+    loop = asyncio.ensure_future(mod._feed_loop(10))
+    await asyncio.sleep(0.05)
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+
+    assert ("a", 1) in store._pending_msgs, "a burst that could not be written was dropped"
+
+
+@pytest.mark.asyncio
+async def test_an_idle_feed_still_has_its_retention_applied(monkeypatch):
+    """Enforcing age only on append and on a status call meant an idle process
+    kept whatever the feed already held for as long as nothing happened - which
+    is exactly when nothing does."""
+    from telegram_mcp.tools import events as mod
+
+    monkeypatch.setattr(mod, "_IDLE_MAINTENANCE_SECONDS", 0.01)
+    monkeypatch.setattr(store, "_pending_msgs", {})
+    monkeypatch.setattr(mod, "_scan_settled", lambda *a, **k: (None, None))
+    monkeypatch.setattr(store, "_expire_pending", lambda: None)
+    swept = []
+    monkeypatch.setattr(store, "apply_retention", lambda: swept.append(True))
+
+    loop = asyncio.ensure_future(mod._feed_loop(10))
+    for _ in range(200):
+        if swept:
+            break
+        await asyncio.sleep(0.01)
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+
+    assert swept, "an idle consumer never ran the retention pass"

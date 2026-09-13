@@ -203,44 +203,77 @@ _WATCH_POLL_MS = 500
 def watch_script(path, contains: Optional[str] = None) -> str:
     """A rotation-aware PowerShell tail for ``path``, optionally filtered.
 
-    Rotation is detected by CONTINUITY, not by length. Reading the length alone
-    only caught a replacement shorter than the offset already read: a fresh
-    generation that grew back past that mark inside one poll interval was seeked
-    into, and everything it had written first was never emitted.
+    Two checks, and the reasoning for each is the whole of this function:
 
-    So the first 64 bytes are read on every poll and compared with what they were
-    last time; a change means a different file and the offset goes back to zero,
-    whatever the new length is. The creation stamp cannot do this job on Windows:
-    NTFS tunneling gives a name recreated within about fifteen seconds the OLD
-    stamp, and fifteen seconds is far longer than a rotation takes. The bytes
-    themselves have no such memory.
+    **Is this still the same file?** Rotation replaces the name with a fresh,
+    EMPTY file, so a length below what has already been read settles it. What
+    that misses is a replacement that grew back past the old mark inside one
+    poll interval, which is why the first bytes are compared as well.
 
-    Opened with FileShare.ReadWrite so watching never blocks the feed from
-    writing or from replacing the file underneath.
+    The bytes compared are the first `min(64, offset)` - the region already read,
+    which an append cannot change. Sampling a fixed 64 bytes instead was wrong on
+    a file SHORTER than 64 bytes: an ordinary append changed the sample, the
+    watcher called it a new file, reset to zero and replayed every record it had
+    already emitted. It is also compared on EVERY poll rather than only when the
+    file has grown, because a same-size replacement grows by nothing and was
+    therefore invisible.
+
+    The creation stamp is not used and cannot be: NTFS tunneling hands a name
+    recreated within about fifteen seconds the OLD stamp, and a rotation takes
+    far less than that.
+
+    **Is this line finished?** A JSONL record and its newline are one append, but
+    a reader can still arrive mid-write. Only content up to the last newline is
+    emitted; the trailing fragment is left for the next poll, so nothing is
+    handed over split through a record or a UTF-8 sequence.
+
+    Opened with FileShare.ReadWrite|Delete so watching never blocks the feed from
+    writing, or from replacing the file underneath.
     """
     quoted = str(path).replace("'", "''")
     emit = "$line" if contains is None else f"if($line -like '*{contains}*'){{$line}}"
     return (
-        f"$p='{quoted}';$o=[long]0;$head='';"
+        # UTF-8 on the way OUT as well as in. The feed holds contact names, and
+        # Windows PowerShell writes stdout in the console code page - so a name
+        # the watcher read correctly still reached the agent as `???`.
+        "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
+        f"$p='{quoted}';$o=[long]0;$sig='';"
         "while($true){"
         "if(Test-Path -LiteralPath $p){"
-        "$len=(Get-Item -LiteralPath $p).Length;"
-        "if($len -lt $o){$o=[long]0};"
-        "if($len -gt $o){"
+        "try{"
         "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,"
         "[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete);"
         "try{"
-        # Continuity, checked against the file's own first bytes. Creation time
-        # cannot do this on Windows: NTFS tunneling hands a name recreated within
-        # about fifteen seconds the OLD creation stamp, which is exactly the
-        # interval a rotation happens in.
-        "$b=New-Object byte[] 64;$n=$f.Read($b,0,64);"
-        "$h=[Convert]::ToBase64String($b,0,$n);"
-        "if($h -ne $head){$head=$h;$o=[long]0};"
+        # Shorter than what was already read: a different file, certainly.
+        "if($f.Length -lt $o){$o=[long]0;$sig=''};"
+        # The region already read, which an append cannot alter. Checked every
+        # poll, so a replacement of exactly the same length is still caught.
+        "$n=[Math]::Min(64,$o);"
+        "$cur='';"
+        "if($n -gt 0){"
+        "$b=New-Object byte[] $n;"
+        "[void]$f.Seek(0,[IO.SeekOrigin]::Begin);"
+        "$read=$f.Read($b,0,$n);"
+        "$cur=[Convert]::ToBase64String($b,0,$read)};"
+        "if($cur -ne $sig){$o=[long]0;$sig=''};"
+        "if($f.Length -gt $o){"
         "[void]$f.Seek($o,[IO.SeekOrigin]::Begin);"
         "$r=New-Object IO.StreamReader($f,[Text.Encoding]::UTF8);"
-        "while($null -ne ($line=$r.ReadLine())){" + emit + "};"
-        "$o=$f.Position}finally{$f.Dispose()}}}"
+        "$buf=$r.ReadToEnd();"
+        # Whole lines only; the remainder waits for the next poll.
+        "$cut=$buf.LastIndexOf([char]10);"
+        "if($cut -ge 0){"
+        "$whole=$buf.Substring(0,$cut+1);"
+        "foreach($line in $whole.Split([char]10)){"
+        "$line=$line.TrimEnd([char]13);"
+        "if($line -ne ''){" + emit + "}};"
+        "$o=$o+[Text.Encoding]::UTF8.GetByteCount($whole);"
+        "$n2=[Math]::Min(64,$o);"
+        "$b2=New-Object byte[] $n2;"
+        "[void]$f.Seek(0,[IO.SeekOrigin]::Begin);"
+        "$read2=$f.Read($b2,0,$n2);"
+        "$sig=[Convert]::ToBase64String($b2,0,$read2)}}"
+        "}finally{$f.Dispose()}}catch{}}"
         f"Start-Sleep -Milliseconds {_WATCH_POLL_MS}" + "}"
     )
 

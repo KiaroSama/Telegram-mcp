@@ -28,6 +28,16 @@ def _mono(seconds_ago=0.0):
 # Every pre-seeded burst belongs to a login; these tests only need one.
 ACCOUNT = "default"
 
+# The handler is bound to the client it was registered for, so it can tell
+# whether the generation it belongs to is still the current one. Delivering
+# means naming that client - which here is simply the account's own.
+_CURRENT_CLIENT = object()
+
+
+async def _deliver(event):
+    events.clients.setdefault(ACCOUNT, _CURRENT_CLIENT)
+    return await events._on_new_incoming(ACCOUNT, events.clients[ACCOUNT], event)
+
 
 def _pending_record(last_ts, count=2, name="Client"):
     return {
@@ -289,7 +299,7 @@ async def test_on_new_incoming_records_and_autostarts(monkeypatch):
         message=SimpleNamespace(id=7),
         get_sender=get_sender,
     )
-    await events._on_new_incoming(ACCOUNT, event)
+    await _deliver(event)
 
     assert (ACCOUNT, 42) in events_store._pending_msgs
     assert events_store._pending_msgs[(ACCOUNT, 42)]["count"] == 1
@@ -559,7 +569,7 @@ async def test_the_pending_map_stops_at_its_ceiling(monkeypatch):
     monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "5")
 
     for chat in range(9):
-        await events._on_new_incoming(ACCOUNT, _incoming(chat))
+        await _deliver(_incoming(chat))
 
     assert len(events_store._pending_msgs) == 5, events_store._pending_msgs
 
@@ -571,7 +581,7 @@ async def test_an_overflow_drop_is_reported_rather_than_silent(monkeypatch):
     monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "2")
 
     for chat in range(5):
-        await events._on_new_incoming(ACCOUNT, _incoming(chat))
+        await _deliver(_incoming(chat))
 
     state = events_store.overflow_state()
     assert state["dropped_total"] == 3
@@ -586,7 +596,7 @@ async def test_the_oldest_burst_is_the_one_dropped(monkeypatch):
     monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "2")
 
     for chat in (1, 2, 3):
-        await events._on_new_incoming(ACCOUNT, _incoming(chat))
+        await _deliver(_incoming(chat))
 
     assert sorted(chat for _account, chat in events_store._pending_msgs) == [2, 3]
 
@@ -619,7 +629,7 @@ async def test_the_drop_ledger_itself_is_bounded(monkeypatch):
     monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "1")
 
     for chat in range(200):
-        await events._on_new_incoming(ACCOUNT, _incoming(chat))
+        await _deliver(_incoming(chat))
 
     state = events_store.overflow_state()
     assert state["dropped_total"] == 199
@@ -667,7 +677,7 @@ async def test_a_short_pending_list_says_there_is_no_more():
 async def test_the_wait_reports_what_was_dropped_while_it_was_not_looking(monkeypatch):
     monkeypatch.setenv("TELEGRAM_EVENT_PENDING_MAX", "2")
     for chat in range(5):
-        await events._on_new_incoming(ACCOUNT, _incoming(chat))
+        await _deliver(_incoming(chat))
 
     result = json.loads(await events.wait_for_new_message(timeout=0.2))
 
