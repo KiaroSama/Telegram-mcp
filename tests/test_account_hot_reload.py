@@ -14,6 +14,7 @@ import os
 import pytest
 
 from telegram_mcp import account_config as cfg
+from telegram_mcp import account_snapshot as snap
 from telegram_mcp import connection as conn
 
 
@@ -45,7 +46,7 @@ def env_file(tmp_path, monkeypatch):
     monkeypatch.setattr(conn, "clients", {}, raising=False)
     monkeypatch.setattr(conn, "_env_stamp", (), raising=False)
     monkeypatch.setattr(conn, "_env_digests", {}, raising=False)
-    monkeypatch.setattr(cfg, "_EXTERNAL_ACCOUNT_VARS", {}, raising=False)
+    monkeypatch.setattr(snap, "PROCESS_ACCOUNT_VARS", {})
     return _write
 
 
@@ -322,7 +323,7 @@ def test_an_environment_account_survives_an_unrelated_file_edit(env_file, monkey
     unconfigured an account supplied as a real environment variable whenever
     anything else in `.env` moved."""
     env_file(["TELEGRAM_SESSION_STRING_FILEACC=f1"])
-    monkeypatch.setattr(cfg, "_EXTERNAL_ACCOUNT_VARS", {"TELEGRAM_SESSION_STRING_ENVACC": "e1"})
+    monkeypatch.setattr(snap, "PROCESS_ACCOUNT_VARS", {"TELEGRAM_SESSION_STRING_ENVACC": "e1"})
 
     env = cfg._accounts_from_disk()
 
@@ -330,20 +331,26 @@ def test_an_environment_account_survives_an_unrelated_file_edit(env_file, monkey
     assert env.get("TELEGRAM_SESSION_STRING_FILEACC") == "f1"
 
 
-def test_the_file_still_wins_where_both_name_the_same_account(env_file, monkeypatch):
-    env_file(["TELEGRAM_SESSION_STRING_BOTH=from-file"])
-    monkeypatch.setattr(
-        cfg, "_EXTERNAL_ACCOUNT_VARS", {"TELEGRAM_SESSION_STRING_BOTH": "from-env"}
-    )
+def test_the_process_wins_where_both_name_the_same_account(env_file, monkeypatch):
+    """This asserted the opposite, and the opposite was the defect.
 
-    assert cfg._accounts_from_disk()["TELEGRAM_SESSION_STRING_BOTH"] == "from-file"
+    `load_dotenv()` does not override, so the CLIENT serving every call was built
+    from the process's value. A reload view that answered "from-file" for the
+    same key disagreed with the process it was describing - and, because the
+    overlapping key was then filed as file-managed, deleting that line dropped
+    the genuine external account too.
+    """
+    env_file(["TELEGRAM_SESSION_STRING_BOTH=from-file"])
+    monkeypatch.setattr(snap, "PROCESS_ACCOUNT_VARS", {"TELEGRAM_SESSION_STRING_BOTH": "from-env"})
+
+    assert cfg._accounts_from_disk()["TELEGRAM_SESSION_STRING_BOTH"] == "from-env"
 
 
 def test_an_account_deleted_from_the_file_really_goes(env_file, monkeypatch):
     """The asymmetry this all exists for: `load_dotenv` never removes, so a
     deleted account would otherwise stay configured forever."""
     env_file(["TELEGRAM_SESSION_STRING_GONE=g1"])
-    monkeypatch.setattr(cfg, "_EXTERNAL_ACCOUNT_VARS", {})
+    monkeypatch.setattr(snap, "PROCESS_ACCOUNT_VARS", {})
     assert "TELEGRAM_SESSION_STRING_GONE" in cfg._accounts_from_disk()
 
     env_file(["# deleted"])
@@ -402,7 +409,7 @@ def test_a_reload_does_not_claim_a_second_pooled_slot(monkeypatch):
     # what is under test is which slot gets claimed, not what is built from it.
     monkeypatch.setattr(conn, "_build_client", lambda session, label: _Client(label))
     monkeypatch.setattr(conn, "StringSession", lambda value: value)
-    monkeypatch.setattr(cfg, "_EXTERNAL_ACCOUNT_VARS", {})
+    monkeypatch.setattr(snap, "PROCESS_ACCOUNT_VARS", {})
 
     env = {"TELEGRAM_SESSION_STRINGS": "slot-a slot-b"}
     first = conn._discover_accounts(env)

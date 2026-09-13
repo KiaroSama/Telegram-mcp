@@ -1,23 +1,24 @@
-"""What the account configuration SAYS right now, and what changed since.
+"""Which file the configuration comes from, and the names the rest of the package uses.
 
-Pure functions over the `.env` file and the process environment: which file is
-read, a content digest of it, which variables configure an account, and which of
-those the environment supplied rather than the file. Nothing here builds a
-client, opens a socket or mutates the live registry - `connection` does that,
-and split this out when the provenance tracking pushed it past the size ceiling.
+The reading itself moved to :mod:`telegram_mcp.account_snapshot`, because the
+three separate reads this module used to perform were allowed to describe three
+different revisions of the same file. What is left here is the question that
+genuinely stands alone - WHICH file - plus the names `connection` re-exports and
+the tests already patch, each delegating to the one snapshot so there is a
+single reading behind every answer.
 
-Two facts the rest of the package depends on:
-
-* **Provenance is decidable only at import.** `load_dotenv` adds to `os.environ`
-  and never removes, so after the first edit a variable deleted from the file is
-  indistinguishable from one the environment always supplied.
-* **The fingerprint hashes CONTENT, not metadata.** A re-login rewrites `.env`
-  with a session string of the same length, which moves neither size nor - on a
-  coarse-resolution filesystem - mtime.
+Provenance is decided earlier still, in :mod:`telegram_mcp.settings`, on the
+line before ``load_dotenv`` runs. It cannot be decided here: by the time this
+module is imported the process environment and the file have been merged, and
+asking afterwards which keys are missing from the file answers a different
+question - one that got the overlapping case backwards.
 """
 
-import os
 from typing import Optional
+
+from telegram_mcp.account_snapshot import account_digest as _snapshot_digest
+from telegram_mcp.account_snapshot import digests_of, read_snapshot
+from telegram_mcp.settings import ACCOUNT_PREFIXES
 
 
 def _env_file() -> Optional[str]:
@@ -40,16 +41,14 @@ def _env_fingerprint(path: Optional[str]) -> tuple:
     the two writes the mtime does not move either. CI caught it on a Windows
     runner where the local machine never had.
 
-    Hashing a file of a few kilobytes costs microseconds and is checked once per
-    `get_client`. The stat was the cheaper answer to the wrong question.
+    Kept as a name of its own because the reload's first question is only "has
+    the file changed at all", and answering it must not cost a parse. It hashes
+    the same bytes :func:`read_snapshot` would.
     """
-    if not path:
-        return ()
-    try:
-        with open(path, "rb") as handle:
-            return (_account_digest_bytes(handle.read()),)
-    except OSError:
-        return ()
+    from telegram_mcp.account_snapshot import _read_file_bytes
+
+    raw = _read_file_bytes(path)
+    return () if raw is None else (_account_digest_bytes(raw),)
 
 
 def _account_digest_bytes(data: bytes) -> str:
@@ -60,68 +59,21 @@ def _account_digest_bytes(data: bytes) -> str:
 
 def _account_digest(value: str) -> str:
     """A session string is a full login; only ever its digest is kept."""
-    import hashlib
-
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return _snapshot_digest(value)
 
 
-_ACCOUNT_PREFIXES = ("TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME")
-
-
-def _external_account_vars() -> dict:
-    """Account variables the ENVIRONMENT supplies, not the `.env` file.
-
-    Provenance is decidable exactly once, and only at import: a variable that is
-    in `os.environ` but not in the file was set outside it. Afterwards the
-    question is unanswerable, because `load_dotenv` adds to `os.environ` and
-    never removes, so a variable later deleted from the file still sits there
-    looking externally configured.
-    """
-    from dotenv import dotenv_values
-
-    path = _env_file()
-    on_disk = dotenv_values(path) if path else {}
-    return {
-        key: value
-        for key, value in os.environ.items()
-        if key.startswith(_ACCOUNT_PREFIXES) and value and key not in on_disk
-    }
-
-
-# Decided once, at import, for the reason the docstring above gives.
-_EXTERNAL_ACCOUNT_VARS: dict = _external_account_vars()
+# The historic spelling, kept because `connection` re-exports it and `__all__`
+# publishes it.
+_ACCOUNT_PREFIXES = ACCOUNT_PREFIXES
 
 
 def _accounts_from_disk() -> dict:
-    """The environment as it would be if this process had started right now.
-
-    File-managed account variables come from the FILE alone, everything else
-    from the live process. That asymmetry is the point: `load_dotenv` can add a
-    variable to `os.environ` but never removes one, so an account deleted from
-    `.env` would otherwise stay configured forever.
-
-    What the asymmetry must NOT do is delete an account the file never owned.
-    Dropping every account-prefixed variable and re-adding only the file's meant
-    an unrelated edit to `.env` silently unconfigured an account supplied as a
-    real environment variable - so `_EXTERNAL_ACCOUNT_VARS`, decided at import,
-    is re-added first and the file still wins wherever both name the same key.
-    """
-    from dotenv import dotenv_values
-
-    path = _env_file()
-    on_disk = dotenv_values(path) if path else {}
-    env = {k: v for k, v in os.environ.items() if not k.startswith(_ACCOUNT_PREFIXES)}
-    env.update(_EXTERNAL_ACCOUNT_VARS)
-    env.update({k: v for k, v in on_disk.items() if v})
-    return env
+    """The environment as it would be if this process had started right now."""
+    return read_snapshot().env
 
 
 def _current_digests(env: dict) -> dict:
-    return {
-        key: _account_digest(value)
-        for key, value in env.items()
-        if key.startswith(_ACCOUNT_PREFIXES) and value
-    }
+    return digests_of(env)
 
 
 __all__ = [
@@ -132,6 +84,4 @@ __all__ = [
     "_current_digests",
     "_env_file",
     "_env_fingerprint",
-    "_EXTERNAL_ACCOUNT_VARS",
-    "_external_account_vars",
 ]
