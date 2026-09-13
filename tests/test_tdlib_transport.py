@@ -325,8 +325,15 @@ async def test_an_account_without_a_login_is_refused_with_the_command_to_fix_it(
 ):
     """Returning a running-but-unauthorised client would fail later, on whichever
     call happened to come first, with a message about that call instead."""
+    from telegram_mcp import connection as conn
+
     monkeypatch.setattr(tdlib_reg, "_by_account", {})
     monkeypatch.setattr(tdlib, "database_dir_for", lambda account: tmp_path / account)
+    # The account has to exist on the Telethon side for a TDLib client to be
+    # asked for at all. Named here rather than borrowed from whatever `.env` the
+    # machine happens to hold - the suite describes the code, not the developer.
+    monkeypatch.setattr(conn, "clients", {"kgb_verifier": _Session(7)})
+    monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
 
     class Unauthorised(tdlib.TDLibClient):
         async def start(self):
