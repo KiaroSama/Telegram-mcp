@@ -10,6 +10,7 @@ except UnsafeInstallationError as exc:
 from telethon.errors import AuthKeyDuplicatedError
 
 from telegram_mcp import runtime as _runtime
+from telegram_mcp import admission as _admission
 from telegram_mcp.connection import _BURNED_SESSION_MESSAGE, harden_env_file, parse_port
 from telegram_mcp.paging import bounded_number
 from telegram_mcp.safe_log import safe_exception
@@ -23,9 +24,14 @@ from telegram_mcp.singleton import (
 )
 import telegram_mcp.tools  # noqa: F401 - registers MCP tools via decorators
 
-# Populated as each account's session lock is acquired; released in _main's
-# finally block so a lock is never held past this process's lifetime.
-_session_locks: dict[str, SessionLock] = {}
+# The session locks this process holds, shared with the reload path so an
+# account added while the server runs is admitted the same way one present at
+# boot is. Released in _main's finally block, so a lock never outlives the
+# process. `_session_locks` stays as the name the tests and this module use.
+# `reject_duplicate_sessions` moved there too, so the reload path runs the same
+# check; both keep the names this module and its tests already use.
+from telegram_mcp.admission import reject_duplicate_sessions as _reject_duplicate_sessions
+from telegram_mcp.admission import session_locks as _session_locks
 
 # Every transport this server can actually run. Anything else is a typo.
 _TRANSPORTS = ("stdio", "http", "sse")
@@ -50,36 +56,12 @@ def _lock_grace_seconds() -> float:
     return span.value
 
 
-def _reject_duplicate_sessions(configured: dict) -> None:
-    """Refuse to start when two labels name the SAME Telegram session.
-
-    Two labels, one auth key is not a configuration that can work: Telegram
-    permanently invalidates a key used twice at once. Caught here it is a
-    one-line error naming both labels; caught by the session lock it is a
-    20-second stall followed by a message about "another process" that does
-    not exist.
-    """
-    by_identity: dict[str, str] = {}
-    for label, client in configured.items():
-        identity = session_identity(client)
-        first = by_identity.setdefault(identity, label)
-        if first != label:
-            raise StartupMessage(
-                f"Accounts '{first}' and '{label}' are configured with the same "
-                "Telegram session. One session is one auth key, and connecting it "
-                "twice makes Telegram invalidate it for both. Generate a separate "
-                "session per account with `uv run session_string_generator.py`."
-            )
-
-
 async def _connect_authorized_client(label, client) -> None:
     # First, prevent our own duplicate-spawn case outright: an exclusive
     # per-session lock means a second instance of this server never even
     # attempts to connect while another instance already holds the same
     # session (see telegram_mcp/singleton.py for why and how).
-    lock = SessionLock(session_identity(client))
-    await asyncio.to_thread(lock.acquire, grace_seconds=_lock_grace_seconds())
-    _session_locks[label] = lock
+    await _admission.claim_session(label, client, grace_seconds=_lock_grace_seconds())
 
     # No retry. Telegram invalidates an auth key used from two places at once
     # permanently -- connection.py has said so on the reconnect path all along
@@ -96,8 +78,7 @@ async def _connect_authorized_client(label, client) -> None:
         # Nothing is connected on this session, so nothing should still be
         # holding its lock: a retry after fixing the config must not queue
         # behind a lock this failed attempt left standing.
-        _session_locks.pop(label, None)
-        lock.release()
+        _admission.forget(label)
         raise StartupMessage(f"[{label}] {_BURNED_SESSION_MESSAGE}") from exc
 
     if await client.is_user_authorized():
@@ -376,6 +357,27 @@ async def _main() -> None:
             )
         except Exception:
             pass
+        # TDLib, before the Telethon locks go. It writes secret-chat keys lazily
+        # and a key lost on exit takes its chat's history with it - there is no
+        # way to re-derive one. `close_all` existed for exactly this and nothing
+        # called it, so every run of this server exited without flushing.
+        try:
+            from telegram_mcp.tdlib_registry import close_all as _close_tdlib
+
+            unflushed = await asyncio.wait_for(_close_tdlib(), timeout=_TDLIB_CLOSE_SECONDS)
+            for account, error in unflushed:
+                startup_note(
+                    f"[{account}] TDLib did not close cleanly ({_startup_text(error)}); "
+                    "secret-chat keys written since its last flush may be lost."
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            startup_note(
+                f"TDLib did not finish closing within {_TDLIB_CLOSE_SECONDS:.0f}s; "
+                "exiting anyway. Secret-chat keys written since its last flush may be lost."
+            )
+        except Exception as exc:
+            startup_note(f"Closing TDLib failed: {_startup_text(exc)}")
+
         # A client REPLACED while the server ran is not in `clients` any more:
         # `refresh_accounts` dropped it and its disconnect is still in flight.
         # Releasing its session lock now is what lets a second connection claim
@@ -391,9 +393,13 @@ async def _main() -> None:
                 )
         except Exception as exc:
             startup_note(f"Waiting for retired clients failed: {_startup_text(exc)}")
-        for lock in _session_locks.values():
-            lock.release()
-        _session_locks.clear()
+        _admission.release_all()
+
+
+# How long shutdown waits for TDLib to flush and close. Generous, because the
+# cost of cutting it short is unrecoverable: the keys that decrypt a secret
+# chat's history. Bounded all the same - exit must not hang forever.
+_TDLIB_CLOSE_SECONDS: float = 30.0
 
 
 def main() -> None:

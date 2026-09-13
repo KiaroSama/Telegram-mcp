@@ -11,6 +11,7 @@ Nothing here imports the MCP runtime or Telethon. A ceiling is a decision about
 size and age: it needs an environment variable and a clock, not a client.
 """
 
+import json
 import logging
 import math
 import os
@@ -235,37 +236,125 @@ def _restrict_to_owner(path, fd: Optional[int] = None) -> None:
         )
 
 
-def _rotate_feed_if_needed(path: Path) -> None:
-    """Keep the feed inside its size and age budget, before anything is appended.
+# How much of the feed is read to find its oldest record. One JSONL line is a
+# burst summary - well under a kilobyte - so this is a whole line with room to
+# spare, and a file whose first line is somehow enormous is not worth reading to
+# answer a question about its age.
+_FIRST_LINE_CAP = 8192
 
-    Checked at open time rather than mid-write, so a file can carry the one
-    record that took it over its ceiling. Two generations of that is the bound.
+# The last rotation failure, surfaced through the status tool. Disk filling up
+# because a rename keeps failing is exactly the thing that must not be visible
+# only in a log nobody is tailing.
+_last_rotation_error: Optional[str] = None
+
+
+def rotation_error() -> Optional[str]:
+    """The last rotation failure, or ``None`` if the last attempt succeeded."""
+    return _last_rotation_error
+
+
+def _oldest_record_age(path: Path) -> Optional[float]:
+    """Seconds since the OLDEST record in the feed, or ``None`` when unknown.
+
+    Deliberately not mtime. Every append moves mtime forward, so a file whose
+    first line is three months old reports an age of seconds - which is how an
+    old, small, still-active feed sat outside the age budget indefinitely while
+    the budget was applied only to the rotated generation beside it.
+
+    The feed is append-only, so its first line is its oldest record, and that
+    line carries its own `ts`. Content, not metadata: this also survives a
+    restart, where an in-memory "when did this generation start" would not.
     """
-    max_bytes, max_age = feed_retention()
-    rotated = _rotated_feed_path(path)
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline(_FIRST_LINE_CAP)
+    except OSError:
+        return None
+    if not first:
+        return None
+    try:
+        ts = json.loads(first.decode("utf-8", "replace")).get("ts")
+    except (ValueError, AttributeError):
+        # A half-written or hand-edited first line says nothing about age. Size
+        # is still enforced, so the file cannot grow without bound either way.
+        return None
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None
+    return max(0.0, time.time() - float(ts))
 
+
+def _expire_rotated(rotated: Path, max_age: int) -> None:
+    """Drop the retained generation once it is past the age budget.
+
+    mtime is the right clock HERE and the wrong one for the active file: nothing
+    appends to a rotated generation, so its mtime is the moment it stopped
+    growing, which is the newest record it holds.
+    """
     try:
         if time.time() - rotated.stat().st_mtime > max_age:
             rotated.unlink()
     except OSError:
         pass  # no rotated generation, or it went away underneath us
 
+
+def _rotate_feed_if_needed(path: Path) -> None:
+    """Keep the feed inside its size AND age budget, before anything is appended.
+
+    The contract both generations are held to:
+
+    * the active file rotates when it passes `max_bytes` **or** when its oldest
+      record passes `max_age` - either one, so a quiet feed cannot keep months
+      of contact metadata merely by staying small;
+    * the retained generation is deleted once it is past `max_age`, including
+      immediately after an age-triggered rotation, whose records were already
+      too old before they moved;
+    * disk use stays bounded by roughly twice `max_bytes`.
+
+    Checked at open time rather than mid-write, so a file can carry the one
+    record that took it over its ceiling. An idle feed is checked whenever
+    anything asks - an append, a status call - and not on a timer of its own.
+    """
+    global _last_rotation_error
+    max_bytes, max_age = feed_retention()
+    rotated = _rotated_feed_path(path)
+
+    _expire_rotated(rotated, max_age)
+
     try:
-        if path.stat().st_size < max_bytes:
-            return
+        size = path.stat().st_size
     except OSError:
         return  # nothing to rotate yet
+    if size == 0:
+        return
+    age = _oldest_record_age(path)
+    if size < max_bytes and not (age is not None and age > max_age):
+        return
 
     try:
         # os.replace, not a copy: atomic, and it drops the previous generation in
         # the same step rather than leaving a window with three of them.
         os.replace(path, rotated)
     except OSError as error:
+        _last_rotation_error = f"{type(error).__name__}: {error}"
         log_event(logging.ERROR, "event-feed-rotate-failed", error=error)
         return
+    _last_rotation_error = None
     # Both names now refer to different files than they did; the retained
     # generation carries the same private records, so it is hardened as itself.
     _restrict_to_owner(rotated)
+    # It went stale before it was rotated, so retaining it would keep exactly the
+    # records the age budget just objected to.
+    _expire_rotated(rotated, max_age)
+
+
+def apply_retention() -> None:
+    """Run the retention pass without opening the feed for writing.
+
+    Rotation happens at append time, which is the right moment while events are
+    arriving and no moment at all once they stop. A status call is the other
+    thing that happens to an idle server, so it applies the same pass.
+    """
+    _rotate_feed_if_needed(feed_file_path())
 
 
 def _open_feed_append():
@@ -299,8 +388,10 @@ def _touch_feed_file() -> None:
 # with events.py's rather than overlapping it: `tools/__init__.py` star-imports
 # both, and a name exported twice is one module silently shadowing the other.
 __all__ = [
+    "apply_retention",
     "feed_file_path",
     "feed_retention",
     "pending_bounds",
     "overflow_state",
+    "rotation_error",
 ]

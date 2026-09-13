@@ -348,8 +348,13 @@ class TDLibClient:
         extra = str(next(_extra_ids))
         future = self._loop.create_future()
         self._pending[extra] = future
-        self._send({**obj, "@extra": extra})
         try:
+            # INSIDE the try. `_send` serialises to JSON and calls into the
+            # native library, and either can raise - an unencodable argument, a
+            # library error - at which point the entry registered a line above
+            # was orphaned for the life of a client that lives as long as the
+            # server, because only the await was ever guarded.
+            self._send({**obj, "@extra": extra})
             result = await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             raise TimeoutError(f"TDLib did not answer {obj['@type']} within {timeout:.0f}s")
@@ -360,7 +365,12 @@ class TDLibClient:
             # a sibling in a gather that failed) left its future here for the life
             # of a client that lives as long as the server. Same leak the timeout
             # branch was already written to prevent, through the other door.
-            self._pending.pop(extra, None)
+            abandoned = self._pending.pop(extra, None)
+            # A future nobody will ever resolve: the send failed, so no reply
+            # carrying this `@extra` is coming. Left pending it warns at
+            # interpreter exit and hides the real error behind the noise.
+            if abandoned is not None and not abandoned.done():
+                abandoned.cancel()
         if result.get("@type") == "error":
             raise TDLibError(result.get("code", 0), result.get("message", "unknown error"))
         return result
@@ -453,45 +463,6 @@ class TDLibClient:
 # database, reconnects, and re-fetches state. A tool call must not pay that.
 # --------------------------------------------------------------------------
 
-_by_account: dict[str, TDLibClient] = {}
-_by_account_lock = asyncio.Lock()
-
-
-async def secret_client(account: str) -> TDLibClient:
-    """The account's started TDLib client.
-
-    Raises `NotSignedIn` rather than returning a half-usable client: every
-    secret-chat operation needs a real authorisation, and a client that is
-    merely running would fail later with a message about whatever call happened
-    to come first.
-    """
-    async with _by_account_lock:
-        existing = _by_account.get(account)
-        if existing is not None and existing._client_id is not None:
-            return existing
-
-        client = TDLibClient(account)
-        state = await client.start()
-        if state != "authorizationStateReady":
-            await client.close()
-            raise NotSignedIn(account, state)
-        _by_account[account] = client
-        return client
-
-
-async def close_all() -> None:
-    """Shut every started client down, flushing its database.
-
-    Called on server shutdown. TDLib writes secret-chat keys lazily, and a key
-    lost on exit takes its chat's history with it -- there is no way to
-    re-derive one.
-    """
-    async with _by_account_lock:
-        for client in list(_by_account.values()):
-            await client.close()
-        _by_account.clear()
-
-
 # --------------------------------------------------------------------------
 # Authorising TDLib from the Telethon login that already exists.
 #
@@ -507,6 +478,18 @@ async def close_all() -> None:
 # part is the protocol and cannot be removed -- but it is no longer a second
 # code.
 # --------------------------------------------------------------------------
+
+
+# The account -> client registry moved next door: which client is alive and
+# whether it can still serve is a lifecycle question, not a protocol one.
+# Imported BELOW the class rather than at the top, because that module imports
+# `TDLibClient` from here - the name has to exist before it is loaded.
+from telegram_mcp.tdlib_registry import (  # noqa: E402,F401  (re-exported)
+    _by_account,
+    _by_account_lock,
+    close_all,
+    secret_client,
+)
 
 
 def login_token(link: str) -> bytes:
@@ -595,8 +578,15 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
     Returns the state reached. ``authorizationStateReady`` is the only success.
     The password is never logged, stored, or passed on a command line.
     """
+    from telegram_mcp import tdlib_identity as identity
+
     try:
         return await _attempt_login(label, telethon_client, password, ask_password)
+    except identity.IdentityMismatch:
+        # Two real accounts and no way to tell which was meant. Never recovered
+        # from automatically: the database is the evidence, and the old recovery
+        # path would have deleted it.
+        raise
     except (TDLibError, RuntimeError) as error:
         if not _authorisation_is_dead(error):
             raise
@@ -607,11 +597,26 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
         # which no amount of logging in again can fix, and each attempt costs a
         # real login.
         #
-        # Discarding it loses nothing that still works. It is not the secret-chat
-        # HISTORY being thrown away either: those keys were tied to the same dead
-        # authorisation and Telegram has already forgotten them.
-        _discard_database(label)
-        return await _attempt_login(label, telethon_client, password, ask_password)
+        # Moved aside, not deleted. The bytes may hold secret-chat keys that
+        # cannot be re-derived, and the diagnosis above is a guess about
+        # Telegram's answer rather than a fact about the file. `rmtree` with
+        # `ignore_errors=True` was worse than either: a directory still held
+        # open reported success while deleting nothing at all.
+        kept_at = identity.quarantine_database(label, why=str(error))
+        try:
+            # ONE retry. A dead authorisation that survives a fresh database is
+            # not a stale database, and quarantining again would spend another
+            # real login to learn the same thing.
+            return await _attempt_login(label, telethon_client, password, ask_password)
+        except (TDLibError, RuntimeError) as second:
+            if _authorisation_is_dead(second):
+                raise RuntimeError(
+                    f"Telegram still refuses the authorisation for account '{label}' after a "
+                    f"fresh database was started. The previous one was not deleted - it is at "
+                    f"{kept_at}. Sign the account in again from the Telegram app, then retry; "
+                    "nothing here will keep requesting authorisations on its own."
+                ) from second
+            raise
 
 
 def _authorisation_is_dead(error: Exception) -> bool:
@@ -627,18 +632,17 @@ def _authorisation_is_dead(error: Exception) -> bool:
     )
 
 
-def _discard_database(label: str) -> None:
-    """Delete one account's TDLib database so the next login starts clean."""
-    import shutil
-
-    shutil.rmtree(database_dir_for(label), ignore_errors=True)
-
-
 async def _attempt_login(label, telethon_client, password, ask_password) -> str:
+    from telegram_mcp import tdlib_identity as identity
+
     client = TDLibClient(label)
     try:
         state = await client.start()
         if state == "authorizationStateReady":
+            # Before the caller does ANYTHING with this client. A ready database
+            # under a reused label is signed in as the previous owner, and every
+            # call made through it would run as them.
+            await identity.verify_owner(label, client, telethon_client)
             return state
 
         if state == "authorizationStateWaitPhoneNumber":
@@ -653,6 +657,13 @@ async def _attempt_login(label, telethon_client, password, ask_password) -> str:
             await client.request({"@type": "checkAuthenticationPassword", "password": secret})
             state = await client._settle()
 
+        if state == "authorizationStateReady":
+            # The other way a reused label signs in as the wrong person: a
+            # database an interrupted run left at WaitPassword belongs to
+            # WHOEVER started that run, and finishing it here completes THEIR
+            # login. Checked on every path that reaches Ready, not only the one
+            # that was already there.
+            await identity.verify_owner(label, client, telethon_client)
         return state
     finally:
         await client.close()

@@ -588,6 +588,34 @@ before this existed — it is one command, still without a code:
 python scripts/secret_chat_login.py <label>
 ```
 
+**The database is bound to the account it belongs to.** A label is a name in `.env`; a TDLib
+database is a signed-in Telegram account, and the database outlives `.env`. Reuse a label for
+a different person and the directory is still there under the old name, already at
+`authorizationStateReady` — signed in as the previous owner. Every login and every cached
+client now compares TDLib's `getMe.id` against the Telethon session's `get_me().id` before
+the client is used for anything, and refuses a mismatch by name:
+
+> The TDLib database for account 'work' is signed in as Telegram user 111, but the configured
+> session for that label is user 222.
+
+Nothing is changed when that happens — both accounts are real, and only you know which one
+the label was meant to name. Point the label back at the account the database holds, or move
+its directory aside yourself and run the login above to build a fresh one.
+
+The binding lives in `owner.json` beside the database and is written the first time an
+identity is proved, so a database made before this existed keeps working and gains its record
+on first use. Nothing is inferred from a directory name, and nothing is deleted for lacking
+the file.
+
+**A dead authorisation is quarantined, not deleted.** When Telegram answers
+`AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED` or `SESSION_EXPIRED`, the database is *renamed* to
+`<label>.quarantined-<UTC timestamp>` and a fresh login starts beside it — once. The bytes may
+hold secret-chat keys that cannot be re-derived, so they are kept and the path is reported; if
+the rename fails (on Windows, an open handle), the login refuses rather than proceeding on a
+database it did not actually replace. Delete a quarantined directory yourself once you are
+satisfied the account works. If the fresh database is refused too, the run stops and says so
+instead of requesting authorisation after authorisation.
+
 ## Multi-Account Setup
 
 **`.env` is re-read while the server runs.** An account added, removed, or signed in again
@@ -870,9 +898,12 @@ own. That is what `tests/test_tool_registry.py` guards.
 main.py                       # historical entrypoint and compatibility exports
 telegram_mcp/settings.py      # environment configuration; the bottom of the import graph
 telegram_mcp/runtime.py       # shared MCP setup, entity resolution, formatting
+telegram_mcp/dialog_warm.py   # warming the entity cache once, with shared waiters
 telegram_mcp/errors.py        # error classes, refusal wording, id validation
-telegram_mcp/connection.py    # the session pool, account routing, reconnection
+telegram_mcp/connection.py    # the session pool, and which account a call routes to
+telegram_mcp/reconnect.py     # whether the socket still answers, and bringing it back
 telegram_mcp/account_config.py # what the .env says about accounts, and what changed
+telegram_mcp/admission.py     # what a client must satisfy before this process serves from it
 telegram_mcp/retirement.py    # closing a client this process dropped, and waiting for it
 telegram_mcp/session_files.py # session files on disk, and the client built over one
 telegram_mcp/proxy.py         # TELEGRAM_PROXY_* into Telethon kwargs; touches no socket
@@ -884,7 +915,10 @@ telegram_mcp/paging.py        # one limit rule for every list and search tool
 telegram_mcp/aliases.py       # calling a contact what the operator calls them
 telegram_mcp/alias_store.py   # that name on disk: addressing, locking, protection
 telegram_mcp/runner.py        # application startup
+telegram_mcp/tdlib_registry.py # which TDLib client serves an account, and closing them
+telegram_mcp/tdlib_identity.py # whose account a TDLib database is, and quarantining a dead one
 telegram_mcp/tools/           # tool modules grouped by domain
+telegram_mcp/tools/feed_lifecycle.py  # one feed consumer at a time, and who owns one that will not stop
 telegram_mcp/message_view.py  # deep structured message view
 telegram_mcp/visual/          # Telegram Desktop capture and image/frame helpers
                               #   capture.py runs inside the worker; capture_runner.py
@@ -939,6 +973,22 @@ Get-ChildItem tests -Filter 'test_*.ps1' | ForEach-Object { pwsh -NoProfile -Fil
 
 CI discovers them the same way rather than from a list — a hardcoded list is how a suite
 outlived the script it tested.
+
+**A matrix leg proves its label.** `uv run` reads `.python-version` and resolves the
+project's own pin, so a job that installed 3.11 and then ran `uv run pytest` tested 3.13
+and reported a pass for an interpreter it never touched — with the matrix showing green
+across four names and two versions. Every job now exports `UV_PYTHON` as the exact
+executable `setup-python` installed, and `scripts/ci_record.py` asserts `sys.version_info`
+from inside the resolved environment before pytest starts. It runs again afterwards to
+record what actually happened: interpreter, platform, commit, `uv.lock` digest, and the
+case and skip counts out of the JUnit report — a leg that collected nothing fails there
+rather than passing quietly.
+
+**The lockfile is checked, not assumed.** A separate job runs `uv lock --check` and then
+`git diff --exit-code` over `uv.lock` and `pyproject.toml`; every other job invokes
+`uv run --locked`, so a manifest the lock no longer describes fails instead of being
+silently re-resolved. The uv binary itself is pinned in the workflows, because an
+unpinned resolver is one more dependency of every result below it.
 
 Run formatting checks:
 
