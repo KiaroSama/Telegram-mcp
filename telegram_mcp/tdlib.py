@@ -32,6 +32,7 @@ import asyncio
 import itertools
 import json
 import logging
+import atexit
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -184,6 +185,14 @@ def database_dir_for(account: str) -> Path:
 _clients: dict[int, "TDLibClient"] = {}
 _clients_lock = threading.Lock()
 _reader: Optional[threading.Thread] = None
+
+# Set to ask the reader to finish. It is a DAEMON thread blocked in a native
+# call, and a daemon thread is killed where it stands at interpreter shutdown -
+# inside `td_receive`, that is TDLib's C++ runtime being unwound from under
+# itself, which ends the process with `terminate called without an active
+# exception` and exit 250. The native lifecycle test found it; nothing had
+# started a real client under pytest before.
+_reader_stop = threading.Event()
 _extra_ids = itertools.count(1)
 
 
@@ -207,7 +216,7 @@ def _dispatch(event: dict) -> None:
 
 def _reader_loop() -> None:  # pragma: no cover - a thread, driven by live TDLib
     td = _tdjson()
-    while True:
+    while not _reader_stop.is_set():
         try:
             raw = td.td_receive(1.0)
         except Exception as exc:
@@ -229,8 +238,39 @@ def _ensure_reader() -> None:
     with _clients_lock:
         if _reader is not None and _reader.is_alive():
             return
+        _reader_stop.clear()
         _reader = threading.Thread(target=_reader_loop, name="tdlib-receive", daemon=True)
         _reader.start()
+
+
+def stop_reader(timeout: float = 3.0) -> bool:
+    """Ask the receive thread to finish, and wait for it to actually leave TDLib.
+
+    `td_receive` returns on its own within a second, so the flag is seen quickly.
+    Waiting matters more than asking: the point is that the thread is OUT of the
+    native library before the process ends.
+    """
+    global _reader
+    thread = _reader
+    _reader_stop.set()
+    if thread is None or not thread.is_alive():
+        _reader = None
+        return True
+    thread.join(timeout)
+    stopped = not thread.is_alive()
+    if stopped:
+        _reader = None
+    return stopped
+
+
+def _stop_reader_at_exit() -> None:  # pragma: no cover - runs at interpreter exit
+    stop_reader()
+
+
+# Registered once, at import. A process that exits with a client still open -
+# a crash, a Ctrl+C, a test session - must not leave the daemon thread to be
+# killed inside a native call.
+atexit.register(_stop_reader_at_exit)
 
 
 class TDLibClient:
