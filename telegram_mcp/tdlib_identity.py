@@ -40,7 +40,19 @@ from typing import Optional
 
 from telegram_mcp.owner_only import restrict_to_owner_strict, verify_owner_only
 from telegram_mcp.safe_log import log_event
-from telegram_mcp.tdlib import database_dir_for
+from telegram_mcp import tdlib as _tdlib
+
+
+def database_dir_for(label: str) -> Path:
+    """One account's database directory, resolved through `tdlib` at CALL time.
+
+    Not `from telegram_mcp.tdlib import database_dir_for`. That binds a second
+    name, and a test redirecting the one on `tdlib` left this module writing
+    into the owner's real state directory - which is how a test fixture's user
+    id came to be recorded against a live account and lock it out.
+    """
+    return _tdlib.database_dir_for(label)
+
 
 # One quarantine per login attempt, and no second one on the retry. "Log in
 # again" against a dead authorisation costs a real login every time, and a loop
@@ -92,10 +104,15 @@ def record_identity(label: str, user_id: int) -> None:
     because a note beside it could not be written. The verification itself is
     what protects the caller; this only saves doing it from scratch.
     """
+    directory = database_dir_for(label)
+    if not directory.is_dir():
+        # A binding beside no database says nothing, and CREATING the directory to
+        # hold one is how a stray call writes a tree into the owner's state
+        # directory. Nothing to bind here.
+        return
     path = identity_path(label)
     temporary = path.with_name(path.name + ".tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(
             json.dumps({"user_id": user_id, "label": label, "recorded_at": time.time()}),
             encoding="utf-8",
@@ -171,6 +188,32 @@ def quarantine_path(label: str, now: Optional[float] = None) -> Path:
     return database_dir_for(label).with_name(f"{label}.quarantined-{stamp}")
 
 
+# How long a rename waits for the previous holder to let go. TDLib answers `close`
+# and THEN finishes its checkpoint on its own thread, so on Windows - where a
+# directory with an open handle cannot be renamed - a quarantine issued right
+# after a clean close fails perhaps half the time. Measured against a live 40 MB
+# database: the same close reported clean, and the rename succeeded on one run
+# and returned WinError 5 on the next.
+#
+# This is a readiness condition, not a guess about timing: the thing being waited
+# for is the rename itself succeeding, and the loop stops the moment it does.
+_RELEASE_DEADLINE_SECONDS = 5.0
+_RELEASE_POLL_SECONDS = 0.1
+
+
+def _rename_when_released(source: Path, target: Path) -> Optional[OSError]:
+    """Rename once the last holder lets go. Returns the final error, or ``None``."""
+    deadline = time.monotonic() + _RELEASE_DEADLINE_SECONDS
+    while True:
+        try:
+            os.replace(source, target)
+            return None
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                return error
+            time.sleep(_RELEASE_POLL_SECONDS)
+
+
 def quarantine_database(label: str, why: str) -> Path:
     """Move a dead database aside. Never delete it.
 
@@ -197,13 +240,13 @@ def quarantine_database(label: str, why: str) -> Path:
     while target.exists():
         target = target.with_name(f"{target.name}-{suffix}")
         suffix += 1
-    try:
-        os.replace(source, target)
-    except OSError as error:
+    error = _rename_when_released(source, target)
+    if error is not None:
         raise QuarantineFailed(
-            f"could not move {source} aside: {error}. Nothing was deleted. On Windows this "
-            "usually means the TDLib client is still open on it; close the server and try "
-            "again."
+            f"could not move {source} aside after {_RELEASE_DEADLINE_SECONDS:.0f}s: {error}. "
+            "Nothing was deleted. On Windows this means something still holds the database "
+            "open - another instance of this server, or a file browser sitting in the "
+            "directory. Close it and try again."
         ) from error
     log_event(
         logging.WARNING,

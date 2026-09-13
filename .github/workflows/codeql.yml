@@ -1,0 +1,63 @@
+# Static security analysis, which this repository had none of.
+#
+# The other scanners here answer different questions: `secret-scan.yml` looks for
+# credential SHAPES in the tree and in history, `Dependency review` looks at what
+# is pulled in. Neither reads the code. CodeQL does - taint from an argument to a
+# sink, a path built from caller-supplied text, a command line assembled by
+# string - which is most of what this server does for a living: it resolves paths
+# inside allowed roots, spawns ffmpeg and a native decoder, and hands
+# model-supplied ids to Telegram.
+#
+# Why `manual` and not `autobuild`: Python needs no build, and `autobuild` on a
+# project whose dependencies come from a lockfile only invites the analysis to
+# resolve something. The extraction is over the source as committed.
+name: CodeQL
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # A dependency-free scanner still gets new queries. Weekly, off-peak, so a
+    # rule added upstream reaches this repository without waiting for a push.
+    - cron: "27 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyse Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # The findings go to the repository's security tab, which needs write.
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          build-mode: none
+          # security-extended over the default: this is a credential-handling,
+          # subprocess-spawning, path-resolving server, and the default suite
+          # leaves out most of the path and command-injection queries.
+          queries: security-extended
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:python"
