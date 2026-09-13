@@ -18,6 +18,7 @@ invisible.
 """
 
 import pytest
+from telethon import utils
 from telethon.tl import functions, types
 
 from telegram_mcp.tools import folders as folders_mod
@@ -73,10 +74,18 @@ class Recorder:
         self.calls.append(("forward_messages", to_entity, ids, from_entity))
 
     async def get_messages(self, entity, ids=None):
-        # `_album_batch` asks for the anchor to decide whether the id belongs to
-        # an album. `grouped_id=None` means a lone message, which is this case.
+        # Two callers with two shapes. `_album_batch` asks for ONE anchor id and
+        # reads `grouped_id`; `grouped_id=None` means a lone message, which is
+        # this case. `_ids_that_live_here` asks for a LIST and reads each
+        # message's `peer_id` - outside a channel an id is account-global, so
+        # that is how a bulk delete proves the ids belong to the chat named.
+        # Answering both with one Message left the preflight zipping a list
+        # against a single object.
         self.calls.append(("get_messages", entity, ids))
-        return types.Message(id=ids if isinstance(ids, int) else 0, peer_id=None, message="")
+        peer = utils.get_peer(entity)
+        if isinstance(ids, list):
+            return [types.Message(id=i, peer_id=peer, message="") for i in ids]
+        return types.Message(id=ids if isinstance(ids, int) else 0, peer_id=peer, message="")
 
     async def get_me(self, input_peer=False):
         return types.InputPeerUser(user_id=1, access_hash=0)
