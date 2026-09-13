@@ -27,8 +27,10 @@ from telegram_mcp import tdlib, tdlib_identity as identity
 @pytest.fixture(autouse=True)
 def _state(monkeypatch, tmp_path):
     """Every database under a directory this test owns."""
+    # ONE seam: `tdlib_identity.database_dir_for` calls through to `tdlib` at call
+    # time, so redirecting the owner is enough - and is the only redirection that
+    # actually protects the owner's real state directory.
     monkeypatch.setattr(tdlib, "database_dir_for", lambda label: tmp_path / "tdlib" / label)
-    monkeypatch.setattr(identity, "database_dir_for", lambda label: tmp_path / "tdlib" / label)
     return tmp_path
 
 
@@ -187,8 +189,10 @@ def test_a_locked_database_is_reported_not_silently_left(_state, monkeypatch):
         raise OSError("the directory is open in another process")
 
     monkeypatch.setattr(identity.os, "replace", _refuse)
+    monkeypatch.setattr(identity, "_RELEASE_DEADLINE_SECONDS", 0.01)
+    monkeypatch.setattr(identity, "_RELEASE_POLL_SECONDS", 0.001)
 
-    with pytest.raises(identity.QuarantineFailed, match="still open"):
+    with pytest.raises(identity.QuarantineFailed, match="still holds the database open"):
         identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
 
     assert identity.database_dir_for("work").exists(), "it was destroyed after all"
@@ -354,3 +358,73 @@ def test_the_cached_client_path_asks_too(_state, monkeypatch):
 
     assert wrong.closed == 1, "the wrong account's client was cached or left open"
     assert "work" not in reg._by_account
+
+
+def test_the_real_state_directory_is_never_written_to_by_accident(tmp_path, monkeypatch):
+    """This one is not hypothetical.
+
+    `tdlib_identity` used to `from telegram_mcp.tdlib import database_dir_for`,
+    which binds a SECOND name. A test that redirected `tdlib.database_dir_for`
+    therefore left this module resolving the real path, and a fixture's
+    `user_id: 7` was recorded against two live TDLib databases under
+    `~/.local/state/telegram-mcp/tdlib` - locking one of them out with an
+    IdentityMismatch until the file was removed by hand.
+
+    Two guards, because either alone was enough to prevent it: the seam is the
+    owning module's, and a binding is never written where there is no database.
+    """
+    monkeypatch.setattr(tdlib, "database_dir_for", lambda label: tmp_path / "redirected" / label)
+
+    assert identity.database_dir_for("work") == tmp_path / "redirected" / "work"
+
+    identity.record_identity("work", 7)
+
+    assert not (
+        tmp_path / "redirected"
+    ).exists(), "recording a binding created a database directory that did not exist"
+    assert identity.read_identity("work") is None
+
+
+def test_a_rename_waits_for_the_previous_holder_to_let_go(_state, monkeypatch):
+    """TDLib answers `close` and THEN finishes its checkpoint on its own thread.
+
+    Measured against a live 40 MB database: `close_all()` reported clean, and the
+    quarantine rename that followed succeeded on one run and returned WinError 5
+    on the next - telling the operator to close a server that had already closed.
+    So the rename waits for the handle to go, bounded, and the thing it waits on
+    is the rename itself succeeding rather than a guessed interval.
+    """
+    _database(_state, "work")
+    attempts = []
+    real = identity.os.replace
+
+    def _busy_at_first(src, dst):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise PermissionError(13, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(identity.os, "replace", _busy_at_first)
+    monkeypatch.setattr(identity, "_RELEASE_POLL_SECONDS", 0.001)
+
+    kept = identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
+
+    assert len(attempts) == 3, "it gave up on the first refusal"
+    assert (kept / "td.binlog").exists()
+
+
+def test_a_holder_that_never_lets_go_is_still_reported(_state, monkeypatch):
+    """Bounded, so a directory genuinely held open fails rather than hanging."""
+    _database(_state, "work")
+
+    def _always_busy(src, dst):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(identity.os, "replace", _always_busy)
+    monkeypatch.setattr(identity, "_RELEASE_DEADLINE_SECONDS", 0.01)
+    monkeypatch.setattr(identity, "_RELEASE_POLL_SECONDS", 0.001)
+
+    with pytest.raises(identity.QuarantineFailed, match="still holds the database open"):
+        identity.quarantine_database("work", why="AUTH_KEY_UNREGISTERED")
+
+    assert identity.database_dir_for("work").exists(), "it was destroyed after all"
