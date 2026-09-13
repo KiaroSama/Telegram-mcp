@@ -79,9 +79,12 @@ def test_a_reload_runs_the_same_duplicate_check(monkeypatch, tmp_path):
     path.write_text("TELEGRAM_SESSION_STRING_ONE=s\n", encoding="utf-8")
     from telegram_mcp import account_config as cfg
 
+    from telegram_mcp import account_snapshot as snapshot
+
     monkeypatch.setattr(cfg, "_env_file", lambda: str(path))
     monkeypatch.setattr(conn, "_env_file", lambda: str(path))
-    monkeypatch.setattr(cfg, "_EXTERNAL_ACCOUNT_VARS", {})
+    monkeypatch.setattr(snapshot, "PROCESS_ACCOUNT_VARS", {})
+    monkeypatch.setattr(conn, "read_snapshot", lambda p=None: snapshot.read_snapshot(str(path)))
     monkeypatch.setattr(conn, "clients", {"one": _Client("kept")})
     monkeypatch.setattr(conn, "_env_stamp", ())
     monkeypatch.setattr(conn, "_env_digests", {"TELEGRAM_SESSION_STRING_ONE": "old"})
@@ -136,10 +139,14 @@ async def test_a_failed_admission_stays_pending_and_raises(monkeypatch):
     client = _Client("identity")
     mod.mark_awaiting_admission({"fresh": client})
 
-    async def _refuse(label, cl, grace_seconds=None):
-        raise OSError("the lock file could not be opened")
+    class _Refusing:
+        def __init__(self, identity):
+            pass
 
-    monkeypatch.setattr(mod, "claim_session", _refuse)
+        def acquire(self, grace_seconds=None):
+            raise OSError("the lock file could not be opened")
+
+    monkeypatch.setattr(mod, "SessionLock", _Refusing)
 
     with pytest.raises(OSError):
         await mod.admit_if_pending(client)
@@ -154,8 +161,10 @@ def test_retiring_a_label_releases_what_it_held():
         def release(self):
             released.append(True)
 
-    mod.session_locks["gone"] = _Lock()
-    mod._awaiting_admission["gone"] = _Client("x")
+    lock = _Lock()
+    client = _Client("x")
+    mod._publish("gone", client, lock, "x")
+    mod._awaiting_admission["gone"] = client
 
     mod.forget("gone")
 
@@ -179,9 +188,12 @@ def _env_pointing_at(monkeypatch, tmp_path, text):
     path.write_text(text, encoding="utf-8")
     from telegram_mcp import account_config as cfg
 
+    from telegram_mcp import account_snapshot as snapshot
+
     monkeypatch.setattr(cfg, "_env_file", lambda: str(path))
     monkeypatch.setattr(conn, "_env_file", lambda: str(path))
-    monkeypatch.setattr(cfg, "_EXTERNAL_ACCOUNT_VARS", {})
+    monkeypatch.setattr(snapshot, "PROCESS_ACCOUNT_VARS", {})
+    monkeypatch.setattr(conn, "read_snapshot", lambda p=None: snapshot.read_snapshot(str(path)))
     monkeypatch.setattr(conn, "_env_stamp", ())
     return path
 
