@@ -19,6 +19,7 @@ from telethon.errors import AuthKeyDuplicatedError, RPCError
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import StartupMessage
+from telegram_mcp import admission as _admission
 
 _last_conn_verified: dict[int, float] = {}
 _RECONNECT_LOCKS: dict[int, asyncio.Lock] = {}
@@ -127,6 +128,10 @@ async def ensure_connected(cl: TelegramClient = None):
         from telegram_mcp.connection import get_client
 
         cl = get_client()
+
+    # The first place inside the event loop that a hot-added client is touched,
+    # so it is where a reload's client finally takes its session lock.
+    await _admission.admit_if_pending(cl)
 
     key = id(cl)
 
