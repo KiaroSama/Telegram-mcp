@@ -346,10 +346,16 @@ def test_the_cached_client_path_asks_too(_state, monkeypatch):
 
     from telegram_mcp import tdlib_registry as reg
 
+    from telegram_mcp import connection as conn
+
     _database(_state, "work")
     identity.record_identity("work", 111)
     monkeypatch.setattr(reg, "_by_account", {})
+    monkeypatch.setattr(reg, "_verified_against", {})
     monkeypatch.setattr(reg, "_by_account_lock", _asyncio.Lock())
+    # The label now names user 111 on the Telethon side; the database is 222.
+    monkeypatch.setattr(conn, "clients", {"work": _Telethon(111)})
+    monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
     wrong = _StartsReady(222)
     monkeypatch.setattr(tdlib, "TDLibClient", lambda account: wrong)
 
