@@ -571,11 +571,16 @@ class _StubClient:
 
 
 @pytest.fixture
-def stub(monkeypatch):
+def stub(monkeypatch, tmp_path):
     def _make(start_state, states=()):
         client = _StubClient(states, start_state)
         monkeypatch.setattr(tdlib, "TDLibClient", lambda label, **kw: client)
         monkeypatch.setattr(tdlib, "account_label", lambda account: account)
+        # Not optional. A login that reaches Ready records whose database it is,
+        # and without this the fixture's user id was written into the OWNER's real
+        # `~/.local/state/telegram-mcp/tdlib`, locking a live account out with an
+        # IdentityMismatch until the file was removed by hand.
+        monkeypatch.setattr(tdlib, "database_dir_for", lambda label: tmp_path / "tdlib" / label)
         return client
 
     return _make
