@@ -42,6 +42,13 @@ re-resolved into something nobody reviewed:
 uv lock
 ```
 
+**Adding or removing a test FILE means updating `.github/expected-suites.txt`** in the
+same commit. It holds one integer — how many `tests/test_*.py` this repository tracks —
+and it is what stops a suite being deleted everywhere at once without anyone noticing:
+every leg then agrees on the smaller number and CI is green. Adding tests to an existing
+file changes nothing. A tracked file that collects no case at all also fails, so a broken
+import cannot make a suite disappear quietly either.
+
 **Every CI leg must collect the same number of cases.** A dropped test file is identical
 to success in every other number, so the six legs are compared against each other rather
 than against a stored baseline. SKIPPING differs between them by design - the Windows leg

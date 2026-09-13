@@ -198,3 +198,107 @@ def test_nothing_is_emitted_for_a_report_that_could_not_be_read(tmp_path):
 
     assert ci_record.main(["--junit", str(broken), "--emit", str(tmp_path / "r/one.json")]) == 1
     assert not (tmp_path / "r/one.json").exists()
+
+
+def test_the_declared_suite_count_matches_what_git_tracks(tmp_path, capsys):
+    """The half cross-leg agreement cannot reach: a suite deleted on EVERY leg.
+    All of them then collect the same smaller number and agree perfectly."""
+    declared = tmp_path / "expected.txt"
+    declared.write_text("# a comment\n145\n", encoding="utf-8")
+
+    lines, failed = ci_record.check_suite_count(declared)
+
+    real = len(ci_record.tracked_suites())
+    assert failed is (real != 145)
+    assert str(real) in " ".join(lines)
+
+
+def test_an_undeclared_removal_fails_and_says_what_to_do(tmp_path):
+    declared = tmp_path / "expected.txt"
+    declared.write_text(str(len(ci_record.tracked_suites()) + 3), encoding="utf-8")
+
+    lines, failed = ci_record.check_suite_count(declared)
+
+    assert failed
+    said = " ".join(lines)
+    assert "3 were removed" in said and "SAME commit" in said
+
+
+def test_an_undeclared_addition_also_fails(tmp_path):
+    """Both directions: a file added without declaring it means the number stops
+    describing the repository, and then it stops catching a removal too."""
+    declared = tmp_path / "expected.txt"
+    declared.write_text(str(len(ci_record.tracked_suites()) - 2), encoding="utf-8")
+
+    lines, failed = ci_record.check_suite_count(declared)
+
+    assert failed and "2 were added" in " ".join(lines)
+
+
+def test_a_declaration_with_no_number_is_an_error(tmp_path):
+    declared = tmp_path / "expected.txt"
+    declared.write_text("# only comments\n", encoding="utf-8")
+
+    lines, failed = ci_record.check_suite_count(declared)
+
+    assert failed and "could not check" in " ".join(lines)
+
+
+def test_the_repository_declaration_is_current():
+    """The committed file is only useful while it is true."""
+    declared = Path(__file__).resolve().parents[1] / ".github" / "expected-suites.txt"
+
+    _lines, failed = ci_record.check_suite_count(declared)
+
+    assert not failed, "`.github/expected-suites.txt` no longer matches the tracked suites"
+
+
+def test_a_tracked_suite_that_collected_nothing_is_named(tmp_path):
+    """Still on disk, still tracked, collecting nothing - a bad import or a
+    renamed class. Invisible to every count, because it was never counted."""
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        '<testsuites><testsuite name="pytest" tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tests.test_alpha" name="one"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+    quiet = ci_record.silent_suites(report, ["tests.test_alpha", "tests.test_beta"])
+
+    assert quiet == ["tests.test_beta"]
+
+
+def test_every_suite_speaking_leaves_nothing_quiet(tmp_path):
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        '<testsuites><testsuite name="pytest" tests="2" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tests.test_alpha" name="one"/>'
+        '<testcase classname="tests.test_beta" name="two"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+    assert ci_record.silent_suites(report, ["tests.test_alpha", "tests.test_beta"]) == []
+
+
+def test_the_tracked_list_comes_from_git_and_is_never_empty():
+    tracked = ci_record.tracked_suites()
+
+    assert "tests.test_ci_record" in tracked
+    assert all(name.startswith("tests.test_") for name in tracked)
+
+
+def test_a_partial_report_is_not_accused_of_silent_suites(tmp_path, capsys):
+    """`pytest tests/test_one.py` legitimately mentions one file. Calling that
+    144 silent suites is noise, and noise is how a real one gets scrolled past."""
+    report = _junit(tmp_path / "junit.xml", tests=17)
+
+    assert ci_record.main(["--junit", str(report)]) == 0
+    assert "contributed no case" not in capsys.readouterr().out
+
+
+def test_a_whole_suite_report_missing_a_file_is_accused(tmp_path, capsys):
+    """With --all-suites the same report IS a claim about every tracked file."""
+    report = _junit(tmp_path / "junit.xml", tests=17)
+
+    assert ci_record.main(["--junit", str(report), "--all-suites"]) == 1
+    assert "contributed no case" in capsys.readouterr().out

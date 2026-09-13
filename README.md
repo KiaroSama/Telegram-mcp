@@ -984,6 +984,19 @@ record what actually happened: interpreter, platform, commit, `uv.lock` digest, 
 case and skip counts out of the JUnit report — a leg that collected nothing fails there
 rather than passing quietly.
 
+**A suite cannot leave quietly.** Three checks, because each sees a case the others
+cannot. The legs must agree with each other, which catches a suite lost on ONE of them.
+The count of tracked `tests/test_*.py` files is committed in
+`.github/expected-suites.txt`, which catches one deleted on ALL of them — every leg then
+agrees perfectly on the smaller number and the run is green. And every tracked file must
+contribute at least one collected case, which catches a file still on disk and still
+tracked that silently collects nothing: a bad import, a renamed class, a conftest filter.
+That last one is invisible to both counts, because it was never counted to begin with.
+
+Adding tests to an existing file touches none of them. Adding or removing a FILE means
+updating that integer in the same commit — which is the only thing that separates a suite
+someone meant to drop from one that was lost.
+
 **The legs must agree on how many cases exist.** A dropped test file is identical to
 success in every number except the collected count: nothing goes red, the total is simply
 short, and one worker failing to start reads exactly like a clean run. Every leg runs the

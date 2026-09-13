@@ -133,6 +133,7 @@ jobs:
           --require "${{ matrix.python-version }}"
           --junit "junit-linux-py${{ matrix.python-version }}.xml"
           --emit "cases/cases-linux-py${{ matrix.python-version }}.json"
+          --all-suites
 
       - name: Upload this leg's case record
         if: always()
@@ -229,6 +230,7 @@ jobs:
           --label "lottie-${{ matrix.os }}" --require "3.11"
           --junit "junit-lottie-${{ matrix.os }}.xml"
           --emit "cases/cases-lottie-${{ matrix.os }}.json"
+          --all-suites
 
       - name: Upload this leg's case record
         if: always()
@@ -314,8 +316,13 @@ jobs:
           path: case-records
           merge-multiple: true
 
-      - name: Refuse a run whose legs disagree on what exists
+      # Two questions, one step. `--compare`: did the legs agree with each other
+      # (a suite lost on ONE leg). `--suites`: is the number of tracked suites
+      # still the declared one (a suite deleted on ALL of them, where every leg
+      # agrees perfectly on the smaller number and the run is green).
+      - name: Refuse a run whose legs disagree, or an undeclared suite removal
         run: python scripts/ci_record.py --compare case-records
+          --suites .github/expected-suites.txt
 
   # The floor, applied once, to everything that ran.
   #
