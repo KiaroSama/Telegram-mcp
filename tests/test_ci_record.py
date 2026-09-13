@@ -302,3 +302,30 @@ def test_a_whole_suite_report_missing_a_file_is_accused(tmp_path, capsys):
 
     assert ci_record.main(["--junit", str(report), "--all-suites"]) == 1
     assert "contributed no case" in capsys.readouterr().out
+
+
+def test_a_suite_whose_tests_live_in_classes_counts_as_speaking(tmp_path):
+    """pytest reports `module.Class` for a method. Matching the whole string
+    called `tests/test_sanitize.py` silent on the first CI run, with 34 passing
+    tests in it - a false positive is how a real finding gets scrolled past."""
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        '<testsuites><testsuite name="pytest" tests="2" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tests.test_sanitize.TestSanitizeName" name="one"/>'
+        '<testcase classname="tests.test_plain" name="two"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+    assert ci_record.silent_suites(report, ["tests.test_sanitize", "tests.test_plain"]) == []
+
+
+def test_a_prefix_is_not_a_match(tmp_path):
+    """`tests.test_alpha_extra` speaking says nothing about `tests.test_alpha`."""
+    report = tmp_path / "junit.xml"
+    report.write_text(
+        '<testsuites><testsuite name="pytest" tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="tests.test_alpha_extra" name="one"/></testsuite></testsuites>',
+        encoding="utf-8",
+    )
+
+    assert ci_record.silent_suites(report, ["tests.test_alpha"]) == ["tests.test_alpha"]
