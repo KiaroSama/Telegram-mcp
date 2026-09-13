@@ -138,6 +138,7 @@ source = [
     "sanitize",
     "session_string_generator",
     "telegram_mcp.account_config",
+    "telegram_mcp.admission",
     "telegram_mcp.alias_store",
     "telegram_mcp.aliases",
     "telegram_mcp.button_view",
