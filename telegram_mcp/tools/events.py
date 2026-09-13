@@ -129,6 +129,17 @@ def incoming_feed_state() -> Dict[str, Any]:
     )
 
 
+# How long the consumer waits on an idle feed before running the retention pass
+# anyway. Age enforcement that only happens when something is written never
+# happens on the server that most needs it.
+_IDLE_MAINTENANCE_SECONDS = 300.0
+
+# How long to wait before retrying a feed that refused a write. Long enough not
+# to spin on a rename that keeps failing, short enough that a fixed permission
+# is picked up without a restart.
+_WRITE_REFUSED_BACKOFF_SECONDS = 30.0
+
+
 async def _feed_loop(settle_ms: int) -> None:
     """Consume settled bursts and append them as JSONL lines to the feed file."""
     settle = settle_ms / 1000.0
@@ -154,9 +165,23 @@ async def _feed_loop(settle_ms: int) -> None:
                 await asyncio.sleep(soonest_remaining)
             else:
                 ev.clear()
-                await ev.wait()
+                # BOUNDED, so retention still runs on a server that is simply
+                # quiet. Enforcing age only on append and on a status call meant
+                # an idle process kept whatever the feed already held for as long
+                # as nothing happened - which is exactly when nothing does.
+                try:
+                    await asyncio.wait_for(ev.wait(), timeout=_IDLE_MAINTENANCE_SECONDS)
+                except (asyncio.TimeoutError, TimeoutError):
+                    store.apply_retention()
         except asyncio.CancelledError:
             raise
+        except store.FeedWriteRefused as refused:
+            # Backpressure, not a fault to shrug at: the burst is still pending
+            # and will be written when the feed can take it. Named separately
+            # from a generic loop error because the operator has something to
+            # DO about this one.
+            log_event(logging.ERROR, "the event feed cannot accept writes", error=refused)
+            await asyncio.sleep(_WRITE_REFUSED_BACKOFF_SECONDS)
         except Exception as error:
             log_event(logging.ERROR, "error in the incoming feed loop", error=error)
             await asyncio.sleep(1.0)
@@ -182,19 +207,33 @@ def _maybe_autostart_feed() -> None:
         lifecycle.start_now(_feed_loop)
 
 
-async def _on_new_incoming(account: str, event) -> None:
+async def _on_new_incoming(account: str, client, event) -> None:
     """Record incoming private (non-bot, non-self) messages for the debounce tools.
 
     ``account`` is bound at registration rather than read off the event: Telethon
     hands the handler an event, not the client it arrived on, and every client was
     given the same unbound function - so nothing downstream could tell two logins
     apart.
+
+    ``client`` is bound for a second reason, and it is about time rather than
+    identity. Detaching a handler stops NEW events; it cannot reach into one that
+    is already suspended at the `get_sender()` await below. That call goes to the
+    network, so the gap is a real one - long enough for a reload to replace this
+    account - and on the far side the old handler went on writing pending state
+    under a label that now means a different login. The generation is re-checked
+    after every await for exactly that reason.
     """
     try:
         if not event.is_private:
             return
+        if not _still_current(account, client):
+            return
         sender = await event.get_sender()
         if sender is None:
+            return
+        # AFTER the await, not only before it: what is being guarded against is
+        # the replacement that happened while this was suspended.
+        if not _still_current(account, client):
             return
         if getattr(sender, "bot", False) or getattr(sender, "is_self", False):
             return
@@ -259,6 +298,16 @@ def _forget_pending(label: str) -> None:
         store._pending_msgs.pop(key, None)
 
 
+def _still_current(account: str, client) -> bool:
+    """Whether this handler's client is still what its label means.
+
+    Object identity IS the generation: a re-login or a reload replaces the
+    object, and a handler holding the old one has nothing to say about the new
+    account's messages.
+    """
+    return clients.get(account) is client
+
+
 def register_incoming_handlers(labels=None) -> None:
     """Attach the incoming-message handler to every configured client.
 
@@ -282,8 +331,10 @@ def register_incoming_handlers(labels=None) -> None:
             continue
         _detach_incoming_handler(label)
         # partial, not a closure over the loop variable: a closure would
-        # capture the NAME and every handler would report the last label.
-        callback = partial(_on_new_incoming, label)
+        # capture the NAME and every handler would report the last label. The
+        # CLIENT is bound for the same reason, so a suspended handler can tell
+        # whether the generation it belongs to is still the current one.
+        callback = partial(_on_new_incoming, label, cl)
         try:
             cl.add_event_handler(callback, _events.NewMessage(incoming=True))
         except Exception as error:
