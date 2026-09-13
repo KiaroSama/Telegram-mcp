@@ -112,3 +112,26 @@ async def test_closing_a_client_twice_is_harmless(own_database):
     await asyncio.wait_for(client.close(timeout=5), timeout=20)
 
     assert client._client_id is None
+
+
+def test_the_receive_thread_leaves_the_native_library_when_asked():
+    """The defect this file found. The reader is a DAEMON thread blocked inside
+    `td_receive`, and a daemon thread is killed where it stands at interpreter
+    shutdown - which, inside TDLib's C++ runtime, ends the process with
+    `terminate called without an active exception` and exit 250.
+
+    Nothing had started a real client under pytest before, so a whole test
+    session could pass and then abort on its way out. CI reported `2950 passed`
+    and exit 250 in the same job.
+    """
+    tdlib._ensure_reader()
+    assert tdlib._reader is not None and tdlib._reader.is_alive()
+
+    assert tdlib.stop_reader(timeout=5) is True, "the receive thread would not leave TDLib"
+    assert tdlib._reader is None
+
+
+def test_stopping_a_reader_that_never_started_is_harmless():
+    tdlib.stop_reader(timeout=1)
+
+    assert tdlib.stop_reader(timeout=1) is True
