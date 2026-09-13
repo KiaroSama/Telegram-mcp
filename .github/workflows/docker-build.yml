@@ -42,6 +42,10 @@ jobs:
     name: State Survives A Container Replacement
     runs-on: ubuntu-latest
     needs: docker_build
+    env:
+      # `settings` reads these at import time. They are placeholders and nothing
+      # in this job connects to Telegram: the subject is where files land.
+      CREDS: "-e TELEGRAM_API_ID=12345 -e TELEGRAM_API_HASH=placeholder"
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
@@ -52,7 +56,9 @@ jobs:
       - name: The image resolves its state under the mount
         run: |
           set -euo pipefail
-          resolved=$(docker run --rm --entrypoint python telegram-mcp:persistence -c             "from telegram_mcp.settings import state_dir; print(state_dir())")
+          # Placeholders: `settings` requires them at IMPORT, and nothing here
+          # connects to anything. What is being read is a path, not an account.
+          resolved=$(docker run --rm $CREDS --entrypoint python telegram-mcp:persistence -c             "from telegram_mcp.settings import state_dir; print(state_dir())")
           echo "state_dir() -> $resolved"
           case "$resolved" in
             /data/*) ;;
@@ -96,7 +102,7 @@ jobs:
       - name: A deployment that overrides the location still wins
         run: |
           set -euo pipefail
-          resolved=$(docker run --rm -e XDG_STATE_HOME=/data/elsewhere --entrypoint python             telegram-mcp:persistence -c "from telegram_mcp.settings import state_dir; print(state_dir())")
+          resolved=$(docker run --rm $CREDS -e XDG_STATE_HOME=/data/elsewhere --entrypoint python             telegram-mcp:persistence -c "from telegram_mcp.settings import state_dir; print(state_dir())")
           echo "overridden state_dir() -> $resolved"
           test "$resolved" = "/data/elsewhere/telegram-mcp"
 
