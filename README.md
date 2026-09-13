@@ -902,6 +902,7 @@ telegram_mcp/dialog_warm.py   # warming the entity cache once, with shared waite
 telegram_mcp/errors.py        # error classes, refusal wording, id validation
 telegram_mcp/connection.py    # the session pool, and which account a call routes to
 telegram_mcp/reconnect.py     # whether the socket still answers, and bringing it back
+telegram_mcp/account_snapshot.py # one reading of the configuration, used for every decision
 telegram_mcp/account_config.py # what the .env says about accounts, and what changed
 telegram_mcp/admission.py     # what a client must satisfy before this process serves from it
 telegram_mcp/retirement.py    # closing a client this process dropped, and waiting for it
