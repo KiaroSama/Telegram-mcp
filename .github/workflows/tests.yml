@@ -141,6 +141,7 @@ jobs:
         with:
           name: case-record-linux-py${{ matrix.python-version }}
           path: cases/cases-linux-py${{ matrix.python-version }}.json
+          if-no-files-found: error
 
       - name: Upload this leg's coverage data
         uses: actions/upload-artifact@v7
@@ -152,6 +153,10 @@ jobs:
           # The data file starts with a dot, and v4 drops hidden files unless
           # told otherwise - which would leave the combine step short a leg.
           include-hidden-files: true
+          # An upload that found nothing is a leg that will be missing from
+          # the comparison below, and the comparison cannot tell that from a
+          # leg that never ran.
+          if-no-files-found: error
 
   # The job above installs the base package, where the .tgs tests skip - which is
   # also the proof that the base install works without the optional renderer. This
@@ -238,6 +243,7 @@ jobs:
         with:
           name: case-record-lottie-${{ matrix.os }}
           path: cases/cases-lottie-${{ matrix.os }}.json
+          if-no-files-found: error
 
       - name: Upload this leg's coverage data
         uses: actions/upload-artifact@v7
@@ -245,6 +251,10 @@ jobs:
           name: coverage-data-lottie-${{ matrix.os }}
           path: .coverage.lottie-${{ matrix.os }}
           include-hidden-files: true
+          # An upload that found nothing is a leg that will be missing from
+          # the comparison below, and the comparison cannot tell that from a
+          # leg that never ran.
+          if-no-files-found: error
 
   # The launchers are PowerShell and Windows-only, and nothing ran their tests
   # until now - which is how `tests/test_update_menu.ps1` was able to outlive the
@@ -285,6 +295,51 @@ jobs:
           if ($failed.Count -gt 0) { throw "PowerShell suites failed: $($failed -join '; ')" }
           Write-Host "All $($suites.Count) PowerShell suite(s) passed."
 
+  # A locked dependency graph is only as safe as the last time anyone looked at
+  # it. Dependabot proposes upgrades; this asks the separate question of whether
+  # what is pinned RIGHT NOW has a known advisory against it, transitive
+  # dependencies included - which a version bump nobody has merged does not
+  # answer.
+  #
+  # Against the exported lockfile rather than an installed environment, so the
+  # answer is about what this project resolves to and not about whatever else the
+  # runner happens to have. `--no-dev`: a vulnerability in a test-only tool is
+  # worth knowing and is not a vulnerability in what ships.
+  audit:
+    name: Locked Dependencies Have No Known Advisory
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Point uv at the interpreter this job installed
+        shell: bash
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.12.8"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Export exactly what the lockfile resolves to
+        run: uv export --locked --no-dev --no-emit-project --format requirements-txt
+          --output-file locked-production.txt
+
+      # Pinned, like every other tool here: an auditor that changes underneath
+      # the project turns a green run into a claim about a different checker.
+      - name: Refuse a known advisory in the locked graph
+        run: uvx pip-audit==2.9.0 --requirement locked-production.txt --strict --progress-spinner off
+
   # Every leg ran the same suite on the same commit, so they must agree on how
   # many cases exist. A dropped file is identical to success in every other
   # number - nothing goes red, the total is simply short.
@@ -320,8 +375,9 @@ jobs:
       # (a suite lost on ONE leg). `--suites`: is the number of tracked suites
       # still the declared one (a suite deleted on ALL of them, where every leg
       # agrees perfectly on the smaller number and the run is green).
-      - name: Refuse a run whose legs disagree, or an undeclared suite removal
+      - name: Refuse a run missing legs, disagreeing, or dropping a suite
         run: python scripts/ci_record.py --compare case-records
+          --legs .github/expected-legs.txt
           --suites .github/expected-suites.txt
 
   # The floor, applied once, to everything that ran.

@@ -1,0 +1,19 @@
+# The legs the Tests & Coverage workflow must produce, and the interpreter each
+# one is named after. `scripts/ci_record.py --compare` holds the run to exactly
+# this set.
+#
+# It exists because "the legs agree with each other" is only as strong as how
+# many legs there are: two empty records agreed perfectly, and so did two of the
+# six. A run missing four of its legs is not a run that passed.
+#
+# `tests/test_ci_record.py` checks this list against the workflow's own matrix,
+# so the two cannot drift: add a matrix entry without adding it here and that
+# test fails.
+#
+# Format: <label> <expected X.Y>
+py3.11 3.11
+py3.12 3.12
+py3.13 3.13
+py3.14 3.14
+lottie-ubuntu-latest 3.11
+lottie-windows-latest 3.11
