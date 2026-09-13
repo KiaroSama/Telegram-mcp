@@ -376,6 +376,27 @@ async def _main() -> None:
             )
         except Exception:
             pass
+        # TDLib, before the Telethon locks go. It writes secret-chat keys lazily
+        # and a key lost on exit takes its chat's history with it - there is no
+        # way to re-derive one. `close_all` existed for exactly this and nothing
+        # called it, so every run of this server exited without flushing.
+        try:
+            from telegram_mcp.tdlib_registry import close_all as _close_tdlib
+
+            unflushed = await asyncio.wait_for(_close_tdlib(), timeout=_TDLIB_CLOSE_SECONDS)
+            for account, error in unflushed:
+                startup_note(
+                    f"[{account}] TDLib did not close cleanly ({_startup_text(error)}); "
+                    "secret-chat keys written since its last flush may be lost."
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            startup_note(
+                f"TDLib did not finish closing within {_TDLIB_CLOSE_SECONDS:.0f}s; "
+                "exiting anyway. Secret-chat keys written since its last flush may be lost."
+            )
+        except Exception as exc:
+            startup_note(f"Closing TDLib failed: {_startup_text(exc)}")
+
         # A client REPLACED while the server ran is not in `clients` any more:
         # `refresh_accounts` dropped it and its disconnect is still in flight.
         # Releasing its session lock now is what lets a second connection claim
@@ -394,6 +415,12 @@ async def _main() -> None:
         for lock in _session_locks.values():
             lock.release()
         _session_locks.clear()
+
+
+# How long shutdown waits for TDLib to flush and close. Generous, because the
+# cost of cutting it short is unrecoverable: the keys that decrypt a secret
+# chat's history. Bounded all the same - exit must not hang forever.
+_TDLIB_CLOSE_SECONDS: float = 30.0
 
 
 def main() -> None:
