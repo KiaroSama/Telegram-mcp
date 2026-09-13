@@ -33,6 +33,12 @@ services:
     # Optional: uncomment to persist the Telegram session file across container
     # replacements. Only needed if you are NOT using TELEGRAM_SESSION_STRING.
     #
+    # /data holds EVERYTHING that must outlive the container: the Telethon
+    # session file, and - under /data/state, where XDG_STATE_HOME points - the
+    # TDLib databases, the identity note beside each one, any quarantined
+    # database, the alias store and the event feed. Mounting it is what makes
+    # `docker compose up` after a rebuild the same account rather than a new one.
+    #
     # The target is /data, never /app: mounting over /app hides the application
     # itself and the container starts with no code to run. TELEGRAM_SESSION_NAME
     # already points at /data in the image, so this needs no further config.
