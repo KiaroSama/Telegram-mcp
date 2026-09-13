@@ -61,6 +61,25 @@ async def _ids_that_live_here(cl, entity, message_ids):
     return here, missing, elsewhere
 
 
+def _private_only_refusal(chat_id, what: str) -> str:
+    """The one wording, for the one rule, on both entrypoints.
+
+    `revoke=False` asks for a deletion only this account sees. A channel or
+    supergroup has no per-account copy, so there is no such deletion to perform -
+    going ahead removes the message for every subscriber while the caller
+    believed they were tidying their own view.
+
+    Single deletion refused this and bulk did not, so the same request was safe
+    one message at a time and a global deletion in a list.
+    """
+    return (
+        f"Refusing to delete {what} from chat {chat_id}: revoke=False asks for a "
+        "deletion only you see, and a channel or supergroup has no per-account "
+        "copy - removing a message there removes it for every subscriber. Pass "
+        "revoke=True to say that is what you mean."
+    )
+
+
 def _wrong_chat_refusal(elsewhere, chat_id):
     shown = ", ".join(str(i) for i in elsewhere[:10])
     more = "" if len(elsewhere) <= 10 else f" (and {len(elsewhere) - 10} more)"
@@ -104,18 +123,33 @@ async def delete_message(
     """
     try:
         cl = get_client(account)
+        await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
         if isinstance(entity, Channel) and not revoke:
-            # Refused BEFORE the call, not silently widened. `revoke=False` asks
-            # for a deletion only this account sees; a channel has no such thing,
-            # and going ahead would remove the post for every subscriber while
-            # the caller believed they were tidying their own view.
-            return (
-                f"Refusing to delete message {message_id} from chat {chat_id}: "
-                "revoke=False asks for a deletion only you see, and a channel has "
-                "no per-account copy - removing it there removes it for every "
-                "subscriber. Pass revoke=True to say that is what you mean."
-            )
+            # Refused BEFORE the call, not silently widened.
+            return _private_only_refusal(chat_id, f"message {message_id}")
+        if not isinstance(entity, Channel):
+            # The SAME preflight bulk runs, and for the same reason: outside a
+            # channel `messages.deleteMessages` carries no peer at all, so an id
+            # copied from another conversation deletes a message THERE while the
+            # caller names this chat - irreversibly, and with no error.
+            #
+            # Single deletion skipped it entirely, so the one-message call was
+            # the dangerous one and the list was the guarded one.
+            here, missing, elsewhere = await _ids_that_live_here(cl, entity, [message_id])
+            if elsewhere:
+                return _wrong_chat_refusal(elsewhere, chat_id)
+            if missing:
+                return (
+                    f"Nothing to delete: message {message_id} is not in chat {chat_id} - "
+                    "it was already deleted, or never existed here."
+                )
+            if not here:
+                return (
+                    f"Refusing to delete message {message_id} from chat {chat_id}: it "
+                    "could not be read back, so which conversation it belongs to is "
+                    "unknown, and outside a channel that decides which message goes."
+                )
         # Telethon's friendly method defaults to revoke=True, and so did this,
         # which made the least alarming-sounding call the most destructive one on
         # offer: an agent tidying its own view took the message out of the
@@ -168,7 +202,6 @@ async def delete_chat_history(
         # value means the method has to be repeated with the same parameters
         # until it answers zero. One call and a "cleared" report was a claim the
         # server had not made -- it had said the opposite.
-        deleted = 0
         offset = None
         passes = 0
         deadline = time.monotonic() + _DELETE_HISTORY_DEADLINE_SECONDS
@@ -196,7 +229,10 @@ async def delete_chat_history(
                 timed_out = True
                 break
             passes += 1
-            deleted += getattr(result, "pts_count", 0) or 0
+            # NOT `pts_count`. It counts the update events the deletion produced,
+            # which is not a count of messages removed - a synthetic 777 counter
+            # became "777 messages deleted". Telegram does not say how many it
+            # removed, so what is reported below is how far the operation got.
             remaining = getattr(result, "offset", 0) or 0
             if remaining <= 0:
                 offset = 0
@@ -212,7 +248,12 @@ async def delete_chat_history(
 
         scope = "for both parties" if revoke else "for you"
         if offset == 0:
-            return f"Chat {chat_id} history cleared {scope}: {deleted} messages deleted."
+            # No count. Telegram does not report one, and the number that used
+            # to stand here was `pts_count` - update events, not messages.
+            return (
+                f"Chat {chat_id} history cleared {scope} over {passes} pass(es); "
+                "Telegram reports nothing left to delete."
+            )
         if stalled:
             reason = "the server stopped reporting progress"
         elif timed_out:
@@ -226,9 +267,11 @@ async def delete_chat_history(
         # the honest form of "Telegram never told us".
         left = "unknown" if offset is None else offset
         return (
-            f"Chat {chat_id} history deletion is INCOMPLETE {scope}: {deleted} messages "
-            f"deleted over {passes} pass(es), and Telegram still reports offset={left} "
-            f"left because {reason}. Run delete_chat_history again to continue."
+            f"Chat {chat_id} history deletion is INCOMPLETE {scope} after {passes} "
+            f"pass(es): Telegram still reports offset={left} left because {reason}. "
+            "Messages WERE deleted - Telegram does not say how many - so re-read the "
+            "chat rather than assuming nothing happened. Run delete_chat_history "
+            "again to continue."
         )
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
         return "Cannot delete chat history: admin privileges are required."
@@ -281,6 +324,11 @@ async def delete_messages_bulk(
         notes = []
 
         if isinstance(entity, Channel):
+            if not revoke:
+                # The rule single deletion has always applied, now applied here
+                # too. `channels.deleteMessages` has no per-account form, so a
+                # caller asking for one was silently given a global deletion.
+                return _private_only_refusal(chat_id, f"{len(wanted)} message(s)")
             # A channel request carries the peer, so an id from elsewhere simply
             # is not found here - there is nothing to guard against.
             targets = wanted
@@ -299,10 +347,27 @@ async def delete_messages_bulk(
         sent = 0
         for start in range(0, len(targets), _DELETE_CHUNK):
             batch = targets[start : start + _DELETE_CHUNK]
-            if isinstance(entity, Channel):
-                await cl(functions.channels.DeleteMessagesRequest(channel=entity, id=batch))
-            else:
-                await cl(functions.messages.DeleteMessagesRequest(id=batch, revoke=revoke))
+            try:
+                if isinstance(entity, Channel):
+                    await cl(functions.channels.DeleteMessagesRequest(channel=entity, id=batch))
+                else:
+                    await cl(functions.messages.DeleteMessagesRequest(id=batch, revoke=revoke))
+            except Exception as error:
+                # A deletion is irreversible, so a caller who has already lost
+                # 100 messages must be told which ones. Reporting only the
+                # exception left them unable to tell "nothing happened" from
+                # "the first hundred are gone" - and the obvious next move,
+                # running it again, is destructive in the first case.
+                log_and_format_error(
+                    "delete_messages_bulk", error, chat_id=chat_id, message_ids=batch
+                )
+                return (
+                    f"Deletion of {len(targets)} message(s) in chat {chat_id} stopped "
+                    f"part-way: {sent} were accepted and are GONE, {len(batch)} failed "
+                    f"({type(error).__name__}: {error}), and "
+                    f"{len(targets) - sent - len(batch)} were never sent. Re-read the "
+                    "chat before retrying - the accepted ones will not be there."
+                )
             sent += len(batch)
 
         # NOT `pts_count`. That field counts the update events the deletion
