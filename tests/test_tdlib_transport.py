@@ -350,7 +350,14 @@ async def test_a_started_client_is_reused_rather_than_started_again(fake, tmp_pa
     """Starting one opens a database and reconnects. Paying that per tool call
     would also mean several TDLib clients for one account, each with its own
     view of the same secret chats."""
+    from telegram_mcp import connection as conn
+
     monkeypatch.setattr(tdlib_reg, "_by_account", {})
+    monkeypatch.setattr(tdlib_reg, "_verified_against", {})
+    # `secret_client` compares the database against the ACTIVE session, so the
+    # Telethon half of the same label has to exist for the call to mean anything.
+    monkeypatch.setattr(conn, "clients", {"acct": _Session(7)})
+    monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
     starts = []
 
     class Ready(tdlib.TDLibClient):
