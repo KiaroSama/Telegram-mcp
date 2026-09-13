@@ -211,7 +211,17 @@ def _acquire_session(pool: List[str]) -> str:
     except OSError:
         lock_dir = tempfile.gettempdir()
     for idx, session in enumerate(pool):
-        digest = hashlib.sha1(session.encode("utf-8")).hexdigest()[:16]
+        # sha256, matching `singleton.SessionLock`, which derives its own lock
+        # name from a session the same way. Two derivations of one concept using
+        # two algorithms is a decision nobody made; this was the outlier, and it
+        # is the one a security scan objects to.
+        #
+        # The name therefore changes. For one restart an old instance holds the
+        # sha1 name and a new one the sha256 name, so both can claim the same
+        # pool slot - and then `SessionLock`, which is keyed on the session
+        # itself and unchanged, refuses the second. The window costs a failed
+        # start, not a burned auth key.
+        digest = hashlib.sha256(session.encode("utf-8")).hexdigest()[:16]
         lock_path = os.path.join(lock_dir, f"session-{digest}.lock")
         try:
             # "a+", not "w": on Windows the lock covers the first byte, and

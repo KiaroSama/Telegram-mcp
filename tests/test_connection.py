@@ -754,3 +754,27 @@ def test_importing_the_server_raises_no_deprecation_warning_of_our_own():
     assert result.returncode == 0, (
         "importing the server raised a DeprecationWarning as an error:\n" + result.stderr
     )
+
+
+def test_the_two_session_lock_names_are_derived_the_same_way():
+    """`connection._acquire_session` and `singleton.SessionLock` both turn a
+    session into a lock file name, and they used different hashes - sha1 here,
+    sha256 there. Two derivations of one concept diverging is a decision nobody
+    made, and a security scan objects to the weaker half.
+
+    Asserted on the SOURCE of both, because the names live in different
+    directories and no runtime comparison would notice them drifting apart.
+    """
+    import inspect
+
+    from telegram_mcp import singleton
+
+    here = inspect.getsource(connection._acquire_session)
+    there = inspect.getsource(singleton.SessionLock.__init__)
+
+    # The CALL, with its parenthesis - not the word. `connection` explains the
+    # upgrade window in a comment that says "sha1", and a bare substring check
+    # matched that prose instead of the code it was written about.
+    assert "hashlib.sha256(" in here, "the pool lock name is derived with something else"
+    assert "hashlib.sha256(" in there, "the session lock name is derived with something else"
+    assert "hashlib.sha1(" not in here and "hashlib.sha1(" not in there
