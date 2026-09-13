@@ -21,12 +21,22 @@ from telegram_mcp import tdlib_registry as reg
 class _FakeClient:
     """Stands in for a started TDLibClient."""
 
-    def __init__(self, account="acc", state="authorizationStateReady", refuse_close=False):
+    def __init__(
+        self, account="acc", state="authorizationStateReady", refuse_close=False, user_id=7
+    ):
         self.account = account
         self.authorization_state = state
         self._client_id = 1
         self.closed = 0
         self.refuse_close = refuse_close
+        self.user_id = user_id
+
+    async def request(self, obj, timeout=30.0):
+        # `secret_client` checks whose database it is before handing the client
+        # back, and a stand-in that cannot answer that is not standing in for
+        # anything the caller would actually receive.
+        assert obj["@type"] == "getMe"
+        return {"@type": "user", "id": self.user_id}
 
     async def close(self):
         self.closed += 1
@@ -125,7 +135,7 @@ async def test_a_client_that_died_on_its_own_is_not_handed_back(state, monkeypat
     dead = _FakeClient(state=state)
     reg._by_account["acc"] = dead
     fresh = _FakeClient()
-    monkeypatch.setattr(reg, "TDLibClient", lambda account: fresh)
+    monkeypatch.setattr(tdlib, "TDLibClient", lambda account: fresh)
     fresh.start = lambda: _ready()
 
     got = await reg.secret_client("acc")
@@ -157,7 +167,7 @@ async def test_a_start_that_raises_closes_what_it_brought_up(monkeypatch):
         raise ConnectionError("tdlib would not come up")
 
     built.start = _fail
-    monkeypatch.setattr(reg, "TDLibClient", lambda account: built)
+    monkeypatch.setattr(tdlib, "TDLibClient", lambda account: built)
 
     with pytest.raises(ConnectionError):
         await reg.secret_client("acc")
@@ -174,7 +184,7 @@ async def test_a_cancelled_start_also_closes_what_it_brought_up(monkeypatch):
         raise asyncio.CancelledError()
 
     built.start = _cancelled
-    monkeypatch.setattr(reg, "TDLibClient", lambda account: built)
+    monkeypatch.setattr(tdlib, "TDLibClient", lambda account: built)
 
     with pytest.raises(asyncio.CancelledError):
         await reg.secret_client("acc")
@@ -190,7 +200,7 @@ async def test_an_unauthorised_start_is_refused_and_closed(monkeypatch):
         return "authorizationStateWaitPhoneNumber"
 
     built.start = _waiting
-    monkeypatch.setattr(reg, "TDLibClient", lambda account: built)
+    monkeypatch.setattr(tdlib, "TDLibClient", lambda account: built)
 
     with pytest.raises(tdlib.NotSignedIn):
         await reg.secret_client("acc")
@@ -237,5 +247,5 @@ def test_the_server_shutdown_actually_closes_tdlib():
 
     assert "close_all" in shutdown, "the shutdown path still never closes TDLib"
     assert shutdown.index("close_all") < shutdown.index(
-        "lock.release()"
+        "release_all"
     ), "TDLib must be closed before the session locks go"
