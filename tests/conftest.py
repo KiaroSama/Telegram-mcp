@@ -24,6 +24,17 @@ def wire_client(monkeypatch):
     """
 
     def _wire(module, client, *, resolve=None, entity=None, marked_id=None):
+        # `with_account` refreshes before it decides single- or multi-mode, which
+        # it must: the registry only moves when something refreshes it, so a
+        # second account added while the server ran was invisible to the routing
+        # decision. In a test that means the REAL `.env` would be read and the
+        # machine's own accounts published - so the wired client is the whole
+        # registry here, and the reload is a no-op.
+        from telegram_mcp import connection as conn
+
+        monkeypatch.setattr(conn, "refresh_accounts", lambda: [])
+        monkeypatch.setattr(conn, "clients", {"default": client})
+
         async def _resolve_entity(chat_id, cl=None, account=None):
             if resolve is not None:
                 return await resolve(chat_id, cl, account)
