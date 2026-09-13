@@ -33,6 +33,15 @@ uv run black --check .
 uv run flake8 .
 ```
 
+**Touch `pyproject.toml`, re-lock.** CI runs `uv lock --check` and then
+`git diff --exit-code` over the two files, and every other job invokes `uv run --locked`,
+so a manifest the lockfile no longer describes fails the build rather than being quietly
+re-resolved into something nobody reviewed:
+
+```bash
+uv lock
+```
+
 The launchers have their own PowerShell suites, which pytest does not see. On Windows:
 
 ```powershell
