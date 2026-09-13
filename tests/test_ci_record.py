@@ -109,14 +109,24 @@ def test_the_record_reaches_the_step_summary(tmp_path, monkeypatch):
     assert "written-down" in summary.read_text(encoding="utf-8")
 
 
-def _record(directory, name, collected, skipped=0, label=None, python="3.13"):
+def _record(directory, name, collected, skipped=0, label=None, python="3.13.15"):
+    """A complete, believable record - which is now the only kind that counts.
+
+    A bare label and a count is what two empty legs looked like when they agreed
+    with each other, so every field below is required rather than decorative.
+    """
     directory.mkdir(parents=True, exist_ok=True)
     (directory / f"{name}.json").write_text(
         json.dumps(
             {
                 "label": label or name,
                 "python": python,
+                "platform": "Linux",
+                "commit": "abc123def456",
+                "lock": "1a04e5340789",
                 "collected": collected,
+                "failures": 0,
+                "errors": 0,
                 "skipped": skipped,
             }
         ),
@@ -130,7 +140,7 @@ def test_legs_that_agree_on_the_case_count_pass(tmp_path, capsys):
     _record(tmp_path, "lottie-windows", 2834, skipped=23)
 
     assert ci_record.main(["--compare", str(tmp_path)]) == 0
-    assert "every leg collected 2834" in capsys.readouterr().out
+    assert "all collecting 2834 case(s)" in capsys.readouterr().out
 
 
 def test_one_leg_short_by_a_single_file_fails(tmp_path, capsys):
@@ -329,3 +339,175 @@ def test_a_prefix_is_not_a_match(tmp_path):
     )
 
     assert ci_record.silent_suites(report, ["tests.test_alpha"]) == ["tests.test_alpha"]
+
+
+# --- the run must have the legs it is supposed to have -------------------------
+
+LEGS = Path(__file__).resolve().parents[1] / ".github" / "expected-legs.txt"
+
+
+def _leg(directory, label, python="3.13.15", collected=2859, skipped=67, **over):
+    directory.mkdir(parents=True, exist_ok=True)
+    record = {
+        "label": label,
+        "python": python,
+        "platform": "Linux",
+        "commit": "abc123def456",
+        "lock": "1a04e5340789",
+        "collected": collected,
+        "failures": 0,
+        "errors": 0,
+        "skipped": skipped,
+    }
+    record.update(over)
+    (directory / f"{label}.json").write_text(json.dumps(record), encoding="utf-8")
+    return record
+
+
+def _full_set(directory):
+    for label, want in ci_record.expected_legs(LEGS).items():
+        _leg(directory, label, python=f"{want}.9")
+
+
+def test_the_six_expected_legs_pass(tmp_path):
+    _full_set(tmp_path)
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert not failed, lines
+    assert "6 leg(s)" in " ".join(lines)
+
+
+def test_two_of_six_legs_is_not_a_run_that_passed(tmp_path):
+    """They agree with each other perfectly and prove nothing about the four
+    that never reported."""
+    _leg(tmp_path, "py3.11", python="3.11.9")
+    _leg(tmp_path, "py3.13")
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed
+    assert "expected leg(s) produced no record" in " ".join(lines)
+
+
+def test_a_duplicated_label_is_refused(tmp_path):
+    _full_set(tmp_path)
+    (tmp_path / "again.json").write_text(
+        json.dumps(
+            {
+                "label": "py3.13",
+                "python": "3.13.15",
+                "platform": "Linux",
+                "commit": "abc123def456",
+                "lock": "1a04e5340789",
+                "collected": 2859,
+                "failures": 0,
+                "errors": 0,
+                "skipped": 67,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "two records claim the same leg" in " ".join(lines)
+
+
+def test_an_unexpected_leg_is_refused(tmp_path):
+    _full_set(tmp_path)
+    _leg(tmp_path, "py3.99", python="3.99.0")
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "unexpected leg(s)" in " ".join(lines)
+
+
+def test_legs_from_different_commits_are_not_one_run(tmp_path):
+    _full_set(tmp_path)
+    _leg(tmp_path, "py3.13", python="3.13.9", commit="something-else")
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "different commits" in " ".join(lines)
+
+
+def test_legs_from_different_lockfiles_are_not_one_run(tmp_path):
+    _full_set(tmp_path)
+    _leg(tmp_path, "py3.13", python="3.13.9", lock="a-different-lock")
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "different lockfiles" in " ".join(lines)
+
+
+@pytest.mark.parametrize("collected", [0, -5, None, "many", True])
+def test_a_record_without_a_positive_case_count_is_not_believed(tmp_path, collected):
+    """Two EMPTY records agreed with each other, which was the weakest possible
+    way to pass."""
+    _full_set(tmp_path)
+    _leg(tmp_path, "py3.13", python="3.13.9", collected=collected)  # noqa: E501
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "cannot be believed" in " ".join(lines)
+
+
+@pytest.mark.parametrize("field", ["failures", "errors", "skipped"])
+def test_a_negative_count_is_not_believed(tmp_path, field):
+    _full_set(tmp_path)
+    _leg(tmp_path, "py3.13", python="3.13.9", **{field: -1})
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "cannot be believed" in " ".join(lines)
+
+
+@pytest.mark.parametrize("field", ["commit", "lock", "python", "platform", "label"])
+def test_a_record_missing_its_provenance_is_not_believed(tmp_path, field):
+    _full_set(tmp_path)
+    record = _leg(tmp_path, "py3.13", python="3.13.9")
+    record[field] = ""
+    (tmp_path / "py3.13.json").write_text(json.dumps(record), encoding="utf-8")
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "cannot be believed" in " ".join(lines)
+
+
+def test_a_leg_running_the_wrong_interpreter_is_refused(tmp_path):
+    _full_set(tmp_path)
+    _leg(tmp_path, "py3.11", python="3.13.15")
+
+    lines, failed = ci_record.compare_legs(tmp_path, LEGS)
+
+    assert failed and "is named after 3.11 and ran 3.13.15" in " ".join(lines)
+
+
+def test_the_leg_manifest_matches_the_workflow_matrix():
+    """The manifest is the contract; the workflow is what produces it. Adding a
+    matrix entry without adding it here would leave the new leg unchecked."""
+    import yaml
+
+    workflow = yaml.safe_load(
+        (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tests.yml").read_text(
+            encoding="utf-8"
+        )
+    )
+    jobs = workflow["jobs"]
+    from_matrix = {
+        f"py{version}" for version in jobs["test"]["strategy"]["matrix"]["python-version"]
+    }
+    from_matrix |= {f"lottie-{os_name}" for os_name in jobs["lottie"]["strategy"]["matrix"]["os"]}
+
+    assert set(ci_record.expected_legs(LEGS)) == from_matrix
+
+
+def test_a_manifest_that_cannot_be_read_fails_rather_than_being_skipped(tmp_path):
+    _full_set(tmp_path)
+    broken = tmp_path / "legs.txt"
+    broken.write_text("# only comments\n", encoding="utf-8")
+
+    lines, failed = ci_record.compare_legs(tmp_path, broken)
+
+    assert failed and "manifest could not be read" in " ".join(lines)

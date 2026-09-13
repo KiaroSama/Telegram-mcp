@@ -997,6 +997,23 @@ Adding tests to an existing file touches none of them. Adding or removing a FILE
 updating that integer in the same commit — which is the only thing that separates a suite
 someone meant to drop from one that was lost.
 
+**A run must have the legs it is supposed to have.** Agreement between whatever records
+happen to arrive is a weak claim, and it was weak in six ways: two empty records agreed
+perfectly, so did two of the six legs, a duplicated label counted twice, and records from
+different commits or different lockfiles were compared as though they described one run.
+`.github/expected-legs.txt` names the six and the interpreter each is for; every record is
+checked for shape (a positive case count, whole failure/error/skip counts, a commit, a
+lockfile digest, a platform) before any of them is compared, and a test holds that manifest
+against the workflow's own matrix so the two cannot drift. Artifact uploads use
+`if-no-files-found: error`, because a leg that uploaded nothing is indistinguishable from
+one that never ran.
+
+**The locked graph is audited, not just kept current.** Dependabot proposes upgrades; a
+separate job exports exactly what `uv.lock` resolves to — transitive packages included —
+and runs a pinned `pip-audit` over it. That answers a different question: whether what is
+pinned *right now* has a known advisory against it, which a version bump nobody has merged
+does not.
+
 **The legs must agree on how many cases exist.** A dropped test file is identical to
 success in every number except the collected count: nothing goes red, the total is simply
 short, and one worker failing to start reads exactly like a clean run. Every leg runs the
