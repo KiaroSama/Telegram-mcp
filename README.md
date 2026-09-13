@@ -875,6 +875,7 @@ telegram_mcp/errors.py        # error classes, refusal wording, id validation
 telegram_mcp/connection.py    # the session pool, and which account a call routes to
 telegram_mcp/reconnect.py     # whether the socket still answers, and bringing it back
 telegram_mcp/account_config.py # what the .env says about accounts, and what changed
+telegram_mcp/admission.py     # what a client must satisfy before this process serves from it
 telegram_mcp/retirement.py    # closing a client this process dropped, and waiting for it
 telegram_mcp/session_files.py # session files on disk, and the client built over one
 telegram_mcp/proxy.py         # TELEGRAM_PROXY_* into Telethon kwargs; touches no socket
