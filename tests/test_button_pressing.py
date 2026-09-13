@@ -146,6 +146,60 @@ async def test_the_legacy_listing_needs_a_message_id(_wire_legacy):
     assert "message_id" in await list_inline_buttons(1, account="default")
 
 
+# A caller sends these fields as JSON, so a string arrives whenever the id was
+# pasted or built rather than typed. `str.isdigit()` is True for Unicode digit
+# forms `int()` refuses - a superscript among them - so the guard admitted a
+# value the very next line could not convert, and the ValueError left the tool
+# instead of the refusal written two lines above it.
+
+
+@pytest.mark.asyncio
+async def test_a_message_id_that_is_not_a_decimal_is_refused_not_raised(_wire_legacy):
+    from telegram_mcp.tools.messages_state import list_inline_buttons
+
+    _wire_legacy(_message([[_callback()]]))
+
+    assert "message_id must be an integer." == await list_inline_buttons(
+        1, message_id="²", account="default"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_button_index_that_is_not_a_decimal_is_refused_not_raised(_wire_legacy):
+    from telegram_mcp.tools.messages_state import press_inline_button
+
+    client = _wire_legacy(_message([[_callback()]]))
+
+    result = await press_inline_button(
+        1, 7, button_text="Yes", button_index="²", account="default"
+    )
+
+    assert result == "button_index must be an integer."
+    assert client.calls == [], "a callback was sent for an index that was never a number"
+
+
+@pytest.mark.asyncio
+async def test_a_decimal_digit_from_another_locale_is_still_accepted(_wire_legacy):
+    """The guard must NARROW, not change which real numbers get through: an
+    Arabic-Indic digit is `isdecimal()` and `int()` reads it as the same number."""
+    from telegram_mcp.tools.messages_state import press_inline_button
+
+    rows = [[_callback(text="Yes", data=b"YES")]]
+    client = _wire_legacy(
+        _message(rows), answer=SimpleNamespace(message="ok", alert=None, url=None)
+    )
+
+    token = _tokens_of(await _inspect())[0]
+    payload = json.loads(
+        await press_inline_button(
+            1, 7, button_index="٠", button_text="Yes", press_token=token, account="default"
+        )
+    )
+
+    assert client.calls[0].data == b"YES"
+    assert payload["results"][0]["button_index"] == 0
+
+
 @pytest.mark.asyncio
 async def test_pressing_without_an_expected_label_is_refused_before_any_callback(_wire):
     """expect_text was merely recommended, so an index taken from a listing made

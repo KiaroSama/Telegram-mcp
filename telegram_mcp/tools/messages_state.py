@@ -152,7 +152,7 @@ def _require_message_id(message_id) -> tuple:
     with buttons", which let a press land on a message the caller never named.
     """
     if isinstance(message_id, str):
-        if not message_id.isdigit():
+        if not message_id.isdecimal():
             return None, "message_id must be an integer."
         message_id = int(message_id)
     if message_id is None:
@@ -246,7 +246,7 @@ async def press_inline_button(
         return error
 
     if isinstance(button_index, str):
-        if not button_index.isdigit():
+        if not button_index.isdecimal():
             return "button_index must be an integer."
         button_index = int(button_index)
     if button_index is None:
