@@ -889,6 +889,7 @@ telegram_mcp/alias_store.py   # that name on disk: addressing, locking, protecti
 telegram_mcp/runner.py        # application startup
 telegram_mcp/tdlib_registry.py # which TDLib client serves an account, and closing them
 telegram_mcp/tools/           # tool modules grouped by domain
+telegram_mcp/tools/feed_lifecycle.py  # one feed consumer at a time, and who owns one that will not stop
 telegram_mcp/message_view.py  # deep structured message view
 telegram_mcp/visual/          # Telegram Desktop capture and image/frame helpers
                               #   capture.py runs inside the worker; capture_runner.py
