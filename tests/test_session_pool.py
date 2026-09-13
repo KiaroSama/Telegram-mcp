@@ -32,10 +32,21 @@ def isolated_lock_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _slot_path(lock_dir, session):
+    """The lock file `_acquire_session` uses for ``session``.
+
+    Derived here the way the code derives it, and that is the point: these tests
+    restated the algorithm, so changing it in `connection` left them locking a
+    file nothing looks at - a green fixture guarding nothing, which is worse than
+    a red one. CI caught it; the fix is to stop keeping a second copy.
+    """
+    digest = hashlib.sha256(session.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(str(lock_dir), "telegram-mcp-session-locks", f"session-{digest}.lock")
+
+
 def _lock_slot(lock_dir, session):
     """Simulate another live client holding the slot for ``session``."""
-    digest = hashlib.sha1(session.encode("utf-8")).hexdigest()[:16]
-    path = os.path.join(str(lock_dir), "telegram-mcp-session-locks", f"session-{digest}.lock")
+    path = _slot_path(lock_dir, session)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     fh = open(path, "a+")
     assert try_lock_exclusive(fh), "test could not take the lock it means to hold"
@@ -73,11 +84,7 @@ def test_acquire_session_locks_are_visible_to_other_clients(isolated_lock_dir):
     pool[0], which is precisely the collision the pool exists to prevent.
     """
     assert runtime._acquire_session(["AAA", "BBB"]) == "AAA"
-    digest = hashlib.sha1(b"AAA").hexdigest()[:16]
-    path = os.path.join(
-        str(isolated_lock_dir), "telegram-mcp-session-locks", f"session-{digest}.lock"
-    )
-    with open(path, "a+") as rival:
+    with open(_slot_path(isolated_lock_dir, "AAA"), "a+") as rival:
         assert not try_lock_exclusive(rival)
 
 
