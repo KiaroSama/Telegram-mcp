@@ -57,7 +57,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def lock_digest(path: Path) -> str:
@@ -152,13 +152,61 @@ def write_record(path: Path, record: dict) -> None:
     path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def compare_legs(directory: Path) -> Tuple[List[str], bool]:
-    """Every leg must have collected the same number of cases.
+def expected_legs(path: Path) -> Dict[str, str]:
+    """The legs this workflow must produce, label -> expected X.Y.
 
-    Returns the report lines and whether anything is wrong. A leg missing
-    entirely is the coverage gate's job - its platform-exclusive modules drop to
-    near zero and the combined floor fails - so this only refuses to compare one
-    record against nothing.
+    A committed manifest rather than "whatever turned up", because agreement
+    between legs is only as strong as how many legs there are: two empty records
+    agree perfectly, and so do two of six. `tests/test_ci_record.py` checks this
+    file against the workflow's own matrix so the two cannot drift.
+    """
+    legs: Dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) != 2:
+            raise ValueError(f"unparsable leg line: {line!r}")
+        legs[parts[0]] = parts[1]
+    if not legs:
+        raise ValueError(f"{path} names no legs")
+    return legs
+
+
+def _valid_record(rec) -> Optional[str]:
+    """Why this record cannot be believed, or ``None``.
+
+    Every field is checked for SHAPE, not only presence. A record carrying
+    `collected: 0`, or a negative skip count, or no commit at all, used to be
+    compared against its siblings as though it meant something.
+    """
+    if not isinstance(rec, dict):
+        return "it is not an object"
+    label = rec.get("label")
+    if not isinstance(label, str) or not label:
+        return "it has no label"
+    collected = rec.get("collected")
+    if not isinstance(collected, int) or isinstance(collected, bool) or collected <= 0:
+        return f"collected is {collected!r}, which is not a positive whole number"
+    for name in ("failures", "errors", "skipped"):
+        value = rec.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return f"{name} is {value!r}, which is not a whole number of cases"
+    for name in ("commit", "lock", "python", "platform"):
+        if not isinstance(rec.get(name), str) or not rec.get(name):
+            return f"it records no {name}"
+    return None
+
+
+def compare_legs(directory: Path, manifest: Optional[Path] = None) -> Tuple[List[str], bool]:
+    """Hold the run to the legs it is supposed to have, and to one provenance.
+
+    Agreement between whatever records happened to arrive is a weak claim, and
+    every way it was weak is checked here now: two empty records agreed, two of
+    six agreed, a duplicated label counted twice, and records from different
+    commits or different lockfiles were compared against each other as though
+    they described the same run.
     """
     records = []
     for path in sorted(directory.rglob("*.json")):
@@ -167,36 +215,83 @@ def compare_legs(directory: Path) -> Tuple[List[str], bool]:
         except (OSError, ValueError) as error:
             return [f"- **could not read {path.name}: {error}**"], True
 
-    if len(records) < 2:
+    problems: List[str] = []
+    for name, rec in records:
+        wrong = _valid_record(rec)
+        if wrong is not None:
+            problems.append(f"- **{name} cannot be believed: {wrong}.**")
+    if problems:
+        return problems, True
+
+    if manifest is None and len(records) < 2:
         return (
             [f"- **only {len(records)} leg record(s) found: there is nothing to compare.**"],
             True,
         )
 
+    labels = [rec["label"] for _, rec in records]
+    duplicated = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicated:
+        problems.append(
+            f"- **two records claim the same leg: {duplicated}.** One of them is "
+            "describing a run that is not this one."
+        )
+
+    if manifest is not None:
+        try:
+            wanted = expected_legs(manifest)
+        except (OSError, ValueError) as error:
+            return [f"- **the leg manifest could not be read: {error}**"], True
+        missing = sorted(set(wanted) - set(labels))
+        extra = sorted(set(labels) - set(wanted))
+        if missing:
+            problems.append(
+                f"- **{len(missing)} expected leg(s) produced no record: {missing}.** "
+                "A run missing legs is not a run that passed - the ones that did "
+                "report agree with each other perfectly and prove nothing about these."
+            )
+        if extra:
+            problems.append(f"- **unexpected leg(s) reported: {extra}.**")
+        for _, rec in records:
+            want = wanted.get(rec["label"])
+            if want and not str(rec["python"]).startswith(want + "."):
+                problems.append(
+                    f"- **leg `{rec['label']}` is named after {want} and ran "
+                    f"{rec['python']}.**"
+                )
+
+    for field, what in (("commit", "commit"), ("lock", "lockfile")):
+        values = {rec[field] for _, rec in records}
+        if len(values) > 1:
+            problems.append(
+                f"- **the legs describe different {what}s: {sorted(values)}.** They are "
+                "not results about one run, so agreeing about anything means nothing."
+            )
+
     lines = [
         "### Cases collected per leg",
         "",
-        "| leg | python | collected | skipped |",
-        "|---|---|---|---|",
+        "| leg | python | platform | collected | skipped |",
+        "|---|---|---|---|---|",
     ]
-    for _, rec in records:
+    for _, rec in sorted(records, key=lambda pair: pair[1]["label"]):
         lines.append(
-            f"| {rec.get('label')} | {rec.get('python')} | "
-            f"{rec.get('collected')} | {rec.get('skipped')} |"
+            f"| {rec['label']} | {rec['python']} | {rec['platform']} | "
+            f"{rec['collected']} | {rec['skipped']} |"
         )
 
-    counts = {rec.get("collected") for _, rec in records}
+    counts = {rec["collected"] for _, rec in records}
     if len(counts) > 1:
-        lines += [
-            "",
+        problems.append(
             f"- **the legs disagree on how many cases exist: {sorted(counts)}.** "
             "They ran the same suite on the same commit, so a leg that collected "
             "fewer lost a file rather than passing it - which looks identical to "
-            "success in every other number.",
-        ]
-        return lines, True
+            "success in every other number."
+        )
 
-    lines += ["", f"- every leg collected {counts.pop()} case(s)."]
+    if problems:
+        return lines + [""] + problems, True
+    lines += ["", f"- {len(records)} leg(s), all collecting {counts.pop()} case(s)."]
     return lines, False
 
 
@@ -246,6 +341,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--emit", type=Path, help="write this leg's record here")
     parser.add_argument("--compare", type=Path, help="compare every leg record under here")
     parser.add_argument(
+        "--legs", type=Path, help="the committed manifest of legs the run must produce"
+    )
+    parser.add_argument(
         "--suites", type=Path, help="the committed count of tracked test files to hold to"
     )
     parser.add_argument(
@@ -260,12 +358,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         _emit(lines)
         if args.compare is None:
             return 1 if failed else 0
-        more, worse = compare_legs(args.compare)
+        more, worse = compare_legs(args.compare, args.legs)
         _emit(more)
         return 1 if (failed or worse) else 0
 
     if args.compare is not None:
-        lines, failed = compare_legs(args.compare)
+        lines, failed = compare_legs(args.compare, args.legs)
         _emit(lines)
         return 1 if failed else 0
 
