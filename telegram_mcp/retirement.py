@@ -54,6 +54,15 @@ def retire(client):
     documented never to raise, during a registry swap with the client table
     half-rebuilt. ``ensure_future`` accepts either shape.
     """
+    # Before the socket goes: a warm for this client is work nobody will use,
+    # and a shielded wait protects it from its callers rather than from the
+    # client's own retirement.
+    try:
+        from telegram_mcp.dialog_warm import cancel_warm
+
+        cancel_warm(client)
+    except Exception:
+        pass
     try:
         closing = client.disconnect()
     except Exception:

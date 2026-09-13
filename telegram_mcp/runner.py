@@ -33,6 +33,10 @@ import telegram_mcp.tools  # noqa: F401 - registers MCP tools via decorators
 from telegram_mcp.admission import reject_duplicate_sessions as _reject_duplicate_sessions
 from telegram_mcp.admission import session_locks as _session_locks
 
+# Closing a client this startup attempt built but will not serve from. The
+# lease release below is tied to it, so the lock never goes before the socket.
+from telegram_mcp.retirement import retire as _retire
+
 # Every transport this server can actually run. Anything else is a typo.
 _TRANSPORTS = ("stdio", "http", "sse")
 
@@ -68,6 +72,26 @@ async def _connect_authorized_client(label, client) -> None:
     # -- so the four attempts here only spent 2+4+8 seconds re-asking for a key
     # that can never come back, and then reported the raw Telethon error
     # instead of the sentence that says how to recover.
+    #
+    # ONE budget over connect AND the authorization check, because neither has a
+    # deadline of its own and either can sit on an unreachable DC indefinitely.
+    # A startup that never finishes and never says why is the worst of the three
+    # outcomes; this makes it the one that cannot happen.
+    try:
+        async with asyncio.timeout(_CONNECT_PHASE_SECONDS):
+            await _connect_and_check(label, client)
+    except (asyncio.TimeoutError, TimeoutError) as exc:
+        _admission.forget(label, closing=_retire(client))
+        raise StartupMessage(
+            f"[{label}] Telegram did not answer within {_CONNECT_PHASE_SECONDS:.0f}s while "
+            "connecting and checking the session. The session lock was released, so a "
+            "retry will not queue behind this attempt. Check network reachability and "
+            "any TELEGRAM_PROXY_* settings."
+        ) from exc
+
+
+async def _connect_and_check(label, client) -> None:
+    """Connect and prove the session is usable. Bounded by its caller."""
     try:
         await client.connect()
     except AuthKeyDuplicatedError as exc:
@@ -410,6 +434,17 @@ async def _main() -> None:
         # A lease whose release is waiting on a socket to close. Draining before
         # the sweep below means those releases happen in the right order rather
         # than being cancelled by the loop shutting down underneath them.
+        # Cancelled before the locks go: a warm still running holds the client
+        # it is warming and goes on calling into it after the socket is closed.
+        try:
+            from telegram_mcp.dialog_warm import drain_warms
+
+            still_warming = await drain_warms()
+            if still_warming:
+                startup_note(f"{still_warming} dialog warm(s) did not stop when asked.")
+        except Exception as exc:
+            startup_note(f"Stopping dialog warms failed: {_startup_text(exc)}")
+
         try:
             unreleased = await _admission.drain_releases()
             if unreleased:
@@ -420,6 +455,12 @@ async def _main() -> None:
         except Exception as exc:
             startup_note(f"Waiting for session lease releases failed: {_startup_text(exc)}")
         _admission.release_all()
+
+
+# How long one account gets to connect AND prove its session, together. Neither
+# call bounds itself, so without this a single unreachable DC held startup open
+# with no message and no exit.
+_CONNECT_PHASE_SECONDS = 60.0
 
 
 # How long shutdown waits for every account to disconnect before moving on. The
