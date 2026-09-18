@@ -358,7 +358,10 @@ def _leg(directory, label, python="3.13.15", collected=2859, skipped=67, **over)
     record = {
         "label": label,
         "python": python,
-        "platform": "Linux",
+        # The leg's REAL platform, not a constant. The manifest now declares one
+        # per leg and the comparator checks it, so a fixture that made the
+        # windows leg report Linux was asserting the defect.
+        "platform": "Windows" if "windows" in label else "Linux",
         "commit": "abc123def456",
         "lock": REPO_LOCK,
         "collected": collected,

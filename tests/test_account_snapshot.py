@@ -22,7 +22,9 @@ import os
 
 import pytest
 
+from telegram_mcp import account_lifecycle as lifecycle
 from telegram_mcp import account_snapshot as snap
+from telegram_mcp.settings import StartupMessage
 
 KEY = "TELEGRAM_SESSION_STRING_X"
 
@@ -148,12 +150,21 @@ def test_an_empty_file_configures_nothing_and_says_so(env_file):
     assert taken.stamp != (), "an empty file is a revision, not an absent one"
 
 
-def test_a_malformed_file_does_not_raise(env_file):
-    """dotenv skips what it cannot parse; the point is that the reader returns a
-    snapshot rather than taking the server down."""
+def test_a_malformed_file_is_refused_rather_than_partly_applied(env_file):
+    """INVERTED 2026-09-19. This used to assert that the reader returns a
+    snapshot for a file it could not fully parse, on the reasoning that a broken
+    `.env` must not take the server down.
+
+    The server still does not go down - the caller catches this and keeps the
+    running accounts - but the reader must not hand back HALF a revision. dotenv
+    drops the lines it cannot parse and returns the rest, so a file with one bad
+    line arrived looking complete, and the reload that "succeeded" then reported
+    every account on a dropped line as deliberately removed.
+    """
     path = env_file("this is not = a = valid line\n\x00\n")
 
-    snap.read_snapshot(path)
+    with pytest.raises(StartupMessage, match="could not be parsed"):
+        snap.read_snapshot(path)
 
 
 def test_a_snapshot_cannot_be_edited_apart(env_file):
@@ -218,7 +229,7 @@ def test_a_refused_revision_is_seen_but_not_made_active(monkeypatch, tmp_path):
     monkeypatch.setattr(conn, "_env_stamp", ())
     monkeypatch.setattr(conn, "_env_digests", {"TELEGRAM_SESSION_STRING_OLD": "d"})
     monkeypatch.setattr(conn, "clients", {"old": object()})
-    monkeypatch.setattr(conn, "_last_rejection", None)
+    lifecycle.clear_rejection()
 
     def _refuse(env=None, reuse=None):
         raise conn.StartupMessage("two labels share one session")
@@ -228,8 +239,8 @@ def test_a_refused_revision_is_seen_but_not_made_active(monkeypatch, tmp_path):
     assert conn.refresh_accounts() == []
     assert conn._env_digests == {"TELEGRAM_SESSION_STRING_OLD": "d"}, "a refusal was applied"
     assert conn._env_stamp != (), "the broken file will be re-parsed on every call"
-    assert conn._last_rejection is not None, "the refusal was not recorded anywhere"
-    assert "share one session" in conn._last_rejection[1]
+    assert conn.last_rejection() is not None, "the refusal was not recorded anywhere"
+    assert "share one session" in conn.last_rejection()[1]
 
 
 def test_a_fixed_file_recovers_after_a_refused_revision(monkeypatch, tmp_path):
@@ -241,7 +252,7 @@ def test_a_fixed_file_recovers_after_a_refused_revision(monkeypatch, tmp_path):
     monkeypatch.setattr(conn, "_env_stamp", ())
     monkeypatch.setattr(conn, "_env_digests", {})
     monkeypatch.setattr(conn, "clients", {})
-    monkeypatch.setattr(conn, "_last_rejection", None)
+    lifecycle.clear_rejection()
     monkeypatch.setattr(conn._admission, "reject_duplicate_sessions", lambda _c: None)
     monkeypatch.setattr(conn, "_notify_clients_changed", lambda *a, **k: None)
 
@@ -257,4 +268,4 @@ def test_a_fixed_file_recovers_after_a_refused_revision(monkeypatch, tmp_path):
     monkeypatch.setattr(conn, "_discover_accounts", lambda env=None, reuse=None: {"x": object()})
 
     assert conn.refresh_accounts() == ["x"]
-    assert conn._last_rejection is None, "the cleared rejection was still being reported"
+    assert conn.last_rejection() is None, "the cleared rejection was still being reported"

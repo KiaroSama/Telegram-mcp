@@ -131,17 +131,47 @@ def stranded_state_dir() -> Optional[Path]:
     legacy = Path.home() / ".local" / "state" / "telegram-mcp"
     if legacy == current:
         return None
+    left_behind = _account_state_in(legacy) - _account_state_in(current)
+    return legacy if left_behind else None
+
+
+def _account_state_in(root: Path) -> set:
+    """What a directory holds that BELONGS to an account, named piece by piece.
+
+    Two things this is not. It is not "the directory is non-empty": this
+    server's own logging creates `mcp_errors.log` in the state directory at
+    import time, before startup ever asks, so the new location was never empty
+    and the warning could not fire on the deployment shape it exists for. A log
+    is re-created every run and nothing is lost with it.
+
+    And it is not a single yes/no for the whole directory, because a PARTIAL
+    migration is the expensive case: the session file copied across and the
+    TDLib database left behind reads as "the new location is in use" while the
+    secret-chat keys sit in the old one. Naming each piece is what lets the
+    caller subtract one set from the other.
+
+    What counts is what cannot be re-created: a TDLib database per account (its
+    keys cannot be re-derived), a Telethon session (it IS the login), and the
+    alias store.
+    """
+    found = set()
     try:
-        if not any(legacy.iterdir()):
-            return None
+        if not root.is_dir():
+            return found
+        for database in (root / "tdlib").glob("*"):
+            if database.is_dir() and any(database.iterdir()):
+                found.add(f"tdlib:{database.name}")
+        for entry in root.iterdir():
+            if entry.suffix == ".session":
+                found.add(f"session:{entry.stem}")
+            elif entry.suffix == ".json":
+                found.add(f"store:{entry.name}")
     except OSError:
-        return None
-    try:
-        if current.exists() and any(current.iterdir()):
-            return None  # the new location is in use; nothing is being missed
-    except OSError:
-        pass
-    return legacy
+        # Unreadable is not evidence of absence, but it is also not something
+        # this can report a path for. The startup note is advisory; a permission
+        # problem here belongs to whatever actually tries to use the directory.
+        return set()
+    return found
 
 
 def parse_bool_env(value: Optional[str], default: bool) -> bool:
