@@ -14,8 +14,25 @@ import os
 import pytest
 
 from telegram_mcp import account_config as cfg
+from telegram_mcp import account_lifecycle as lifecycle
 from telegram_mcp import account_snapshot as snap
+from telegram_mcp import admission
 from telegram_mcp import connection as conn
+
+
+async def _noop_claim(label, client, grace_seconds=None):
+    """Admission's lease step, without a real POSIX lock on a real file."""
+    return None
+
+
+def _admits_cleanly(monkeypatch):
+    """Make the staged transaction succeed: lease taken, connected, authorized."""
+
+    async def _connected(label, client):
+        return None
+
+    monkeypatch.setattr(admission, "claim_session", _noop_claim)
+    monkeypatch.setattr(lifecycle, "_connect_and_authorize", _connected)
 
 
 class _Client:
@@ -103,19 +120,57 @@ def test_an_account_removed_while_running_is_dropped_and_disconnected(env_file):
     assert retired.disconnected, "the dropped client was left holding its socket"
 
 
-def test_a_re_login_replaces_the_client_rather_than_keeping_the_dead_session(env_file):
+@pytest.mark.asyncio
+async def test_a_re_login_replaces_the_client_rather_than_keeping_the_dead_session(
+    env_file, monkeypatch
+):
     """The expensive case. The label is unchanged, so a check that only compared
     NAMES would keep serving the session Telegram has already invalidated - which
-    is precisely the AuthKeyUnregisteredError that cost the owner four logins."""
+    is precisely the AuthKeyUnregisteredError that cost the owner four logins.
+
+    REWRITTEN 2026-09-18 for the transactional swap. The replacement used to land
+    in the registry the instant the file was read - before it had a lease, a
+    socket or an authorized session - so a replacement that could never connect
+    destroyed the one that worked. Now the old client keeps serving until the new
+    one is admitted, and this test waits for that transaction rather than
+    asserting the half-done state it used to see.
+    """
     _adopt(env_file, ["TELEGRAM_SESSION_STRING_ONE=aaa"])
     stale = conn.clients["one"]
+    _admits_cleanly(monkeypatch)
 
     env_file(["TELEGRAM_SESSION_STRING_ONE=zzz"])
     changed = conn.refresh_accounts()
 
+    assert conn.clients["one"] is stale, "the replacement was published before it was admitted"
+    assert await lifecycle.drain(timeout=5) == 0
+
     assert conn.clients["one"] is not stale, "the dead session is still in use"
     assert stale.disconnected
     assert "one" in changed
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_that_cannot_connect_leaves_the_working_client_serving(
+    env_file, monkeypatch
+):
+    """The whole point of staging. A held session lock or a session Telegram no
+    longer authorizes used to replace a working account with an unusable one."""
+    _adopt(env_file, ["TELEGRAM_SESSION_STRING_ONE=aaa"])
+    working = conn.clients["one"]
+
+    async def _refuses(label, client):
+        raise OSError("the replacement session could not connect")
+
+    monkeypatch.setattr(lifecycle, "_connect_and_authorize", _refuses)
+    monkeypatch.setattr(admission, "claim_session", _noop_claim)
+
+    env_file(["TELEGRAM_SESSION_STRING_ONE=zzz"])
+    conn.refresh_accounts()
+    assert await lifecycle.drain(timeout=5) == 0
+
+    assert conn.clients["one"] is working, "a replacement that never connected took over"
+    assert not working.disconnected, "the working client was retired for a failed replacement"
 
 
 def test_an_untouched_file_costs_nothing(env_file):
@@ -201,7 +256,8 @@ def test_the_fingerprint_of_an_unchanged_file_is_stable(env_file):
     assert conn._env_fingerprint(str(path)) == conn._env_fingerprint(str(path))
 
 
-def test_a_re_login_of_the_default_account_replaces_its_client(env_file):
+@pytest.mark.asyncio
+async def test_a_re_login_of_the_default_account_replaces_its_client(env_file, monkeypatch):
     """The single-account setup, which is the common one and was the broken one.
 
     `_replaced` selected an account's variables with `key.endswith(label)`, and
@@ -215,9 +271,11 @@ def test_a_re_login_of_the_default_account_replaces_its_client(env_file):
     """
     _adopt(env_file, ["TELEGRAM_SESSION_STRING=aaa"])
     stale = conn.clients["default"]
+    _admits_cleanly(monkeypatch)
 
     env_file(["TELEGRAM_SESSION_STRING=zzz"])
     changed = conn.refresh_accounts()
+    assert await lifecycle.drain(timeout=5) == 0
 
     assert "default" in changed, "the default account's re-login was not reported"
     assert conn.clients["default"] is not stale, "the dead default session is still in use"

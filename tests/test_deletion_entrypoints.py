@@ -272,7 +272,9 @@ async def test_a_failure_after_the_first_batch_names_what_is_already_gone(wire):
     answer = await delete_mod.delete_messages_bulk(RAW_CHAT_ID, list(range(1, 102)), revoke=True)
 
     assert len(client.sent) == 2, "the second batch was never attempted"
-    assert "100 were accepted and are GONE" in answer
+    # The report now names the ids per state rather than only counting them,
+    # because after an irreversible deletion WHICH ones is the question.
+    assert "accepted and GONE (100)" in answer
     assert "stopped part-way" in answer
     assert "re-read" in answer.lower()
 
