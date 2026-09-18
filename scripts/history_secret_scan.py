@@ -117,17 +117,44 @@ def object_names(run=subprocess.run, cwd: Optional[str] = None) -> Dict[str, str
     return names
 
 
-def _scan_stream(stream: BinaryIO, size: int, oid: str, match: bool) -> List[str]:
+def _scan_stream(
+    stream: BinaryIO, size: int, oid: str, match: bool, deadline: Optional[float] = None
+) -> List[str]:
     """Read ``size`` bytes in chunks, matching as they go. Never holds them all.
 
-    The overlap is what makes chunking safe. Without it a credential split
-    across a boundary is two fragments, neither of which matches, and the scan
-    reports clean because of where the divisions happened to fall.
+    Two things the obvious version gets wrong.
+
+    **The overlap is what makes chunking safe** in one direction: without it a
+    credential split across a boundary is two fragments, neither of which
+    matches, and the scan reports clean because of where the divisions fell.
+
+    It is not enough on its own, because matching each window as an independent
+    string INVENTS context at its ends. `\\b` anchors to the end of the string
+    `re` is given, so a 20-character AWS-shaped run that ends exactly at a
+    boundary - and is followed in the file by another word character, which
+    makes it a non-match over the whole input - matched its window. A scanner
+    that reports a credential the file does not contain teaches its operator to
+    ignore it, so a match is only accepted once its right-hand context is known:
+    anything ending inside the carry is deferred to the next window, where those
+    bytes are followed by real ones. On the final chunk there is no next window
+    and end-of-input is the true boundary, so everything is accepted.
+
+    **The deadline is checked HERE**, per chunk, not once the read has finished.
+    Checking it afterwards is not a deadline at all: a child that produced a
+    header and then went quiet was never stopped by this function, only by
+    whatever outer guard was watching the whole run.
     """
+    # A read with no deadline IS the defect, so an absent one is computed rather
+    # than meaning "unbounded". A caller that owns a whole-run budget passes it
+    # down; anything else still cannot block here for ever.
+    if deadline is None:
+        deadline = time.monotonic() + _SCAN_DEADLINE_SECONDS
     found: List[str] = []
     carry = b""
     remaining = size
     while remaining > 0:
+        if time.monotonic() > deadline:
+            raise ScanError(f"the history scan exceeded {_SCAN_DEADLINE_SECONDS:.0f}s")
         piece = stream.read(min(_CHUNK, remaining))
         if not piece:
             raise ScanError(
@@ -137,14 +164,30 @@ def _scan_stream(stream: BinaryIO, size: int, oid: str, match: bool) -> List[str
         if not match:
             continue
         window = carry + piece
+        # Where the right-hand context stops being real. Past this point the
+        # bytes are re-read in the next window with what actually follows them.
+        settled = len(window) if remaining <= 0 else max(len(window) - _OVERLAP, 0)
         for name, pattern in COMPILED.items():
-            if name not in found and pattern.search(window):
-                found.append(name)
-        carry = window[-_OVERLAP:]
+            if name in found:
+                continue
+            for hit in pattern.finditer(window):
+                if hit.end() <= settled:
+                    found.append(name)
+                    break
+        # TWICE the overlap, and the second half is what deferral costs. A match
+        # deferred above ENDS in the last `_OVERLAP` bytes, so - given the
+        # overlap is wider than the longest shape, which is what sizes it - it
+        # can START a further `_OVERLAP` back. Carrying only `_OVERLAP` cut the
+        # beginning off exactly the match that was deferred, and it was then
+        # never found at all: the deferral turned a false positive into a false
+        # negative, which is the worse of the two.
+        carry = window[-(2 * _OVERLAP) :]
     return found
 
 
-def iter_batch_records(stream: BinaryIO) -> Iterator[Tuple[str, str, List[str]]]:
+def iter_batch_records(
+    stream: BinaryIO, deadline: Optional[float] = None
+) -> Iterator[Tuple[str, str, List[str]]]:
     """Parse ``git cat-file --batch-all-objects --batch``, a chunk at a time.
 
     Yields ``(oid, kind, credential_kinds)`` - the MATCHES rather than the body,
@@ -176,7 +219,7 @@ def iter_batch_records(stream: BinaryIO) -> Iterator[Tuple[str, str, List[str]]]
                 f"object {oid[:12]} declares {size} bytes, outside anything this scanner "
                 f"will read (ceiling {_MAX_OBJECT_BYTES})"
             )
-        found = _scan_stream(stream, size, oid, match=(kind == "blob"))
+        found = _scan_stream(stream, size, oid, match=(kind == "blob"), deadline=deadline)
         if stream.read(1) != b"\n":
             raise ScanError(f"object {oid[:12]} was not terminated by a newline")
         yield oid, kind, found
@@ -267,7 +310,9 @@ def scan_history(
     started = time.monotonic()
     try:
         findings, scanned, seen = scan_records(
-            iter_batch_records(process.stdout), names, include_unreachable
+            iter_batch_records(process.stdout, deadline=started + _SCAN_DEADLINE_SECONDS),
+            names,
+            include_unreachable,
         )
     except BaseException:
         # The dump is long-running; abandoning it mid-stream would leave git

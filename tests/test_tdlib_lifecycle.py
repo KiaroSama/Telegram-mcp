@@ -282,6 +282,9 @@ def test_the_server_shutdown_actually_closes_tdlib():
     shutdown = inspect.getsource(runner._main)
 
     assert "close_all" in shutdown, "the shutdown path still never closes TDLib"
-    assert shutdown.index("close_all") < shutdown.index(
-        "release_all"
+    # The CALLS, not the bare names. Matching `release_all` anywhere in the
+    # source matched a comment that merely mentions it, which is the recorded
+    # trap: a test that reads source text matches the prose, not the rule.
+    assert shutdown.index("_close_tdlib()") < shutdown.index(
+        "_admission.release_all()"
     ), "TDLib must be closed before the session locks go"

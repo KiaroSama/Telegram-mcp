@@ -213,7 +213,9 @@ async def test_progress_made_before_a_hung_call_is_reported_honestly(_wire, monk
     # The honest form of "progress was made": say so, and say the count is not
     # knowable, rather than quoting `pts_count` as if it were one.
     assert "12" not in result
-    assert "Messages WERE deleted" in result
+    # Reworded when zero-pass timeouts stopped claiming a deletion: a completed
+    # pass still DID delete, and saying otherwise would be the opposite error.
+    assert "DID delete" in result
     assert "does not say how many" in result
 
 

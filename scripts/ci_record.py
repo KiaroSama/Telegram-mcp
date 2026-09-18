@@ -152,23 +152,40 @@ def write_record(path: Path, record: dict) -> None:
     path.write_text(json.dumps(record, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def expected_legs(path: Path) -> Dict[str, str]:
-    """The legs this workflow must produce, label -> expected X.Y.
+class Leg(str):
+    """What one leg must be: the interpreter it is named after, and its OS.
+
+    A `str` subclass so every existing reader - `legs[label]` compared against a
+    version, printed, sorted - keeps working unchanged, while the platform rides
+    along. Agreement between records said nothing about the OS, so both
+    "cross-platform" legs could report the same one and nothing noticed.
+    """
+
+    platform: str
+
+    def __new__(cls, version: str, platform: str = ""):
+        self = super().__new__(cls, version)
+        self.platform = platform
+        return self
+
+
+def expected_legs(path: Path) -> Dict[str, Leg]:
+    """The legs this workflow must produce, label -> expected version and OS.
 
     A committed manifest rather than "whatever turned up", because agreement
     between legs is only as strong as how many legs there are: two empty records
     agree perfectly, and so do two of six. `tests/test_ci_record.py` checks this
     file against the workflow's own matrix so the two cannot drift.
     """
-    legs: Dict[str, str] = {}
+    legs: Dict[str, Leg] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if len(parts) != 2:
+        if len(parts) not in (2, 3):
             raise ValueError(f"unparsable leg line: {line!r}")
-        legs[parts[0]] = parts[1]
+        legs[parts[0]] = Leg(parts[1], parts[2] if len(parts) == 3 else "")
     if not legs:
         raise ValueError(f"{path} names no legs")
     return legs
@@ -196,10 +213,27 @@ def _valid_record(rec) -> Optional[str]:
     for name in ("commit", "lock", "python", "platform"):
         if not isinstance(rec.get(name), str) or not rec.get(name):
             return f"it records no {name}"
+    # Internally impossible, so the record is not describing a real run at all.
+    # It used to be compared against its siblings as though it were.
+    for name in ("failures", "errors", "skipped"):
+        if rec[name] > collected:
+            return f"{name} is {rec[name]}, which is more than the {collected} collected"
+    # The values the emitter writes when it is NOT in CI. Six of them agree with
+    # each other perfectly and describe six local runs.
+    if rec["commit"] == "local" or rec["lock"] == "absent":
+        return (
+            f"it was emitted outside CI (commit={rec['commit']!r}, lock={rec['lock']!r}), "
+            "so it is not evidence about a pushed commit"
+        )
     return None
 
 
-def compare_legs(directory: Path, manifest: Optional[Path] = None) -> Tuple[List[str], bool]:
+def compare_legs(
+    directory: Path,
+    manifest: Optional[Path] = None,
+    expect_commit: Optional[str] = None,
+    expect_lock: Optional[str] = None,
+) -> Tuple[List[str], bool]:
     """Hold the run to the legs it is supposed to have, and to one provenance.
 
     Agreement between whatever records happened to arrive is a weak claim, and
@@ -259,6 +293,17 @@ def compare_legs(directory: Path, manifest: Optional[Path] = None) -> Tuple[List
                     f"- **leg `{rec['label']}` is named after {want} and ran "
                     f"{rec['python']}.**"
                 )
+            # The label says which OS this leg is FOR; the record says which one
+            # it ran on. Nothing compared them, so both "cross-platform" legs
+            # could report the same platform and the matrix proved half of what
+            # it claimed.
+            if want is not None and getattr(want, "platform", "") and rec.get("platform"):
+                if str(rec["platform"]).lower() != want.platform.lower():
+                    problems.append(
+                        f"- **leg `{rec['label']}` is declared for {want.platform} and "
+                        f"ran on {rec['platform']}.** The matrix is not covering what "
+                        "it says it covers."
+                    )
 
     for field, what in (("commit", "commit"), ("lock", "lockfile")):
         values = {rec[field] for _, rec in records}
@@ -266,6 +311,24 @@ def compare_legs(directory: Path, manifest: Optional[Path] = None) -> Tuple[List
             problems.append(
                 f"- **the legs describe different {what}s: {sorted(values)}.** They are "
                 "not results about one run, so agreeing about anything means nothing."
+            )
+
+    # Agreement is not identity. Six records naming the same OTHER commit agree
+    # perfectly and describe a run about a different tree than the one the gate
+    # is for, which is the whole point of an exact-SHA gate.
+    if expect_commit:
+        wrong = sorted({rec["commit"] for _, rec in records if rec["commit"] != expect_commit})
+        if wrong:
+            problems.append(
+                f"- **the legs name commit(s) {wrong}, not {expect_commit!r}.** They agree "
+                "with each other and not with the tree being verified."
+            )
+    if expect_lock:
+        wrong = sorted({rec["lock"] for _, rec in records if rec["lock"] != expect_lock})
+        if wrong:
+            problems.append(
+                f"- **the legs resolved from lockfile digest(s) {wrong}, not "
+                f"{expect_lock!r}.** They did not install what this tree declares."
             )
 
     lines = [
@@ -341,6 +404,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--emit", type=Path, help="write this leg's record here")
     parser.add_argument("--compare", type=Path, help="compare every leg record under here")
     parser.add_argument(
+        "--expect-commit",
+        help="the commit every record must name - the SHA the gate is about, not "
+        "merely one they agree on",
+    )
+    parser.add_argument(
+        "--expect-lock",
+        action="store_true",
+        help="every record must name the digest of THIS tree's uv.lock",
+    )
+    parser.add_argument(
         "--legs", type=Path, help="the committed manifest of legs the run must produce"
     )
     parser.add_argument(
@@ -358,12 +431,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         _emit(lines)
         if args.compare is None:
             return 1 if failed else 0
-        more, worse = compare_legs(args.compare, args.legs)
+        more, worse = compare_legs(
+            args.compare,
+            args.legs,
+            args.expect_commit,
+            lock_digest(args.lock) if args.expect_lock else None,
+        )
         _emit(more)
         return 1 if (failed or worse) else 0
 
     if args.compare is not None:
-        lines, failed = compare_legs(args.compare, args.legs)
+        lines, failed = compare_legs(
+            args.compare,
+            args.legs,
+            args.expect_commit,
+            lock_digest(args.lock) if args.expect_lock else None,
+        )
         _emit(lines)
         return 1 if failed else 0
 

@@ -244,9 +244,18 @@ async def test_a_lease_is_held_until_the_socket_is_down():
 
 
 @pytest.mark.asyncio
-async def test_a_disconnect_that_never_finishes_still_releases_eventually(monkeypatch):
-    """Bounded the other way too: holding the lease forever locks the operator
-    out of their own account."""
+async def test_a_disconnect_that_never_finishes_keeps_the_lease(monkeypatch):
+    """INVERTED 2026-09-18. This used to assert that the lease was released once
+    the wait timed out, on the reasoning that holding it forever locks the
+    operator out of their own account.
+
+    That trade is the wrong way round. An unfinished disconnect means the socket
+    MAY STILL BE OPEN, and handing the session to whoever asks next is a session
+    connected twice - which Telegram answers by invalidating the auth key for
+    both ends. Losing the account is not recoverable; a session this process will
+    not reuse until it restarts is. So the lock is kept and the label is recorded,
+    which is also what lets shutdown say what it could not account for.
+    """
     monkeypatch.setattr(mod, "_CLOSE_BEFORE_RELEASE_SECONDS", 0.05)
     client = _Client("session-A")
     mod.mark_awaiting_admission({"work": client})
@@ -257,7 +266,8 @@ async def test_a_disconnect_that_never_finishes_still_releases_eventually(monkey
     mod.forget("work", closing=asyncio.get_running_loop().create_future())
     await mod.drain_releases(timeout=2)
 
-    assert released == [True]
+    assert released == [], "the session was given away over a socket that never closed"
+    assert "work" in mod.unreleased_leases
 
 
 def test_a_retirement_with_nothing_left_to_wait_for_releases_at_once(monkeypatch, tmp_path):

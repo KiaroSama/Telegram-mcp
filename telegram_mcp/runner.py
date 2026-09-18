@@ -331,6 +331,10 @@ def startup_note(text: str) -> None:
 
 async def _main() -> None:
     try:
+        # The door `release_all()` closes at the bottom of this function. Stated
+        # at the start of serving rather than assumed, because the boundary is
+        # sticky on purpose: a shutdown must not be undone by a slow acquire.
+        _admission.begin_serving()
         labels = ", ".join(clients.keys())
         _reject_duplicate_sessions(clients)
         # Said before anything signs in. A deployment whose state directory moved -
@@ -348,9 +352,18 @@ async def _main() -> None:
             )
 
         startup_note(f"Starting {len(clients)} Telegram client(s) ({labels})...")
-        await asyncio.gather(
-            *(_connect_authorized_client(label, cl) for label, cl in clients.items())
+        # OWNED siblings. A bare `gather` propagates the first exception while
+        # the others are still running and unawaited, so cleanup began beside
+        # live connects - one of which could still take a session lock after
+        # this function had decided to give up. `return_exceptions=True` waits
+        # for every sibling to settle; the first real failure is raised after.
+        outcomes = await asyncio.gather(
+            *(_connect_authorized_client(label, cl) for label, cl in clients.items()),
+            return_exceptions=True,
         )
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
 
         # Warm entity caches — StringSession has no persistent cache,
         # so fetch all dialogs once per client to populate them.
@@ -360,8 +373,15 @@ async def _main() -> None:
         startup_note("Warming entity caches (background)...")
 
         async def _warm_caches() -> None:
+            # Through the managed registry, NOT `cl.get_dialogs()` directly. The
+            # direct call is a task nothing owns: `drain_warms()` could not see
+            # it, `cancel_warm()` could not stop it when its client was retired,
+            # and shutdown had no way to wait for it. The registry bounds each
+            # warm and records why a cache is cold.
+            from telegram_mcp.dialog_warm import warm_dialogs_once
+
             try:
-                await asyncio.gather(*(cl.get_dialogs() for cl in clients.values()))
+                await asyncio.gather(*(warm_dialogs_once(cl) for cl in clients.values()))
                 startup_note("Entity caches warmed.")
             except Exception as warm_exc:
                 # stderr may be persisted by the launcher, so this says what
@@ -389,6 +409,27 @@ async def _main() -> None:
             )
         sys.exit(1)
     finally:
+        # STOP NEW WORK FIRST. The incoming-event consumer writes to the feed and
+        # calls into clients, so tearing the clients down underneath it produced
+        # errors from a component that was merely still running. Nothing below
+        # waited for it either - it was left to whatever cancelled the loop.
+        try:
+            from telegram_mcp.tools import feed_lifecycle as _feed
+
+            if _feed.feed_enabled():
+                stopped = await asyncio.wait_for(_feed._stop_current(), timeout=_FEED_STOP_SECONDS)
+                if not stopped:
+                    startup_note(
+                        "The incoming-event consumer did not stop within "
+                        f"{_FEED_STOP_SECONDS:.0f}s; continuing with shutdown."
+                    )
+        except (asyncio.TimeoutError, TimeoutError):
+            startup_note(
+                f"The incoming-event consumer did not stop within {_FEED_STOP_SECONDS:.0f}s; "
+                "continuing with shutdown."
+            )
+        except Exception:
+            pass
         # BOUNDED, and that is the whole point of the deadline. This gather was
         # unbounded, so a single client whose disconnect never returned held
         # shutdown here forever - and everything below it, including the TDLib
@@ -459,15 +500,44 @@ async def _main() -> None:
         except Exception as exc:
             startup_note(f"Stopping dialog warms failed: {_startup_text(exc)}")
 
+        # A reload's admission still in flight. It owns a staged client and may
+        # be about to take a lease, so exiting past it leaves both to whatever
+        # the loop does on its way down.
+        try:
+            from telegram_mcp.account_lifecycle import drain as _drain_admissions
+
+            unsettled = await asyncio.wait_for(_drain_admissions(), timeout=_ADMIT_DRAIN_SECONDS)
+            if unsettled:
+                startup_note(
+                    f"{unsettled} account admission(s) had not settled within "
+                    f"{_ADMIT_DRAIN_SECONDS:.0f}s; their staged clients are being closed."
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            startup_note("Account admissions did not settle before exit.")
+        except Exception as exc:
+            startup_note(f"Waiting for account admissions failed: {_startup_text(exc)}")
+
         try:
             unreleased = await _admission.drain_releases()
             if unreleased:
                 startup_note(
                     f"{unreleased} session lease release(s) were still waiting on a socket; "
-                    "releasing them anyway so this process can exit."
+                    "they are being kept rather than released, because a socket that never "
+                    "confirmed it closed may still be connected."
                 )
         except Exception as exc:
             startup_note(f"Waiting for session lease releases failed: {_startup_text(exc)}")
+
+        # Named before the locks go, because this is the one thing shutdown
+        # cannot put right: a session whose socket never confirmed it closed
+        # keeps its lease deliberately, and the next start of this server will
+        # refuse to connect it. Saying which accounts, and why, is the difference
+        # between a recoverable state and a mystery.
+        for account, why in sorted(_admission.unreleased_leases.items()):
+            startup_note(
+                f"[{account}] its session lease was NOT released: {why}. Nothing else "
+                "may connect that session until this process has fully exited."
+            )
         _admission.release_all()
 
 
@@ -481,6 +551,16 @@ _CONNECT_PHASE_SECONDS = 60.0
 # step after it flushes TDLib, whose loss is unrecoverable, so this one cannot be
 # allowed to hold the exit path open indefinitely.
 _DISCONNECT_ALL_SECONDS = 15.0
+
+# How long shutdown waits for the incoming-event consumer to stop before it
+# carries on. Short: it is asked to stop FIRST so the clients under it are not
+# torn away mid-write, and a consumer that will not stop must not hold exit.
+_FEED_STOP_SECONDS: float = 5.0
+
+# How long shutdown waits for a reload's admission to settle. One budget for
+# all of them: each is already bounded by ADMIT_PHASE_SECONDS, and exit must
+# not wait out several of those in series.
+_ADMIT_DRAIN_SECONDS: float = 20.0
 
 
 # How long shutdown waits for TDLib to flush and close. Generous, because the

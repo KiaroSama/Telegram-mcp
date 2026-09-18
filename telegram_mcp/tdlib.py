@@ -34,6 +34,7 @@ import json
 import logging
 import atexit
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -386,14 +387,20 @@ class TDLibClient:
         if self._client_id is None:
             return
         closed = self._closed_event()
+        # ONE monotonic deadline over both halves. Spending `timeout` on the
+        # request and then `timeout` again on the Closed event meant a caller
+        # that asked for ten seconds could wait twenty - so a shutdown budget
+        # bought half of what it said, and the accounts behind this one lost
+        # their turn.
+        deadline = time.monotonic() + timeout
         try:
-            await self.request({"@type": "close"}, timeout=timeout)
+            await self.request({"@type": "close"}, timeout=max(deadline - time.monotonic(), 0.0))
         except (TDLibError, TimeoutError):
             # The request itself failed. TDLib may still be closing, so the
             # wait below is still the question worth asking.
             pass
         try:
-            await asyncio.wait_for(closed.wait(), timeout=timeout)
+            await asyncio.wait_for(closed.wait(), timeout=max(deadline - time.monotonic(), 0.0))
         except (asyncio.TimeoutError, TimeoutError) as error:
             # NOT unregistered. A client whose close cannot be confirmed is
             # still holding its database, and dropping the handle here is how
@@ -510,10 +517,22 @@ class TDLibClient:
         self.authorization_link = state.get("link")
         if self.authorization_state == "authorizationStateWaitTdlibParameters":
             self._send(self._parameters())
-        if self.authorization_state == "authorizationStateClosed" and self._closed is not None:
+        if self.authorization_state == "authorizationStateClosed":
             # The completion signal, per TDLib's own documentation. `close`
             # answering `ok` only says the request arrived.
-            self._closed.set()
+            if self._closed is not None:
+                self._closed.set()
+            # Closed can arrive UNSOLICITED - the session terminated from another
+            # device, or TDLib closing itself after an error - and a client that
+            # is closed can never answer. Every request still in flight used to
+            # sit until its own timeout expired, one by one, reporting a network
+            # stall for something that had already ended.
+            self._settle_pending(
+                RuntimeError(
+                    f"the TDLib client for {self.account!r} reported it closed while this "
+                    "request was in flight"
+                )
+            )
         if self._state_changed is not None:
             self._state_changed.set()
 

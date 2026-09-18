@@ -291,6 +291,14 @@ def _install_annotation_hook() -> None:
 
 _install_annotation_hook()
 
+# A ceiling on the whole tool call, next door because this file is at its size
+# limit. Every Telegram call below is bounded individually; the CALL was not, so
+# a request that wedged left the client waiting for its own idle timeout and
+# then reporting a transport failure for a stalled operation.
+from telegram_mcp.tool_budget import install as _install_tool_budget  # noqa: E402
+
+_install_tool_budget(mcp)
+
 
 _EXPOSED_TOOLS_MODES = {"all", "read-only"}
 _EXPOSED_TOOLS_ALLOW_SEPARATOR = "+"
