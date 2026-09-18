@@ -32,14 +32,27 @@ import asyncio
 import itertools
 import json
 import logging
-import atexit
-import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import TELEGRAM_API_HASH, TELEGRAM_API_ID, state_dir
+
+# The process-global half - the shared binary handle and the single receive
+# thread that routes events back to these clients. Imported by name so the
+# call sites below read the same as they always did, and so a test that
+# patches `tdlib._tdjson` still reaches the client that uses it.
+from telegram_mcp.tdlib_runtime import (
+    TDLibUnavailable,
+    _clients,
+    _clients_lock,
+    _ensure_reader,
+    _quieten,
+    _tdjson,
+    stop_reader,
+    tdjson_status,
+)
 
 __all__ = [
     "complete_login",
@@ -52,16 +65,9 @@ __all__ = [
     "close_all",
     "database_dir_for",
     "secret_client",
+    "stop_reader",
     "tdjson_status",
 ]
-
-
-class TDLibUnavailable(RuntimeError):
-    """The `tdjson` binary is not installed.
-
-    Raised instead of `ImportError` so a tool can answer with the install
-    command rather than a traceback about a module nobody mentioned.
-    """
 
 
 class NotSignedIn(RuntimeError):
@@ -104,43 +110,6 @@ class TDLibError(RuntimeError):
         self.message = message
 
 
-def _tdjson():
-    """The binary, imported on first use.
-
-    Deferred so that importing this module -- which `tools/secret_chats.py` does
-    unconditionally -- cannot break a server whose operator never wanted secret
-    chats and never installed the dependency.
-    """
-    try:
-        import tdjson
-    except ImportError as exc:  # pragma: no cover - exercised by tdjson_status
-        raise TDLibUnavailable(
-            "Secret chats need Telegram's own library, which is not installed. "
-            "Install it with: pip install tdjson"
-        ) from exc
-    return tdjson
-
-
-def tdjson_status() -> dict:
-    """Whether secret chats are available, and what to do if not.
-
-    A tool that simply failed would leave the caller unable to tell an absent
-    dependency from a broken login, which are fixed in completely different
-    places.
-    """
-    try:
-        td = _tdjson()
-    except TDLibUnavailable as exc:
-        return {"available": False, "reason": str(exc)}
-    try:
-        version = json.loads(
-            td.td_execute(json.dumps({"@type": "getOption", "name": "version"}).encode()).decode()
-        ).get("value")
-    except Exception as exc:  # pragma: no cover - a broken build, not a missing one
-        return {"available": False, "reason": f"tdjson is installed but unusable: {exc}"}
-    return {"available": True, "tdlib_version": version}
-
-
 def account_label(account: Optional[str]) -> str:
     """The account label a TDLib database is stored under.
 
@@ -174,104 +143,9 @@ def database_dir_for(account: str) -> Path:
     return state_dir() / "tdlib" / account
 
 
-# --------------------------------------------------------------------------
-# The receive loop.
-#
-# `td_receive` is process-global, not per-client: one call returns the next
-# event for ANY client, tagged with its `@client_id`. So there is exactly one
-# reader thread for the process, and it routes. A thread rather than a task
-# because the call blocks.
-# --------------------------------------------------------------------------
-
-_clients: dict[int, "TDLibClient"] = {}
-_clients_lock = threading.Lock()
-_reader: Optional[threading.Thread] = None
-
-# Set to ask the reader to finish. It is a DAEMON thread blocked in a native
-# call, and a daemon thread is killed where it stands at interpreter shutdown -
-# inside `td_receive`, that is TDLib's C++ runtime being unwound from under
-# itself, which ends the process with `terminate called without an active
-# exception` and exit 250. The native lifecycle test found it; nothing had
-# started a real client under pytest before.
-_reader_stop = threading.Event()
+# Request correlation: TDLib echoes `@extra` back, so a client can have
+# several requests in flight and still match each answer to its future.
 _extra_ids = itertools.count(1)
-
-
-def _quieten(td) -> None:
-    """TDLib logs every request and response at its default verbosity.
-
-    Left alone it writes the full text of each message to stderr, which for a
-    secret chat means printing the plaintext this module exists to protect.
-    """
-    td.td_execute(json.dumps({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}).encode())
-
-
-def _dispatch(event: dict) -> None:
-    client_id = event.get("@client_id")
-    with _clients_lock:
-        client = _clients.get(client_id)
-    if client is None:
-        return
-    client._handle(event)
-
-
-def _reader_loop() -> None:  # pragma: no cover - a thread, driven by live TDLib
-    td = _tdjson()
-    while not _reader_stop.is_set():
-        try:
-            raw = td.td_receive(1.0)
-        except Exception as exc:
-            # Through log_event, not the logger: a raw handler would be free to
-            # format the event that failed, and a secret chat's event carries
-            # the plaintext this module exists to keep out of logs.
-            log_event(logging.ERROR, "tdlib_receive_failed", error=exc)
-            return
-        if not raw:
-            continue
-        try:
-            _dispatch(json.loads(raw.decode()))
-        except Exception as exc:
-            log_event(logging.ERROR, "tdlib_dispatch_failed", error=exc)
-
-
-def _ensure_reader() -> None:
-    global _reader
-    with _clients_lock:
-        if _reader is not None and _reader.is_alive():
-            return
-        _reader_stop.clear()
-        _reader = threading.Thread(target=_reader_loop, name="tdlib-receive", daemon=True)
-        _reader.start()
-
-
-def stop_reader(timeout: float = 3.0) -> bool:
-    """Ask the receive thread to finish, and wait for it to actually leave TDLib.
-
-    `td_receive` returns on its own within a second, so the flag is seen quickly.
-    Waiting matters more than asking: the point is that the thread is OUT of the
-    native library before the process ends.
-    """
-    global _reader
-    thread = _reader
-    _reader_stop.set()
-    if thread is None or not thread.is_alive():
-        _reader = None
-        return True
-    thread.join(timeout)
-    stopped = not thread.is_alive()
-    if stopped:
-        _reader = None
-    return stopped
-
-
-def _stop_reader_at_exit() -> None:  # pragma: no cover - runs at interpreter exit
-    stop_reader()
-
-
-# Registered once, at import. A process that exits with a client still open -
-# a crash, a Ctrl+C, a test session - must not leave the daemon thread to be
-# killed inside a native call.
-atexit.register(_stop_reader_at_exit)
 
 
 class TDLibClient:
