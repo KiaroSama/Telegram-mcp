@@ -17,6 +17,7 @@ import json
 import pytest
 
 from telegram_mcp import tdlib
+from telegram_mcp import tdlib_runtime
 from telegram_mcp import tdlib_registry as tdlib_reg
 
 
@@ -48,7 +49,12 @@ class FakeTdjson:
 @pytest.fixture
 def fake(monkeypatch):
     module = FakeTdjson()
+    # BOTH modules. `tdlib` owns the name the client looks up; `tdlib_runtime`
+    # owns the one `tdjson_status` uses. Patching only the first let the status
+    # test load the real binary, so it passed on a machine that has one and
+    # said nothing about a machine that does not.
     monkeypatch.setattr(tdlib, "_tdjson", lambda: module)
+    monkeypatch.setattr(tdlib_runtime, "_tdjson", lambda: module)
     monkeypatch.setattr(tdlib, "_ensure_reader", lambda: None)
     monkeypatch.setattr(tdlib, "_clients", {})
     return module
@@ -306,10 +312,10 @@ def test_an_event_goes_only_to_the_client_it_belongs_to(monkeypatch):
         def _handle(self, event):
             seen.append((self.tag, event))
 
-    monkeypatch.setattr(tdlib, "_clients", {1: Recorder("one"), 2: Recorder("two")})
+    monkeypatch.setattr(tdlib_runtime, "_clients", {1: Recorder("one"), 2: Recorder("two")})
 
-    tdlib._dispatch({"@client_id": 2, "@type": "updateNewMessage"})
-    tdlib._dispatch({"@client_id": 99, "@type": "updateNewMessage"})  # unknown: dropped
+    tdlib_runtime._dispatch({"@client_id": 2, "@type": "updateNewMessage"})
+    tdlib_runtime._dispatch({"@client_id": 99, "@type": "updateNewMessage"})  # unknown: dropped
 
     assert [tag for tag, _ in seen] == ["two"]
 
@@ -405,7 +411,7 @@ def test_a_missing_binary_is_reported_not_raised(monkeypatch):
     def _absent():
         raise tdlib.TDLibUnavailable("Install it with: pip install tdjson")
 
-    monkeypatch.setattr(tdlib, "_tdjson", _absent)
+    monkeypatch.setattr(tdlib_runtime, "_tdjson", _absent)
 
     status = tdlib.tdjson_status()
 
@@ -422,7 +428,7 @@ def test_a_present_binary_reports_its_version(fake):
 def test_the_log_verbosity_is_lowered_before_anything_is_sent(fake, tmp_path):
     """At its default level TDLib prints every request and response, which for a
     secret chat means printing the plaintext to stderr."""
-    tdlib._quieten(fake)
+    tdlib_runtime._quieten(fake)
 
     (request,) = [r for r in fake.executed if r["@type"] == "setLogVerbosityLevel"]
     assert request["new_verbosity_level"] <= 1

@@ -304,6 +304,14 @@ the tree, which is the cost of having deferred them.
    `runtime.py` 905 -> 662 (`errors.py`), `connection.py` 984 -> 757 (`session_files.py`
    and, earlier, `proxy.py`). Eleven modules became twenty-two in total.
 
+   **Two more on 2026-09-19**, both pushed over the ceiling by the audit-23 repairs
+   rather than by new features: `tdlib.py` 814 -> 687 (`tdlib_runtime.py` - the
+   process-global half, one `tdjson` handle and the one `td_receive` thread that routes
+   by `@client_id`, which is per-process and so was never the client's) and
+   `connection.py` 801 -> 699 (`session_pool.py` - claiming one of several
+   interchangeable authorized sessions by advisory lock, which is a different decision
+   from building a client).
+
    **`Manage-Accounts.ps1` was split on 2026-09-06**, 1152 -> 650 plus three
    dot-sourced pieces: `account-manager/FileSafety.ps1` (private files, atomic writes, the
    log), `account-manager/EnvFile.ps1` (reading and rewriting `.env`) and `account-manager/Console.ps1`

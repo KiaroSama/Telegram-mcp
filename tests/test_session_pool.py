@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from telegram_mcp import connection, runner, runtime
+from telegram_mcp import connection, runner, runtime, session_pool
 from telegram_mcp.singleton import try_lock_exclusive
 
 # --- _parse_session_pool -----------------------------------------------------
@@ -24,11 +24,11 @@ def test_parse_session_pool_empty_when_unset(monkeypatch):
 
 @pytest.fixture
 def isolated_lock_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(runtime.tempfile, "gettempdir", lambda: str(tmp_path))
-    monkeypatch.setattr(connection, "_SESSION_LOCKS", [])
+    monkeypatch.setattr(session_pool.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(session_pool, "_SESSION_LOCKS", [])
     # A slot claimed by one test is handed straight back to the next otherwise:
     # the reuse that stops a rebuild taking a second slot is module state.
-    monkeypatch.setattr(connection, "_CLAIMED_SESSION", None)
+    monkeypatch.setattr(session_pool, "_CLAIMED_SESSION", None)
     return tmp_path
 
 
@@ -167,21 +167,21 @@ def test_the_pool_is_read_from_the_snapshot_it_was_handed(monkeypatch):
     pool from whatever the process still held."""
     monkeypatch.setenv("TELEGRAM_SESSION_STRINGS", "stale-a stale-b")
 
-    assert connection._parse_session_pool({"TELEGRAM_SESSION_STRINGS": "fresh-a"}) == ["fresh-a"]
-    assert connection._parse_session_pool({}) == []
+    assert session_pool._parse_session_pool({"TELEGRAM_SESSION_STRINGS": "fresh-a"}) == ["fresh-a"]
+    assert session_pool._parse_session_pool({}) == []
 
 
 def test_a_rebuild_hands_back_the_slot_it_already_claimed(monkeypatch, tmp_path):
     """A hot reload rebuilds an unchanged pool whenever anything else in `.env`
     moves. Walking the pool again found this process's own slot locked, skipped
     it, and claimed the NEXT one - consuming a slot another live client owns."""
-    monkeypatch.setattr(connection, "_SESSION_LOCKS", [])
-    monkeypatch.setattr(connection, "_CLAIMED_SESSION", None)
-    monkeypatch.setattr(connection.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(session_pool, "_SESSION_LOCKS", [])
+    monkeypatch.setattr(session_pool, "_CLAIMED_SESSION", None)
+    monkeypatch.setattr(session_pool.tempfile, "gettempdir", lambda: str(tmp_path))
     pool = ["session-one", "session-two"]
 
-    first = connection._acquire_session(pool)
-    again = connection._acquire_session(pool)
+    first = session_pool._acquire_session(pool)
+    again = session_pool._acquire_session(pool)
 
     assert again == first, "the rebuild claimed a second slot"
-    assert len(connection._SESSION_LOCKS) == 1, "and took a second lock with it"
+    assert len(session_pool._SESSION_LOCKS) == 1, "and took a second lock with it"

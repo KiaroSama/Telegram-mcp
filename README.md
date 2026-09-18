@@ -900,7 +900,8 @@ telegram_mcp/settings.py      # environment configuration; the bottom of the imp
 telegram_mcp/runtime.py       # shared MCP setup, entity resolution, formatting
 telegram_mcp/dialog_warm.py   # warming the entity cache once, with shared waiters
 telegram_mcp/errors.py        # error classes, refusal wording, id validation
-telegram_mcp/connection.py    # the session pool, and which account a call routes to
+telegram_mcp/connection.py    # building a client per account, and which one a call routes to
+telegram_mcp/session_pool.py  # which of several interchangeable sessions this process claims
 telegram_mcp/reconnect.py     # whether the socket still answers, and bringing it back
 telegram_mcp/account_snapshot.py # one reading of the configuration, used for every decision
 telegram_mcp/account_config.py # what the .env says about accounts, and what changed
@@ -917,8 +918,9 @@ telegram_mcp/aliases.py       # calling a contact what the operator calls them
 telegram_mcp/alias_store.py   # that name on disk: addressing, locking, protection
 telegram_mcp/runner.py        # application startup
 telegram_mcp/tdlib_registry.py # which TDLib client serves an account, and closing them
-                              #   `tdlib.stop_reader()` takes the receive thread out of
-                              #   the native library before the process ends
+telegram_mcp/tdlib_runtime.py # the one tdjson handle and the one receive thread, per process
+                              #   `stop_reader()` takes that thread out of the native
+                              #   library before the process ends
 telegram_mcp/tdlib_identity.py # whose account a TDLib database is, and quarantining a dead one
 telegram_mcp/tools/           # tool modules grouped by domain
 telegram_mcp/tools/feed_lifecycle.py  # one feed consumer at a time, and who owns one that will not stop
