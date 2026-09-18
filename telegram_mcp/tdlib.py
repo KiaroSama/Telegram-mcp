@@ -65,6 +65,7 @@ __all__ = [
     "close_all",
     "database_dir_for",
     "secret_client",
+    "stop_reader",
     "tdjson_status",
 ]
 

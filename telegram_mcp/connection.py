@@ -22,7 +22,7 @@ import logging
 import os
 import sys
 from functools import wraps
-from typing import Any, List, Optional
+from typing import Any, Optional
 
 from telethon import TelegramClient
 from telethon.sessions import StringSession
@@ -49,7 +49,6 @@ from telegram_mcp.log_setup import (  # noqa: F401  (re-exported)
     log_file_path,
     redact,
 )
-from telegram_mcp.singleton import try_lock_exclusive
 
 # Which of the pooled sessions this process claims, and the advisory locks that
 # keep two clients off the same slot. Imported by name so `_build_accounts`
@@ -155,7 +154,6 @@ from telegram_mcp.session_files import (  # noqa: F401  (re-exported)
 # the same file mid-write, and `-wal`/`-shm` hold them for as long as the
 # connection lives, so restricting only the `.session` restricts nothing while
 # a write is in flight.
-
 
 
 class NoAccountsConfigured(StartupMessage):
