@@ -58,6 +58,7 @@ from telegram_mcp.singleton import try_lock_exclusive
 # these checks and a reload did not, so the same server enforced two different
 # rules depending on when an account appeared.
 from telegram_mcp import admission as _admission
+from telegram_mcp import account_lifecycle as _lifecycle
 
 # Whether the socket in front of you still works, and bringing it back when it
 # does not. A different question from which accounts exist, so it lives next
@@ -428,7 +429,10 @@ _env_digests: dict = _boot.digests
 
 # The last revision that was read and refused, for the status tools to report. A
 # reload that quietly did nothing is indistinguishable from one that worked.
-_last_rejection: Optional[tuple] = None
+# The refused-revision record moved to `account_lifecycle`, which owns the
+# reload transaction and can be asked about it from anywhere. Re-exported
+# here because that is where callers have always looked.
+last_rejection = _lifecycle.last_rejection
 
 
 # Told after every change to `clients`. A registry of callbacks rather than a
@@ -476,7 +480,7 @@ def refresh_accounts() -> list:
 
     Returns the labels that changed, so a caller can say what happened.
     """
-    global _env_stamp, _env_digests, _last_rejection
+    global _env_stamp, _env_digests
 
     # ONE read. Fingerprinting the file and then parsing it again is two
     # readings of something being rewritten underneath, and the pair could
@@ -484,10 +488,18 @@ def refresh_accounts() -> list:
     # were never built, after which the next call saw nothing left to do.
     try:
         snapshot = read_snapshot()
-    except Exception:
+    except Exception as error:
         # A half-written `.env` - the account manager backs up and rewrites, so
         # there IS a window - must not take the running server down. The next
         # call reads again.
+        #
+        # RECORDED, not only swallowed. A revision the reader refuses - a
+        # malformed line, undecodable bytes, a file that exists and cannot be
+        # opened - now stops here rather than arriving as a partial
+        # configuration, and an operator who edited the file has to be able to
+        # ask why nothing happened. The stamp deliberately does NOT move: the
+        # bytes were never understood, so there is nothing to mark as seen.
+        _lifecycle.record_rejection(None, f"{type(error).__name__}: {error}")
         return []
 
     if snapshot.stamp == _env_stamp:
@@ -500,6 +512,7 @@ def refresh_accounts() -> list:
         return []
 
     keep = {label: client for label, client in clients.items() if not _replaced(label, digests)}
+    rebuilt = None
     try:
         rebuilt = _discover_accounts(env, reuse=keep)
         # The same check startup runs, before anything is published: two labels
@@ -507,6 +520,14 @@ def refresh_accounts() -> list:
         # by invalidating it for both. A reload could publish exactly that.
         _admission.reject_duplicate_sessions(rebuilt)
     except Exception as error:
+        # Every client this attempt CONSTRUCTED is closed before returning. The
+        # duplicate check runs after construction, so a rejection here used to
+        # leave real clients - sockets, and an open SQLite handle on a file
+        # session - built and owned by nobody at all.
+        if rebuilt:
+            for label, client in rebuilt.items():
+                if keep.get(label) is not client:
+                    _lifecycle.dispose(label, client, "the reload was rejected")
         # A `.env` that no longer describes a valid account set - a duplicate
         # label, an unusable one, or none at all - leaves the WORKING clients in
         # place. Refusing to serve because a file on disk went wrong would be
@@ -523,7 +544,7 @@ def refresh_accounts() -> list:
         # serving. The rejection is recorded rather than only logged, because a
         # reload that quietly did nothing looks exactly like one that worked.
         _env_stamp = stamp
-        _last_rejection = (stamp, f"{type(error).__name__}: {error}")
+        _lifecycle.record_rejection(stamp, f"{type(error).__name__}: {error}")
         return []
 
     before = dict(clients)
@@ -535,43 +556,60 @@ def refresh_accounts() -> list:
         # socket is actually down. Releasing first is the window another process
         # needs to claim a session this one is still connected to.
         _admission.forget(label, closing=_retire(clients.pop(label)))
+    # STAGED, not published. A replacement is only what its label means once it
+    # holds the session lease, has connected and has proved the session is
+    # authorized - all of which can fail, and all of which used to happen after
+    # the working client had already been retired and replaced. Until then the
+    # previous client keeps answering.
+    staged = []
     for label, client in rebuilt.items():
         if label in clients and not _replaced(label, digests):
             continue
-        if label in clients:
-            _admission.forget(label, closing=_retire(clients[label]))
-        clients[label] = client
+        previous = clients.get(label)
+        if previous is None:
+            # Nothing is serving this label, so there is nothing to protect:
+            # publish it and let admission gate what is served FROM it.
+            clients[label] = client
+        staged.append(_lifecycle.Staged(label=label, client=client, previous=previous))
 
-    _env_stamp, _env_digests, _last_rejection = stamp, digests, None
-    # Identity, not label: a re-login keeps the label and replaces the object, and
-    # a listener that only watched labels left the new client with no handler.
-    added = {label: cl for label, cl in clients.items() if before.get(label) is not cl}
-    # A hot-added client has taken no session lock. Admission needs an event loop
-    # and this function is synchronous, so it is queued for the first async use
-    # rather than skipped - which is how a reload came to connect a session that
-    # no lock protected.
-    for label, client in added.items():
-        # The same session under a new label keeps the lease it already holds;
-        # releasing and re-taking it would be a gap for a change that never
-        # touched the session.
+    _env_stamp, _env_digests = stamp, digests
+    _lifecycle.clear_rejection()
+
+    # A pure label move first, and it is not a transaction: the SAME session and
+    # the SAME client under a new name already hold the lease, and releasing and
+    # re-taking it would be a gap another process could use for a change that
+    # never touched the session. A fresh `claim_session` would also block on this
+    # process's own lock.
+    for entry in list(staged):
         moved = next(
             (
                 old
                 for old, lease in _admission._leases.items()
-                if lease.client is client and old != label
+                if lease.client is entry.client and old != entry.label
             ),
             None,
         )
-        if moved is not None and _admission.transfer_lease(moved, label, client):
-            continue
-        _admission.forget(label)
+        if moved is not None and _admission.transfer_lease(moved, entry.label, entry.client):
+            clients[entry.label] = entry.client
+            staged.remove(entry)
+
+    # Identity, not label: a re-login keeps the label and replaces the object, and
+    # a listener that only watched labels left the new client with no handler.
+    added = {label: cl for label, cl in clients.items() if before.get(label) is not cl}
+    for label in added:
+        if label not in _admission.session_locks:
+            _admission.forget(label)
     still_pending = {
         label: client for label, client in added.items() if label not in _admission.session_locks
     }
-    # Started NOW rather than on the first async API call. A server that only
-    # waits for incoming events never makes one, so a hot-added account sat
-    # published and unadmitted for as long as nobody used a tool.
-    _admission.begin_admission(still_pending)
+    # Started NOW rather than on the first async API call, and it CONNECTS. A
+    # server that only waits for incoming updates never makes an API call, so a
+    # hot-added account used to sit published with a lease and no socket - which
+    # is not an account that receives anything. The transaction takes the lease,
+    # connects, proves the session is authorized, and only then swaps a
+    # replacement in; a failure leaves the previous client serving.
+    _admission.mark_awaiting_admission(still_pending)
+    _lifecycle.begin(staged, clients)
     _notify_clients_changed(set(added), set(before) - set(clients))
     return sorted(set(changed))
 

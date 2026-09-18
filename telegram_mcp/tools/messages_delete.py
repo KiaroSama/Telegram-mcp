@@ -61,6 +61,15 @@ async def _ids_that_live_here(cl, entity, message_ids):
     return here, missing, elsewhere
 
 
+def _ids(values, cap: int = 12) -> str:
+    """The ids themselves, bounded. A count alone leaves the caller unable to
+    act: after an irreversible deletion, WHICH ones is the whole question."""
+    if not values:
+        return "none"
+    shown = ", ".join(str(v) for v in values[:cap])
+    return shown if len(values) <= cap else f"{shown} ... (+{len(values) - cap} more)"
+
+
 def _private_only_refusal(chat_id, what: str) -> str:
     """The one wording, for the one rule, on both entrypoints.
 
@@ -266,12 +275,26 @@ async def delete_chat_history(
         # An unanswered first call leaves no offset to quote; saying "unknown" is
         # the honest form of "Telegram never told us".
         left = "unknown" if offset is None else offset
+        # ZERO COMPLETED PASSES MEANS NOTHING IS KNOWN TO HAVE GONE. The sentence
+        # here used to say "Messages WERE deleted" unconditionally, so a first
+        # call that timed out sent the caller to re-read a chat for a deletion
+        # that may never have happened - and the request may equally have been
+        # acted on, which is why this says neither.
+        if passes == 0:
+            outcome = (
+                "Whether anything was deleted is NOT KNOWN: the first call was sent "
+                "and no answer came back, so Telegram may or may not have acted on it. "
+                "Re-read the chat before deciding."
+            )
+        else:
+            outcome = (
+                f"The {passes} completed pass(es) DID delete - Telegram does not say "
+                "how many - so re-read the chat rather than assuming nothing happened."
+            )
         return (
             f"Chat {chat_id} history deletion is INCOMPLETE {scope} after {passes} "
             f"pass(es): Telegram still reports offset={left} left because {reason}. "
-            "Messages WERE deleted - Telegram does not say how many - so re-read the "
-            "chat rather than assuming nothing happened. Run delete_chat_history "
-            "again to continue."
+            f"{outcome} Run delete_chat_history again to continue."
         )
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
         return "Cannot delete chat history: admin privileges are required."
@@ -354,19 +377,36 @@ async def delete_messages_bulk(
                     await cl(functions.messages.DeleteMessagesRequest(id=batch, revoke=revoke))
             except Exception as error:
                 # A deletion is irreversible, so a caller who has already lost
-                # 100 messages must be told which ones. Reporting only the
+                # 100 messages must be told WHICH ones. Reporting only the
                 # exception left them unable to tell "nothing happened" from
                 # "the first hundred are gone" - and the obvious next move,
                 # running it again, is destructive in the first case.
                 log_and_format_error(
                     "delete_messages_bulk", error, chat_id=chat_id, message_ids=batch
                 )
+                # A LOST RESPONSE IS NOT A FAILURE. `TimeoutError` says the answer
+                # never arrived, which is silent about whether the server acted;
+                # calling that "failed" invites a retry that deletes a second
+                # batch the caller believed was still there. A deterministic
+                # refusal from Telegram is a different fact and keeps its name.
+                lost = isinstance(error, (asyncio.TimeoutError, TimeoutError))
+                unsent = targets[start + len(batch) :]
                 return (
                     f"Deletion of {len(targets)} message(s) in chat {chat_id} stopped "
-                    f"part-way: {sent} were accepted and are GONE, {len(batch)} failed "
-                    f"({type(error).__name__}: {error}), and "
-                    f"{len(targets) - sent - len(batch)} were never sent. Re-read the "
-                    "chat before retrying - the accepted ones will not be there."
+                    f"part-way.{chr(10)}"
+                    f"  accepted and GONE ({sent}): {_ids(targets[:start])}{chr(10)}"
+                    + (
+                        f"  UNCONFIRMED ({len(batch)}): {_ids(batch)} - the request was "
+                        f"sent and no answer came back ({type(error).__name__}), so "
+                        f"Telegram may or may not have removed these. Check the chat "
+                        f"before retrying them.{chr(10)}"
+                        if lost
+                        else f"  rejected ({len(batch)}): {_ids(batch)} - "
+                        f"{type(error).__name__}: {error}{chr(10)}"
+                    )
+                    + f"  never sent ({len(unsent)}): {_ids(unsent)}{chr(10)}"
+                    + "Re-read the chat before retrying - the accepted ones will not "
+                    "be there."
                 )
             sent += len(batch)
 

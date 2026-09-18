@@ -53,11 +53,19 @@ def _tdlib_not_shutting_down():
     Autouse and here rather than in each suite, because the leak is a property
     of the module rather than of any one test file.
     """
-    from telegram_mcp import tdlib_registry
+    from telegram_mcp import admission, tdlib_registry
 
     tdlib_registry._closing = False
+    # The same shape one module along: `admission.release_all()` closes the door
+    # so a slow acquire cannot publish after shutdown, and every suite's cleanup
+    # calls it. Without this, the first cleanup left every later admission in the
+    # session silently refusing to publish.
+    admission.begin_serving()
+    admission.unreleased_leases.clear()
     yield
     tdlib_registry._closing = False
+    admission.begin_serving()
+    admission.unreleased_leases.clear()
 
 
 @pytest.fixture
