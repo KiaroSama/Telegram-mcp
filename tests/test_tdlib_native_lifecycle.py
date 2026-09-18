@@ -22,6 +22,7 @@ import asyncio
 import pytest
 
 from telegram_mcp import tdlib
+from telegram_mcp import tdlib_runtime
 
 
 def _tdjson_available() -> bool:
@@ -124,11 +125,11 @@ def test_the_receive_thread_leaves_the_native_library_when_asked():
     session could pass and then abort on its way out. CI reported `2950 passed`
     and exit 250 in the same job.
     """
-    tdlib._ensure_reader()
-    assert tdlib._reader is not None and tdlib._reader.is_alive()
+    tdlib_runtime._ensure_reader()
+    assert tdlib_runtime._reader is not None and tdlib_runtime._reader.is_alive()
 
     assert tdlib.stop_reader(timeout=5) is True, "the receive thread would not leave TDLib"
-    assert tdlib._reader is None
+    assert tdlib_runtime._reader is None
 
 
 def test_stopping_a_reader_that_never_started_is_harmless():
