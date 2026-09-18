@@ -10,10 +10,14 @@
 # so the two cannot drift: add a matrix entry without adding it here and that
 # test fails.
 #
-# Format: <label> <expected X.Y>
-py3.11 3.11
-py3.12 3.12
-py3.13 3.13
-py3.14 3.14
-lottie-ubuntu-latest 3.11
-lottie-windows-latest 3.11
+# Format: <label> <expected X.Y> <expected platform>
+#
+# The platform is here because agreement said nothing about it: both OS legs
+# could report the same OS and nothing noticed, so "we test Windows too" was
+# unverified.
+py3.11 3.11 Linux
+py3.12 3.12 Linux
+py3.13 3.13 Linux
+py3.14 3.14 Linux
+lottie-ubuntu-latest 3.11 Linux
+lottie-windows-latest 3.11 Windows

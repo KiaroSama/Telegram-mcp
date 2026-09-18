@@ -82,6 +82,18 @@ _admitting: Dict[int, asyncio.Task] = {}
 # Releases waiting on a socket to finish closing, so shutdown can wait for them.
 _releasing: set = set()
 
+# Leases whose socket never confirmed it closed. The lock is STILL HELD - giving
+# it back would let a second process connect a session this one may still have
+# open, which Telegram answers by invalidating the key for both. Kept as an owned
+# record so shutdown can report what it could not account for, keyed by label
+# with the reason.
+unreleased_leases: Dict[str, str] = {}
+
+# Set by `release_all()`. An acquire blocked in its thread when shutdown ran must
+# not publish afterwards: nothing would be left to release it, and the session
+# would stay claimed for the life of the process.
+_stopped: bool = False
+
 
 class AdmissionSuperseded(StartupMessage):
     """This client stopped being what its label means while it was being admitted.
@@ -119,6 +131,12 @@ def reject_duplicate_sessions(configured: dict) -> None:
 
 
 def _publish(label: str, client, lock: SessionLock, identity: str) -> None:
+    if _stopped:
+        # Shutdown already ran. `asyncio.to_thread` cannot be cancelled, so an
+        # acquire begun before the boundary still returns a real lock afterwards;
+        # publishing it here would leave a held session with no owner to release.
+        _release_lock(lock, "an admission that finished after shutdown")
+        return
     session_locks[label] = lock
     _leases[label] = _Lease(label=label, client=client, lock=lock, identity=identity)
 
@@ -284,18 +302,30 @@ def forget(label: str, closing=None) -> None:
 
 
 async def _release_when_closed(lease: _Lease, closing) -> None:
+    """Release the lease only once the socket it protects is CONFIRMED down.
+
+    The earlier version released on every path, timeout included. That is the
+    precise window the lease exists to close: a disconnect that had not finished
+    handed the session to whoever asked next, while this process may still have
+    had it open - and a session connected twice is an auth key Telegram
+    invalidates for both ends.
+
+    So an unconfirmed close keeps the lock and records the label instead. The
+    cost is a session this process will not reuse until it restarts, which is
+    recoverable; the alternative is not.
+    """
     try:
         await asyncio.wait_for(asyncio.shield(_as_future(closing)), _CLOSE_BEFORE_RELEASE_SECONDS)
     except Exception as error:
-        # Released anyway, and said out loud. Holding it for the life of the
-        # process would lock the operator out of their own account; the risk
-        # being accepted is named rather than hidden.
+        unreleased_leases[lease.label] = f"{type(error).__name__}: {error}"
         log_event(
             logging.WARNING,
-            "releasing a session lease before its socket confirmed it closed",
+            "keeping a session lease: its socket never confirmed it closed",
             account=lease.label,
             error=error,
         )
+        return
+    unreleased_leases.pop(lease.label, None)
     _release_lock(lease.lock, "a confirmed close")
 
 
@@ -318,8 +348,27 @@ async def drain_releases(timeout: float = _CLOSE_BEFORE_RELEASE_SECONDS) -> int:
     return len(still_running)
 
 
+def begin_serving() -> None:
+    """Open the door `release_all` closed. Startup's first step.
+
+    The stop boundary is sticky on purpose - a shutdown must not be undone by a
+    task that was merely slow - so something has to state that this process is
+    serving again. Only startup does, which is why no admission path calls it.
+    """
+    global _stopped
+    _stopped = False
+
+
 def release_all() -> None:
-    """Drop every lock this process holds. Shutdown's last step."""
+    """Drop every lock this process holds, and close the door behind it.
+
+    Shutdown's last step. The `_stopped` flag is the half that was missing: an
+    acquire already blocked in its thread cannot be cancelled, so without a
+    boundary it published a lock after this ran and nothing was left to release
+    it.
+    """
+    global _stopped
+    _stopped = True
     for lease in list(_leases.values()):
         _release_lock(lease.lock, "shutdown")
     for label, lock in list(session_locks.items()):
@@ -336,6 +385,7 @@ __all__ = [
     "_awaiting_admission",
     "admit_if_pending",
     "begin_admission",
+    "begin_serving",
     "claim_session",
     "drain_releases",
     "forget",
@@ -344,4 +394,5 @@ __all__ = [
     "release_all",
     "session_locks",
     "transfer_lease",
+    "unreleased_leases",
 ]

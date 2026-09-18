@@ -379,6 +379,8 @@ jobs:
         run: python scripts/ci_record.py --compare case-records
           --legs .github/expected-legs.txt
           --suites .github/expected-suites.txt
+          --expect-commit "${{ github.sha }}"
+          --expect-lock
 
   # The floor, applied once, to everything that ran.
   #

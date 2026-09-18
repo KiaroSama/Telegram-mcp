@@ -33,6 +33,53 @@ async def _awaited(awaitable):
     await awaitable
 
 
+class ClosureRefused(RuntimeError):
+    """The client would not close. Its socket may still be up.
+
+    Carried on the future ``retire`` hands back rather than collapsed into
+    ``None``, because the caller releases a session lease on that answer and
+    "already closed" and "refused to close" must not look the same to it.
+    """
+
+
+class _Refused:
+    """An already-failed awaitable that needs no event loop to exist.
+
+    `retire` is synchronous and is called with and without a running loop, so a
+    `Future` is the wrong carrier here: creating one outside a loop is deprecated
+    and about to stop working. Awaiting this raises, which is what every caller
+    that waits on a closure needs to see.
+    """
+
+    __slots__ = ("error",)
+
+    def __init__(self, error: BaseException):
+        self.error = ClosureRefused(str(error) or type(error).__name__)
+
+    def __await__(self):
+        raise self.error
+        yield  # unreachable, and what makes this a generator function
+
+
+def _refused(error: BaseException) -> "_Refused":
+    return _Refused(error)
+
+
+def closure_failed(outcome) -> bool:
+    """True when what ``retire`` returned says the close did NOT happen.
+
+    Anything still pending is a disconnect in flight; ``None`` is a completed
+    one; only this shape means the socket may still be up.
+    """
+    if isinstance(outcome, _Refused):
+        return True
+    if outcome is None or not asyncio.isfuture(outcome) or not outcome.done():
+        return False
+    if outcome.cancelled():
+        return True
+    return isinstance(outcome.exception(), ClosureRefused)
+
+
 def retire(client):
     """Close a client this process no longer serves, and hand back its progress.
 
@@ -65,8 +112,10 @@ def retire(client):
         pass
     try:
         closing = client.disconnect()
-    except Exception:
-        return None
+    except Exception as error:
+        # NOT `None`. The socket is probably still up, and the caller decides
+        # whether to give a session lease away on this answer.
+        return _refused(error)
     if closing is None:  # Telethon already closed it synchronously
         return None
     try:
@@ -76,8 +125,8 @@ def retire(client):
     else:
         try:
             task = asyncio.ensure_future(closing)
-        except Exception:
-            return None
+        except Exception as error:
+            return _refused(error)
         # Tracked, because dropping the handle is how a session lock came to be
         # released while the socket under it was still closing.
         _retiring.add(task)
@@ -85,13 +134,13 @@ def retire(client):
         return task
     try:
         asyncio.run(closing if asyncio.iscoroutine(closing) else _awaited(closing))
-    except Exception:
+    except Exception as error:
         try:
             closing.close()  # at least do not leave a pending coroutine
         except Exception:
             pass
-    # Closed (or failed to) right here, so there is nothing left to wait on.
-    return None
+        return _refused(error)
+    return None  # closed right here, so there is nothing left to wait on
 
 
 async def drain_retirements(timeout: float = None) -> int:
@@ -118,6 +167,8 @@ async def drain_retirements(timeout: float = None) -> int:
 __all__ = [
     "_RETIRE_DRAIN_SECONDS",
     "_retiring",
+    "ClosureRefused",
+    "closure_failed",
     "drain_retirements",
     "retire",
 ]

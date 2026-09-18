@@ -205,22 +205,28 @@ def watch_script(path, contains: Optional[str] = None) -> str:
 
     Two checks, and the reasoning for each is the whole of this function:
 
-    **Is this still the same file?** Rotation replaces the name with a fresh,
-    EMPTY file, so a length below what has already been read settles it. What
-    that misses is a replacement that grew back past the old mark inside one
-    poll interval, which is why the first bytes are compared as well.
+    **Is this still the same file?** Asked of the FILE, not of its contents.
+    Every content-based answer has the same hole: two files can agree. A prefix
+    comparison was the previous answer, and a replacement sharing the first 64
+    bytes AND the length - which ordinary JSONL records do, having the same keys
+    in the same order - passed it completely. The watcher then read on at the old
+    offset, skipping the new file's first records and, once it grew past that
+    mark, emitting the wrong bytes. Widening the prefix moves the collision
+    rather than removing it.
 
-    The bytes compared are the first `min(64, offset)` - the region already read,
-    which an append cannot change. Sampling a fixed 64 bytes instead was wrong on
-    a file SHORTER than 64 bytes: an ordinary append changed the sample, the
-    watcher called it a new file, reset to zero and replayed every record it had
-    already emitted. It is also compared on EVERY poll rather than only when the
-    file has grown, because a same-size replacement grows by nothing and was
-    therefore invisible.
+    So identity comes from the file itself: `GetFileInformationByHandle` on the
+    handle already open, giving the volume serial and the NTFS file index. A
+    newly created file has a new index, whatever its name or contents, and the
+    call is made on the SAME handle the bytes are read from - so there is no
+    window between deciding identity and using it.
 
-    The creation stamp is not used and cannot be: NTFS tunneling hands a name
-    recreated within about fifteen seconds the OLD stamp, and a rotation takes
-    far less than that.
+    The creation stamp cannot answer this and is not used: NTFS tunneling hands a
+    name recreated within about fifteen seconds the OLD stamp, and a rotation
+    takes far less than that.
+
+    The length check stays beside it, because the two catch different things: a
+    file emptied and rewritten IN PLACE keeps its identity, and only the length
+    says it restarted.
 
     **Is this line finished?** A JSONL record and its newline are one append, but
     a reader can still arrive mid-write. Only content up to the last newline is
@@ -244,17 +250,32 @@ def watch_script(path, contains: Optional[str] = None) -> str:
         "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,"
         "[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete);"
         "try{"
-        # Shorter than what was already read: a different file, certainly.
+        # Shorter than what was already read: a different file, or the same one
+        # truncated in place - which keeps its identity, so only this sees it.
         "if($f.Length -lt $o){$o=[long]0;$sig=''};"
-        # The region already read, which an append cannot alter. Checked every
-        # poll, so a replacement of exactly the same length is still caught.
-        "$n=[Math]::Min(64,$o);"
+        # WHICH FILE this is, from the handle being read. A replacement has a new
+        # NTFS index whatever its name, length or first bytes.
+        # WHICH FILE this is, by its NTFS id. `fsutil` rather than a P/Invoke
+        # through Add-Type: that route compiles C# at startup, which measured
+        # 4.7-6.8 seconds before the watcher read its first line - a monitor that
+        # takes five seconds to notice anything, and a race every caller and test
+        # around it then has to sleep through. This costs ~66ms per poll, needs
+        # no elevation, and leaves startup immediate.
         "$cur='';"
+        "try{$q=(fsutil file queryfileid $p 2>$null);"
+        "if($q){$cur=[string]$q}}catch{};"
+        # And the region already read, which an append cannot alter. The identity
+        # and the prefix catch DIFFERENT things and both are needed: a new file
+        # can carry the same first bytes (the audit's case), and the same file
+        # can be rewritten in place at the same length (this project's own case,
+        # where the id never changes and neither does the length). Dropping
+        # either one loses a rotation.
+        "$n=[Math]::Min(64,$o);"
         "if($n -gt 0){"
         "$b=New-Object byte[] $n;"
         "[void]$f.Seek(0,[IO.SeekOrigin]::Begin);"
         "$read=$f.Read($b,0,$n);"
-        "$cur=[Convert]::ToBase64String($b,0,$read)};"
+        "$cur=$cur+'|'+[Convert]::ToBase64String($b,0,$read)};"
         "if($cur -ne $sig){$o=[long]0;$sig=''};"
         "if($f.Length -gt $o){"
         "[void]$f.Seek($o,[IO.SeekOrigin]::Begin);"
@@ -267,12 +288,18 @@ def watch_script(path, contains: Optional[str] = None) -> str:
         "foreach($line in $whole.Split([char]10)){"
         "$line=$line.TrimEnd([char]13);"
         "if($line -ne ''){" + emit + "}};"
+        # The offset moves, and the signature is rebuilt over the region that is
+        # now "already read" - which just grew, so the prefix half of it has to be
+        # taken again or the next poll compares against a stale sample.
         "$o=$o+[Text.Encoding]::UTF8.GetByteCount($whole);"
         "$n2=[Math]::Min(64,$o);"
         "$b2=New-Object byte[] $n2;"
         "[void]$f.Seek(0,[IO.SeekOrigin]::Begin);"
         "$read2=$f.Read($b2,0,$n2);"
-        "$sig=[Convert]::ToBase64String($b2,0,$read2)}}"
+        "$idnow='';"
+        "try{$q2=(fsutil file queryfileid $p 2>$null);"
+        "if($q2){$idnow=[string]$q2}}catch{};"
+        "$sig=$idnow+'|'+[Convert]::ToBase64String($b2,0,$read2)}}"
         "}finally{$f.Dispose()}}catch{}}"
         f"Start-Sleep -Milliseconds {_WATCH_POLL_MS}" + "}"
     )
