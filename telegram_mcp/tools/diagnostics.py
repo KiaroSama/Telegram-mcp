@@ -25,9 +25,12 @@ _ROOTS_ADVICE = {
         "File tools are enabled. Paths must resolve inside one of the roots listed below."
     ),
     file_roots.ROOTS_STATUS_NOT_CONFIGURED: (
-        "File tools are disabled: no allowed root is configured. Either start the "
-        "server with one or more directories as positional arguments, or configure "
-        "roots in the MCP client so it answers `roots/list`."
+        "File tools are disabled: no allowed root is configured. Three ways to fix "
+        "it, any one is enough: set TELEGRAM_FILE_ROOTS to the directories to allow "
+        "(separated by this OS's path separator - usually the easiest, because an "
+        "MCP client config has an `env` block); or start the server with those "
+        "directories as positional arguments; or configure roots in the MCP client "
+        "so it answers `roots/list`."
     ),
     file_roots.ROOTS_STATUS_UNSUPPORTED_FALLBACK: (
         "This MCP client does not implement `roots/list`, so the server's own "

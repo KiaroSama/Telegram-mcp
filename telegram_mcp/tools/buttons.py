@@ -24,6 +24,11 @@ from telegram_mcp.message_view import display_name
 
 from telethon import functions
 
+# Spelled out rather than escaped. This message is assembled inside an
+# f-string, and a literal backslash-n there is one careless transformation
+# away from becoming a real newline and an unterminated literal.
+NEWLINE = chr(10)
+
 __all__ = [
     "click_button",
     "inspect_buttons",
@@ -144,11 +149,21 @@ def _bind_tokens(buttons: list[dict[str, Any]], msg, entity, account) -> None:
             described["press_token"] = _sign(facts)
 
 
-async def _message_with_keyboard(chat_id, message_id: int, account: Optional[str]):
-    """``(client, entity, message)`` for one message. Raises on a missing chat."""
+async def _message_with_keyboard(chat_id, message_id: Optional[int], account: Optional[str]):
+    """``(client, entity, message)`` for one message. Raises on a missing chat.
+
+    ``message_id=None`` means the chat's most recent message, which is what a
+    caller wants when it is looking at a keyboard that just arrived. Only
+    `inspect_buttons` passes None: pressing a button on "whatever is latest" is a
+    different and much worse idea, so `click_button` names its message and this
+    branch never runs for it.
+    """
     cl = get_client(account)
     await ensure_connected(cl)
     entity = await resolve_entity(chat_id, cl)
+    if message_id is None:
+        latest = await cl.get_messages(entity, limit=1)
+        return cl, entity, (latest[0] if latest else None)
     return cl, entity, await cl.get_messages(entity, ids=message_id)
 
 
@@ -221,7 +236,7 @@ async def _resolve_icons(cl, buttons: list) -> None:
 @validate_id("chat_id")
 async def inspect_buttons(
     chat_id: Union[int, str],
-    message_id: int,
+    message_id: Optional[int] = None,
     resolve_icons: bool = True,
     account: str = None,
 ) -> str:
@@ -248,7 +263,9 @@ async def inspect_buttons(
 
     Args:
         chat_id: The chat ID or username.
-        message_id: The message carrying the keyboard.
+        message_id: The message carrying the keyboard. Omit it for the chat's most
+            recent message, which is usually the one you are looking at; the reply
+            names the id it actually read, so the answer is never ambiguous.
         resolve_icons: Look up what each styled button's icon emoji actually is.
             One extra request for the whole keyboard, no download. Turn it off to
             keep the listing to a single round trip.
@@ -258,12 +275,13 @@ async def inspect_buttons(
     """
     try:
         cl, entity, msg = await _message_with_keyboard(chat_id, message_id, account)
+        wanted = f"Message {message_id}" if message_id is not None else "The latest message"
         if not msg:
-            return f"Message {message_id} was not found in chat {chat_id}."
+            return f"{wanted} was not found in chat {chat_id}."
 
         keyboard = describe_keyboard(msg)
         if keyboard is None:
-            return f"Message {message_id} carries no keyboard of either kind."
+            return f"{wanted} (id {msg.id}) carries no keyboard of either kind."
 
         buttons = keyboard["buttons"]
         _mark_text_collisions(buttons, msg)
@@ -349,20 +367,32 @@ async def click_button(
         # is precisely the press this tool exists to prevent. It was only ever
         # recommended, so an index taken from any listing, however old, still
         # sent a real callback to whatever now sits at that position.
+        # Both conditions in ONE answer. Reporting them one at a time cost a
+        # caller two round trips to learn two things this function knew before it
+        # read anything, and the second refusal reads like a new problem rather
+        # than the rest of the first one.
+        missing = []
         if expect_text is None:
-            return (
-                "expect_text is required. An index is a position, not an identity: the bot "
-                "can edit its own keyboard between the listing and the press, and the index "
-                "would still resolve — to a different button. Run inspect_buttons and pass "
-                "the label it reports at that index. Nothing was pressed."
+            missing.append(
+                "expect_text - an index is a position, not an identity: the bot can edit "
+                "its own keyboard between the listing and the press, and the index would "
+                "still resolve, to a different button. Pass the label inspect_buttons "
+                "reports at that index."
             )
         if not press_token:
+            missing.append(
+                "press_token - expect_text compares the label a listing DISPLAYED, and a "
+                "bot can keep that label while changing the callback the button sends, so "
+                "the label is a readability guard and not an identity. Pass the "
+                "press_token inspect_buttons publishes beside the button."
+            )
+        if missing:
+            plural = "s are" if len(missing) > 1 else " is"
+            listed = (NEWLINE + "- ").join(missing)
             return (
-                "press_token is required. expect_text compares the label a listing "
-                "DISPLAYED, and a bot can keep that label while changing the callback "
-                "the button sends — so the label is a readability guard, not an "
-                "identity. Run inspect_buttons and pass the press_token it publishes "
-                "beside the button. Nothing was pressed."
+                f"Nothing was pressed. {len(missing)} required argument{plural} missing:"
+                f"{NEWLINE}- {listed}{NEWLINE}{NEWLINE}"
+                "Run inspect_buttons on this message and pass what it returns."
             )
 
         cl, entity, msg = await _message_with_keyboard(chat_id, message_id, account)
