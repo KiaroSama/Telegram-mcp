@@ -1169,7 +1169,7 @@ below is read-only; the Actions row is not, and each entry there has a real effe
 
 | | Tools |
 |---|---|
-| Structured | `inspect_message`, `inspect_messages`, `get_media_details`, `inspect_buttons`, `list_scheduled_messages`, `list_disappearing_media` |
+| Structured | `inspect_message`, `inspect_messages`, `get_media_details`, `inspect_buttons`, `list_chat_commands`, `list_scheduled_messages`, `list_disappearing_media` |
 | Previews | `get_media_thumbnail`, `get_media_frames`, `get_custom_emoji`, `get_message_effect`, `list_message_effects` |
 | Visual (Windows) | `list_telegram_windows`, `get_telegram_screen`, `get_telegram_region`, `get_telegram_frames` |
 | Actions | `click_button`, `schedule_message`, `edit_scheduled_message`, `cancel_scheduled_message`, `send_disappearing_media`, `save_disappearing_media` |
@@ -1202,6 +1202,13 @@ legitimate documents.
 `send_disappearing_media` sends with a timer through that same
 gate; `seconds` is 1-60 or 0 for view-once, and anything longer is refused because Telegram
 silently drops an out-of-range timer and would send permanent media instead.
+
+`list_chat_commands` is the list a Telegram client shows after `/`: every command every bot in
+the chat publishes, each with the exact `send_as_text` that invokes it there -
+`/status@AdTimerBot` in a group, `/status` in a private chat - so sending one is a matter of
+passing that text to `send_message` rather than assembling it. A bot with no commands but a
+menu button still appears, since that button is then its only entry point, and a chat with no
+bots says so rather than returning an empty list that could equally mean a failed read.
 
 `inspect_buttons` and `click_button` cover the inline ("glass") keyboard. The pairing matters:
 a button label is written by whoever sent the message and can carry a bidi override that makes
