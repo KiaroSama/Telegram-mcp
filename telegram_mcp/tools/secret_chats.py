@@ -41,6 +41,7 @@ from telegram_mcp.file_roots import (
 )
 from telegram_mcp.handles import NAME_ATTEMPTS
 from telegram_mcp.paging import LIMITS, bounded
+from telegram_mcp.secret_limits import CAPABILITIES
 from telegram_mcp.runtime import *
 from telegram_mcp.tdlib import (
     NotSignedIn,
@@ -103,14 +104,30 @@ def _chat_record(chat: dict) -> dict:
 @with_account(readonly=True)
 async def secret_chat_status(account: str = None) -> str:
     """
-    Report whether secret chats work for this account, and what to do if not.
+    Report whether secret chats work for this account, and what each one can do.
 
     Secret chats have two prerequisites the rest of the server does not, and
     they fail in completely different places: Telegram's own library has to be
     installed, and the account has to be signed in to it separately. Without
     this tool a caller meeting either failure cannot tell which one it hit.
 
-    Note: the values here are local configuration, not user-generated content.
+    **`capabilities` is the other half, and the reason to read this before
+    planning work in a secret chat.** A secret chat is not an ordinary chat with
+    a flag on it: MTProto's encrypted layer has a closed vocabulary of thirteen
+    actions and ten media types, and roughly a third of what an ordinary chat
+    does has no representation in it at all. Editing a sent message, reactions,
+    pinning, scheduling, forwarding out, polls, live locations, threads and
+    read-by are not missing from this server — they do not exist in the
+    protocol. Each is listed with the concrete reason, so an agent can tell
+    "there is no tool for this" from "this cannot be done", and does not spend
+    turns looking for a tool that was never going to exist.
+
+    Each entry carries `verdict`: `available` (works as it does anywhere),
+    `differs` (works, but not the way an ordinary chat does — read the note), or
+    `impossible`.
+
+    Note: the values here are local configuration and this server's own
+    documentation, not user-generated content.
     """
     status = tdjson_status()
     if not status["available"]:
@@ -119,6 +136,10 @@ async def secret_chat_status(account: str = None) -> str:
                 "secret_chats": "unavailable",
                 "reason": status["reason"],
                 "fix": "pip install tdjson  (or: uv pip install tdjson)",
+                # Still reported: these verdicts describe the PROTOCOL, not this
+                # installation, so they are just as true with the library absent
+                # - and a caller planning work deserves them before fixing setup.
+                "capabilities": CAPABILITIES,
             }
         )
 
@@ -149,6 +170,7 @@ async def secret_chat_status(account: str = None) -> str:
         return log_and_format_error("secret_chat_status", e, account=label)
 
     record["secret_chats"] = "ready"
+    record["capabilities"] = CAPABILITIES
     return format_tool_result(record)
 
 
