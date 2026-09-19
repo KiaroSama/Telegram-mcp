@@ -635,7 +635,7 @@ so the environment guard stays distinct from the test fixtures. It neutralises t
 The inherited files this touches are `telegram_mcp/tools/__init__.py` (28 import lines
 now: 12 for the modules described here, and 16 above them — up from 9, because splitting
 `messages.py`, `groups.py` and `chats.py` gave each of them siblings to register),
-plus `pyproject.toml` and `requirements.txt` for the Pillow dependency. `message_view.py` layers
+plus `pyproject.toml` for the Pillow dependency. `message_view.py` layers
 on top of the inherited `message_to_dict` rather than replacing it - originally so improvements from the
 original project kept flowing through, now simply because the layering is the cleaner shape.
 
