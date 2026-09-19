@@ -44,7 +44,8 @@ class _Client:
 def _clean(monkeypatch, tmp_path):
     """Real locks, in a directory this test owns; state cleared in place."""
     mod.session_locks.clear()
-    mod._leases.clear()
+    mod._active.clear()
+    mod._retiring.clear()
     mod._awaiting_admission.clear()
     mod._admitting.clear()
     mod._releasing.clear()
@@ -325,7 +326,7 @@ async def test_shutdown_releases_every_lease():
     mod.release_all()
 
     assert len(released) == 2
-    assert mod.session_locks == {} and mod._leases == {}
+    assert mod.session_locks == {} and mod._active == {} and mod._retiring == {}
 
 
 # --- what the reload path does with all of it ----------------------------------

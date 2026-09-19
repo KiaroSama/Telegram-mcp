@@ -168,7 +168,7 @@ async def admit(
         # The lease first: an acquire that succeeded before the connect failed
         # would otherwise keep a session claimed for a client nobody serves.
         closing = retire(client)
-        _admission.forget(label, closing=closing)
+        _admission.forget(label, closing=closing, client=client)
         # AWAITED, bounded, as part of the transaction. Scheduling the disconnect
         # and returning leaves the caller unable to say whether the staged client
         # was disposed of - and "dispose every staged resource" is the property
@@ -188,9 +188,13 @@ async def admit(
     # client has a lease, a socket and an authorized session.
     registry[label] = client
     if staged.previous is not None and staged.previous is not client:
-        # The old one goes only once its replacement is actually serving, and
-        # its lease is already gone - `claim_session` above replaced the entry.
+        # The old one goes only once its replacement is actually serving. Its
+        # lease is NOT gone: publishing the replacement retired it rather than
+        # overwriting it, so it is still held and still owned, and handing the
+        # close to `forget` is what releases it - once the socket it protects is
+        # confirmed down, and not before.
         outcome = retire(staged.previous)
+        _admission.forget(label, closing=outcome, client=staged.previous)
         if closure_failed(outcome):
             log_event(
                 logging.WARNING,

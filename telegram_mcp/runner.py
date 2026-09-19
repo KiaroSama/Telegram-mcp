@@ -104,7 +104,7 @@ async def _connect_authorized_client(label, client) -> None:
         async with asyncio.timeout(_CONNECT_PHASE_SECONDS):
             await _connect_and_check(label, client)
     except (asyncio.TimeoutError, TimeoutError) as exc:
-        _admission.forget(label, closing=_retire(client))
+        _admission.forget(label, closing=_retire(client), client=client)
         raise StartupMessage(
             f"[{label}] Telegram did not answer within {_CONNECT_PHASE_SECONDS:.0f}s while "
             "connecting and checking the session. The session lock was released, so a "
@@ -125,7 +125,7 @@ async def _connect_and_check(label, client) -> None:
         # Nothing is connected on this session, so nothing should still be
         # holding its lock: a retry after fixing the config must not queue
         # behind a lock this failed attempt left standing.
-        _admission.forget(label)
+        _admission.forget(label, client=client)
         raise StartupMessage(f"[{label}] {_BURNED_SESSION_MESSAGE}") from exc
 
     if await client.is_user_authorized():

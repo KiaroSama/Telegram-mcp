@@ -35,8 +35,23 @@ class _Client:
         self.disconnected = True
 
 
+class _Lock:
+    """Stands in for the POSIX lock, and only for that."""
+
+    def __init__(self):
+        self.released = 0
+
+    def release(self):
+        self.released += 1
+
+
 async def _claims(label, client, grace_seconds=None, **_):
-    admission.session_locks[label] = object()
+    # Publishes a real lease, because that is what `claim_session` does. Writing
+    # into `session_locks` alone made this double disagree with the invariant the
+    # module actually keeps - the published view and the lease store are written
+    # together, and a lease belongs to a client - so a retirement had nothing to
+    # find and the assertion below passed for the wrong reason.
+    admission._publish(label, client, _Lock(), f"id:{label}")
     return None
 
 
@@ -44,13 +59,15 @@ async def _claims(label, client, grace_seconds=None, **_):
 def _clean(monkeypatch):
     admission.begin_serving()
     admission.session_locks.clear()
-    admission._leases.clear()
+    admission._active.clear()
+    admission._retiring.clear()
     admission._awaiting_admission.clear()
     monkeypatch.setattr(admission, "claim_session", _claims)
     yield
     lifecycle._admissions.clear()
     admission.session_locks.clear()
-    admission._leases.clear()
+    admission._active.clear()
+    admission._retiring.clear()
 
 
 @pytest.mark.asyncio
