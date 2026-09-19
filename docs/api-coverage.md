@@ -492,8 +492,8 @@ what makes it a real resolution rather than a shortcut:
 The cost, which is real and is stated in every tool that hits it: TDLib cannot read a
 Telethon session and offers no import path, so an account needs one additional
 sign-in through `scripts/secret_chat_login.py`, appearing as another device. The
-dependency is required as of 2026-08-31 (`tdjson`); before that it was optional and the other 181 tools
-are unaffected and `secret_chat_status` says which prerequisite is missing.
+dependency is required as of 2026-08-31 (`tdjson`); before that it was optional. Every other
+tool is unaffected, and `secret_chat_status` says which prerequisite is missing.
 
 Nine tools, all for the chats themselves: `secret_chat_status`, `create_secret_chat`, `list_secret_chats`,
 `send_secret_message`, `send_secret_media`, `read_secret_messages`,
