@@ -79,3 +79,29 @@ _Avoid_: full command, qualified command
 A bot's entry point beside the message field, offered instead of or alongside its
 commands. A bot can have one and no commands at all.
 _Avoid_: menu, start button, app button
+
+### Secret chats
+
+**Secret layer**:
+The protocol version two devices settled on when they opened one secret chat, and
+the ceiling on what that chat can express. A property of the one chat, not of the
+account or of this server.
+_Avoid_: version, protocol level, encryption level
+
+**Dropped entity**:
+Formatting a message carried that its secret layer cannot express, discarded in
+transit with no error on either side. A property of the pairing of a format and a
+layer, so the same message is whole in one chat and thinned in another.
+_Avoid_: unsupported formatting, stripped markup, lost entity
+
+**Read horizon**:
+The moment in time a secret chat's read receipt marks. Reading is addressed by date
+rather than by message, so a secret chat has a point before which everything is
+read, and never a set of individually read messages.
+_Avoid_: read receipt, seen marker, last read message
+
+**Timed send**:
+Arming a secret chat's self-destruct timer, sending one message under it, and
+restoring the timer that was there before. Three acts that read as one, over a
+timer that belongs to the chat and therefore to both people in it.
+_Avoid_: ephemeral send, one-shot timer, disappearing message
