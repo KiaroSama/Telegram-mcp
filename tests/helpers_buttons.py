@@ -13,28 +13,35 @@ parameter shadowing an imported name.
 import json
 from types import SimpleNamespace
 
+from telethon.tl import types as tl
 
 import telegram_mcp.tools.buttons as buttons_tool
 from telegram_mcp.tools.buttons import inspect_buttons
 
 
-def _button(cls_name, **fields):
-    """A button whose class NAME drives the description, as in Telethon."""
-    fields.setdefault("style", None)
-    return type(cls_name, (SimpleNamespace,), {})(**fields)
+def _button(type_name, text="Button", style=None, **fields):
+    """A button in Telethon's real shape, named by the TYPE that decides its kind.
+
+    ``KeyboardInlineButton``/``KeyboardButton`` carry only ``text`` and
+    ``style``; the kind and every field belonging to it live on ``type``. These
+    are the real classes rather than look-alikes, because look-alikes are what
+    let Telethon 1.45 move the whole model without a single test noticing.
+    """
+    detail = getattr(tl, type_name)(**fields)
+    wrapper = tl.KeyboardInlineButton if "InlineButtonType" in type_name else tl.KeyboardButton
+    return wrapper(text=text, type=detail, style=style)
 
 
 def _callback(text="Confirm", data=b"cb:1", **kw):
-    return _button("KeyboardButtonCallback", text=text, data=data, **kw)
+    return _button("InlineButtonTypeCallback", text=text, data=data, **kw)
 
 
 def _message(rows, message_id=7, inline=True):
     """A message with a keyboard. `inline` picks glass vs reply — Telethon
     distinguishes them by the markup CLASS, and both fill `rows`."""
-    markup_cls = "ReplyInlineMarkup" if inline else "ReplyKeyboardMarkup"
-    markup = type(markup_cls, (SimpleNamespace,), {})(
-        rows=[SimpleNamespace(buttons=r) for r in rows]
-    )
+    markup_cls = tl.ReplyInlineMarkup if inline else tl.ReplyKeyboardMarkup
+    row_cls = tl.KeyboardInlineButtonRow if inline else tl.KeyboardButtonRow
+    markup = markup_cls(rows=[row_cls(buttons=r) for r in rows])
     return SimpleNamespace(id=message_id, reply_markup=markup)
 
 

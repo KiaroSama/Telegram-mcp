@@ -1,9 +1,11 @@
 """Event-driven incoming-message tracking + debounce (settle window).
 
 Lets agents react to new client messages instead of polling. A Telethon
-NewMessage(incoming=True) handler records incoming private (non-bot, non-self)
-messages per chat; the tools below expose them, with wait_for_settled_message
-debouncing a burst (several messages typed in a row) into a single settled event.
+NewMessage(incoming=True) handler records incoming private (non-self) messages
+per chat; the tools below expose them, with wait_for_settled_message debouncing
+a burst (several messages typed in a row) into a single settled event. A bot's
+messages are recorded like anyone's and reached by naming its chat, so an
+unnamed wait stays what it says it is: a wait for people.
 
 The stores these tools drive -- the pending-burst map, the drop ledger, and the
 feed file with its rotation and retention -- live in
@@ -61,12 +63,18 @@ def _scan_settled(
     Returns ((account, chat_id), seconds_until_soonest_chat_settles). The second
     value is None when nothing is pending; the first is None when no chat has
     settled yet. With `only` set, every other chat is ignored — waiting for one
-    person must not be interrupted by unrelated conversations.
+    person must not be interrupted by unrelated conversations, and a chat named
+    outright is wanted whoever sent it, bot included. Without `only`, bursts from
+    bots are passed over: an open wait is for people.
     """
     soonest_remaining = None
     for key, rec in list(store._pending_msgs.items()):
         key_account, cid = key
         if only is not None and cid != only:
+            continue
+        # Skipped before the quiet arithmetic, not after: a burst nobody here
+        # will take must not set the sleep-until-it-settles deadline either.
+        if only is None and rec.get("bot"):
             continue
         # A wait bound to one login must not settle on another login's burst.
         if account is not None and key_account != account:
@@ -108,6 +116,7 @@ def _burst_summary(key: tuple[str, int], rec: Dict[str, Any]) -> Dict[str, Any]:
         "first_message_id": rec["first_id"],
         "last_message_id": rec["last_id"],
         "burst_seconds": round(rec["last_ts"] - rec["first_ts"], 2),
+        **({"bot": True} if rec.get("bot") else {}),
     }
 
 
@@ -208,7 +217,7 @@ def _maybe_autostart_feed() -> None:
 
 
 async def _on_new_incoming(account: str, client, event) -> None:
-    """Record incoming private (non-bot, non-self) messages for the debounce tools.
+    """Record incoming private (non-self) messages for the debounce tools.
 
     ``account`` is bound at registration rather than read off the event: Telethon
     hands the handler an event, not the client it arrived on, and every client was
@@ -235,8 +244,13 @@ async def _on_new_incoming(account: str, client, event) -> None:
         # the replacement that happened while this was suspended.
         if not _still_current(account, client):
             return
-        if getattr(sender, "bot", False) or getattr(sender, "is_self", False):
+        if getattr(sender, "is_self", False):
             return
+        # A bot's reply is RECORDED, and skipped later by the waits that did not
+        # ask for it. Dropping it here made a named wait on a bot chat return a
+        # timeout while the answer sat in the chat - and the two are
+        # indistinguishable to the caller, so it read as "the bot never replied".
+        is_bot = bool(getattr(sender, "bot", False))
         chat_id = event.chat_id
         now = time.monotonic()
         msg_id = event.message.id
@@ -252,6 +266,7 @@ async def _on_new_incoming(account: str, client, event) -> None:
                 "name": utils.get_display_name(sender) or str(chat_id),
                 "username": getattr(sender, "username", None),
                 "account": account,
+                "bot": is_bot,
             }
         else:
             # Handlers for the same chat can interleave across the get_sender()
@@ -363,8 +378,8 @@ async def wait_for_new_message(
     account: Optional[str] = None,
 ) -> str:
     """
-    Block until a new incoming private message from a non-bot user arrives, then
-    return immediately with the list of chats that currently have pending
+    Block until a new incoming private message arrives, then return
+    immediately with the list of chats that currently have pending
     (unprocessed) incoming messages. If nothing arrives within `timeout` seconds,
     returns {"event": false, "reason": "timeout"}. Lets the agent react to events
     instead of polling. Does NOT consume the pending set — use
@@ -381,6 +396,9 @@ async def wait_for_new_message(
             any unrelated conversation wakes the call and you burn turns on
             messages you are not waiting for. Other chats keep accumulating and
             are still there when you ask for them.
+            It is also how you wait for a BOT: an unnamed wait lists chats with
+            people in them only, so a bot's answer is returned when, and only
+            when, you name its chat here.
         limit: Most chats to list in one answer (default 50, max 100). The pending set is
             bounded but not small, and every chat listed costs context; `total`
             and `has_more` say what was left out. Ask for the rest by calling
@@ -411,7 +429,9 @@ async def wait_for_new_message(
             pending = {
                 key: rec
                 for key, rec in store._pending_msgs.items()
-                if (target is None or key[1] == target) and (account is None or key[0] == account)
+                if (target is None or key[1] == target)
+                and (account is None or key[0] == account)
+                and not (target is None and rec.get("bot"))
             }
             if pending:
                 chats = [
@@ -493,6 +513,9 @@ async def wait_for_settled_message(
             other conversation wakes the call, wastes a turn, and tempts you into
             sleep-polling. Bursts from other chats stay pending and are returned by
             later unfiltered calls.
+            REQUIRED to wait for a BOT. An unnamed wait settles on people only, so
+            without this a bot that answered in milliseconds still reads as a
+            timeout. Naming its chat returns the burst, marked "bot": true.
     """
     try:
         settle_span = bounded_number(settle_ms, "settle_ms")

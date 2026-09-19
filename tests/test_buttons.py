@@ -1,14 +1,15 @@
 """Inline-keyboard inspection and pressing.
 
-The fakes mirror Telethon's real shapes: every ``KeyboardButton*`` class carries
-``text`` and ``style`` and nothing else in common, only ``KeyboardButtonCallback``
-carries ``data``, and no button type carries entities.
+The keyboards come from `helpers_buttons`, which builds them out of Telethon's
+own classes: a button carries ``text`` and ``style``, its ``type`` carries
+everything else, and no part of it carries entities.
 """
 
 import json
 from types import SimpleNamespace
 
 import pytest
+from telethon.tl.types import RequestPeerTypeChat
 
 from telegram_mcp.button_view import describe_button, describe_keyboard, describe_style
 import telegram_mcp.tools.buttons as buttons_tool
@@ -52,7 +53,7 @@ def _buttons_of(msg):
 def test_a_callback_button_is_pressable_and_a_url_button_is_not():
     keyboard = _buttons_of(
         _message(
-            [[_callback(), _button("KeyboardButtonUrl", text="Open", url="https://e.example")]]
+            [[_callback(), _button("InlineButtonTypeUrl", text="Open", url="https://e.example")]]
         )
     )
 
@@ -71,7 +72,7 @@ def test_a_mini_app_button_says_it_cannot_be_pressed_and_names_the_route_that_wo
     to name, and the button's `url` is the argument it takes.
     """
     keyboard = _buttons_of(
-        _message([[_button("KeyboardButtonWebView", text="Play", url="https://app.example")]])
+        _message([[_button("InlineButtonTypeWebView", text="Play", url="https://app.example")]])
     )
 
     assert keyboard[0]["pressable"] is False
@@ -153,7 +154,7 @@ def test_a_style_with_only_an_icon_still_reports_it():
 
 @pytest.mark.asyncio
 async def test_inspect_buttons_publishes_the_pressable_indexes(_wire):
-    _wire(_message([[_callback(), _button("KeyboardButtonUrl", text="Open", url="u")]]))
+    _wire(_message([[_callback(), _button("InlineButtonTypeUrl", text="Open", url="u")]]))
 
     payload = json.loads(await inspect_buttons(1, 7, account="default"))
 
@@ -180,7 +181,7 @@ async def test_clicking_a_callback_button_sends_that_buttons_payload(_wire):
 
 @pytest.mark.asyncio
 async def test_clicking_a_non_callback_button_is_refused_without_a_request(_wire):
-    client = _wire(_message([[_button("KeyboardButtonUrl", text="Open", url="u")]]))
+    client = _wire(_message([[_button("InlineButtonTypeUrl", text="Open", url="u")]]))
 
     result = await click_button(
         1, 7, 0, expect_text="Open", press_token=_UNUSABLE_TOKEN, account="default"
@@ -436,10 +437,11 @@ def test_a_request_peer_button_does_not_break_the_whole_listing():
                 [
                     _callback(text="Confirm"),
                     _button(
-                        "KeyboardButtonRequestPeer",
+                        "ButtonTypeRequestPeer",
                         text="Choose a group",
                         button_id=1,
-                        peer_type=type("RequestPeerTypeChat", (SimpleNamespace,), {})(),
+                        peer_type=RequestPeerTypeChat(),
+                        max_quantity=1,
                     ),
                 ]
             ]
@@ -455,7 +457,7 @@ def test_a_long_url_is_reported_whole_rather_than_ellipsised():
     """A Mini App start param routinely runs past display_name's prose default."""
     url = "https://app.example/webapp?tgWebAppStartParam=" + "s" * 260
 
-    described = describe_button(_button("KeyboardButtonWebView", text="Open", url=url), 0, 0, 0)
+    described = describe_button(_button("InlineButtonTypeWebView", text="Open", url=url), 0, 0, 0)
 
     assert described["url"] == url
     assert not described["url"].endswith("\u2026")
@@ -465,7 +467,7 @@ def test_a_long_url_is_reported_whole_rather_than_ellipsised():
 def test_a_url_carrying_a_direction_override_is_cleaned_and_flagged():
     """Sanitizing still applies — a bidi override in a URL is the same spoof."""
     described = describe_button(
-        _button("KeyboardButtonUrl", text="Open", url="https://e.example/\u202egpj.exe"),
+        _button("InlineButtonTypeUrl", text="Open", url="https://e.example/\u202egpj.exe"),
         0,
         0,
         0,

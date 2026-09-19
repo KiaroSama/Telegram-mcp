@@ -584,3 +584,42 @@ async def test_an_unreadable_stateless_setting_keeps_the_safe_default(monkeypatc
     await runner._serve("http")
 
     assert fake.kwargs["stateless_http"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_client_does_not_have_its_session_reaped(monkeypatch):
+    """mcp 2.2.0 ends a stateful streamable-HTTP session after 30 minutes with no
+    request in flight, and its id then answers 404 "Session not found" — which a
+    client reports as "Session terminated".
+
+    On this server that 404 already means something, and it is something else.
+    `_stateless_http` chose stateful sessions precisely so a RESTART would be
+    observable: the 404 is the only thing in the protocol that makes a client
+    re-initialise and refetch a tool list it would otherwise keep believing. An
+    idle reaper raises the same signal when nothing restarted, so the one
+    sacrificed call per restart becomes a session lost every half hour of quiet —
+    to a server that is up, connected, and holding the Telegram session.
+    """
+    fake = _FakeMcp()
+    monkeypatch.setattr(runner, "mcp", fake)
+
+    await runner._serve("http")
+
+    assert fake.kwargs["session_idle_timeout"] is None
+
+
+def test_the_sdk_default_being_overridden_is_still_a_reaper():
+    """The override is only worth its line while the default it displaces reaps.
+
+    Pinned against the SDK rather than assumed, because a dependency quietly
+    changing shape underneath this project is the same failure as the button
+    model moving in Telethon 1.45 — and there it cost every button on every
+    message.
+    """
+    import inspect
+
+    from mcp.server.mcpserver import MCPServer
+
+    parameters = inspect.signature(MCPServer.run_streamable_http_async).parameters
+
+    assert parameters["session_idle_timeout"].default == 1800

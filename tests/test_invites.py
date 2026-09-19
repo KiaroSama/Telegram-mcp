@@ -319,3 +319,67 @@ async def test_the_hash_never_reaches_the_logs(_wire, caplog):
         await mod.import_chat_invite("SECRETHASH1234", account="a")
 
     assert "SECRETHASH1234" not in caplog.text
+
+
+# --- what the caller is told they may pass ----------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "given",
+    [
+        "https://t.me/+AAAAAEHbEkejzxUjAUCfYg",
+        "t.me/+AAAAAEHbEkejzxUjAUCfYg",
+        "https://t.me/joinchat/AAAAAEHbEkejzxUjAUCfYg",
+        "tg://join?invite=AAAAAEHbEkejzxUjAUCfYg",
+        "AAAAAEHbEkejzxUjAUCfYg",
+    ],
+)
+async def test_the_hash_tool_takes_the_link_a_caller_actually_has(_wire, given):
+    """A caller holds a link, not a hash, and the tool's own description said
+    hash. The parser has accepted links since it was written; only the contract
+    the agent reads did not say so, which is the same as not accepting them."""
+    client = _wire(
+        None,
+        {
+            "CheckChatInviteRequest": SimpleNamespace(chat=None),
+            "ImportChatInviteRequest": SimpleNamespace(chats=[SimpleNamespace(title="Grp")]),
+        },
+    )
+
+    result = await mod.import_chat_invite(given, account="a")
+
+    assert client.sent("ImportChatInviteRequest").hash == "AAAAAEHbEkejzxUjAUCfYg"
+    assert "Grp" in result
+
+
+def test_the_tool_description_lists_every_form_the_parser_takes():
+    """The docstring IS the schema; a form it omits is a form nobody passes."""
+    described = mod.import_chat_invite.__doc__
+
+    for form in ("t.me/+", "joinchat", "tg://join", "telegram.me", "telegram.dog"):
+        assert form in described, f"{form} is accepted but undocumented"
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://t.me/durov",
+        "https://evil.example/joinchat/HASH123",
+        "https://t.me/joinchat/",
+        "tg://resolve?domain=durov",
+        "",
+    ],
+)
+def test_a_refusal_never_sends_the_caller_to_a_tool_that_does_not_exist(link):
+    """`join_chat` is not a tool on this server and never was. A refusal that
+    names one is a dead end dressed up as help: the caller reads a good sentence,
+    calls the tool it names, and is told that tool is unknown."""
+    import telegram_mcp.tools  # noqa: F401  (registration is a side effect)
+    from telegram_mcp.runtime import mcp
+
+    _, error = mod._parse_invite_hash(link)
+    registered = {tool.name for tool in mcp._tool_manager.list_tools()}
+
+    named = {word.strip(".,;:()") for word in error.split() if "_" in word}
+    assert not (named - registered), f"refusal names {named - registered}, which is not a tool"
