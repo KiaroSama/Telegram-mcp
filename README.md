@@ -758,10 +758,17 @@ bypassing the proxy.
 
 File-path tools are disabled until allowed roots are configured. This affects tools such as `send_file`, `download_media`, `upload_file`, `send_voice`, `send_sticker`, `set_profile_photo`, and `edit_chat_photo`.
 
-Allowed roots can come from:
+Allowed roots can come from any of three places:
 
+- `TELEGRAM_FILE_ROOTS`, a list separated by this OS's path separator (`;` on
+  Windows, `:` elsewhere). Usually the easiest, because an MCP client
+  configuration has an `env` block and supplies its own argv.
 - Server CLI arguments, used as a fallback.
 - MCP client Roots, when supported by the client.
+
+The environment variable and the command line are the same allow-list and get the
+same validation - a root that does not exist stops the server either way. Command
+line first, so it stays the explicit override.
 
 Security behavior:
 
@@ -785,10 +792,14 @@ Security behavior:
 - Downloads default to `<first_root>/downloads/`.
 - Size and extension limits are enforced for sensitive media tools.
 
-Run with allowed roots:
+Run with allowed roots, either way:
 
 ```bash
 uv run main.py /data/telegram /tmp/telegram-mcp
+```
+
+```bash
+TELEGRAM_FILE_ROOTS=/data/telegram:/tmp/telegram-mcp uv run main.py
 ```
 
 From an MCP client configuration, pass the same roots after `main.py`:
@@ -908,6 +919,7 @@ telegram_mcp/retirement.py    # closing a client this process dropped, and waiti
 telegram_mcp/session_files.py # session files on disk, and the client built over one
 telegram_mcp/proxy.py         # TELEGRAM_PROXY_* into Telethon kwargs; touches no socket
 telegram_mcp/file_roots.py    # allowed roots, and resolving a caller's path inside one
+telegram_mcp/sanitize.py      # cleaning untrusted Telegram text before it reaches a caller
 telegram_mcp/handles.py       # file access bound to an open handle, not to a pathname
 telegram_mcp/syscalls.py      # the OS calls handles.py opens through, injectable in tests
 telegram_mcp/safe_log.py      # the only module allowed to write a log line
@@ -929,7 +941,6 @@ telegram_mcp/visual/          # Telegram Desktop capture and image/frame helpers
 account-manager/                          # the account manager's own pieces, dot-sourced by it
                               #   FileSafety, EnvFile, Console - the launcher keeps
                               #   every function that resolves $PSScriptRoot
-sanitize.py                   # output sanitization helpers
 tests/                        # pytest suite, plus PowerShell suites for the launchers
 ```
 
@@ -1086,7 +1097,7 @@ Telegram messages, display names, chat titles, and button labels are untrusted c
   must already be readable by your account alone, or the account refuses to start rather than run
   from a credential anyone can read.
 - **`AuthKeyDuplicatedError` / "Another telegram-mcp process is already connected with this session":** two processes tried to connect the same Telegram session at once (e.g. an MCP client restarted the connector before the old process exited), which Telegram rejects and can invalidate the session for both. The server now takes an exclusive lock per session before connecting; a second concurrent launch waits briefly (default 20s, override with `TELEGRAM_LOCK_GRACE_SECONDS`) for the first to release it and otherwise exits without ever calling `connect()`, instead of racing into a duplicate connection. Retry once only one instance is running. The wait is announced as it starts, per account, with its bound - it used to pass in silence, which made a launcher that was working look hung. That exit is **code 75**, not 1: it is this server refusing on purpose, not a failure, and `start-mcp.ps1` says so rather than reporting a `uv` error.
-- **File tools are disabled:** pass allowed roots or configure MCP Roots in your client.
+- **File tools are disabled:** set `TELEGRAM_FILE_ROOTS`, pass allowed roots on the command line, or configure MCP Roots in your client. `get_file_roots_status` says which of the three is in effect and why the others are not.
 - **Path rejected:** ensure the path is inside an allowed root and does not use traversal or wildcard patterns.
 - **Auth errors after password changes:** regenerate your session string.
 - **Bot-only tool rejected:** regular user accounts cannot manage bot command settings.
