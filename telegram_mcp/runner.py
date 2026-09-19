@@ -40,6 +40,15 @@ from telegram_mcp.retirement import retire as _retire
 # Every transport this server can actually run. Anything else is a typo.
 _TRANSPORTS = ("stdio", "http", "sse")
 
+# Leaving because another instance already holds the session is not a failure of
+# this server, and it is the single most common way it is started wrongly. It
+# left through the same `exit 1` as a crash, so the launcher's last word was
+# "uv exited with code 1" - blaming the package manager for a deliberate,
+# correct refusal and sending the operator to debug the wrong thing. Its own
+# code lets the launcher say what actually happened. Below 126, which a shell
+# reserves for "could not execute".
+EXIT_SESSION_HELD = 75
+
 
 def _lock_grace_seconds() -> float:
     """The configured lock grace period, or a loud error for anything unusable.
@@ -65,7 +74,21 @@ async def _connect_authorized_client(label, client) -> None:
     # per-session lock means a second instance of this server never even
     # attempts to connect while another instance already holds the same
     # session (see telegram_mcp/singleton.py for why and how).
-    await _admission.claim_session(label, client, grace_seconds=_lock_grace_seconds())
+    grace = _lock_grace_seconds()
+    await _admission.claim_session(
+        label,
+        client,
+        grace_seconds=grace,
+        # Only fires when the lock is actually held by someone else. Twenty
+        # seconds is the default grace, and all twenty used to pass without a
+        # word: a second instance printed "Starting N Telegram client(s)", went
+        # silent, and died. Measured at 24.6s end to end on this machine.
+        on_wait=lambda seconds: startup_note(
+            f"[{label}] Another process still holds this account's Telegram session. "
+            f"Waiting up to {seconds:.0f}s for it to let go - this is the running "
+            "instance shutting down, or an instance you did not mean to leave running."
+        ),
+    )
 
     # No retry. Telegram invalidates an auth key used from two places at once
     # permanently -- connection.py has said so on the reconnect path all along
@@ -407,6 +430,7 @@ async def _main() -> None:
                 "connecting a second time, which would risk Telegram invalidating "
                 "the session for both. Retry once the other instance is gone."
             )
+            sys.exit(EXIT_SESSION_HELD)
         sys.exit(1)
     finally:
         # STOP NEW WORK FIRST. The incoming-event consumer writes to the feed and
