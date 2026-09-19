@@ -778,6 +778,16 @@ The environment variable and the command line are the same allow-list and get th
 same validation - a root that does not exist stops the server either way. Command
 line first, so it stays the explicit override.
 
+**A root added to the file takes effect without a restart.** The file is re-read
+on the path every file tool passes through, so allowing a new folder is an edit to
+the configuration rather than a restart. Three things keep that safe: nothing is
+rebuilt when nothing was edited; a file that cannot be read at that moment - one
+mid-rewrite - leaves the current roots exactly as they are rather than refusing an
+operation that was already permitted; and a root named in the file that does not
+exist is skipped with a warning instead of taking the working ones down with it. A
+value the PROCESS supplied still wins over the file, the same way `load_dotenv`
+does not override one.
+
 Security behavior:
 
 - Client MCP Roots replace server CLI roots when available.
