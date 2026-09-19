@@ -1,0 +1,72 @@
+name: Locked Reproduction Bundle
+
+# Opt-in in normal operation. A change to this workflow also tests the bundle
+# itself in a pull request, without running on every application change.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/reproduction-bundle.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  bundle:
+    name: Build Offline Linux Reproduction Bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out tracked source without persistent credentials
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up the recorded Python interpreter
+        id: python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      - name: Select this interpreter for uv
+        shell: bash
+        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
+
+      - name: Install the pinned resolver
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: '0.12.8'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the exact locked development and optional dependencies
+        run: uv sync --locked --all-extras
+
+      - name: Scan tracked source before exporting it
+        run: uv run --locked --all-extras python scripts/secret_scan.py
+
+      - name: Record provenance and archive only explicit safe inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reproduction
+          git rev-parse HEAD > reproduction/commit.txt
+          sha256sum uv.lock > reproduction/lock.sha256
+          uv --version > reproduction/uv-version.txt
+          uv run --locked --all-extras python -c 'import platform,sys; print(sys.version); print(platform.platform())' > reproduction/python.txt
+          git archive --format=tar.gz HEAD > reproduction/source.tar.gz
+          # Only installed packages: no Git config, environment dump, home
+          # directory, session database, pip cache or runner credentials.
+          tar -C .venv/lib/python3.13 -czf reproduction/site-packages.tar.gz site-packages
+          du -h reproduction/*
+          test "$(du -sb reproduction | cut -f1)" -lt 157286400
+          sha256sum reproduction/*.tar.gz > reproduction/archives.sha256
+
+      - name: Upload short-lived reproduction evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: locked-linux-py313-reproduction
+          path: reproduction/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 0
