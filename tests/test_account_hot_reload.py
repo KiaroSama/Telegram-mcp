@@ -20,8 +20,12 @@ from telegram_mcp import admission
 from telegram_mcp import connection as conn
 
 
-async def _noop_claim(label, client, grace_seconds=None):
-    """Admission's lease step, without a real POSIX lock on a real file."""
+async def _noop_claim(label, client, grace_seconds=None, **_):
+    """Admission's lease step, without a real POSIX lock on a real file.
+
+    `**_` because this doubles a real function: pinning its exact signature
+    makes every optional keyword it later gains a test failure.
+    """
     return None
 
 

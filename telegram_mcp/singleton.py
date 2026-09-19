@@ -31,7 +31,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import IO, Optional
+from typing import IO, Callable, Optional
 
 from telegram_mcp.paging import bounded_number
 
@@ -83,6 +83,23 @@ DEFAULT_GRACE_SECONDS = 20.0
 DEFAULT_POLL_INTERVAL = 0.5
 
 
+def _announce(on_wait: Optional[Callable[[float], None]], grace_seconds: float) -> None:
+    """Report the wait, and never let reporting it be what fails.
+
+    The callback belongs to the caller and writes somewhere this module knows
+    nothing about - a stream that may be closed, redirected or gone. An
+    exception here would leak the open file handle below and turn a diagnostic
+    into the outage it exists to describe, so it is swallowed. Same rule the
+    launcher applies to its own logging.
+    """
+    if on_wait is None:
+        return
+    try:
+        on_wait(grace_seconds)
+    except Exception:
+        pass
+
+
 class SessionLockError(RuntimeError):
     """Raised when a session lock isn't acquired before its grace period elapses."""
 
@@ -102,11 +119,20 @@ class SessionLock:
         *,
         grace_seconds: float = DEFAULT_GRACE_SECONDS,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
+        on_wait: Optional[Callable[[float], None]] = None,
     ) -> None:
         """Block (up to ``grace_seconds``) until the lock is free, then take it.
 
         Raises :class:`SessionLockError` if another live process still holds
         the lock once the grace period elapses.
+
+        ``on_wait`` is called ONCE, with ``grace_seconds``, the moment this has
+        to start waiting - and not at all when the lock is free. The grace is
+        twenty seconds by default and every one of them used to pass in silence,
+        so a second instance looked hung for twenty seconds and then died. A
+        caller that says nothing is still correct; one that reports the wait can
+        only do so if it is told the wait is happening, and told before rather
+        than after.
         """
         # Validated before anything is opened or slept on: with ``nan`` the
         # deadline comparison below is never true and the wait never ends.
@@ -126,10 +152,14 @@ class SessionLock:
 
         fh = open(self.path, "a+")
         deadline = time.monotonic() + grace_seconds
+        announced = False
         while True:
             if _try_lock(fh):
                 self._fh = fh
                 return
+            if not announced:
+                announced = True
+                _announce(on_wait, grace_seconds)
             if time.monotonic() >= deadline:
                 fh.close()
                 raise SessionLockError(

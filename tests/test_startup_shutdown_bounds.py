@@ -253,7 +253,11 @@ async def test_a_connect_that_answers_in_time_is_untouched(monkeypatch):
 
 
 def _noop_claim():
-    async def _claim(label, client, grace_seconds=None):
+    # `**_`: this doubles `admission.claim_session`, and a double that pins the
+    # exact signature breaks the moment the real function gains an optional
+    # keyword - which is how `on_wait` turned six green CI legs red while the
+    # suites exercising this seam passed locally.
+    async def _claim(label, client, grace_seconds=None, **_):
         return None
 
     return _claim
