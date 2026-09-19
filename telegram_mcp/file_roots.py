@@ -340,6 +340,10 @@ def _server_roots_fallback_enabled(value: Optional[str] = None) -> bool:
 async def _get_effective_allowed_roots_with_status(
     ctx: Optional[Context],
 ) -> tuple[List[Path], str]:
+    # The one place every file tool passes through, so it is where the allow-list
+    # gets its chance to be current. Allowing a folder is then an edit to the
+    # configuration file, not a restart.
+    refresh_server_roots()
     fallback_roots = list(SERVER_ALLOWED_ROOTS)
     if ctx is None:
         if fallback_roots:
@@ -604,6 +608,80 @@ async def _open_verified_directory(*, path: Path, ctx: Optional[Context], tool_n
         directory.close()
 
 
+# The roots this process was STARTED with, kept apart from the ones the file
+# names so a refresh can rebuild the list without losing them.
+_CLI_ROOTS: list[str] = []
+
+# The file's raw value as last APPLIED. A refresh that cannot tell 'unchanged'
+# from 'never read' rebuilds on every file-tool call, and a rebuild discards
+# whatever the list holds that did not come from argv or the file.
+_last_named_roots: Optional[str] = None
+
+
+def _roots_from_file() -> Optional[str]:
+    """`TELEGRAM_FILE_ROOTS` as the configuration file currently spells it.
+
+    Not `os.getenv`: `load_dotenv` copied the file's value into the process
+    environment once, at startup, and never again - so reading the environment
+    answers what the file said when the server booted, which is exactly the
+    question a refresh is not asking. A value the PROCESS supplied still wins,
+    because `settings` recorded that before the two were merged.
+    """
+    from telegram_mcp import account_snapshot
+    from telegram_mcp.settings import PROCESS_FILE_ROOTS
+
+    if PROCESS_FILE_ROOTS:
+        return PROCESS_FILE_ROOTS
+    return account_snapshot.file_value("TELEGRAM_FILE_ROOTS")
+
+
+def _roots_from_file_quietly() -> Optional[str]:
+    """The file's value, or None when it cannot be read. Startup only."""
+    try:
+        return _roots_from_file()
+    except Exception:
+        return None
+
+
+def refresh_server_roots() -> bool:
+    """Re-read the allow-list so a folder can be allowed without a restart.
+
+    Returns whether the list changed. A file that cannot be read leaves the
+    current roots exactly as they are and says nothing: this runs on the path of
+    every file tool, and a `.env` being rewritten must not turn into a refusal
+    for an operation that was already permitted.
+    """
+    global _last_named_roots
+    try:
+        named = _roots_from_file()
+    except Exception:
+        return False
+    if named == _last_named_roots:
+        # Nothing was edited, so nothing is rebuilt. This runs on the path of
+        # every file tool, and a rebuild that fires regardless would discard any
+        # root the list holds for a reason this function does not know about.
+        return False
+    _last_named_roots = named
+    wanted: List[Path] = []
+    for raw_root in list(_CLI_ROOTS) + [p for p in (named or "").split(os.pathsep) if p.strip()]:
+        root = Path(raw_root).expanduser()
+        if not root.exists():
+            # A typo in a live edit is not a reason to drop the roots that work.
+            log_event(
+                logging.WARNING,
+                "an allowed root named in the configuration does not exist; ignoring it",
+                root=str(root),
+            )
+            continue
+        wanted.append(root.resolve(strict=True))
+    wanted = _dedupe_paths(wanted)
+    if wanted == list(SERVER_ALLOWED_ROOTS):
+        return False
+    # In place: `runtime` and `main` hold this same list object.
+    SERVER_ALLOWED_ROOTS[:] = wanted
+    return True
+
+
 def _roots_from_environment() -> List[str]:
     """Allowed roots named by ``TELEGRAM_FILE_ROOTS``, split on this OS's separator.
 
@@ -633,6 +711,12 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
     )
     parser.add_argument("allowed_roots", nargs="*")
     parsed, _unknown = parser.parse_known_args(argv or [])
+
+    # Kept so `refresh_server_roots` can rebuild the list from the file without
+    # losing what the command line named.
+    _CLI_ROOTS[:] = list(parsed.allowed_roots)
+    global _last_named_roots
+    _last_named_roots = _roots_from_file_quietly()
 
     resolved_roots: List[Path] = []
     # Both sources, argv first so a command line stays the explicit override when
