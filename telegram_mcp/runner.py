@@ -305,7 +305,26 @@ async def _serve(transport: str) -> None:
             options["transport_security"] = security
         if transport == "http":
             # `stateless_http` moved here from the server constructor in 2.x.
-            await mcp.run_streamable_http_async(stateless_http=_stateless_http(), **options)
+            #
+            # `session_idle_timeout=None` turns OFF the SDK's 30-minute reaper,
+            # and it is not a tuning choice - it is what keeps the 404 honest.
+            # A stateful session whose id is reaped answers 404 "Session not
+            # found", which is the exact code `_stateless_http` above chose
+            # statefulness FOR: the one signal that tells a client the server
+            # restarted and its cached tool list is stale. Left on, that signal
+            # also fires at a server that never went anywhere, half an hour
+            # after a client last spoke - a client that reads it correctly loses
+            # a call, one that does not reports "Session terminated" and stops.
+            # An agent waiting on a person is quiet for far longer than that.
+            #
+            # What the reaper also did was collect a session a client abandoned
+            # without its DELETE; those now persist. `max_sessions` is left at
+            # the SDK's 10 000, so that leak has a ceiling and reaches it after
+            # more reconnects than this server will see - and 503 at a known
+            # bound beats a 404 at half an hour.
+            await mcp.run_streamable_http_async(
+                stateless_http=_stateless_http(), session_idle_timeout=None, **options
+            )
         else:
             await mcp.run_sse_async(**options)
     else:

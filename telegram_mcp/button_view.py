@@ -5,13 +5,17 @@ a security surface: upstream hands it back raw, and a raw label can carry a bidi
 override that makes it read as something else entirely. Everything here goes
 through :func:`display_name`, and says so when the raw text differed.
 
-Two facts about Telegram's data model shape this module:
+Three facts about Telegram's data model shape this module:
 
-* **A button label carries no entities.** Every ``KeyboardButton*`` type has a
-  plain ``text: str`` and no ``entities`` field, so a premium/custom emoji inside
-  a label arrives as its fallback glyph with no ``document_id`` — unresolvable by
-  design, not by omission. Verified against the TL schema.
-* **Every button type carries ``style``**, and its ``icon`` is a custom-emoji
+* **A button is two objects.** ``KeyboardInlineButton``/``KeyboardButton`` carry
+  ``text`` and ``style``; everything else — the kind, the callback payload, the
+  URL, the user id — hangs off their ``type``, an ``InlineButtonType*`` or
+  ``ButtonType*``. So the kind is read from ``type``'s class, never the button's.
+* **A button label carries no entities.** Neither the button nor its type has an
+  ``entities`` field, so a premium/custom emoji inside a label arrives as its
+  fallback glyph with no ``document_id`` — unresolvable by design, not by
+  omission. Verified against the TL schema.
+* **Every button carries ``style``**, and its ``icon`` is a custom-emoji
   document ID. Confirmed live: @EVdlcbot's keyboard carries two styled buttons
   whose icons resolve to animated ``.tgs`` emoji, beside a third with no style.
 
@@ -26,23 +30,50 @@ from telegram_mcp.message_view import display_name
 # reach it. Only a button carrying callback ``data`` answers a press; the rest
 # are actions Telegram performs in the client, and saying "pressed" of them
 # would be a lie.
+#
+# Keyed on the class of the button's ``type``, NOT on the button's own class,
+# because that is where Telegram keeps the answer. A button is
+# ``KeyboardInlineButton(text, type, style)`` on the glass keyboard and
+# ``KeyboardButton(text, type, style)`` on the reply keyboard - two classes for
+# every button there is - and everything that distinguishes one button from
+# another, the callback payload included, hangs off ``type``. Keying on the
+# button instead described every real button as ``unknown`` and refused every
+# press; see `tests/test_button_real_types.py`.
 _BUTTON_KINDS: dict[str, tuple[str, bool]] = {
-    "KeyboardButtonCallback": ("callback", True),
-    "KeyboardButtonUrl": ("url", False),
-    "KeyboardButtonUrlAuth": ("url_auth", False),
-    "KeyboardButtonWebView": ("webview", False),
-    "KeyboardButtonSimpleWebView": ("webview", False),
-    "KeyboardButtonSwitchInline": ("switch_inline", False),
-    "KeyboardButtonUserProfile": ("user_profile", False),
-    "KeyboardButtonCopy": ("copy", False),
-    "KeyboardButtonBuy": ("buy", False),
-    "KeyboardButtonGame": ("game", False),
-    "KeyboardButtonRequestPhone": ("request_phone", False),
-    "KeyboardButtonRequestGeoLocation": ("request_geo", False),
-    "KeyboardButtonRequestPoll": ("request_poll", False),
-    "KeyboardButtonRequestPeer": ("request_peer", False),
-    "KeyboardButton": ("plain", False),
+    # Glass keyboard: KeyboardInlineButton.type
+    "InlineButtonTypeCallback": ("callback", True),
+    "InlineButtonTypeUrl": ("url", False),
+    "InlineButtonTypeUrlAuth": ("url_auth", False),
+    "InputInlineButtonTypeUrlAuth": ("url_auth", False),
+    "InlineButtonTypeWebView": ("webview", False),
+    "InlineButtonTypeSwitchInline": ("switch_inline", False),
+    "InlineButtonTypeUserProfile": ("user_profile", False),
+    "InputInlineButtonTypeUserProfile": ("user_profile", False),
+    "InlineButtonTypeCopy": ("copy", False),
+    "InlineButtonTypeBuy": ("buy", False),
+    "InlineButtonTypeGame": ("game", False),
+    "InlineButtonTypeDisabled": ("disabled", False),
+    # Reply keyboard: KeyboardButton.type
+    "ButtonTypeDefault": ("plain", False),
+    "ButtonTypeSimpleWebView": ("webview", False),
+    "ButtonTypeRequestPhone": ("request_phone", False),
+    "ButtonTypeRequestGeoLocation": ("request_geo", False),
+    "ButtonTypeRequestPoll": ("request_poll", False),
+    "ButtonTypeRequestPeer": ("request_peer", False),
+    "InputButtonTypeRequestPeer": ("request_peer", False),
 }
+
+
+def button_detail(button):
+    """The object holding what a button IS: its ``type``, or ``None``.
+
+    Read every field through this rather than off the button: ``data``, ``url``,
+    ``copy_text``, ``query``, ``user_id``, ``button_id``, ``peer_type`` and
+    ``requires_password`` all live on ``type``. ``text`` and ``style`` are the
+    two that do not.
+    """
+    return getattr(button, "type", None)
+
 
 # A URL, a copy payload or an inline query is a machine value: it is bounded so a
 # hostile button cannot flood the context, but far above display_name's prose
@@ -64,6 +95,7 @@ _NOT_PRESSABLE = {
     "request_geo": "Asks the user to share their location.",
     "request_poll": "Opens the poll composer.",
     "request_peer": "Asks the user to choose a chat or user to share.",
+    "disabled": "Telegram draws this button but it does nothing when tapped.",
     "plain": "A reply-keyboard button: it sends its own text as a message rather "
     "than answering a callback.",
 }
@@ -112,7 +144,8 @@ def describe_style(button) -> Optional[dict[str, Any]]:
 
 def describe_button(button, index: int, row: int, column: int) -> dict[str, Any]:
     """One button: what it is, whether a press can reach it, and its real label."""
-    kind, pressable = _BUTTON_KINDS.get(type(button).__name__, ("unknown", False))
+    detail = button_detail(button)
+    kind, pressable = _BUTTON_KINDS.get(type(detail).__name__, ("unknown", False))
 
     raw = getattr(button, "text", None) or ""
     text = display_name(raw)
@@ -132,8 +165,8 @@ def describe_button(button, index: int, row: int, column: int) -> dict[str, Any]
     if kind == "callback":
         # The callback payload is opaque bot state and can encode anything; the
         # index is the safe handle, so the payload is reported as present only.
-        described["has_callback_data"] = bool(getattr(button, "data", None))
-        if getattr(button, "requires_password", None):
+        described["has_callback_data"] = bool(getattr(detail, "data", None))
+        if getattr(detail, "requires_password", None):
             described["requires_password"] = True
             described["pressable"] = False
             described["press_note"] = (
@@ -151,7 +184,7 @@ def describe_button(button, index: int, row: int, column: int) -> dict[str, Any]
     # override inside a URL is the same spoof as one inside a label, and any
     # change is now flagged the way `text_altered` flags the label.
     for attribute in ("url", "copy_text", "query"):
-        value = getattr(button, attribute, None)
+        value = getattr(detail, attribute, None)
         if value is None:
             continue
         if isinstance(value, str):
@@ -163,11 +196,11 @@ def describe_button(button, index: int, row: int, column: int) -> dict[str, Any]
             described[attribute] = value
 
     for attribute in ("user_id", "button_id"):
-        value = getattr(button, attribute, None)
+        value = getattr(detail, attribute, None)
         if value is not None:
             described[attribute] = value
 
-    peer_type = getattr(button, "peer_type", None)
+    peer_type = getattr(detail, "peer_type", None)
     if peer_type is not None:
         # RequestPeerTypeChat/User/Broadcast is a TLObject, the only non-scalar in
         # this group. Copied as itself it reached json.dumps and raised TypeError,
