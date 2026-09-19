@@ -11,7 +11,7 @@ re-exports, which is where the earlier 802 came from.
 
 | | Count |
 |---|---|
-| MCP tools registered | **215** |
+| MCP tools registered | **216** |
 | TL namespaces | 25, plus the root `functions` module |
 | Unique `TLRequest` classes in layer 229 | **824** |
 | Raw TL requests this codebase calls | 97 |
