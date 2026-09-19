@@ -1,6 +1,6 @@
 # API coverage: what this server exposes, and what Telegram has
 
-Measured, not estimated. Snapshot: **Telethon 1.44.0, TL layer 227, 2026-08-22.**
+Measured, not estimated. Snapshot: **Telethon 1.45.0, TL layer 229, 2026-09-19.**
 
 Reproduce the tool count by `await mcp.list_tools()` after importing
 `telegram_mcp.tools`, not by grepping for `@mcp.tool` — the two agreed here, but only
@@ -11,9 +11,9 @@ re-exports, which is where the earlier 802 came from.
 
 | | Count |
 |---|---|
-| MCP tools registered | **217** |
-| TL namespaces | 23, plus the root `functions` module |
-| Unique `TLRequest` classes in layer 227 | **800** |
+| MCP tools registered | **215** |
+| TL namespaces | 25, plus the root `functions` module |
+| Unique `TLRequest` classes in layer 229 | **824** |
 | Raw TL requests this codebase calls | 97 |
 
 The tool count was **148** in the previous revision of this document. That number was
@@ -23,7 +23,7 @@ numbers can be re-derived.
 
 ## Why "100% of Telegram" is the wrong target
 
-800 request classes is the whole protocol, including `langpack`, `smsjobs`,
+824 request classes is the whole protocol, including `langpack`, `smsjobs`,
 `fragment`, `aicompose` and the login flow. Exposing all of it would produce
 hundreds of tools an agent will never pick correctly, and every one still needs a
 docstring, a test and a safety review. Tool choice degrades as the surface grows —
@@ -475,7 +475,7 @@ correctly refused.
 The move was to stop looking at Telethon. **TDLib is Telegram's own client library**
 — the code their official clients are built on, Boost-licensed, and it implements
 secret chats completely. It ships as a pre-built binary (`tdjson`, with Windows
-wheels), and 1.8.67 speaks layer 229 where Telethon is stuck on 227 and archived.
+wheels), and 1.8.67 speaks layer 229 - which Telethon 1.44 did not, and 1.45 does.
 Nothing about the cryptography is written or reviewed here.
 
 That answers the three questions this section said had to be settled first, which is
@@ -495,15 +495,15 @@ sign-in through `scripts/secret_chat_login.py`, appearing as another device. The
 dependency is required as of 2026-08-31 (`tdjson`); before that it was optional and the other 181 tools
 are unaffected and `secret_chat_status` says which prerequisite is missing.
 
-Eleven tools. Nine for the chats themselves: `secret_chat_status`, `create_secret_chat`, `list_secret_chats`,
+Nine tools, all for the chats themselves: `secret_chat_status`, `create_secret_chat`, `list_secret_chats`,
 `send_secret_message`, `send_secret_media`, `read_secret_messages`,
 `save_secret_media`, `set_secret_chat_timer`, `close_secret_chat`
-(`tools/secret_chats.py`). Two more use the same transport for a different reason —
-`set_admin_right` and `get_admin_rights_via_tdlib` (`tools/later_rights.py`) reach the admin
-rights Telethon's announced layer 227 cannot carry. Transport for all eleven is
-`telegram_mcp/tdlib.py`. `edit_admin_rights` stays on MTProto but borrows the same
-transport for those rights alone, so the tool an agent reaches for first delivers
-them rather than reporting them lost.
+(`tools/secret_chats.py`). Transport for all nine is `telegram_mcp/tdlib.py`.
+
+Two admin-rights tools used to sit here as well, because layer 227 could not carry
+`manage_linked_peers` or `manage_welcome_messages`. Telethon 1.45 announces layer 229 and
+`edit_admin_rights` sets both over MTProto, so they were removed — secret chats are TDLib's
+only remaining reason to exist in this project.
 
 ### Measured: `can_be_saved` is advisory
 
