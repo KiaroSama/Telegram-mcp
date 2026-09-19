@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from sanitize import (
+from telegram_mcp.sanitize import (
     format_tool_result,
     sanitize_dict,
     sanitize_name,
