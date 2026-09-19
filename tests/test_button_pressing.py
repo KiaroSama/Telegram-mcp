@@ -127,7 +127,7 @@ async def test_the_legacy_listing_is_the_safe_listing(_wire_legacy):
 
     _wire_legacy(
         _message(
-            [[_callback(), _button("KeyboardButtonUrl", text="Open", url="https://e.example")]]
+            [[_callback(), _button("InlineButtonTypeUrl", text="Open", url="https://e.example")]]
         )
     )
 
@@ -250,7 +250,7 @@ async def test_inspect_publishes_a_distinct_press_token_per_pressable_button(_wi
         _message(
             [
                 [_callback(text="Yes", data=b"YES"), _callback(text="No", data=b"NO")],
-                [_button("KeyboardButtonUrl", text="Open", url="https://e.example")],
+                [_button("InlineButtonTypeUrl", text="Open", url="https://e.example")],
             ]
         )
     )
