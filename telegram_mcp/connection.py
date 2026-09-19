@@ -449,7 +449,8 @@ def refresh_accounts() -> list:
         # The disconnect is handed to admission so the lease is released when the
         # socket is actually down. Releasing first is the window another process
         # needs to claim a session this one is still connected to.
-        _admission.forget(label, closing=_retire(clients.pop(label)))
+        removed = clients.pop(label)
+        _admission.forget(label, closing=_retire(removed), client=removed)
     # STAGED, not published. A replacement is only what its label means once it
     # holds the session lease, has connected and has proved the session is
     # authorized - all of which can fail, and all of which used to happen after
@@ -478,7 +479,7 @@ def refresh_accounts() -> list:
         moved = next(
             (
                 old
-                for old, lease in _admission._leases.items()
+                for old, lease in _admission._active.items()
                 if lease.client is entry.client and old != entry.label
             ),
             None,
@@ -492,7 +493,10 @@ def refresh_accounts() -> list:
     added = {label: cl for label, cl in clients.items() if before.get(label) is not cl}
     for label in added:
         if label not in _admission.session_locks:
-            _admission.forget(label)
+            # No lock was ever taken for this label, so there is nothing to release;
+            # this only clears a stale pending entry. Named anyway, so it cannot
+            # reach a lease that a different client took under the same name.
+            _admission.forget(label, client=clients.get(label))
     still_pending = {
         label: client for label, client in added.items() if label not in _admission.session_locks
     }
