@@ -495,7 +495,7 @@ to their own location, so they work from any directory and from a shortcut.
 
 | Script | What it does |
 |---|---|
-| `start-mcp.ps1` | Runs the server through `uv` without losing the terminal's colours or its TTY. Keeps a timestamped log per run by default, in `logs/` inside the private state directory - never beside the source - recording only this server's own diagnostics. Pass `-NoLogToFile` (or set `TELEGRAM_MCP_LAUNCHER_LOG=off`) for a run that leaves nothing on disk. |
+| `start-mcp.ps1` | Runs the server through `uv` without losing the terminal's colours or its TTY. Works under Windows PowerShell 5.1 (`powershell.exe`) as well as `pwsh` 7. Keeps a timestamped log per run by default, in `logs/` inside the private state directory - never beside the source - recording only this server's own diagnostics. Pass `-NoLogToFile` (or set `TELEGRAM_MCP_LAUNCHER_LOG=off`) for a run that leaves nothing on disk. Exit code 75 means another instance already holds the session. |
 | `Manage-Accounts.ps1` | Menu for the accounts in `.env`: list, add, remove, rename, or generate a session string. The listing shows both halves per account, and every route that adds one finishes the TDLib half too (see below). |
 
 `Manage-Accounts.ps1` edits only the `TELEGRAM_SESSION_*` lines and leaves the rest of
@@ -1087,7 +1087,7 @@ Telegram messages, display names, chat titles, and button labels are untrusted c
   them. Give `TELEGRAM_SESSION_NAME` a path to choose the location yourself — but that directory
   must already be readable by your account alone, or the account refuses to start rather than run
   from a credential anyone can read.
-- **`AuthKeyDuplicatedError` / "Another telegram-mcp process is already connected with this session":** two processes tried to connect the same Telegram session at once (e.g. an MCP client restarted the connector before the old process exited), which Telegram rejects and can invalidate the session for both. The server now takes an exclusive lock per session before connecting; a second concurrent launch waits briefly (default 20s, override with `TELEGRAM_LOCK_GRACE_SECONDS`) for the first to release it and otherwise exits without ever calling `connect()`, instead of racing into a duplicate connection. Retry once only one instance is running.
+- **`AuthKeyDuplicatedError` / "Another telegram-mcp process is already connected with this session":** two processes tried to connect the same Telegram session at once (e.g. an MCP client restarted the connector before the old process exited), which Telegram rejects and can invalidate the session for both. The server now takes an exclusive lock per session before connecting; a second concurrent launch waits briefly (default 20s, override with `TELEGRAM_LOCK_GRACE_SECONDS`) for the first to release it and otherwise exits without ever calling `connect()`, instead of racing into a duplicate connection. Retry once only one instance is running. The wait is announced as it starts, per account, with its bound - it used to pass in silence, which made a launcher that was working look hung. That exit is **code 75**, not 1: it is this server refusing on purpose, not a failure, and `start-mcp.ps1` says so rather than reporting a `uv` error.
 - **File tools are disabled:** pass allowed roots or configure MCP Roots in your client.
 - **Path rejected:** ensure the path is inside an allowed root and does not use traversal or wildcard patterns.
 - **Auth errors after password changes:** regenerate your session string.

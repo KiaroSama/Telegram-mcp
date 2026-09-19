@@ -35,7 +35,7 @@ class _Client:
         self.disconnected = True
 
 
-async def _claims(label, client, grace_seconds=None):
+async def _claims(label, client, grace_seconds=None, **_):
     admission.session_locks[label] = object()
     return None
 
@@ -114,7 +114,7 @@ async def test_a_held_lease_does_not_take_the_working_client_down():
     registry = {"work": old}
     fresh = _Client("new")
 
-    async def _held(label, client, grace_seconds=None):
+    async def _held(label, client, grace_seconds=None, **_):
         raise TimeoutError("another process holds this session")
 
     with pytest.MonkeyPatch.context() as patch:

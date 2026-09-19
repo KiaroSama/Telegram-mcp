@@ -138,7 +138,10 @@ class _Blocking:
             def __init__(self, identity):
                 self.identity = identity
 
-            def acquire(self, grace_seconds=None):
+            # `**_` for the same reason the claim_session doubles carry it: a
+            # double that pins the real signature breaks on its next optional
+            # keyword.
+            def acquire(self, grace_seconds=None, **_):
                 loop.call_soon_threadsafe(test.started.set)
                 asyncio.run_coroutine_threadsafe(test.release_it.wait(), loop).result(5)
                 test.acquired.append(self.identity)

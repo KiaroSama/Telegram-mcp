@@ -19,6 +19,10 @@ Set-StrictMode -Version Latest
 $exitCode = 1
 $logPath = $null
 
+# Kept in step with telegram_mcp.runner.EXIT_SESSION_HELD, which tests/test_second_instance.py
+# pins from the other side. Any other non-zero code is an ordinary failure.
+$script:ExitSessionHeld = 75
+
 # STDOUT IS THE MCP PROTOCOL CHANNEL.
 #
 # Under the stdio transport the server speaks JSON-RPC over stdout, and those
@@ -422,6 +426,15 @@ atexit.register(_report_withheld)
 
 stderr = sys.stderr
 sys.stderr = Tee(stderr)
+# The CHECKOUT, first. `python -c` used to give this for free -- sys.path[0] is
+# the working directory, which the launcher has already set to the project -- and
+# running the wrapper from a file replaced it with the wrapper's own directory.
+# telegram_mcp.install_guard reads the project's provenance from where the
+# package was imported, so the server refused to start: "the installed
+# 'telegram-mcp' distribution was not installed from an explicit source
+# checkout". `script` is main.py's absolute path, so its directory IS the
+# checkout; stated rather than inherited from wherever this file happens to sit.
+sys.path.insert(0, os.path.dirname(os.path.abspath(script)))
 sys.argv = [script, *args]
 exit_code = 0
 try:
@@ -465,8 +478,39 @@ finally:
 if exit_code:
     raise SystemExit(exit_code)
 '@
-            & $uv.Path run python -c $pythonWrapper $logPath $script:LogMaxBytes `
-                (Join-Path $PSScriptRoot 'main.py') @ServerArguments
+            # A FILE, not `-c`. The wrapper above is multi-line Python containing
+            # double quotes, and handing that to a native executable as one
+            # argument is precisely where Windows PowerShell 5.1 differs from
+            # pwsh 7: 5.1 drops the inner quotes, so `python -c` received
+            # `r(?:...` and died with `SyntaxError: unexpected character
+            # after line continuation character` four seconds in, before a
+            # single client started. `powershell.exe` IS 5.1 - what a
+            # double-click, a Start-Process and most embedding clients use - so
+            # the launcher was dead for everyone not developing in pwsh.
+            #
+            # Escaping it correctly for both hosts is possible and is the wrong
+            # answer: a path has no quoting for a shell to get wrong.
+            # In this launcher's own state directory, not bare %TEMP%, and
+            # owner-only: it is a script this process is about to EXECUTE, and a
+            # file another local process can replace between the write and the
+            # run is an execution primitive handed to whoever gets there first.
+            # Same standard the log files are held to, through the same helper.
+            $wrapperDirectory = Join-Path (Get-StateDirectory) 'run'
+            [void] (New-Item -ItemType Directory -Path $wrapperDirectory -Force)
+            [void] (Set-OwnerOnlyAcl -Path $wrapperDirectory)
+            $wrapperPath = Join-Path $wrapperDirectory "tee-$PID.py"
+            [IO.File]::WriteAllText($wrapperPath, $pythonWrapper, [Text.UTF8Encoding]::new($false))
+            if (-not (Set-OwnerOnlyAcl -Path $wrapperPath)) {
+                Remove-Item -LiteralPath $wrapperPath -Force -ErrorAction SilentlyContinue
+                throw 'the logging wrapper could not be made owner-only'
+            }
+            try {
+                & $uv.Path run python $wrapperPath $logPath $script:LogMaxBytes `
+                    (Join-Path $PSScriptRoot 'main.py') @ServerArguments
+            }
+            finally {
+                Remove-Item -LiteralPath $wrapperPath -Force -ErrorAction SilentlyContinue
+            }
         }
         else {
             & $uv.Path run main.py @ServerArguments
@@ -478,7 +522,25 @@ if exit_code:
         Pop-Location
     }
 
-    if ($exitCode -ne 0) {
+    # 75 is EXIT_SESSION_HELD in telegram_mcp/runner.py: another instance of
+    # THIS server already holds the Telegram session, so this one refused to
+    # connect a second time rather than risk Telegram invalidating the auth key
+    # for both. That is the server working, not failing - and it is the most
+    # common way this launcher is run wrongly, so it gets a sentence of its own.
+    # It used to leave through the same `exit 1` as a crash, and the last thing
+    # an operator read was "uv exited with code 1", which blames the package
+    # manager and sends them to debug uv.
+    if ($exitCode -eq $script:ExitSessionHeld) {
+        $heldMessage = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] " +
+        '[launcher] Not started: another instance of this server is already connected ' +
+        'with this Telegram session. Stop that one first, or just use it - this is not ' +
+        'an error, and nothing was changed.'
+        [Console]::Error.WriteLine($heldMessage)
+        if ($logPath) {
+            [IO.File]::AppendAllText($logPath, "$heldMessage$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+        }
+    }
+    elseif ($exitCode -ne 0) {
         Write-Error "uv exited with code $exitCode." -ErrorAction Continue
     }
 }
