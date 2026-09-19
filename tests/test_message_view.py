@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from helpers_unicode import FAMILY, HOSTILE, PERSIAN
-from sanitize import sanitize_name, sanitize_user_content
+from telegram_mcp.sanitize import sanitize_name, sanitize_user_content
 from telegram_mcp.message_view import (
     deep_message_dict,
     fidelity_text,

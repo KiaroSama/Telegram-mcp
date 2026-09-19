@@ -35,7 +35,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.owner_only import restrict_to_owner_strict
 from telegram_mcp.settings import state_dir
-from sanitize import sanitize_name
+from telegram_mcp.sanitize import sanitize_name
 
 try:  # POSIX advisory locking.
     import fcntl

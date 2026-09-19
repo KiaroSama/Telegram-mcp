@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from sanitize import sanitize_name
+from telegram_mcp.sanitize import sanitize_name
 
 # The topic rule lives in one place because the send path needs it read
 # backwards; two copies of "which id means the topic" drift the first time
