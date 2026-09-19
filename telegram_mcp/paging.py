@@ -56,6 +56,8 @@ LIMITS: dict[str, int] = {
     "list_saved_dialogs": 100,
     "search_public_chats": 100,
     "list_topics": 200,
+    # One entry per bot per command; Telegram lets each bot publish 100.
+    "list_chat_commands": 200,
     "get_common_chats": 100,  # Telegram caps messages.getCommonChats at 100
     "get_participants": 1000,  # a member list is the one place four figures is normal
     # Invite links and their queues: one small record each, and a chat rarely has
