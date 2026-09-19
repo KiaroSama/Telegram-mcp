@@ -38,6 +38,12 @@ PROCESS_ACCOUNT_VARS: dict = {
     key: value for key, value in os.environ.items() if key.startswith(ACCOUNT_PREFIXES) and value
 }
 
+# Same line, same reason, for the allow-list. `file_roots` re-reads the file so a
+# folder can be allowed without a restart, and it must not overwrite a value the
+# PROCESS supplied - which after `load_dotenv` is indistinguishable from the
+# file's own. `None` here means the file owns the key.
+PROCESS_FILE_ROOTS: Optional[str] = os.environ.get("TELEGRAM_FILE_ROOTS") or None
+
 # Loaded HERE, not by whoever imports this. These values are read at import time, and
 # this module now sits at the bottom of the import graph - `main.py` reaches it through
 # `file_roots` before `runtime` has run a line, so relying on `runtime` to have called
