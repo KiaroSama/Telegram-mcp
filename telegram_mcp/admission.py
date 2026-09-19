@@ -346,6 +346,13 @@ async def claim_session(
     # Shielded: cancelling the caller must not cancel the owner, or the lock the
     # thread is about to return has no one to dispose of it.
     await asyncio.shield(task)
+    # This client now HOLDS the lease, so it must stop being queued for a second
+    # acquisition of the same session. Two acquires conflict inside one process -
+    # a POSIX lock belongs to an open file description - so leaving the pending
+    # entry made the next tool call wait out the grace period and then fail
+    # against a lock this process had already taken for that very client.
+    if _awaiting_admission.get(label) is client:
+        _awaiting_admission.pop(label, None)
 
 
 async def admit_if_pending(client) -> None:

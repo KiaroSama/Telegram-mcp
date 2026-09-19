@@ -70,6 +70,20 @@ class Outcome:
 # see that one was started at all.
 _admissions: set = set()
 
+# Labels whose admission REACHED the registry in the current transaction. The
+# caller advances its record of the active configuration from this and from
+# nothing else: a desired revision is not an active one, and recording it before
+# a candidate connected is what left a failed account believing it had already
+# been replaced - so the next reload compared the file against itself and never
+# retried it.
+_activated: set = set()
+
+
+def activated_labels() -> set:
+    """The labels that actually became the client their label means."""
+    return set(_activated)
+
+
 # The last configuration revision that was READ and REFUSED, as (stamp, reason).
 # Recorded rather than only logged: a reload that quietly did nothing looks
 # exactly like one that worked, and an operator who edited `.env` needs to be
@@ -187,6 +201,7 @@ async def admit(
     # Published last, and only now. Everything above can fail; from here the new
     # client has a lease, a socket and an authorized session.
     registry[label] = client
+    _activated.add(label)
     if staged.previous is not None and staged.previous is not client:
         # The old one goes only once its replacement is actually serving. Its
         # lease is NOT gone: publishing the replacement retired it rather than
@@ -242,6 +257,9 @@ def begin(
     """
     if not staged:
         return None
+    # One transaction, one record: a label left over from the previous reload
+    # must not be reported as activated by this one.
+    _activated.difference_update({one.label for one in staged})
     try:
         asyncio.get_running_loop()
     except RuntimeError:
