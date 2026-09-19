@@ -225,7 +225,7 @@ async def create_secret_chat(user_id: Union[int, str], account: str = None) -> s
         # Telegram's own refusal, shown rather than filed under an error code.
         # It is the API's verdict - "the user restricts new chats", "have no
         # write access" - and hiding it behind a code sends the caller to a log
-        # to read one sentence. Matches `set_admin_right`, which does the same.
+        # to read one sentence.
         return f"Telegram refused this: {e}"
     except TimeoutError as e:
         return log_and_format_error("create_secret_chat", e, user_id=user_id)
@@ -301,7 +301,7 @@ async def list_secret_chats(account: str = None) -> str:
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("list_secret_chats", e)
@@ -359,7 +359,7 @@ async def set_secret_chat_timer(chat_id: int, seconds: int, account: str = None)
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("set_secret_chat_timer", e, chat_id=chat_id)
@@ -400,7 +400,7 @@ async def close_secret_chat(secret_chat_id: int, account: str = None) -> str:
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("close_secret_chat", e, secret_chat_id=secret_chat_id)

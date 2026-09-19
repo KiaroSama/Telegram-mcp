@@ -16,13 +16,14 @@ The fix is not a longer list - a longer list falls behind the next time Telegram
 adds a right. It is to build the rights object FROM the installed type, which is
 what `_build_admin_rights` does and what these tests pin.
 
-That held until Telethon stopped moving. The project was archived in February
-2026 at 1.44, which stops at `manage_ranks` (flags.18); layer 229 has since
-added `manage_linked_peers` (flags.19) and `manage_welcome_messages`
-(flags.20). So the installed type is now a FLOOR, not the whole truth, and the
-two later rights are named by hand - the one thing this file was written to
-avoid, now unavoidable, and therefore pinned at the only level that proves it:
-the bytes on the wire.
+For three weeks that was not enough on its own. Telethon 1.44 announced layer
+227, which has no `manage_linked_peers` (flags.19) or `manage_welcome_messages`
+(flags.20), and Telegram masks flags newer than the layer the client announced
+- silently, with a success reply - so those two were hand-added to the object
+and then delivered over TDLib. Telethon 1.45 announces layer 229 and carries
+both as ordinary fields, so the detour is gone and the installed type is the
+whole truth again. What stays is where these are pinned: the bytes on the wire,
+because an attribute set on a Python object proves nothing.
 """
 
 import inspect
@@ -35,8 +36,9 @@ from telethon.tl.types import ChatAdminRights
 # alias is kept so the assertions below still read as they did.
 from telegram_mcp.tools import admin_rights as moderation_mod
 
-# The two Telegram added after Telethon's final release.
-_LATER_THAN_TELETHON = {"manage_linked_peers", "manage_welcome_messages"}
+# Telegram's two most recent admin rights, flags.19 and flags.20 - the pair a
+# client one layer behind drops silently.
+_THE_TWO_NEWEST = {"manage_linked_peers", "manage_welcome_messages"}
 
 
 def _telethon_fields():
@@ -71,25 +73,24 @@ def test_the_builder_knows_every_field_the_installed_telethon_has():
     """The guard that makes the rest of this file self-maintaining: if a future
     Telethon adds a right, this is what notices.
 
-    A superset, not an equality: the builder now also carries rights Telethon
-    never shipped. Telethon's own fields remain the floor it may not fall below.
+    An equality again as of 1.45. It was a superset for as long as two rights
+    had to be named by hand, so the day it becomes one again is the day a
+    hand-written list has crept back in.
     """
-    assert _all_fields() >= _telethon_fields()
+    assert _all_fields() == _telethon_fields()
 
 
-def test_the_rights_telethon_never_shipped_are_reachable_too():
-    """Named individually, because these are the ones no introspection can find:
-    the library that would have to declare them is archived."""
-    assert _LATER_THAN_TELETHON <= _all_fields()
+def test_the_two_newest_rights_are_reachable_too():
+    """Named individually rather than counted: these are the two a layer bump
+    added last, and the two a client one layer behind drops again."""
+    assert _THE_TWO_NEWEST <= _all_fields()
 
 
-def test_a_right_telethon_lacks_still_reaches_telegram_as_the_right_bit():
-    """The load-bearing test of the whole hand-added-flags approach.
-
-    Setting an attribute on a Python object proves nothing: the earlier bug was
-    exactly a right that looked set and never left the process. These bit
+def test_the_two_newest_rights_reach_telegram_as_the_right_bits():
+    """Setting an attribute on a Python object proves nothing: the earlier bug
+    was exactly a right that looked set and never left the process. These bit
     positions come from layer 229's `chatAdminRights`, and this asserts the
-    server puts them where Telegram reads them.
+    request puts them where Telegram reads them.
     """
     for name, bit in (("manage_linked_peers", 19), ("manage_welcome_messages", 20)):
         granted = _flags_on_the_wire(moderation_mod._build_admin_rights({name: True}))
@@ -101,9 +102,10 @@ def test_a_right_telethon_lacks_still_reaches_telegram_as_the_right_bit():
         assert not (withheld >> bit & 1), f"{name} set flags.{bit} when it was declined"
 
 
-def test_the_hand_added_bits_do_not_disturb_the_rights_telethon_serialises():
-    """The bits are OR'd onto Telethon's own output. If that arithmetic were
-    wrong it would corrupt a neighbouring right rather than fail loudly."""
+def test_the_two_newest_bits_are_the_only_ones_a_bare_grant_sets():
+    """A flags field is one integer, so a wrong bit corrupts a neighbouring
+    right rather than failing loudly. Pinned as an exact integer for that
+    reason, rather than as two independent bit checks."""
     without = _flags_on_the_wire(moderation_mod._build_admin_rights({}, defaults={}))
     with_later = _flags_on_the_wire(
         moderation_mod._build_admin_rights(
@@ -204,10 +206,10 @@ def test_the_later_flags_survive_a_round_trip_through_telethons_reader():
     """Granting a right this server cannot then report would be the same
     asymmetry in a new place.
 
-    `ChatAdminRights.from_reader` reads the flags integer, sets the seventeen
-    fields it knows and discards the rest, so bits 19 and 20 arrive from
-    Telegram and vanish before any caller sees them. The reader is wrapped at
-    import; this is what proves the wrap is installed and correct.
+    `ChatAdminRights.from_reader` used to set the seventeen fields 1.44 knew and
+    discard the rest, so bits 19 and 20 arrived from Telegram and vanished
+    before any caller saw them - which is why the reader was wrapped. 1.45
+    decodes both itself, which is what this proves and why the wrap could go.
     """
     from telethon.extensions.binaryreader import BinaryReader
 
@@ -223,53 +225,6 @@ def test_the_later_flags_survive_a_round_trip_through_telethons_reader():
     assert rights["ban_users"] is False, "a right never granted came back set"
 
 
-def test_the_reader_wrap_is_installed_only_once():
-    """A second wrap would read the flags twice and rewind twice, which
-    silently corrupts every rights object after it."""
-    moderation_mod._install_extended_rights_reader()
-    moderation_mod._install_extended_rights_reader()
-
-    from telethon.extensions.binaryreader import BinaryReader
-
-    granted = moderation_mod._build_admin_rights({"manage_welcome_messages": True}, defaults={})
-    rights = moderation_mod.admin_rights_to_dict(BinaryReader(bytes(granted)).tgread_object())
-
-    assert rights["manage_welcome_messages"] is True
-
-
-def test_a_right_the_layer_cannot_carry_is_reported_not_swallowed():
-    """Measured on a live channel: one request from its creator carrying
-    flags.18, flags.19 and flags.20 was ACCEPTED, and only flags.18 was there
-    afterwards. Telegram masks flags newer than the layer the client announced.
-
-    Serialising the bits correctly is necessary and not sufficient, so the
-    tool has to say what it could not deliver. "Admin rights updated" while
-    the requested right is quietly absent is the worst available outcome:
-    nothing downstream can tell.
-    """
-    from telethon.tl.alltlobjects import LAYER
-
-    dropped = moderation_mod.undeliverable_rights(
-        {"manage_welcome_messages": True, "ban_users": True, "manage_linked_peers": False}
-    )
-
-    assert dropped == ["manage_welcome_messages"], "the wrong rights were called undeliverable"
-
-    note = moderation_mod._undeliverable_note(dropped)
-    assert "manage_welcome_messages" in note
-    assert str(LAYER) in note, "the note must name the layer it measured, not a remembered number"
-
-
-def test_every_right_beyond_the_announced_layer_is_known_to_be_undeliverable():
-    """The two lists must not drift: a flag added to the builder without being
-    added here would go back to being silently dropped."""
-    assert set(moderation_mod._EXTRA_ADMIN_RIGHT_BITS) == set(
-        moderation_mod.undeliverable_rights(
-            {name: True for name in moderation_mod._EXTRA_ADMIN_RIGHT_BITS}
-        )
-    )
-
-
 def test_the_reported_rights_cover_exactly_what_can_be_set():
     """`get_admins` reads back through `admin_rights_to_dict`. A right the
     reader cannot name is a right nobody can see the absence of - which is how
@@ -279,48 +234,6 @@ def test_the_reported_rights_cover_exactly_what_can_be_set():
 
     assert set(moderation_mod.admin_rights_to_dict(granted)) == set(
         moderation_mod._admin_rights_fields()
-    )
-
-
-def test_the_note_accounts_for_every_right_however_it_ended_up():
-    """`edit_admin_rights` now finishes the dropped rights over TDLib, so the
-    note has three outcomes to report instead of one. The property that matters
-    is not the wording: it is that a requested right cannot fall between the
-    buckets. A name mentioned nowhere reads as success, which is exactly the
-    silent drop this whole path exists to end.
-    """
-    outcome = {
-        "delivered": ["manage_welcome_messages"],
-        "failed": {"a_right_telegram_refused": "Telegram declined it."},
-        "unmappable": ["manage_linked_peers"],
-    }
-
-    note = moderation_mod._later_rights_note(outcome)
-
-    for name in ("manage_welcome_messages", "a_right_telegram_refused", "manage_linked_peers"):
-        assert name in note, f"{name} vanished from the report"
-    assert "Delivered over TDLib" in note
-    assert (
-        "NOT set: a_right_telegram_refused, manage_linked_peers" in note
-    ), "a right that was delivered must not also be listed as not set"
-
-
-def test_a_right_that_was_delivered_is_not_also_reported_as_dropped():
-    """The regression worth pinning: the note is built from what HAPPENED, not
-    from what was requested, so a right TDLib delivered reads as delivered."""
-    note = moderation_mod._later_rights_note(
-        {"delivered": ["manage_welcome_messages"], "failed": {}, "unmappable": []}
-    )
-
-    assert "manage_welcome_messages" in note
-    assert "NOT set" not in note
-
-
-def test_nothing_dropped_and_nothing_delivered_says_nothing():
-    """The ordinary call. A note appended to every successful result would train
-    readers to skip it."""
-    assert (
-        moderation_mod._later_rights_note({"delivered": [], "failed": {}, "unmappable": []}) == ""
     )
 
 
@@ -473,3 +386,65 @@ async def test_a_failed_read_back_does_not_turn_an_applied_change_into_an_error(
 
     assert answer.startswith("Admin rights updated")
     assert "declined" not in answer, "an unread right was reported as declined"
+
+
+@pytest.mark.asyncio
+async def test_both_newest_rights_are_set_on_the_plain_telethon_path():
+    """Telethon 1.45 announces layer 229 - the same layer TDLib does - so
+    `channels.editAdmin` carries flags.19 and flags.20 by itself.
+
+    Proved live on 2026-09-19, one pure `channels.editAdmin` with no fallback,
+    on a real channel, restored afterwards:
+
+        manage_linked_peers        asked True -> got True
+        manage_welcome_messages    asked True -> got True
+
+    So the answer has to be the plain one. Anything appended about TDLib means
+    the detour is back, and with it a second Telegram authorisation for
+    something Telethon already does.
+    """
+    from telegram_mcp.tools import admin_rights as mod
+
+    sent = {}
+
+    class _Channel:
+        async def __call__(self, request):
+            name = type(request).__name__
+            if name == "EditAdminRequest":
+                # Read off the wire form, not off the Python object: the whole
+                # class of bug here is a right that looks set and never leaves
+                # the process.
+                sent["flags"] = _flags_on_the_wire(request.admin_rights)
+                sent["rights"] = request.admin_rights
+                return SimpleNamespace(updates=[])
+            if name == "GetParticipantRequest":
+                return SimpleNamespace(participant=SimpleNamespace(admin_rights=sent["rights"]))
+            raise AssertionError(f"unexpected request {name}")
+
+        def is_connected(self):
+            return True
+
+    async def _connected(_client):
+        return None
+
+    async def _resolve(reference, _client):
+        return SimpleNamespace(id=5876481644)
+
+    original = (mod.get_client, mod.ensure_connected, mod.resolve_entity)
+    mod.get_client = lambda account=None: _Channel()
+    mod.ensure_connected = _connected
+    mod.resolve_entity = _resolve
+    try:
+        answer = await mod.edit_admin_rights(
+            chat_id=-1002046407246,
+            user_id=5876481644,
+            account="acct",
+            manage_linked_peers=True,
+            manage_welcome_messages=True,
+        )
+    finally:
+        mod.get_client, mod.ensure_connected, mod.resolve_entity = original
+
+    assert sent["flags"] >> 19 & 1, "manage_linked_peers never reached flags.19"
+    assert sent["flags"] >> 20 & 1, "manage_welcome_messages never reached flags.20"
+    assert answer == "Admin rights updated for user 5876481644 in chat -1002046407246."
