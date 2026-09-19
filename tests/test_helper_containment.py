@@ -14,11 +14,13 @@ import inspect
 import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import pytest
 
+from telegram_mcp.visual import bounded_process
 from telegram_mcp.visual import frames as frames_mod
 from telegram_mcp.visual.bounded_process import ProcessTimeout, run_bounded
 
@@ -158,6 +160,75 @@ def test_a_helper_that_exits_cleanly_leaves_no_descendant_either(tmp_path):
         f"grandchild {grandchild} survived a helper that had already exited, so the "
         "job handle is leaking one process tree per call"
     )
+
+
+def _kill(pid: int) -> None:
+    """Best effort, for a grandchild this test deliberately left outside a job."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True)
+        else:
+            os.kill(pid, 9)
+    except OSError:
+        pass
+
+
+def test_a_clean_exit_does_not_wait_for_a_descendant_holding_the_pipe(tmp_path):
+    """A clean call returns on the child's timescale, not its grandchild's.
+
+    `_finish` reasons that ``wait()`` means "the child is gone and the write ends
+    are closed by the OS; the readers then see EOF". True of the CHILD's handle,
+    false of a DESCENDANT's - the grandchild inherited the write end and keeps the
+    pipe open, so the reader sits in ``read()`` for the whole join budget and then
+    `close()` blocks too, on the same BufferedReader lock the stuck read holds.
+    Measured before the fix: `_finish` alone took **45.2s**, exactly the
+    grandchild's lifetime. Nothing inside `_finish` can shorten that, which is why
+    the fix is the CALLER's ordering - end the tree, then drain.
+
+    The error path always ended the tree first. The clean path did it afterwards,
+    and on POSIX not at all, because `job` is always None there and `_end_tree`
+    ran only on the error path. ubuntu is where this failed for real, on
+    main@9dcc019: `1 output reader(s) did not stop after the helper was reaped`.
+
+    The sibling test above asserts the grandchild DIES. This one asserts the call
+    does not WAIT for it - the timing half, which is what the flake was.
+    """
+    script = tmp_path / "leaves_a_holder.py"
+    pid_file = tmp_path / "grandchild.pid"
+    script.write_text(
+        "import subprocess, sys\n"
+        "from pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', "
+        f"'import time; time.sleep({GRANDCHILD_SECONDS})'])\n"
+        f"Path({str(pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    started = time.monotonic()
+    run_bounded(
+        [sys.executable, str(script)],
+        label="helper that leaves a holder",
+        timeout=GRANDCHILD_SECONDS,
+        max_output_bytes=CEILING,
+        max_stderr_bytes=CEILING,
+    )
+    elapsed = time.monotonic() - started
+
+    try:
+        # Generous against a loaded runner and still far below the grandchild's
+        # GRANDCHILD_SECONDS, so only the defect can push it over.
+        assert elapsed < GRANDCHILD_SECONDS / 3, (
+            f"the call took {elapsed:.1f}s for a helper that exits at once - it "
+            "waited for the grandchild holding the pipe"
+        )
+        assert not [
+            thread
+            for thread in threading.enumerate()
+            if thread.name.startswith(bounded_process.READER_NAME)
+        ], "a reader thread outlived the call"
+    finally:
+        if pid_file.exists():
+            _kill(int(pid_file.read_text(encoding="utf-8").strip()))
 
 
 # --- the ceiling is the reservation, not a constant -------------------------
