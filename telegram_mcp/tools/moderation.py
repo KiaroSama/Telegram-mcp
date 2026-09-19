@@ -20,32 +20,6 @@ Changes here alter a permission -- never the chat's own identity (see
 """
 
 from telegram_mcp.runtime import *
-from telegram_mcp.tools.later_rights import finish_later_rights
-
-# Rights Telegram has that the installed Telethon does not. Telethon 1.44 is
-# the last release - the project was archived in February 2026 - and it stops at
-# `manage_ranks` (flags.18), while layer 229 carries two more. Introspecting the
-# installed type is therefore still the floor but no longer the whole truth, so
-# these are named here and nowhere else.
-#
-# Adding them by hand is safe precisely because of the shape of this one type:
-# the constructor id did not change across those additions (0x5fb224d5) and
-# every field is a payload-free `flags.N?true`, so the wire form is exactly the
-# id followed by the flags int - nothing else has to be re-derived.
-
-
-# Every field Telegram's ChatAdminRights carries. Built from the installed
-# Telethon rather than typed out, because a hand-written list is exactly how the
-# previous one fell five behind: `post_stories`, `edit_stories`,
-# `delete_stories`, `manage_direct_messages` and `manage_ranks` existed on the
-# type and were never constructed, so no caller could grant them however
-# complete a `rights` dict it passed - the toggles simply stayed off in
-# Telegram's own admin panel with no error anywhere.
-
-
-# Held back from the generous default: one lets an admin mint more admins, the
-# other changes who they appear to be. Everything else is granted unless the
-# caller says otherwise.
 
 
 @mcp.tool(

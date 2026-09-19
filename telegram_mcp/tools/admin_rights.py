@@ -7,7 +7,6 @@ Admin rights are a MODEL - a bitfield Telegram accepts in part, silently.
 That is why so much of this module is not the tools themselves. A request can
 be accepted while a flag is dropped, so the rights are read back and compared,
 and anything Telegram declined is reported rather than assumed applied.
-``undeliverable_rights`` names what this build of Telethon cannot even send,
 ``_rights_telegram_declined`` names what the server refused, and
 ``_WITHHELD_BY_DEFAULT`` keeps ``add_admins`` and ``anonymous`` out of a
 generous default - promoting someone should not let them promote others unless
@@ -17,7 +16,6 @@ Bans, default permissions and the audit log stay in ``moderation``.
 """
 
 from telegram_mcp.runtime import *
-from telegram_mcp.tools.later_rights import finish_later_rights
 
 __all__ = [
     "demote_admin",
@@ -25,103 +23,6 @@ __all__ = [
     "get_admins",
     "promote_admin",
 ]
-
-
-class _ChatAdminRightsWithLaterFlags(ChatAdminRights):
-    """`ChatAdminRights` plus the rights this Telethon predates."""
-
-    def __init__(self, **kwargs):
-        # Popped before Telethon sees them, because this Telethon would reject
-        # the keyword - then set back as ordinary attributes, so that anything
-        # reading a right off this object finds all of them in the same place.
-        later = {name: bool(kwargs.pop(name, False)) for name in _EXTRA_ADMIN_RIGHT_BITS}
-        super().__init__(**kwargs)
-        for name, value in later.items():
-            setattr(self, name, value)
-
-    def _bytes(self):
-        # OR onto Telethon's own output rather than re-deriving the other bits.
-        # A future Telethon that learns one of these sets the same bit itself,
-        # which makes this a no-op for that field instead of a conflict.
-        raw = super()._bytes()
-        flags = int.from_bytes(raw[4:], "little")
-        for name, bit in _EXTRA_ADMIN_RIGHT_BITS.items():
-            if getattr(self, name):
-                flags |= 1 << bit
-        return raw[:4] + flags.to_bytes(4, "little")
-
-
-_EXTRA_ADMIN_RIGHT_BITS = {
-    "manage_linked_peers": 19,
-    "manage_welcome_messages": 20,
-}
-
-
-def _install_extended_rights_reader() -> None:
-    """Teach Telethon's reader to keep the two bits it does not know about.
-
-    `ChatAdminRights.from_reader` reads the flags integer, sets the seventeen
-    fields it knows, and drops the integer. So a right Telegram sends in
-    flags.19 or flags.20 arrives correctly and is discarded before any caller
-    can see it - which would leave this server able to GRANT a right it could
-    never report, the exact asymmetry the rest of this module exists to close.
-
-    Wrapping rather than replacing: the original still does all the decoding,
-    and this only rewinds far enough to read the same integer a second time.
-    Installed once, at import, because a second wrap would rewind twice.
-    """
-    if getattr(ChatAdminRights.from_reader, "_reads_later_flags", False):
-        return
-
-    original = ChatAdminRights.from_reader
-
-    def from_reader(cls, reader):
-        position = reader.tell_position()
-        flags = reader.read_int()
-        reader.set_position(position)
-        rights = original(reader)
-        for name, bit in _EXTRA_ADMIN_RIGHT_BITS.items():
-            setattr(rights, name, bool(flags >> bit & 1))
-        return rights
-
-    from_reader._reads_later_flags = True
-    ChatAdminRights.from_reader = classmethod(from_reader)
-
-
-# Installed at import time: the reader has to know about the extra bits
-# before any ChatAdminRights is parsed off the wire.
-_install_extended_rights_reader()
-
-
-def undeliverable_rights(values: dict) -> list:
-    """The requested rights this connection cannot actually deliver.
-
-    Telegram masks flags that do not exist in the layer the client announced,
-    and it does so SILENTLY: the request is accepted, the reply says the rights
-    were updated, and the flag is simply not there afterwards. Measured on a
-    live channel, one request from its creator carrying three flags -- flags.18
-    landed, flags.19 and flags.20 did not.
-
-    Telethon announces layer 227 (`telethon.tl.alltlobjects.LAYER`) and is
-    archived, so that number will not rise. Serialising the bits correctly, which
-    this module does, is necessary and not sufficient.
-
-    Reporting it is the whole point: a tool that answers "Admin rights updated"
-    while quietly dropping the one right the caller asked for is worse than one
-    that fails, because nothing downstream can tell.
-    """
-    return sorted(name for name in _EXTRA_ADMIN_RIGHT_BITS if values.get(name))
-
-
-def _undeliverable_note(dropped: list) -> str:
-    from telethon.tl.alltlobjects import LAYER
-
-    names = ", ".join(dropped)
-    return (
-        f" NOT set: {names}. Telegram accepted the request but drops these: they were added "
-        f"to chatAdminRights after TL layer {LAYER}, which is the layer Telethon announces "
-        "and, being archived, always will."
-    )
 
 
 async def _rights_telegram_declined(cl, entity, user, requested: dict) -> list:
@@ -134,10 +35,9 @@ async def _rights_telegram_declined(cl, entity, user, requested: dict) -> list:
     because pinning is a supergroup right, topics need a forum, and ranks need
     the supergroup context. Nothing said so.
 
-    `set_admin_right` has always read back for exactly this reason. This is the
-    same check for the tool that sets them all at once, so a declined right is
-    visible rather than assumed - the note used to end "Every other right in
-    this call was applied", which was a claim, not a measurement.
+    So a declined right is visible rather than assumed: the note used to end
+    "Every other right in this call was applied", which was a claim, not a
+    measurement.
 
     Never raises: a failed read-back must not turn an applied change into an
     error. It returns nothing to report instead, which is what it knows.
@@ -150,9 +50,9 @@ async def _rights_telegram_declined(cl, entity, user, requested: dict) -> list:
         actual = admin_rights_to_dict(getattr(got.participant, "admin_rights", None))
     except Exception:
         return []
-    # A name absent from the read-back is one THIS Telethon cannot see, which is
-    # the post-227 case the TDLib path reports on separately. Only a right that
-    # came back explicitly False was declined.
+    # Only a right that came back explicitly False was declined. A name absent
+    # from the read-back is not a right at all, which is a caller's mistake
+    # rather than an answer from Telegram.
     return sorted(name for name in wanted if actual.get(name) is False)
 
 
@@ -165,36 +65,8 @@ def _declined_note(declined: list) -> str:
     )
 
 
-def _later_rights_note(outcome: dict) -> str:
-    """What became of the rights this connection's layer could not carry.
-
-    The layer cannot be raised from here -- Telegram accepts `invokeWithLayer`
-    only as a connection's FIRST request, so there is no per-call escape, and
-    announcing a later layer wholesale would require the library to understand
-    every constructor in it, which an archived library does not.
-
-    So the remainder is finished over TDLib, and this reports the outcome per
-    right. A name that reached neither list would be the original silent drop
-    wearing a longer message, so every requested name appears exactly once.
-    """
-    note = ""
-    if outcome.get("delivered"):
-        note += " Delivered over TDLib instead: " + ", ".join(sorted(outcome["delivered"])) + "."
-    stuck = sorted([*outcome.get("failed", {}), *outcome.get("unmappable", [])])
-    if stuck:
-        note += _undeliverable_note(stuck)
-        for name in sorted(outcome.get("unmappable", [])):
-            note += (
-                f" {name}: TDLib has no field that unambiguously matches it, and a guessed"
-                " mapping revokes rights silently, so it was not guessed at."
-            )
-        for name, why in sorted(outcome.get("failed", {}).items()):
-            note += f" {name}: {why}"
-    return note
-
-
 def admin_rights_to_dict(rights) -> dict:
-    """Every right on a rights object, including the two Telethon lacks.
+    """Every right on a rights object.
 
     One reader for one writer: `get_admins` reports exactly the field set
     `edit_admin_rights` can set, so a right present in one and absent from the
@@ -206,14 +78,17 @@ def admin_rights_to_dict(rights) -> dict:
 
 
 def _admin_rights_fields() -> tuple:
+    """Every right, read off the installed type rather than typed out here.
+
+    A hand-written list is how the previous one fell five behind: `post_stories`
+    and four others were on the type and never constructed, so no caller could
+    grant them however complete a `rights` dict it passed.
+    """
     import inspect
 
-    known = tuple(
+    return tuple(
         name for name in inspect.signature(ChatAdminRights.__init__).parameters if name != "self"
     )
-    # De-duplicated so that the day a Telethon release learns one of these, the
-    # field simply stops being "extra" instead of appearing twice.
-    return known + tuple(n for n in _EXTRA_ADMIN_RIGHT_BITS if n not in known)
 
 
 _WITHHELD_BY_DEFAULT = frozenset({"add_admins", "anonymous"})
@@ -239,7 +114,7 @@ def _build_admin_rights(values: dict = None, defaults: dict = None) -> ChatAdmin
     """
     values = values or {}
     defaults = _generous_defaults() if defaults is None else defaults
-    return _ChatAdminRightsWithLaterFlags(
+    return ChatAdminRights(
         **{
             name: bool(values.get(name, defaults.get(name, False)))
             for name in _admin_rights_fields()
@@ -409,10 +284,6 @@ async def edit_admin_rights(
         manage_ranks: can set other admins' custom titles.
         manage_linked_peers: can manage the channel's linked peers.
         manage_welcome_messages: can write and edit the chat's welcome messages.
-
-    The last two are rights Telegram added after Telethon's final release, so
-    they are put on the wire by this server rather than by the library. They
-    behave like any other right here.
     """
     try:
         cl = get_client(account)
@@ -453,22 +324,7 @@ async def edit_admin_rights(
         )
         if declined:
             answer += _declined_note(declined)
-        dropped = undeliverable_rights(
-            {
-                "manage_linked_peers": manage_linked_peers,
-                "manage_welcome_messages": manage_welcome_messages,
-            }
-        )
-        if not dropped:
-            return answer
-        # The MTProto half is already applied; this finishes the rest over
-        # TDLib, which speaks the current layer. It reports rather than raises,
-        # because turning a partial success into an exception would read like
-        # nothing was applied.
-        outcome = await finish_later_rights(
-            account, utils.get_peer_id(entity), utils.get_peer_id(user), dropped
-        )
-        return answer + _later_rights_note(outcome)
+        return answer
     except telethon.errors.rpcerrorlist.FreshChangeAdminsForbiddenError:
         # Telegram's anti-hijack rule, not a permission this account is missing:
         # a session younger than about 24 hours may not promote or demote
