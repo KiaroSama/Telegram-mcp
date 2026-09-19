@@ -18,6 +18,12 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from telethon.tl.types import (
+    InlineButtonTypeCallback,
+    KeyboardInlineButton,
+    KeyboardInlineButtonRow,
+    ReplyInlineMarkup,
+)
 
 import telegram_mcp.tools.buttons as buttons_tool
 
@@ -109,12 +115,8 @@ class _Client:
 @pytest.fixture
 def _wire(monkeypatch):
     def use(answer):
-        button = type("KeyboardButtonCallback", (SimpleNamespace,), {})(
-            text="Confirm", data=b"cb:1", style=None
-        )
-        markup = type("ReplyInlineMarkup", (SimpleNamespace,), {})(
-            rows=[SimpleNamespace(buttons=[button])]
-        )
+        button = KeyboardInlineButton(text="Confirm", type=InlineButtonTypeCallback(data=b"cb:1"))
+        markup = ReplyInlineMarkup(rows=[KeyboardInlineButtonRow(buttons=[button])])
         client = _Client(SimpleNamespace(id=7, reply_markup=markup), answer)
         monkeypatch.setattr(buttons_tool, "get_client", lambda account=None: client)
 

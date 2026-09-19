@@ -16,6 +16,7 @@ from telegram_mcp.runtime import *
 from telegram_mcp.button_view import (
     MAX_MACHINE_VALUE,
     PREMIUM_EMOJI_NOTE,
+    button_detail,
     describe_keyboard,
     find_button,
 )
@@ -97,7 +98,7 @@ def _binding_facts(account, entity, msg, described: dict[str, Any], raw) -> Opti
         described["column"],
         described["kind"],
         getattr(raw, "text", None) or "",
-        getattr(raw, "data", None) or b"",
+        getattr(button_detail(raw), "data", None) or b"",
     )
 
 
@@ -411,7 +412,7 @@ async def click_button(
         # Re-read the raw button at the same coordinates rather than trusting the
         # description: the payload is bytes and never leaves this function.
         raw = _raw_button(msg, chosen["row"], chosen["column"])
-        data = getattr(raw, "data", None)
+        data = getattr(button_detail(raw), "data", None)
         if not data:
             return (
                 f"Button {button_index} lost its callback payload between listing and "
