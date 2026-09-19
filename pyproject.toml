@@ -73,7 +73,7 @@ secret = []
 "Bug Tracker" = "https://github.com/KiaroSama/telegram-mcp/issues"
 
 [tool.setuptools]
-py-modules = ["main", "sanitize", "session_string_generator"]
+py-modules = ["main", "session_string_generator"]
 
 # Discovered rather than listed: a hand-maintained list silently drops any new
 # subpackage from the wheel, and the failure only shows up as an ImportError at
@@ -135,7 +135,6 @@ relative_files = true
 # rather than testing anything. Their behavioural coverage is a separate effort.
 source = [
     "main",
-    "sanitize",
     "session_string_generator",
     "telegram_mcp.account_config",
     "telegram_mcp.account_lifecycle",
@@ -169,6 +168,7 @@ source = [
     "telegram_mcp.retirement",
     "telegram_mcp.runner",
     "telegram_mcp.runtime",
+    "telegram_mcp.sanitize",
     "telegram_mcp.safe_log",
     "telegram_mcp.sent",
     "telegram_mcp.session_files",

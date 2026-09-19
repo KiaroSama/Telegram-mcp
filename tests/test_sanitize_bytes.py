@@ -11,7 +11,7 @@ Pure functions, so no fakes: build the value, assert on the cleaned value.
 
 import json
 
-from sanitize import _json_default, format_tool_result, sanitize_dict
+from telegram_mcp.sanitize import _json_default, format_tool_result, sanitize_dict
 from telegram_mcp.runtime import json_serializer
 
 BIDI_OVERRIDE = "‮"  # right-to-left override: reorders what a reader sees

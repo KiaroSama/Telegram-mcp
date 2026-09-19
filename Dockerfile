@@ -54,7 +54,7 @@ RUN pip install --no-cache-dir uv==0.12.8 && uv sync --locked --no-dev --no-inst
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy the rest of the application code
-COPY main.py sanitize.py ./
+COPY main.py ./
 COPY telegram_mcp ./telegram_mcp
 # COPY session_string_generator.py . # Optional: if needed within the container, otherwise can be run outside
 

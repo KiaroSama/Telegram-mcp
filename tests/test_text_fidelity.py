@@ -8,7 +8,7 @@ object. The Telegram-shaped tests stayed behind.
 import pytest
 
 from helpers_unicode import FAMILY, FLAG, PERSIAN
-from sanitize import sanitize_name
+from telegram_mcp.sanitize import sanitize_name
 from telegram_mcp.text_fidelity import (
     _sequence_starts,
     display_name,
