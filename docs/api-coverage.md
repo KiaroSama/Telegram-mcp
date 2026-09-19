@@ -11,7 +11,7 @@ re-exports, which is where the earlier 802 came from.
 
 | | Count |
 |---|---|
-| MCP tools registered | **219** |
+| MCP tools registered | **227** |
 | TL namespaces | 25, plus the root `functions` module |
 | Unique `TLRequest` classes in layer 229 | **824** |
 | Raw TL requests this codebase calls | 97 |
@@ -218,7 +218,7 @@ no number from this API means "how many GIFs are saved", and the tools report
 | Terminating active sessions | Reading the device list is harmless; ending sessions is a security action for a human. |
 | Login / QR / auth flow | Session creation already belongs to the operator's setup, and putting it behind a tool widens what a compromised agent can do. |
 | Group and video calls | Needs WebRTC and a media stack, not just TL. Out of proportion to any agent benefit. |
-| ~~Secret chats~~ | No longer a gap. Telethon still has no E2E implementation and never will — the project is archived — so these nine tools run on TDLib instead. See Phase 4 below. |
+| ~~Secret chats~~ | No longer a gap. Telethon still has no E2E implementation and never will — the project is archived — so these seventeen tools run on TDLib instead. See Phase 4 below. |
 
 ## Administering a channel or group: what already ships
 
@@ -495,10 +495,28 @@ sign-in through `scripts/secret_chat_login.py`, appearing as another device. The
 dependency is required as of 2026-08-31 (`tdjson`); before that it was optional. Every other
 tool is unaffected, and `secret_chat_status` says which prerequisite is missing.
 
-Nine tools, all for the chats themselves: `secret_chat_status`, `create_secret_chat`, `list_secret_chats`,
-`send_secret_message`, `send_secret_media`, `read_secret_messages`,
-`save_secret_media`, `set_secret_chat_timer`, `close_secret_chat`
-(`tools/secret_chats.py`). Transport for all nine is `telegram_mcp/tdlib.py`.
+Seventeen tools, all for the chats themselves. The chat: `secret_chat_status`,
+`create_secret_chat`, `list_secret_chats`, `set_secret_chat_timer`, `close_secret_chat`
+(`tools/secret_chats.py`). What travels through it: `send_secret_message`,
+`send_secret_media`, `read_secret_messages`, `save_secret_media`
+(`tools/secret_messaging.py`). What is done to it: `delete_secret_message`,
+`clear_secret_history`, `mark_secret_read`, `send_secret_typing`,
+`search_secret_messages`, `copy_into_secret_chat` (`tools/secret_actions.py`). And the
+two timed sends: `send_timed_secret_message`, `send_timed_secret_media`
+(`tools/secret_timed.py`). Transport for all seventeen is `telegram_mcp/tdlib.py`.
+
+**The boundary is the protocol's, not this server's.** MTProto's encrypted layer has a
+closed vocabulary — thirteen `decryptedMessageAction*` constructors and ten
+`decryptedMessageMedia*` — and anything outside those lists has no representation at all.
+Editing a sent message, reactions, pinning, scheduled send, forwarding out, threads,
+polls, dice, games, invoices, live location, read-by, chat title and photo, and blocking
+from inside the chat are therefore absent by construction rather than unimplemented.
+`secret_chat_status` reports each with its evidence, read off the shipped `tdjson` 1.8.67
+binary: an absent constructor, or the refusal TDLib itself emits ("Secret chats can't have
+pinned messages", "Can't schedule messages in secret chats", "Can't get message viewers in
+secret chats"). Screenshot notification is the one genuinely ambiguous case — the protocol
+defines the action, but this build exposes no `td_api` function to send it, so it is
+reported as unavailable rather than guessed at.
 
 Two admin-rights tools used to sit here as well, because layer 227 could not carry
 `manage_linked_peers` or `manage_welcome_messages`. Telethon 1.45 announces layer 229 and

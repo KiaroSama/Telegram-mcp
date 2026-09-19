@@ -50,6 +50,9 @@ LIMITS: dict[str, int] = {
     # Secret-chat history is read from this device's local database, so the
     # cost is a local query rather than a fetch; the cap is about reply size.
     "read_secret_messages": 100,
+    # Same story for search: the dedicated secret-chat search reads the same
+    # local database, so the cap is about reply size rather than fetch cost.
+    "search_secret_messages": 100,
     # Chat and dialog listings: one record per chat, cheap but numerous.
     "get_chats": 200,
     "list_chats": 200,
