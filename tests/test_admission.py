@@ -143,7 +143,10 @@ async def test_a_failed_admission_stays_pending_and_raises(monkeypatch):
         def __init__(self, identity):
             pass
 
-        def acquire(self, grace_seconds=None):
+        # `**_` for the same reason the claim_session doubles carry it: a
+        # double that pins the real signature breaks on its next optional
+        # keyword.
+        def acquire(self, grace_seconds=None, **_):
             raise OSError("the lock file could not be opened")
 
     monkeypatch.setattr(mod, "SessionLock", _Refusing)

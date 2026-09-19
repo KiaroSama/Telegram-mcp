@@ -39,9 +39,10 @@ it protects to be down.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import StartupMessage
@@ -221,19 +222,31 @@ async def _admit(label: str, client, grace_seconds: Optional[float]) -> None:
     _publish(label, client, lock, identity)
 
 
-async def claim_session(label: str, client, grace_seconds: Optional[float] = None) -> None:
+async def claim_session(
+    label: str,
+    client,
+    grace_seconds: Optional[float] = None,
+    on_wait: Optional[Callable[[float], None]] = None,
+) -> None:
     """Take this process's exclusive lock on the client's session. Startup's path.
 
     Unconditional on purpose. A short-circuit on "this label already has a lock"
     reads like harmless idempotence and is not: the same label handed a SECOND
     client for the same session is exactly the duplicate-connection case the lock
     exists to refuse, and skipping the acquire let it through.
+
+    ``on_wait`` is handed straight to the lock: it fires only when this actually
+    has to wait for another instance, which is the one case startup owes the
+    operator a sentence about.
     """
     identity = session_identity(client)
     lock = SessionLock(identity)
     await asyncio.to_thread(
-        lock.acquire,
-        grace_seconds=DEFAULT_GRACE_SECONDS if grace_seconds is None else grace_seconds,
+        functools.partial(
+            lock.acquire,
+            grace_seconds=DEFAULT_GRACE_SECONDS if grace_seconds is None else grace_seconds,
+            on_wait=on_wait,
+        )
     )
     _publish(label, client, lock, identity)
 
