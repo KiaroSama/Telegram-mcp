@@ -21,7 +21,7 @@ import sys
 
 import pytest
 
-from telegram_mcp import tdlib, tdlib_identity as identity
+from telegram_mcp import tdlib, tdlib_identity as identity, tdlib_lease
 
 
 @pytest.fixture(autouse=True)
@@ -218,12 +218,25 @@ def test_two_quarantines_in_the_same_second_both_survive(_state):
 # --- the login path -----------------------------------------------------------
 
 
+def _attempt_for(label):
+    """One login sequence, which is what `_attempt_login` now takes.
+
+    A label is reusable and an attempt is not, which is the whole point: the
+    close confirmation that authorises a quarantine belongs to the sequence
+    that watched it, never to the name.
+    """
+    return tdlib_lease.LoginAttempt(label, tdlib.database_dir_for(label))
+
+
 def _login_with(monkeypatch, attempts):
     """Drive `complete_login` with a scripted sequence of attempt outcomes."""
     calls = []
 
-    async def _attempt(label, telethon_client, password, ask_password):
-        calls.append(label)
+    async def _attempt(attempt, telethon_client, password, ask_password):
+        calls.append(attempt.label)
+        # The receipt the recovery path spends belongs to THIS attempt now, not
+        # to a module-level dict keyed by the label - see `tdlib_lease`.
+        attempt.closed_confirmed = True
         outcome = attempts[len(calls) - 1]
         if isinstance(outcome, Exception):
             raise outcome
@@ -321,19 +334,19 @@ def test_the_login_path_asks_whose_database_it_is(_state, monkeypatch):
     without asking, so a reused label handed back the previous owner's login."""
     _database(_state, "work")
     previous = _StartsReady(111)
-    monkeypatch.setattr(tdlib, "TDLibClient", lambda account: previous)
+    monkeypatch.setattr(tdlib, "TDLibClient", lambda account, **kw: previous)
 
     with pytest.raises(identity.IdentityMismatch):
-        asyncio.run(tdlib._attempt_login("work", _Telethon(222), None, None))
+        asyncio.run(tdlib._attempt_login(_attempt_for("work"), _Telethon(222), None, None))
 
     assert previous.closed == 1, "the wrong account's client was left open"
 
 
 def test_the_login_path_records_the_binding_it_proved(_state, monkeypatch):
     _database(_state, "work")
-    monkeypatch.setattr(tdlib, "TDLibClient", lambda account: _StartsReady(555))
+    monkeypatch.setattr(tdlib, "TDLibClient", lambda account, **kw: _StartsReady(555))
 
-    state = asyncio.run(tdlib._attempt_login("work", _Telethon(555), None, None))
+    state = asyncio.run(tdlib._attempt_login(_attempt_for("work"), _Telethon(555), None, None))
 
     assert state == "authorizationStateReady"
     assert identity.read_identity("work") == 555

@@ -31,13 +31,17 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
-import logging
 import time
 from pathlib import Path
 from typing import Any, Optional
 
-from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import TELEGRAM_API_HASH, TELEGRAM_API_ID, state_dir
+
+# Who owns a database directory, across processes. A module-scope import is safe
+# here and nowhere else in this file's neighbourhood: it reaches only `singleton`
+# and `safe_log`, so it closes none of the cycles the deferred imports below
+# exist for.
+from telegram_mcp import tdlib_lease
 
 # The process-global half - the shared binary handle and the single receive
 # thread that routes events back to these clients. Imported by name so the
@@ -156,9 +160,21 @@ class TDLibClient:
     `@extra` -- go to a queue instead of a future.
     """
 
-    def __init__(self, account: str, database_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        account: str,
+        database_dir: Optional[Path] = None,
+        *,
+        lease_owner: Optional[object] = None,
+    ):
         self.account = account
         self.database_dir = Path(database_dir) if database_dir else database_dir_for(account)
+        # Who the database lease belongs to. The client itself normally, because
+        # the client is the generation; a login SEQUENCE passes its own token,
+        # because there the lease has to outlive the client - the quarantine
+        # happens after the close, and a database released between the two is
+        # one another process may take.
+        self._lease_owner: object = self if lease_owner is None else lease_owner
         self.authorization_state: Optional[str] = None
         # `authorizationStateWaitOtherDeviceConfirmation` carries a `tg://login`
         # link and nothing else. Keeping only the state name would throw away the
@@ -184,19 +200,48 @@ class TDLibClient:
         Anything else is a step `scripts/secret_chat_login.py` has to complete;
         this returns it rather than prompting, because a tool server has nowhere
         to prompt.
+
+        Takes the database lease FIRST, before anything native exists. TDLib
+        opens the directory the moment it is given its parameters, and two
+        processes writing one database corrupts secret-chat keys that cannot be
+        re-derived - so a database another process owns is refused here, with
+        nothing started, rather than discovered afterwards.
         """
-        _quieten(self._td)
-        self._loop = asyncio.get_running_loop()
-        self._state_changed = asyncio.Event()
-        self._client_id = self._td.td_create_client_id()
-        with _clients_lock:
-            _clients[self._client_id] = self
-        _ensure_reader()
+        tdlib_lease.hold(self.database_dir, self._lease_owner)
+        try:
+            _quieten(self._td)
+            self._loop = asyncio.get_running_loop()
+            self._state_changed = asyncio.Event()
+            self._client_id = self._td.td_create_client_id()
+            with _clients_lock:
+                _clients[self._client_id] = self
+            _ensure_reader()
+        except BaseException:
+            # Nothing native came up, so nothing holds the database: hand the
+            # lease back rather than making this account unusable for the life
+            # of the process. A client that DID come up keeps it - `close()`
+            # confirming is the only thing that returns one.
+            if self._client_id is None:
+                self.release_database()
+            raise
 
         # Nothing happens until the client is poked; TDLib answers the first
         # request with its authorisation state.
         self._send({"@type": "getOption", "name": "version"})
         return await self._settle()
+
+    def release_database(self) -> bool:
+        """Give this client's database lease back, and say whether it was ours.
+
+        A client that BORROWED the lease of the login sequence around it never
+        ends it: the sequence still has a quarantine and a retry to do, and a
+        database handed back between a close and the rename that follows it is
+        one another process may take. `False` covers that and a client that
+        never took a lease at all; both are ordinary.
+        """
+        if self._lease_owner is not self:
+            return False
+        return tdlib_lease.release(self.database_dir, self)
 
     async def _settle(self, timeout: float = 30.0, ignore: frozenset = frozenset()) -> str:
         """Wait for an authorisation state that needs someone else to act.
@@ -267,12 +312,32 @@ class TDLibClient:
         # bought half of what it said, and the accounts behind this one lost
         # their turn.
         deadline = time.monotonic() + timeout
-        try:
-            await self.request({"@type": "close"}, timeout=max(deadline - time.monotonic(), 0.0))
-        except (TDLibError, TimeoutError):
-            # The request itself failed. TDLib may still be closing, so the
-            # wait below is still the question worth asking.
-            pass
+        # Nothing to ask a client that has already reported Closed - TDLib does
+        # that on its own when the session is terminated elsewhere. Asking
+        # anyway sent a `close` nothing would ever answer, spent the WHOLE
+        # budget waiting for the answer, left none for the wait below, and then
+        # raised a timeout about a client whose closure was already recorded.
+        # Twenty seconds each, at shutdown, to report a failure that was not one.
+        if not closed.is_set():
+            try:
+                await self.request(
+                    {"@type": "close"}, timeout=max(deadline - time.monotonic(), 0.0)
+                )
+            except (RuntimeError, TimeoutError):
+                # The request itself failed. TDLib may still be closing, so the
+                # wait below is still the question worth asking.
+                #
+                # `RuntimeError` rather than `TDLibError` alone, and that
+                # widening is a defect fix rather than caution: when TDLib
+                # reports Closed WITHOUT answering its own `close` request -
+                # which is what it does when the authorisation ends underneath
+                # it - `_settle_pending` fails this very future with a
+                # `RuntimeError`. That is a close that SUCCEEDED, and it was
+                # escaping from here as a failure, so shutdown reported possible
+                # key loss and the registry retained the database for the life
+                # of the process. The state below is the completion signal;
+                # nothing the request does changes that.
+                pass
         try:
             await asyncio.wait_for(closed.wait(), timeout=max(deadline - time.monotonic(), 0.0))
         except (asyncio.TimeoutError, TimeoutError) as error:
@@ -289,6 +354,11 @@ class TDLibClient:
         self._settle_pending(
             RuntimeError(f"the TDLib client for {self.account!r} closed while this was in flight")
         )
+        # LAST, and only here. Everything above this line is a database this
+        # process is still responsible for; the path that raises above keeps the
+        # lease deliberately, because a client that could not confirm it closed
+        # may still be checkpointing.
+        self.release_database()
 
     def _closed_event(self) -> "asyncio.Event":
         """The event `_on_authorization` sets when TDLib reports Closed."""
@@ -571,10 +641,23 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
     Returns the state reached. ``authorizationStateReady`` is the only success.
     The password is never logged, stored, or passed on a command line.
     """
+    # ONE lease for the whole sequence, and it outlives every client inside it:
+    # the quarantine below happens AFTER a close, and a database handed back
+    # between the two is one another process may open - or rename - first.
+    attempt = tdlib_lease.LoginAttempt(label, database_dir_for(label))
+    tdlib_lease.hold(attempt.database_dir, attempt)
+    try:
+        return await _login_holding_the_database(attempt, telethon_client, password, ask_password)
+    finally:
+        tdlib_lease.release(attempt.database_dir, attempt)
+
+
+async def _login_holding_the_database(attempt, telethon_client, password, ask_password) -> str:
     from telegram_mcp import tdlib_identity as identity
 
+    label = attempt.label
     try:
-        return await _attempt_login(label, telethon_client, password, ask_password)
+        return await _attempt_login(attempt, telethon_client, password, ask_password)
     except identity.IdentityMismatch:
         # Two real accounts and no way to tell which was meant. Never recovered
         # from automatically: the database is the evidence, and the old recovery
@@ -595,14 +678,26 @@ async def complete_login(label: str, telethon_client, password=None, ask_passwor
         # Telegram's answer rather than a fact about the file. `rmtree` with
         # `ignore_errors=True` was worse than either: a directory still held
         # open reported success while deleting nothing at all.
-        kept_at = identity.quarantine_database(
-            label, why=str(error), closed=_close_confirmed.get(label, False)
+        #
+        # OFF THE LOOP. The rename retries for five seconds with `time.sleep`,
+        # waiting for the previous holder to let go, and on the loop that is
+        # five seconds in which nothing else in this process runs.
+        #
+        # The receipt is the ATTEMPT's, not the label's: it says this sequence's
+        # own client reached Closed. The lease is passed too, so the quarantine
+        # can tell its owner from a competitor.
+        kept_at = await asyncio.to_thread(
+            identity.quarantine_database,
+            label,
+            why=str(error),
+            closed=attempt.closed_confirmed,
+            owner=attempt,
         )
         try:
             # ONE retry. A dead authorisation that survives a fresh database is
             # not a stale database, and quarantining again would spend another
             # real login to learn the same thing.
-            return await _attempt_login(label, telethon_client, password, ask_password)
+            return await _attempt_login(attempt, telethon_client, password, ask_password)
         except (TDLibError, RuntimeError) as second:
             if _authorisation_is_dead(second):
                 raise RuntimeError(
@@ -627,29 +722,19 @@ def _authorisation_is_dead(error: Exception) -> bool:
     )
 
 
-# label -> whether the last `_attempt_login` saw its client reach Closed. Read
-# by the recovery path, which may not move a database aside on any weaker
-# evidence: a rename succeeding is a Windows accident, not a closure check.
-_close_confirmed: dict = {}
+async def _attempt_login(attempt, telethon_client, password, ask_password) -> str:
+    """One login against this attempt's database, under this attempt's lease.
 
-
-async def _closed_cleanly(client) -> bool:
-    try:
-        await client.close()
-    except Exception as error:
-        log_event(
-            logging.WARNING,
-            "a TDLib client did not confirm it closed",
-            error=error,
-        )
-        return False
-    return True
-
-
-async def _attempt_login(label, telethon_client, password, ask_password) -> str:
+    `attempt` rather than a label: the closure receipt used to be a module-level
+    dict keyed by LABEL, so a `True` any earlier login for that name left behind
+    was what authorised the next one's quarantine - and a quarantine renames a
+    database whose secret-chat keys cannot be re-derived. The receipt belongs to
+    the sequence that watched a client close, and to nothing else.
+    """
     from telegram_mcp import tdlib_identity as identity
 
-    client = TDLibClient(label)
+    label = attempt.label
+    client = TDLibClient(label, lease_owner=attempt)
     try:
         state = await client.start()
         if state == "authorizationStateReady":
@@ -680,9 +765,9 @@ async def _attempt_login(label, telethon_client, password, ask_password) -> str:
             await identity.verify_owner(label, client, telethon_client)
         return state
     finally:
-        # Recorded rather than swallowed. The recovery path below may want to
-        # move this database aside, and it may only do that once something has
-        # CONFIRMED the client let go of it. A close that raised - and now it
-        # can, because it waits for the documented completion signal - must not
-        # mask the failure being reported either.
-        _close_confirmed[label] = await _closed_cleanly(client)
+        # Recorded rather than swallowed. The recovery path may want to move this
+        # database aside, and it may only do that once something has CONFIRMED
+        # the client let go of it. A close that raised - and now it can, because
+        # it waits for the documented completion signal - must not mask the
+        # failure being reported either.
+        await attempt.close(client)
