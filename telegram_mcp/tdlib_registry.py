@@ -109,9 +109,8 @@ def _start_close(account: str, client) -> asyncio.Future:
     return task
 
 
-async def _close_quietly(client: TDLibClient, why: str) -> None:
+async def _close_quietly(client: TDLibClient, why: str, *, account: str) -> None:
     """Retain failed/incomplete starts until their database owner actually closes."""
-    account = client.account
     _by_account[account] = client
     _verified_against.pop(account, None)
     try:
@@ -196,10 +195,10 @@ async def secret_client(account: str) -> TDLibClient:
             # Cancellation included: `start()` brings up a native client and
             # registers it with the reader thread, and abandoning that leaked
             # both for the life of the process.
-            await _close_quietly(client, "a failed start")
+            await _close_quietly(client, "a failed start", account=account)
             raise
         if state != "authorizationStateReady":
-            await _close_quietly(client, "an incomplete authorisation")
+            await _close_quietly(client, "an incomplete authorisation", account=account)
             raise NotSignedIn(account, state)
         # AFTER the start, which is a real wait on a native library. The lease
         # this client was started for has to still be the current one, or what
@@ -213,7 +212,9 @@ async def secret_client(account: str) -> TDLibClient:
                     "started, so this generation is no longer current; retry the call",
                 )
         except BaseException:
-            await _close_quietly(client, "the account generation changed during the start")
+            await _close_quietly(
+                client, "the account generation changed during the start", account=account
+            )
             raise
         # Imported here, not at module scope: `tdlib_identity` reads
         # `database_dir_for` out of `tdlib`, which re-exports this module, and
@@ -229,12 +230,13 @@ async def secret_client(account: str) -> TDLibClient:
             await tdlib_identity.verify_owner(account, client, telethon)
             if _closing or get_client(account) is not telethon:
                 raise NotSignedIn(
-                    account, "the account was reconfigured or shut down during identity verification"
+                    account,
+                    "the account was reconfigured or shut down during identity verification",
                 )
             if not _is_usable(client):
                 raise NotSignedIn(account, "authorization changed during identity verification")
         except BaseException:
-            await _close_quietly(client, "an identity that did not match")
+            await _close_quietly(client, "an identity that did not match", account=account)
             raise
         _by_account[account] = client
         _verified_against[account] = telethon
@@ -295,9 +297,7 @@ async def close_all(budget: float = _CLOSE_ALL_BUDGET) -> List[Tuple[str, Except
             if left <= 0:
                 return account, TimeoutError("the shutdown budget ran out before this account")
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(_start_close(account, client)), timeout=left
-                )
+                await asyncio.wait_for(asyncio.shield(_start_close(account, client)), timeout=left)
             except Exception as error:
                 return account, error
             return account, None

@@ -60,7 +60,9 @@ def native_env(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["generation", "shutdown", "authorization", "removal"])
-async def test_final_verification_cannot_publish_an_obsolete_client(native_env, monkeypatch, change):
+async def test_final_verification_cannot_publish_an_obsolete_client(
+    native_env, monkeypatch, change
+):
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def verify(account, client, telethon):
@@ -107,7 +109,9 @@ async def test_cancellation_during_old_close_is_not_relabelled_as_login_failure(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("start_kind", ["error", "incomplete"])
-async def test_failed_new_owner_is_retained_when_cleanup_fails(native_env, monkeypatch, start_kind):
+async def test_failed_new_owner_is_retained_when_cleanup_fails(
+    native_env, monkeypatch, start_kind
+):
     async def start(self):
         self.close_error = RuntimeError("synthetic close failure")
         if start_kind == "error":
