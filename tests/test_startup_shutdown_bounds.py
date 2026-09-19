@@ -196,7 +196,7 @@ async def test_a_connect_that_never_answers_is_bounded_and_explained(monkeypatch
     monkeypatch.setattr(runner, "_retire", lambda client: retired.append(client))
     forgotten = []
     monkeypatch.setattr(
-        runner._admission, "forget", lambda label, closing=None: forgotten.append(label)
+        runner._admission, "forget", lambda label, closing=None, **_: forgotten.append(label)
     )
 
     client = _Client()
@@ -219,7 +219,7 @@ async def test_an_authorization_check_that_hangs_is_bounded_too(monkeypatch):
     monkeypatch.setattr(runner, "_CONNECT_PHASE_SECONDS", 0.05)
     monkeypatch.setattr(runner._admission, "claim_session", _noop_claim())
     monkeypatch.setattr(runner, "_retire", lambda client: None)
-    monkeypatch.setattr(runner._admission, "forget", lambda label, closing=None: None)
+    monkeypatch.setattr(runner._admission, "forget", lambda label, closing=None, **_: None)
 
     client = _Client()
 
