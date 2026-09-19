@@ -41,6 +41,12 @@ class _Client:
         self.reach_closed = reach_closed
         self.request_fails = request_fails
         self.requests = []
+        # `close` ends by handing the database lease back, so a double that
+        # borrows the real `close` has to carry what it reads. Borrowed rather
+        # than stubbed for the same reason as the three methods below: a stub
+        # here would let the real method change underneath this file in silence.
+        self.database_dir = tdlib.database_dir_for(account)
+        self._lease_owner = self
 
     async def request(self, obj, timeout=30.0):
         self.requests.append(obj["@type"])
@@ -58,6 +64,9 @@ class _Client:
 
     def _settle_pending(self, error):
         return tdlib.TDLibClient._settle_pending(self, error)
+
+    def release_database(self):
+        return tdlib.TDLibClient.release_database(self)
 
     async def close(self, timeout=0.2):
         return await tdlib.TDLibClient.close(self, timeout=timeout)
@@ -223,11 +232,16 @@ def test_a_confirmed_close_may_quarantine(tmp_path):
 @pytest.mark.asyncio
 async def test_the_recovery_path_only_quarantines_what_it_saw_close(monkeypatch, tmp_path):
     """The wiring: the recovery branch must carry the close confirmation from
-    the attempt that produced the failure, not assume one."""
-    _database(tmp_path)
-    tdlib._close_confirmed.pop("work", None)
+    the attempt that produced the failure, not assume one.
 
-    async def _dead(label, telethon_client, password, ask_password):
+    The receipt moved with the fix. It was `tdlib._close_confirmed[label]`, a
+    module-level dict keyed by a reusable name; it is now the attempt's own
+    `closed_confirmed`, which no other login can write into. The assertion is
+    unchanged: an attempt that confirmed nothing may quarantine nothing.
+    """
+    _database(tmp_path)
+
+    async def _dead(attempt, telethon_client, password, ask_password):
         raise tdlib.TDLibError(401, "AUTH_KEY_UNREGISTERED")
 
     monkeypatch.setattr(tdlib, "_attempt_login", _dead)
@@ -243,9 +257,9 @@ async def test_the_recovery_path_proceeds_when_the_close_was_confirmed(monkeypat
     _database(tmp_path)
     attempts = []
 
-    async def _then_ready(label, telethon_client, password, ask_password):
-        attempts.append(label)
-        tdlib._close_confirmed[label] = True
+    async def _then_ready(attempt, telethon_client, password, ask_password):
+        attempts.append(attempt.label)
+        attempt.closed_confirmed = True
         if len(attempts) == 1:
             raise tdlib.TDLibError(401, "AUTH_KEY_UNREGISTERED")
         return "authorizationStateReady"

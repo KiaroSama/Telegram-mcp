@@ -42,6 +42,7 @@ from typing import Optional
 from telegram_mcp.owner_only import restrict_to_owner_strict, verify_owner_only
 from telegram_mcp.safe_log import log_event
 from telegram_mcp import tdlib as _tdlib
+from telegram_mcp import tdlib_lease
 
 
 def database_dir_for(label: str) -> Path:
@@ -227,7 +228,39 @@ def _rename_when_released(source: Path, target: Path) -> Optional[OSError]:
             time.sleep(_RELEASE_POLL_SECONDS)
 
 
-def quarantine_database(label: str, why: str, closed: bool = False) -> Path:
+def _take_the_lease_unless_it_is_ours(label: str, source: Path, owner) -> Optional[object]:
+    """Prove nothing else owns this database. Returns a lease to give back, if borrowed.
+
+    Three states and they are not the same question. Ours: nothing to do, and
+    nothing to give back. Somebody else's in this process: refused. Nobody's in
+    this process: another PROCESS may still hold it, and the only way to find
+    out is to try to take the lock - which is then held for the length of the
+    rename, so the answer cannot go stale between the check and the move.
+    """
+    holder = tdlib_lease.owner_of(source)
+    if holder is not None:
+        if holder is owner:
+            return None
+        raise QuarantineFailed(
+            f"refusing to move the TDLib database for '{label}' aside: its lease is held "
+            "by something else in this process, so it is not this caller's to move. "
+            "Nothing was changed."
+        )
+    borrowed = object()
+    try:
+        tdlib_lease.hold(source, borrowed)
+    except tdlib_lease.DatabaseBusy as busy:
+        raise QuarantineFailed(
+            f"refusing to move the TDLib database for '{label}' aside: another process "
+            f"has it open. A confirmed close says this process let go of it, and says "
+            f"nothing at all about anyone else. Nothing was changed. ({busy})"
+        ) from busy
+    return borrowed
+
+
+def quarantine_database(
+    label: str, why: str, closed: bool = False, owner: Optional[object] = None
+) -> Path:
     """Move a dead database aside, once its client has confirmed it closed.
 
     ``closed`` is the caller's statement that the TDLib client for this label
@@ -237,6 +270,14 @@ def quarantine_database(label: str, why: str, closed: bool = False) -> Path:
     POSIX the same rename succeeds immediately with the database still open,
     file descriptors and all. A quarantine taken on that basis moves a live
     database out from under a running client.
+
+    ``closed`` is also a statement about THIS process and nothing else, which is
+    why ``owner`` exists. A second server, a standalone
+    ``scripts/secret_chat_login.py`` or a recovery run can have the same database
+    open, and no boolean passed in here knows that. So the database's own lease
+    is checked: held by this ``owner`` is the caller's to move, held by anyone
+    else is refused, and held by nobody is taken for the length of the rename so
+    that nobody takes it midway.
 
     ``shutil.rmtree(..., ignore_errors=True)`` was three separate mistakes in one
     call: the bytes were gone with no copy, a directory still held open reported
@@ -260,6 +301,7 @@ def quarantine_database(label: str, why: str, closed: bool = False) -> Path:
             f"there is no TDLib database at {source} to move aside, so the failure "
             "was not a stale one"
         )
+    borrowed = _take_the_lease_unless_it_is_ours(label, source, owner)
     target = quarantine_path(label)
     # A second quarantine inside the same second would otherwise land on the
     # first; the counter keeps both rather than one overwriting the other.
@@ -267,7 +309,11 @@ def quarantine_database(label: str, why: str, closed: bool = False) -> Path:
     while target.exists():
         target = target.with_name(f"{target.name}-{suffix}")
         suffix += 1
-    error = _rename_when_released(source, target)
+    try:
+        error = _rename_when_released(source, target)
+    finally:
+        if borrowed is not None:
+            tdlib_lease.release(source, borrowed)
     if error is not None:
         raise QuarantineFailed(
             f"could not move {source} aside after {_RELEASE_DEADLINE_SECONDS:.0f}s: {error}. "
