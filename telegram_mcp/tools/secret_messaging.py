@@ -185,7 +185,7 @@ async def send_secret_message(chat_id: int, message: str, account: str = None) -
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("send_secret_message", e, chat_id=chat_id)
@@ -301,7 +301,7 @@ async def send_secret_media(
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("send_secret_media", e, chat_id=chat_id)
@@ -365,7 +365,7 @@ async def read_secret_messages(chat_id: int, limit: int = 30, account: str = Non
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("read_secret_messages", e, chat_id=chat_id)
@@ -559,7 +559,7 @@ async def save_secret_media(
     except TDLibError as e:
         # Telegram's own refusal, not an internal failure. A code here sends
         # the reader to a log to find one sentence the API already gave;
-        # `create_secret_chat` and `set_admin_right` already show theirs.
+        # `create_secret_chat` already shows its own.
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("save_secret_media", e, chat_id=chat_id, message_id=message_id)
