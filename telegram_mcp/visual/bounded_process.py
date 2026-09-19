@@ -330,7 +330,12 @@ def _end_tree(process, job) -> None:
         return
     if os.name != "nt":
         try:
-            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            # `process.pid` rather than `os.getpgid(process.pid)`: the child was
+            # started with `start_new_session`, so it IS the group leader and the
+            # two are the same number - but the lookup needs the child to still
+            # exist, and this is also called AFTER a clean exit has reaped it.
+            # Looking it up there raised ESRCH and left the group alive.
+            os.killpg(process.pid, signal.SIGKILL)
             return
         except (OSError, ProcessLookupError):
             pass
@@ -496,6 +501,15 @@ def run_bounded(
             if time.monotonic() - started > timeout:
                 raise ProcessTimeout(f"{label} timed out after {timeout:g}s and was terminated.")
 
+        # BEFORE the readers are joined, not after, and this ordering is the whole
+        # point. A grandchild that inherited the pipe keeps its write end open
+        # after the child exits, so the pipe never reaches EOF and `_finish` sits
+        # in its join for the full budget - and then in `close()`, which blocks on
+        # the same BufferedReader lock the stuck `read()` is holding. Ending the
+        # tree first is what makes `_finish`'s "the write ends are closed by the
+        # OS" true. The error path below already had this order.
+        _end_tree(process, job)
+        job = None
         _finish(process, readers)
         # Checked once more after the readers have drained: a helper can exit
         # having already written more than the ceiling into the pipe buffer.
@@ -503,16 +517,13 @@ def run_bounded(
             raise ProcessOutputTooLarge(
                 f"{label} produced more than the {max_output_bytes}-byte ceiling for one call."
             )
-        result = Completed(
+        # Ending the tree above is what kills whatever the child left behind -
+        # after a clean exit, exactly the helpers it walked away from - and it
+        # releases the job handle, which would otherwise leak one per call for
+        # the life of the server.
+        return Completed(
             list(command), process.returncode, out.value(), err.value(), err.overflowed
         )
-        # Closing the job kills whatever is still in it, which after a clean exit
-        # is exactly the helpers the child left behind. One handle per call would
-        # otherwise leak for the life of the server.
-        if job is not None:
-            _win32()[1].CloseHandle(job)
-            job = None
-        return result
     except BaseException:
         # Timeout, cancellation, overflow, or anything at all: the child must not
         # outlive the call that started it, and neither may its readers - nor
@@ -612,7 +623,13 @@ def _finish(process, readers) -> None:
             except OSError:
                 pass
     still_running = [reader for reader in readers if reader.is_alive()]
-    if still_running:  # pragma: no cover - the child is dead, so the pipes are at EOF
+    # REACHABLE, and it fired for real on main@9dcc019 (Python 3.14, ubuntu) before
+    # the caller was fixed to end the tree first. "The child is dead" does not mean
+    # the pipe is at EOF: any DESCENDANT holding the inherited write end keeps it
+    # open. `run_bounded` now ends the tree before calling this, so what is left is
+    # the case that ordering cannot cover - something that escaped the job or the
+    # session on its own - and that is worth refusing rather than reporting clean.
+    if still_running:  # pragma: no cover - needs a process outside the containment
         raise ProcessError(
             f"{len(still_running)} output reader(s) did not stop after the helper was "
             "reaped; refusing to report a clean result while a thread is still live."
