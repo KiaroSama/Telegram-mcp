@@ -374,7 +374,9 @@ def refresh_accounts() -> list:
 
     Returns the labels that changed, so a caller can say what happened.
     """
-    global _env_stamp, _env_digests
+    # `_env_digests` is no longer assigned here: `record_activated` owns it, so
+    # that what is recorded as active is decided in one place.
+    global _env_stamp
 
     # ONE read. Fingerprinting the file and then parsing it again is two
     # readings of something being rewritten underneath, and the pair could
@@ -467,7 +469,19 @@ def refresh_accounts() -> list:
             clients[label] = client
         staged.append(_lifecycle.Staged(label=label, client=client, previous=previous))
 
-    _env_stamp, _env_digests = stamp, digests
+    # The STAMP moves now: this revision has been read, and re-parsing it on
+    # every call would be work with no answer attached. The DIGESTS do not, past
+    # the accounts that are not part of the transaction - they say what is
+    # SERVING, and nothing staged is serving yet.
+    _env_stamp = stamp
+    # Everything except a REPLACEMENT. A replacement's digest waits because its
+    # predecessor is the one still serving, and recording the candidate's is what
+    # made a failed one look already applied. Everything else - untouched
+    # accounts, and a brand-new one, which has no predecessor and was published
+    # into the registry above - is serving now, and a digest left unrecorded
+    # makes the next reload believe it changed and rebuild it.
+    replacing = {one.label for one in staged if one.previous is not None}
+    record_activated(clients, digests, set(clients) - replacing)
     _lifecycle.clear_rejection()
 
     # A pure label move first, and it is not a transaction: the SAME session and
@@ -507,7 +521,14 @@ def refresh_accounts() -> list:
     # connects, proves the session is authorized, and only then swaps a
     # replacement in; a failure leaves the previous client serving.
     _admission.mark_awaiting_admission(still_pending)
-    _lifecycle.begin(staged, clients)
+    settling = _lifecycle.begin(staged, clients)
+    if settling is not None:
+        # Recorded when the transaction settles, from what REACHED the registry.
+        # With no loop to settle on, nothing is recorded, which is the same safe
+        # direction the staging itself takes.
+        settling.add_done_callback(
+            lambda _t: record_activated(clients, digests, _lifecycle.activated_labels())
+        )
     _notify_clients_changed(set(added), set(before) - set(clients))
     return sorted(set(changed))
 
@@ -541,6 +562,28 @@ def _account_label_of(key: str) -> Optional[str]:
                 return None
         return None
     return None
+
+
+def record_activated(clients: dict, digests: dict, labels: set) -> None:
+    """Move the active digest for the given labels, and for nobody else.
+
+    `_replaced` compares against `_env_digests`, so whatever sits there is what
+    this server believes is serving. Setting it to the whole desired revision
+    before the transaction ran meant a candidate that failed to connect was
+    recorded as in force: the old client kept answering, the next reload compared
+    the file against itself, found nothing to do, and the account never retried.
+    """
+    global _env_digests
+    moved = dict(_env_digests)
+    for key, value in digests.items():
+        if _account_label_of(key) in labels:
+            moved[key] = value
+    # A label that has gone from the configuration entirely takes its digest with
+    # it; one that is merely not activated yet keeps the digest it is serving on.
+    for key in list(moved):
+        if _account_label_of(key) not in clients and key not in digests:
+            moved.pop(key, None)
+    _env_digests = moved
 
 
 def _replaced(label: str, digests: dict) -> bool:
