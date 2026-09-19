@@ -221,8 +221,8 @@ def test_the_base_image_can_actually_install_the_dependencies():
             "(manylinux wheels only, no sdist). Use a glibc image such as -slim."
         )
 
-    requirements = (REPO / "requirements.txt").read_text(encoding="utf-8")
-    assert "tdjson" in requirements, (
+    manifest = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+    assert "tdjson" in manifest, (
         "tdjson is no longer required, so this constraint may be lifted - delete "
         "this test rather than leaving a rule whose reason has gone"
     )

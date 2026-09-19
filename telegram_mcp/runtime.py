@@ -88,7 +88,12 @@ from telegram_mcp.singleton import try_lock_exclusive
 
 from functools import wraps
 import telethon.errors.rpcerrorlist
-from sanitize import sanitize_user_content, sanitize_name, sanitize_dict, format_tool_result
+from telegram_mcp.sanitize import (
+    sanitize_user_content,
+    sanitize_name,
+    sanitize_dict,
+    format_tool_result,
+)
 from telegram_mcp.client_identity import client_identity_kwargs
 
 # Every name above is part of this module's PUBLIC surface, not just its own working
@@ -105,7 +110,7 @@ def json_serializer(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()
     if isinstance(obj, bytes):
-        # Same decode-then-sanitize as `sanitize.sanitize_dict`: this is the other
+        # Same decode-then-sanitize as `telegram_mcp.sanitize.sanitize_dict`: this is the other
         # last line of defence, and fixing only one of the two moves the gap.
         return sanitize_user_content(obj.decode("utf-8", errors="replace"), max_length=4096)
     # Add other non-serializable types as needed
