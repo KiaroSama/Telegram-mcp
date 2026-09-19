@@ -53,7 +53,7 @@ def _lease(label="work", lock=None):
     lock = lock or _Lock()
     lease = admission._Lease(label=label, client=object(), lock=lock, identity="id:" + label)
     admission.session_locks[label] = lock
-    admission._leases[label] = lease
+    admission._active[label] = lease
     return lease
 
 
@@ -165,12 +165,19 @@ async def test_a_refused_retirement_reaches_forget_as_a_failure(monkeypatch):
 
 def test_a_lease_cannot_be_published_after_shutdown():
     """`release_all()` is the boundary. An acquire still blocked in its thread
-    published afterwards, and nothing was left to release it."""
+    published afterwards, and nothing was left to release it.
+
+    The refusal RAISES rather than returning: returning quietly meant
+    `claim_session` returned normally and its caller went on to connect believing
+    it held a lease, which is the one state this whole module exists to prevent.
+    """
     admission.release_all()
     lock = _Lock()
 
-    admission._publish("late", object(), lock, "id:late")
+    with pytest.raises(admission.AdmissionSuperseded) as refusal:
+        admission._publish("late", object(), lock, "id:late")
 
+    assert "late" in str(refusal.value)
     assert "late" not in admission.session_locks
     assert lock.released == 1, "the late lock was neither published nor released"
 

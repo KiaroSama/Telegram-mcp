@@ -34,6 +34,29 @@ So: one single-flight operation per client, whose task - never the caller - owns
 the acquire's result and disposes of it; a re-check after the acquire that this
 client is still the one the label means; and a release that waits for the socket
 it protects to be down.
+
+Those three were not enough either, because the store underneath them was still
+keyed by label. Five more ways it came apart, all of them reachable:
+
+* **A replacement overwrote its predecessor's lease.** The entry was replaced and
+  the old `_Lease` was the only reference to its `SessionLock`, so the previous
+  client - still connected - lost its lock to the next collection.
+* **An unconfirmed close recorded a string and dropped the lease.** The comment
+  said the lock was still held. It was held until the collector ran.
+* **`forget(label)` released whatever sat at the label**, so a failed replacement
+  retired the client that was still working.
+* **A refusal at the stop boundary returned normally**, and the caller connected
+  believing it held a lease.
+* **A cancelled caller left the acquire unowned**, so a real lock came back with
+  nothing holding or releasing it.
+
+What holds now: a lease's identity is the CLIENT that took it, never the label.
+`_active` is what each label currently means; `_retiring` holds every lease that
+is no longer active - one closing, one whose close never confirmed - and it is
+the strong reference, because `SessionLock` wraps an open file handle and a lease
+nothing refers to is a lock the operating system has already given back. Two
+leases under one label is the normal state of a replacement, not a bug: the
+predecessor keeps its own lock until its own socket is confirmed down.
 """
 
 from __future__ import annotations
@@ -68,10 +91,21 @@ class _Lease:
 # under this name because the runner and its tests read it.
 session_locks: Dict[str, SessionLock] = {}
 
-# The same leases with their owner attached, which the label-keyed view cannot
-# carry: "release the lock for label X" is the wrong question once X can mean a
-# different client than it did when the lock was taken.
-_leases: Dict[str, _Lease] = {}
+# Label -> the lease currently SERVING that label. One per label.
+_active: Dict[str, _Lease] = {}
+
+# Every lease that is no longer the active one: a client that is closing, and a
+# client whose close never confirmed. Keyed by `id(lease)` because one label can
+# have several at once - a replacement's predecessor sits here while the
+# replacement serves.
+#
+# **This dict is the strong reference, and that is its whole job.** `SessionLock`
+# holds a plain open file object, and both `flock` and `msvcrt.locking` release
+# when the handle closes. A lease nothing refers to is therefore a lock the
+# operating system has already given back, whatever the code around it says. The
+# previous version recorded an error STRING and dropped the lease, under a comment
+# claiming the lock was still held; it was held until the next collection.
+_retiring: Dict[int, _Lease] = {}
 
 # Labels a reload published whose lease has not been taken yet.
 _awaiting_admission: Dict[str, object] = {}
@@ -131,20 +165,63 @@ def reject_duplicate_sessions(configured: dict) -> None:
             )
 
 
-def _publish(label: str, client, lock: SessionLock, identity: str) -> None:
+def _publish(label: str, client, lock: SessionLock, identity: str) -> _Lease:
+    """Make this client's lease the one `label` means, and RETURN it.
+
+    Raises rather than returning quietly when shutdown has begun: the previous
+    version released the lock and returned `None`, so `claim_session` returned
+    normally and its caller went on to connect believing it held a lease.
+    """
     if _stopped:
         # Shutdown already ran. `asyncio.to_thread` cannot be cancelled, so an
         # acquire begun before the boundary still returns a real lock afterwards;
         # publishing it here would leave a held session with no owner to release.
         _release_lock(lock, "an admission that finished after shutdown")
-        return
+        raise AdmissionSuperseded(
+            f"Account '{label}' finished taking its session lock after this process "
+            "began shutting down, so it was not published and the lock was released. "
+            "Nothing connected."
+        )
+    previous = _active.get(label)
+    if previous is not None and previous.client is not client:
+        # NOT overwritten. The previous client may still be connected - during a
+        # replacement it certainly is - and dropping the last reference to its
+        # lease hands its session to whoever asks next. It retires instead, and
+        # its own retirement releases it once its socket is confirmed down.
+        _retire_lease(previous)
     session_locks[label] = lock
-    _leases[label] = _Lease(label=label, client=client, lock=lock, identity=identity)
+    lease = _Lease(label=label, client=client, lock=lock, identity=identity)
+    _active[label] = lease
+    return lease
 
 
 def _drop(label: str) -> Optional[_Lease]:
+    """Unpublish the active lease at this label. The lease itself is returned, not
+    discarded - the caller decides whether it retires or is released."""
     session_locks.pop(label, None)
-    return _leases.pop(label, None)
+    return _active.pop(label, None)
+
+
+def _retire_lease(lease: _Lease) -> None:
+    """Move a lease out of service while keeping it - and its lock - owned."""
+    _retiring[id(lease)] = lease
+
+
+def _lease_of(label: str, client) -> Optional[_Lease]:
+    """The lease this client holds under this label, active or retiring.
+
+    Resolved by OWNER. `forget("work")` used to mean "whatever lease is at work",
+    which is the wrong question once a label can mean a different client than it
+    did when the lock was taken - a failed replacement retired the client that was
+    still serving.
+    """
+    active = _active.get(label)
+    if active is not None and active.client is client:
+        return active
+    for lease in _retiring.values():
+        if lease.client is client and lease.label == label:
+            return lease
+    return None
 
 
 def _release_lock(lock: SessionLock, why: str) -> None:
@@ -239,16 +316,36 @@ async def claim_session(
     has to wait for another instance, which is the one case startup owes the
     operator a sentence about.
     """
-    identity = session_identity(client)
-    lock = SessionLock(identity)
-    await asyncio.to_thread(
-        functools.partial(
-            lock.acquire,
-            grace_seconds=DEFAULT_GRACE_SECONDS if grace_seconds is None else grace_seconds,
-            on_wait=on_wait,
-        )
-    )
-    _publish(label, client, lock, identity)
+
+    async def owned() -> None:
+        # The acquire's result belongs to THIS coroutine, never to the caller.
+        # `asyncio.to_thread` cannot be cancelled, so a cancelled caller used to
+        # leave a real lock with nothing holding or releasing it; here the lock
+        # is published or released before this returns, whatever happened above.
+        identity = session_identity(client)
+        lock = SessionLock(identity)
+        acquired = False
+        try:
+            await asyncio.to_thread(
+                functools.partial(
+                    lock.acquire,
+                    grace_seconds=(
+                        DEFAULT_GRACE_SECONDS if grace_seconds is None else grace_seconds
+                    ),
+                    on_wait=on_wait,
+                )
+            )
+            acquired = True
+            _publish(label, client, lock, identity)
+        except BaseException:
+            if acquired:
+                _release_lock(lock, "a claim that could not be published")
+            raise
+
+    task = asyncio.ensure_future(owned())
+    # Shielded: cancelling the caller must not cancel the owner, or the lock the
+    # thread is about to return has no one to dispose of it.
+    await asyncio.shield(task)
 
 
 async def admit_if_pending(client) -> None:
@@ -279,8 +376,13 @@ def transfer_lease(from_label: str, to_label: str, client) -> bool:
     a session this one is still connected to - for a change that did not touch
     the session at all.
     """
-    lease = _leases.get(from_label)
+    lease = _active.get(from_label)
     if lease is None or lease.client is not client:
+        return False
+    if to_label in _active and _active[to_label].client is not client:
+        # Another client already means the destination name. Taking its place
+        # here would release its lock through the same gap this function exists
+        # to avoid, so the rename is refused rather than half-applied.
         return False
     _drop(from_label)
     _publish(to_label, client, lease.lock, lease.identity)
@@ -288,30 +390,52 @@ def transfer_lease(from_label: str, to_label: str, client) -> bool:
     return True
 
 
-def forget(label: str, closing=None) -> None:
-    """Retire a label's lease: stop admitting it, and release once its socket is down.
+def forget(label: str, closing=None, *, client=None) -> bool:
+    """Retire ONE client's lease: stop admitting it, release once its socket is down.
+
+    ``client`` names whose lease this is. Without it the active lease at the label
+    is taken, which is only correct when the caller genuinely means "whatever is
+    serving here" - every caller that knows which client it is retiring passes it,
+    because "release the lock for label X" is the wrong question once X can mean a
+    different client than it did when the lock was taken.
 
     ``closing`` is whatever the retirement handed back - an awaitable while the
     disconnect is in flight, or ``None`` when it has already finished. Releasing
     before the socket is down is the window a second process needs to claim a
     session this one is still using, which Telegram answers by invalidating the
     key for both.
+
+    Returns whether a lease was actually retired, so a caller can see that its
+    retirement did not apply rather than assuming it did.
     """
     _awaiting_admission.pop(label, None)
-    lease = _drop(label)
+    if client is None:
+        lease = _drop(label)
+    else:
+        lease = _lease_of(label, client)
+        if lease is not None and _active.get(label) is lease:
+            _drop(label)
     if lease is None:
-        return
+        return False
+    _retiring.pop(id(lease), None)
     if closing is None:
         _release_lock(lease.lock, "retirement")
-        return
+        unreleased_leases.pop(lease.label, None)
+        return True
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         _release_lock(lease.lock, "retirement with no loop to wait on")
-        return
+        unreleased_leases.pop(lease.label, None)
+        return True
+    # Owned while it waits: the lease is back in `_retiring` for the whole of the
+    # close, so nothing can collect the lock out from under a socket that is
+    # still open.
+    _retire_lease(lease)
     task = asyncio.ensure_future(_release_when_closed(lease, closing))
     _releasing.add(task)
     task.add_done_callback(_releasing.discard)
+    return True
 
 
 async def _release_when_closed(lease: _Lease, closing) -> None:
@@ -330,6 +454,9 @@ async def _release_when_closed(lease: _Lease, closing) -> None:
     try:
         await asyncio.wait_for(asyncio.shield(_as_future(closing)), _CLOSE_BEFORE_RELEASE_SECONDS)
     except Exception as error:
+        # The lease STAYS in `_retiring`. That is what keeps the lock: recording
+        # the reason is for the operator, and a string in a dict holds nothing.
+        _retire_lease(lease)
         unreleased_leases[lease.label] = f"{type(error).__name__}: {error}"
         log_event(
             logging.WARNING,
@@ -338,6 +465,7 @@ async def _release_when_closed(lease: _Lease, closing) -> None:
             error=error,
         )
         return
+    _retiring.pop(id(lease), None)
     unreleased_leases.pop(lease.label, None)
     _release_lock(lease.lock, "a confirmed close")
 
@@ -382,13 +510,20 @@ def release_all() -> None:
     """
     global _stopped
     _stopped = True
-    for lease in list(_leases.values()):
+    for lease in list(_active.values()):
         _release_lock(lease.lock, "shutdown")
     for label, lock in list(session_locks.items()):
-        if label not in _leases:
+        if label not in _active:
             _release_lock(lock, "shutdown")
+    # The retiring ones last, and their reasons are left standing: a lease whose
+    # close never confirmed is what `unreleased_leases` names, and the report is
+    # the only place an operator learns which sessions this process still had.
+    # The handles go with the process either way; the record is what survives.
+    for lease in list(_retiring.values()):
+        _release_lock(lease.lock, "shutdown")
     session_locks.clear()
-    _leases.clear()
+    _active.clear()
+    _retiring.clear()
     _awaiting_admission.clear()
     _admitting.clear()
 
