@@ -26,12 +26,21 @@ class _Client:
         self.connected = False
         self.authorized = True
         self.disconnects = 0
+        # Set the instant the hung phase is ENTERED, so a test that needs the
+        # reconnect to be INSIDE that phase can wait for the fact rather than for
+        # a number of event-loop turns. `await asyncio.sleep(0)` yields exactly
+        # one turn, and one turn is not enough on a loaded runner: the first
+        # caller had not yet taken the reconnect lock, so the second took it,
+        # walked on to the connect phase and reported a different - also correct -
+        # message. That is the 2026-09-19 windows-latest flake.
+        self.hanging = asyncio.Event()
 
     def is_connected(self):
         return self.connected
 
     async def _maybe_hang(self, phase):
         if self.hang == phase:
+            self.hanging.set()
             await asyncio.Event().wait()
 
     async def disconnect(self):
@@ -70,20 +79,55 @@ async def test_every_phase_is_inside_the_budget(phase, named):
     with pytest.raises(StartupMessage) as raised:
         await asyncio.wait_for(mod._force_reconnect(client), timeout=5)
 
+    # Checked before the message, because it decides what a failure MEANS. There
+    # is one budget over the whole reconnect, so this case only proves what it
+    # claims if the budget expired INSIDE the hung phase. Nothing yields to the
+    # loop between entering the timeout and reaching the hang - the fake's other
+    # phases return without awaiting anything - so the only way to arrive here
+    # with this unset is the process losing 50ms to preemption, and then the
+    # message names an earlier phase for a reason that has nothing to do with
+    # what is under test. Saying so beats an unexplained phase mismatch.
+    assert client.hanging.is_set(), (
+        f"the budget expired before the {phase} phase was entered, so this run "
+        "says nothing about whether that phase is inside it"
+    )
     assert named in str(raised.value), f"the message did not name the {phase} phase"
 
 
 @pytest.mark.asyncio
-async def test_waiting_for_another_callers_lock_is_bounded_too():
+async def test_waiting_for_another_callers_lock_is_bounded_too(monkeypatch):
     """The client is SHARED, so a wedged reconnect held the lock and every other
-    caller queued behind it without any deadline of its own."""
-    wedged = _Client(hang="connect")
-    first = asyncio.ensure_future(mod._force_reconnect(wedged))
-    await asyncio.sleep(0)
+    caller queued behind it without any deadline of its own.
 
+    Two things have to be true at once for this to test what it says, and the
+    version that flaked on windows-latest guaranteed neither. The holder must
+    have TAKEN the lock, and it must still be HOLDING it while the waiter waits.
+    """
+    wedged = _Client(hang="connect")
+
+    # The holder gets a budget it will not reach. Under the autouse 0.05s the
+    # holder times out 50ms after it starts and RELEASES the lock, so a waiter
+    # that arrives a moment later finds the lock free, walks on to the connect
+    # phase and times out there - which is how this test came to assert the lock
+    # path and exercise the connect path.
+    monkeypatch.setattr(mod, "_RECONNECT_TIMEOUT", 30.0)
+    first = asyncio.ensure_future(mod._force_reconnect(wedged))
+
+    # The real synchronisation point. `_force_reconnect` takes the lock BEFORE it
+    # runs any phase, so a client that has entered its hung phase is a client
+    # whose caller is holding the lock - exactly the state under test - and that
+    # is a fact to wait for, not a number of turns to guess at.
+    await asyncio.wait_for(wedged.hanging.wait(), timeout=5)
+
+    # Only now does the waiter get a short budget, and the only thing it can
+    # spend that budget on is the lock.
+    monkeypatch.setattr(mod, "_RECONNECT_TIMEOUT", 0.05)
     with pytest.raises(StartupMessage) as raised:
         await asyncio.wait_for(mod._force_reconnect(wedged), timeout=5)
 
+    # Still load-bearing: if the lock wait moved back outside the budget, the
+    # waiter would block on the lock forever, the outer `wait_for` would raise
+    # TimeoutError rather than StartupMessage, and `pytest.raises` would fail.
     assert "waiting for another reconnect to finish" in str(raised.value)
     first.cancel()
     with pytest.raises((asyncio.CancelledError, StartupMessage)):
