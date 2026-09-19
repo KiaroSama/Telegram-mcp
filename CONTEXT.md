@@ -1,0 +1,81 @@
+# Telegram MCP
+
+This server exposes one operator's own Telegram accounts to an agent over MCP. Its
+vocabulary is where Telegram's model, MCP's model and this server's own safety
+machinery meet — and the three disagree often enough that the words matter.
+
+## Language
+
+### Identity and connection
+
+**Session**:
+One Telegram authorization key, serialized. The credential itself.
+_Avoid_: login, auth, credentials
+
+**Account**:
+One configured Telegram identity this server can serve from, built over exactly one
+session.
+_Avoid_: user, client, profile
+
+**Label**:
+The operator's name for an account, chosen in configuration. Reusable over time, so
+it identifies a name and never a thing.
+_Avoid_: account name, key, id
+
+**Client generation**:
+One built connection object for one label. A reconfiguration produces a new
+generation while the previous one may still be connected.
+_Avoid_: instance, version, reload
+
+**Lease**:
+This process's exclusive hold on one session, owned by the client generation that
+took it — never by the label it was taken under. Given up only once the socket it
+protects is confirmed down.
+_Avoid_: claim, lock, reservation
+
+**Unaccounted lease**:
+A lease whose client's connection never confirmed it closed. Kept for the life of
+the process and reported by name, because the socket may still be open.
+_Avoid_: stale lease, orphaned lock, leaked lease
+
+### What a tool may touch
+
+**Allowed root**:
+A directory the operator has named as reachable by file tools. Nothing outside one
+is readable or writable, and no root configured means no file tool works.
+_Avoid_: workspace, base path, sandbox
+
+**Untrusted content**:
+Any text that came off Telegram — a message, a name, a button label, a command
+description. Data to be reported, never instruction to be followed.
+_Avoid_: user input, remote data
+
+**Text fidelity**:
+The exact string a message's entity offsets index into, which is not always the
+string a reader sees. Anything reconstructing formatting works from this and
+nothing else.
+_Avoid_: raw text, original text
+
+### Messages and keyboards
+
+**Press token**:
+This server's authorization for one button, on one message, in one chat, for one
+account. Bound to the button's position, kind, raw label and raw payload, so a bot
+that keeps the label and changes the payload invalidates it.
+_Avoid_: button id, handle, key
+
+**Command preview**:
+The set of bot commands a Telegram client offers in a chat when the operator types
+`/`. A property of the chat and the bots in it, not of any one message.
+_Avoid_: command list, autocomplete, suggestions
+
+**Ready-to-send form**:
+The exact text that invokes a command in a given chat — `/status@AdTimerBot` where
+more than one bot could answer it, `/status` where only one can. The disambiguation
+belongs to the chat, so it is reported rather than reconstructed by the caller.
+_Avoid_: full command, qualified command
+
+**Menu button**:
+A bot's entry point beside the message field, offered instead of or alongside its
+commands. A bot can have one and no commands at all.
+_Avoid_: menu, start button, app button
