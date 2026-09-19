@@ -80,6 +80,17 @@ def _open_file_bytes(path: str) -> bytes:
         return handle.read()
 
 
+# The configuration file this process last read successfully. Absence and loss
+# are opposite facts and this is what tells them apart; see the refusal below.
+_accepted_path: Optional[str] = None
+
+
+def forget_accepted_source() -> None:
+    """Drop the record of the accepted file. For tests, and for nothing else."""
+    global _accepted_path
+    _accepted_path = None
+
+
 def _read_file_bytes(path: Optional[str]) -> Optional[bytes]:
     """The file's bytes, ``None`` when there is genuinely no file.
 
@@ -89,18 +100,39 @@ def _read_file_bytes(path: Optional[str]) -> Optional[bytes]:
     revision this process cannot read - and treating it as empty removed every
     account the file owned.
     """
+    global _accepted_path
     if not path:
         return None
+    here = os.path.normcase(os.path.abspath(path))
     if not os.path.exists(path):
+        if _accepted_path == here:
+            # GONE, not absent. This process read this exact file, so the accounts
+            # it owned are real and still connected. Returning None here would
+            # parse as an empty file - and an empty file beside an account the
+            # process environment supplies is a valid SMALLER configuration, so
+            # the file's accounts would land in the removal set and be retired by
+            # a `.env` that an editor unlinked for a fraction of a second.
+            raise StartupMessage(
+                f"The account configuration at {path} was read by this process and is "
+                "now missing. Nothing was changed: the accounts already running are "
+                "still serving. If the file is being rewritten this clears itself on "
+                "the next reload; if you meant to remove an account, do it in a file "
+                "that parses, or restart the server to run on environment variables "
+                "alone."
+            )
         return None
     try:
-        return _open_file_bytes(path)
+        raw = _open_file_bytes(path)
     except OSError as error:
         raise StartupMessage(
             f"The account configuration at {path} exists but could not be read "
             f"({type(error).__name__}). Nothing was changed: the accounts already "
             "running are still serving. Fix the file's permissions and reload."
         ) from error
+    # Recorded only on a read that actually returned bytes, so a file that never
+    # opened is never mistaken for one this process accepted.
+    _accepted_path = here
+    return raw
 
 
 def _decode(raw: bytes, path: Optional[str]) -> str:
@@ -206,4 +238,27 @@ def read_snapshot(path: Optional[str] = None) -> Snapshot:
     return Snapshot(env=env, stamp=stamp, digests=digests_of(env), path=path)
 
 
-__all__ = ["Snapshot", "account_digest", "digests_of", "read_snapshot"]
+def file_value(key: str, path: Optional[str] = None) -> Optional[str]:
+    """One key's value as the configuration FILE currently has it.
+
+    `read_snapshot` merges the file into the process environment and keeps only
+    the account keys from it, because those are the ones it exists to reconcile.
+    A caller that wants a different key - the file-tool allow-list is the one so
+    far - needs the file's own answer, not the copy `load_dotenv` put into
+    `os.environ` at startup and never updated.
+
+    Inherits this module's refusals: a file that exists and cannot be read, or
+    that was read and has since vanished, raises rather than answering `None`.
+    `None` means the file genuinely does not set this key.
+    """
+    from telegram_mcp.account_config import _env_file
+
+    if path is None:
+        path = _env_file()
+    raw = _read_file_bytes(path)
+    if raw is None:
+        return None
+    return _parse_or_refuse(_decode(raw, path), path).get(key) or None
+
+
+__all__ = ["Snapshot", "account_digest", "digests_of", "file_value", "read_snapshot"]

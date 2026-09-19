@@ -481,3 +481,112 @@ def test_no_variable_means_no_server_roots(monkeypatch):
     file_roots._configure_allowed_roots_from_cli([])
 
     assert file_roots.SERVER_ALLOWED_ROOTS == []
+
+
+# --- allowing a folder without a restart --------------------------------------
+#
+# `_configure_allowed_roots_from_cli` runs once, from the runner, so until now a
+# new folder meant restarting the server. The operator cannot change a RUNNING
+# process's environment from outside, which is why re-reading `os.environ` would
+# refresh nothing: `load_dotenv` copied the file's value in at startup and never
+# again. The file itself is the live source.
+
+
+@pytest.fixture
+def env_file(monkeypatch, tmp_path):
+    """Point the snapshot reader at a `.env` this test owns."""
+    from telegram_mcp import account_config, account_snapshot
+    from telegram_mcp import settings as settings_mod
+
+    path = tmp_path / ".env"
+
+    def write(body):
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    monkeypatch.setattr(account_config, "_env_file", lambda: str(path))
+    monkeypatch.setattr(file_roots, "_CLI_ROOTS", [])
+    monkeypatch.setattr(settings_mod, "PROCESS_FILE_ROOTS", None, raising=False)
+    account_snapshot.forget_accepted_source()
+    yield write
+    account_snapshot.forget_accepted_source()
+
+
+def test_a_root_added_to_the_file_is_picked_up_without_a_restart(env_file, tmp_path):
+    allowed = tmp_path / "media"
+    allowed.mkdir()
+    env_file(f"TELEGRAM_FILE_ROOTS={allowed}\n")
+
+    changed = file_roots.refresh_server_roots()
+
+    assert changed is True
+    assert file_roots.SERVER_ALLOWED_ROOTS == [allowed.resolve()]
+
+
+def test_a_second_refresh_with_no_edit_reports_no_change(env_file, tmp_path):
+    allowed = tmp_path / "media"
+    allowed.mkdir()
+    env_file(f"TELEGRAM_FILE_ROOTS={allowed}\n")
+    file_roots.refresh_server_roots()
+
+    assert file_roots.refresh_server_roots() is False
+
+
+def test_a_value_the_process_supplied_still_wins(env_file, tmp_path, monkeypatch):
+    """`load_dotenv` does not override a real process variable, so neither does
+    this - otherwise a refresh would quietly replace a deliberate one."""
+    from telegram_mcp import settings as settings_mod
+
+    from_process, from_file = tmp_path / "process", tmp_path / "file"
+    from_process.mkdir()
+    from_file.mkdir()
+    env_file(f"TELEGRAM_FILE_ROOTS={from_file}\n")
+    monkeypatch.setattr(settings_mod, "PROCESS_FILE_ROOTS", str(from_process))
+
+    file_roots.refresh_server_roots()
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == [from_process.resolve()]
+
+
+def test_a_root_that_does_not_exist_does_not_drop_the_ones_that_do(env_file, tmp_path):
+    """A typo in a live edit must not disable file tools that were working."""
+    good = tmp_path / "media"
+    good.mkdir()
+    env_file(f"TELEGRAM_FILE_ROOTS={good}{os.pathsep}{tmp_path / 'typo'}\n")
+
+    file_roots.refresh_server_roots()
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == [good.resolve()]
+
+
+def test_a_file_that_cannot_be_read_leaves_the_roots_alone(env_file, tmp_path, monkeypatch):
+    """This runs on the path of every file tool. A `.env` mid-rewrite must not
+    turn into a refusal for an operation that was already permitted."""
+    from telegram_mcp import account_snapshot
+
+    allowed = tmp_path / "media"
+    allowed.mkdir()
+    env_file(f"TELEGRAM_FILE_ROOTS={allowed}\n")
+    file_roots.refresh_server_roots()
+    before = list(file_roots.SERVER_ALLOWED_ROOTS)
+
+    monkeypatch.setattr(
+        account_snapshot, "_open_file_bytes", lambda _p: (_ for _ in ()).throw(OSError("busy"))
+    )
+
+    assert file_roots.refresh_server_roots() is False
+    assert list(file_roots.SERVER_ALLOWED_ROOTS) == before
+
+
+def test_command_line_roots_survive_a_refresh(env_file, tmp_path, monkeypatch):
+    """A refresh rebuilds the list; the roots the server was STARTED with are
+    part of it, not something the file can take away."""
+    from_cli, from_file = tmp_path / "cli", tmp_path / "file"
+    from_cli.mkdir()
+    from_file.mkdir()
+    monkeypatch.setattr(file_roots, "_CLI_ROOTS", [str(from_cli)])
+    env_file(f"TELEGRAM_FILE_ROOTS={from_file}\n")
+
+    file_roots.refresh_server_roots()
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == [from_cli.resolve(), from_file.resolve()]
