@@ -175,6 +175,7 @@ source = [
     "telegram_mcp.session_pool",
     "telegram_mcp.tdlib",
     "telegram_mcp.tool_budget",
+    "telegram_mcp.tdlib_lease",
     "telegram_mcp.tdlib_registry",
     "telegram_mcp.tdlib_runtime",
     "telegram_mcp.tdlib_identity",
