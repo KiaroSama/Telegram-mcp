@@ -9,6 +9,7 @@ patch applied there is invisible to the code that reads it.
 """
 
 import asyncio
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -405,3 +406,78 @@ async def test_a_stream_name_is_refused_before_it_can_reach_the_disk(tmp_path, m
     # A drive letter is the one colon that IS a path separator, and refusing it
     # would disable every absolute path on Windows.
     assert runtime._contains_forbidden_path_patterns(str(root / "plain.bin")) is None
+
+
+# --- TELEGRAM_FILE_ROOTS ------------------------------------------------------
+#
+# The command line was the only way to name a server-side root, and it is the one
+# route an MCP client config makes awkward: the client supplies its own argv and
+# offers an `env` block beside it. So the file tools reported themselves disabled
+# with a fix the operator could not apply, and `send_file` looked broken rather
+# than unconfigured.
+
+
+@pytest.fixture(autouse=True)
+def _own_roots_list():
+    """Restore the CONTENTS, never the name.
+
+    `runtime` and `main` re-export `SERVER_ALLOWED_ROOTS` and hold the same list
+    object, which is why the module slice-assigns into it. Rebinding the name here
+    - the obvious way to isolate a test - is the one thing that breaks that, and
+    it took the alias test with it.
+    """
+    before = list(file_roots.SERVER_ALLOWED_ROOTS)
+    yield
+    file_roots.SERVER_ALLOWED_ROOTS[:] = before
+
+
+def test_the_environment_can_name_the_allowed_roots(monkeypatch, tmp_path):
+    one, two = tmp_path / "media", tmp_path / "docs"
+    one.mkdir()
+    two.mkdir()
+    monkeypatch.setenv("TELEGRAM_FILE_ROOTS", os.pathsep.join([str(one), str(two)]))
+
+    file_roots._configure_allowed_roots_from_cli([])
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == [one.resolve(), two.resolve()]
+
+
+def test_a_trailing_separator_is_not_a_root(monkeypatch, tmp_path):
+    """An operator writing a list ends it with a separator; that is not an error."""
+    one = tmp_path / "media"
+    one.mkdir()
+    monkeypatch.setenv("TELEGRAM_FILE_ROOTS", str(one) + os.pathsep + "  " + os.pathsep)
+
+    file_roots._configure_allowed_roots_from_cli([])
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == [one.resolve()]
+
+
+def test_the_command_line_and_the_environment_combine(monkeypatch, tmp_path):
+    from_argv, from_env = tmp_path / "argv", tmp_path / "env"
+    from_argv.mkdir()
+    from_env.mkdir()
+    monkeypatch.setenv("TELEGRAM_FILE_ROOTS", str(from_env))
+
+    file_roots._configure_allowed_roots_from_cli([str(from_argv)])
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == [from_argv.resolve(), from_env.resolve()]
+
+
+def test_a_root_from_the_environment_that_does_not_exist_stops_the_server(monkeypatch, tmp_path):
+    """Same refusal as the command line. A root that is not there is a typo, and
+    silently allowing nothing is how a deny-all gets mistaken for a bug."""
+    monkeypatch.setenv("TELEGRAM_FILE_ROOTS", str(tmp_path / "not-here"))
+
+    with pytest.raises(SystemExit) as stopped:
+        file_roots._configure_allowed_roots_from_cli([])
+
+    assert "not-here" in str(stopped.value)
+
+
+def test_no_variable_means_no_server_roots(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_FILE_ROOTS", raising=False)
+
+    file_roots._configure_allowed_roots_from_cli([])
+
+    assert file_roots.SERVER_ALLOWED_ROOTS == []
