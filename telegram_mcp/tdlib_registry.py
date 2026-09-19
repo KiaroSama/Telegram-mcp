@@ -63,6 +63,10 @@ _CLOSE_ALL_BUDGET = 60.0
 # and that is exactly when the proof has to be redone.
 _verified_against: dict[str, object] = {}
 
+# A timeout cancels a waiter, not the native close. Keep that work owned and
+# reuse it on subsequent shutdown calls instead of issuing duplicate closes.
+_close_tasks: dict[int, asyncio.Future] = {}
+
 
 def _is_usable(client: TDLibClient) -> bool:
     """Ready, and nothing else.
@@ -76,10 +80,44 @@ def _is_usable(client: TDLibClient) -> bool:
     return client._client_id is not None and client.authorization_state == _READY
 
 
+def _start_close(account: str, client) -> asyncio.Future:
+    """Own one close per client, including completion after a waiter's deadline."""
+    key = id(client)
+    task = _close_tasks.get(key)
+    if task is not None:
+        return task
+    task = asyncio.ensure_future(client.close())
+    _close_tasks[key] = task
+
+    def completed(done):
+        if _close_tasks.get(key) is done:
+            _close_tasks.pop(key, None)
+        # Retrieve failures even when the last waiter timed out or was cancelled.
+        if done.cancelled():
+            return
+        error = done.exception()
+        if error is not None:
+            log_event(logging.WARNING, "a TDLib close failed; ownership retained", error=error)
+            return
+        # These callbacks run on the registry's loop, without an intervening
+        # await. Never remove a replacement that has since acquired this label.
+        if _by_account.get(account) is client:
+            _by_account.pop(account, None)
+            _verified_against.pop(account, None)
+
+    task.add_done_callback(completed)
+    return task
+
+
 async def _close_quietly(client: TDLibClient, why: str) -> None:
-    """Close a client whose failure is already being reported."""
+    """Retain failed/incomplete starts until their database owner actually closes."""
+    account = client.account
+    _by_account[account] = client
+    _verified_against.pop(account, None)
     try:
-        await client.close()
+        await asyncio.shield(_start_close(account, client))
+    except asyncio.CancelledError:
+        raise
     except Exception as error:
         log_event(logging.WARNING, f"failed to close a TDLib client after {why}", error=error)
 
@@ -132,8 +170,10 @@ async def secret_client(account: str) -> TDLibClient:
             # client opening a database the first one may still have held, which
             # is the one thing this registry exists to prevent.
             try:
-                await existing.close()
-            except BaseException as error:
+                await asyncio.shield(_start_close(account, existing))
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
                 raise NotSignedIn(
                     account,
                     "the previous secret-chat client for this account did not close, so "
@@ -143,7 +183,13 @@ async def secret_client(account: str) -> TDLibClient:
             _by_account.pop(account, None)
             _verified_against.pop(account, None)
 
+        if _closing or get_client(account) is not telethon:
+            raise NotSignedIn(account, "the account was reconfigured or is shutting down")
         client = TDLibClient(account)
+        # Reserve ownership before the first await. Failed starts must be visible
+        # to shutdown and cannot be replaced while cleanup still owns the DB.
+        _by_account[account] = client
+        _verified_against.pop(account, None)
         try:
             state = await client.start()
         except BaseException:
@@ -159,13 +205,16 @@ async def secret_client(account: str) -> TDLibClient:
         # this client was started for has to still be the current one, or what
         # gets published is the previous account's database under the new
         # account's name - and every secret-chat call then runs as the old owner.
-        if _closing or get_client(account) is not telethon:
+        try:
+            if _closing or get_client(account) is not telethon:
+                raise NotSignedIn(
+                    account,
+                    "the account was reconfigured while its secret-chat client was being "
+                    "started, so this generation is no longer current; retry the call",
+                )
+        except BaseException:
             await _close_quietly(client, "the account generation changed during the start")
-            raise NotSignedIn(
-                account,
-                "the account was reconfigured while its secret-chat client was being "
-                "started, so this generation is no longer current; retry the call",
-            )
+            raise
         # Imported here, not at module scope: `tdlib_identity` reads
         # `database_dir_for` out of `tdlib`, which re-exports this module, and
         # naming it at the top closes the cycle.
@@ -178,6 +227,12 @@ async def secret_client(account: str) -> TDLibClient:
             # another account has an old database AND an old note, they agree
             # perfectly, and every secret-chat call runs as the previous owner.
             await tdlib_identity.verify_owner(account, client, telethon)
+            if _closing or get_client(account) is not telethon:
+                raise NotSignedIn(
+                    account, "the account was reconfigured or shut down during identity verification"
+                )
+            if not _is_usable(client):
+                raise NotSignedIn(account, "authorization changed during identity verification")
         except BaseException:
             await _close_quietly(client, "an identity that did not match")
             raise
@@ -240,7 +295,9 @@ async def close_all(budget: float = _CLOSE_ALL_BUDGET) -> List[Tuple[str, Except
             if left <= 0:
                 return account, TimeoutError("the shutdown budget ran out before this account")
             try:
-                await asyncio.wait_for(asyncio.shield(client.close()), timeout=left)
+                await asyncio.wait_for(
+                    asyncio.shield(_start_close(account, client)), timeout=left
+                )
             except Exception as error:
                 return account, error
             return account, None
@@ -264,11 +321,12 @@ async def close_all(budget: float = _CLOSE_ALL_BUDGET) -> List[Tuple[str, Except
             )
 
         closed = {account for (account, _c), result in zip(pending, results) if _went(result)}
-        if closed:
-            async with _by_account_lock:
-                for account in closed:
-                    _by_account.pop(account, None)
-                    _verified_against.pop(account, None)
+        # No second, unbudgeted lock acquisition after waiting for closes.
+        # Identity-checked, synchronous updates cannot interleave on this loop.
+        for account, client in pending:
+            if account in closed and _by_account.get(account) is client:
+                _by_account.pop(account, None)
+                _verified_against.pop(account, None)
     finally:
         # The latch stays SET. Once shutdown has begun, a new native client
         # against a database being flushed is never the right answer.
