@@ -490,3 +490,43 @@ def test_a_url_carrying_a_direction_override_is_cleaned_and_flagged():
 # different raw labels normalize to one display string and the guard cannot tell
 # them apart either. These press against an authenticated binding minted by the
 # listing instead.
+
+
+# --- the two usability defects ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inspect_buttons_reads_the_latest_message_when_none_is_named(_wire):
+    """Omitting message_id used to be an error, which cost a round trip to learn
+    the id of the message the caller was already looking at."""
+    _wire(_message([[_callback(text="Go")]]))
+
+    payload = json.loads(await inspect_buttons(1, account="default"))
+
+    assert payload["message_id"] == 7, "the reply must name the id it actually read"
+    assert payload["button_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_click_button_names_every_missing_argument_at_once(_wire):
+    """Both conditions were known before anything was fetched, and reporting them
+    one at a time made the second refusal read like a new problem."""
+    _wire(_message([[_callback(text="Go")]]))
+
+    refusal = await click_button(1, 7, 0, account="default")
+
+    assert "expect_text" in refusal
+    assert "press_token" in refusal
+    assert "2 required arguments are missing" in refusal
+    assert "Nothing was pressed" in refusal
+
+
+@pytest.mark.asyncio
+async def test_click_button_names_only_the_one_that_is_missing(_wire):
+    _wire(_message([[_callback(text="Go")]]))
+
+    refusal = await click_button(1, 7, 0, expect_text="Go", account="default")
+
+    assert "press_token" in refusal
+    assert "expect_text -" not in refusal, "a supplied argument was reported as missing"
+    assert "1 required argument is missing" in refusal

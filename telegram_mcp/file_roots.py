@@ -604,6 +604,24 @@ async def _open_verified_directory(*, path: Path, ctx: Optional[Context], tool_n
         directory.close()
 
 
+def _roots_from_environment() -> List[str]:
+    """Allowed roots named by ``TELEGRAM_FILE_ROOTS``, split on this OS's separator.
+
+    The command line was the only way in, and it is the one route an MCP client
+    config makes awkward: a client launches the server with its own argv and
+    offers an ``env`` block beside it, so "start the server with directories as
+    positional arguments" was advice a caller often could not take. The file
+    tools then reported themselves disabled with a fix the operator could not
+    apply, which is how `send_file` came to look broken rather than unconfigured.
+
+    Same allow-list, same validation, same refusal of a path that does not exist
+    - only a second way to say it. Empty entries are dropped so a trailing
+    separator is not an error.
+    """
+    raw = os.getenv("TELEGRAM_FILE_ROOTS", "")
+    return [part for part in raw.split(os.pathsep) if part.strip()]
+
+
 def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         prog="telegram-mcp",
@@ -617,7 +635,9 @@ def _configure_allowed_roots_from_cli(argv: Optional[List[str]] = None) -> None:
     parsed, _unknown = parser.parse_known_args(argv or [])
 
     resolved_roots: List[Path] = []
-    for raw_root in parsed.allowed_roots:
+    # Both sources, argv first so a command line stays the explicit override when
+    # something sets the variable in the environment underneath it.
+    for raw_root in list(parsed.allowed_roots) + _roots_from_environment():
         root = Path(raw_root).expanduser()
         if not root.exists():
             raise SystemExit(f"Allowed root does not exist: {root}")
@@ -655,6 +675,7 @@ __all__ = [
     "_coerce_paths_from_list_roots_validation_error",
     "_coerce_root_uri_to_path",
     "_configure_allowed_roots_from_cli",
+    "_roots_from_environment",
     "_contains_forbidden_path_patterns",
     "_dedupe_paths",
     "_ensure_allowed_roots",

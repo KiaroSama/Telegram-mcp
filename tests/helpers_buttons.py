@@ -53,7 +53,13 @@ class _Client:
         self._msg, self._answer = msg, answer
         self.calls = []
 
-    async def get_messages(self, entity, ids=None):
+    async def get_messages(self, entity, ids=None, limit=None):
+        # Telethon returns a LIST for a limit query and a single message for an
+        # ids query, and `inspect_buttons` uses both - the limit form is how it
+        # reaches "the latest message in this chat" when no id was given. A double
+        # that only knew `ids` answered the new caller with a TypeError.
+        if limit is not None:
+            return [self._msg] if self._msg is not None else []
         return self._msg
 
     async def __call__(self, request):
