@@ -169,6 +169,14 @@ Aliases live in `${XDG_STATE_HOME:-~/.local/state}/telegram-mcp/aliases.json` (o
   from one source names nothing in the other. Every transfer is capped, and each sheet cell
   carries the id `open_photo` takes back.
 - **Profile and privacy:** get your own account info, update profile fields, set or delete profile photos, inspect privacy settings, get user info/photos/status, and manage bot commands.
+- **Logged-in devices:** `list_authorizations` reports every device signed into the account
+  with what Telegram knows about it - model, platform, app, where it last connected from, and
+  whether it accepts secret chats. `terminate_authorization` signs ONE named device out and
+  cannot be undone, so it takes that device's `hash`, refuses the authorization this server
+  is connected through unless told explicitly, and has no sign-out-everything form.
+  `set_authorization_secret_chats` is the per-device switch Telegram draws: it is stored
+  negated on the wire (`encrypted_requests_disabled`) and is exposed here only as
+  `accept_secret_chats`, the way the switch reads on screen.
 - **Folders and drafts:** list, create, update, reorder, and delete Telegram folders; save, list, and clear drafts.
 - **Events:** wait for incoming messages with debounce (`wait_for_new_message`, `wait_for_settled_message`), optionally for one chat only via `chat_id` — without it any unrelated conversation wakes the wait — or enable the opt-in incoming event feed for callback-style delivery (see below).
 
