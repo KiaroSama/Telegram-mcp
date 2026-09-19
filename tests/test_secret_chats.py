@@ -32,12 +32,22 @@ def _patch_both(monkeypatch, name, value):
             monkeypatch.setattr(module, name, value)
 
 
+# Every sending tool now checks the chat is ready before it sends, because a
+# send into a half-exchanged chat otherwise fails inside the protocol with an
+# error naming neither the chat nor the state. So the fake answers `getChat` and
+# `getSecretChat` as a READY secret chat by default -- the ordinary case these
+# tests are about -- and a test that cares about the other states scripts them.
+_READY_CHAT = {"@type": "chat", "type": {"@type": "chatTypeSecret", "secret_chat_id": 7}}
+_READY_SECRET = {"@type": "secretChat", "state": {"@type": "secretChatStateReady"}, "layer": 144}
+
+
 class FakeTDLib:
     """Records every request and answers from a scripted table."""
 
     def __init__(self, answers=None):
         self.requests = []
-        self.answers = answers or {}
+        self.answers = {"getChat": _READY_CHAT, "getSecretChat": _READY_SECRET}
+        self.answers.update(answers or {})
 
     async def request(self, obj, timeout=30.0):
         self.requests.append(obj)

@@ -37,6 +37,10 @@ from telegram_mcp.tdlib import (
     tdjson_status,
 )
 
+from telegram_mcp.secret_compose import dropped_note, formatted_text, reply_to
+from telegram_mcp.secret_limits import require_ready_chat
+from telegram_mcp.secret_media_content import KINDS, build_content, infer_kind
+
 from telegram_mcp.tools.secret_chats import (
     _account_label,
     _unavailable,
@@ -144,40 +148,80 @@ def _completed_local_path(file_object: Optional[dict]) -> Optional[str]:
 
 @mcp.tool(annotations=ToolAnnotations(title="Send Secret Message", openWorldHint=True))
 @with_account(readonly=False)
-async def send_secret_message(chat_id: int, message: str, account: str = None) -> str:
+async def send_secret_message(
+    chat_id: int,
+    message: str,
+    parse_mode: str = None,
+    reply_to_message_id: int = None,
+    account: str = None,
+) -> str:
     """
-    Send a text message into a secret chat.
+    Send a text message into a secret chat, optionally formatted and as a reply.
 
     Whether it self-destructs is decided by the CHAT's timer, not by this call
     -- see `set_secret_chat_timer`. That is the opposite of an ordinary chat,
     where the timer rides on each piece of media.
 
+    **Formatting can be silently lost, and this tool refuses to lose it
+    silently.** What survives depends on the layer the two devices negotiated
+    for this one chat, so the same message is whole in one chat and thinned in
+    another. Nine kinds never cross at all -- cashtag, bot command, phone
+    number, bank card number, mention-by-name, media timestamp, formatted date,
+    blockquote and expandable blockquote -- and underline, strikethrough,
+    spoiler and custom emoji need a recent enough app on the other side. When
+    anything is dropped the result carries `dropped_formatting` naming it and
+    why; when nothing is dropped the field is absent entirely, so its presence
+    is the signal.
+
     Args:
         chat_id: The `chat_id` from `create_secret_chat` or `list_secret_chats`.
             Not the `secret_chat_id`.
         message: The text to send.
+        parse_mode: `markdown` or `html` to format it, or unset for plain text.
+        reply_to_message_id: A message id from `read_secret_messages` to reply
+            to. Checked against this device's copy first — Telegram silently
+            downgrades a reply whose target it cannot find into an ordinary
+            message, so a missing one is refused here instead.
     """
     try:
         label = _account_label(account)
         client = await secret_client(label)
-        sent = await client.request(
-            {
-                "@type": "sendMessage",
-                "chat_id": int(chat_id),
-                "input_message_content": {
-                    "@type": "inputMessageText",
-                    "text": {"@type": "formattedText", "text": message},
-                },
-            }
-        )
-        return format_tool_result(
-            {
-                "sent": True,
-                "chat_id": int(chat_id),
-                "message_id": sent.get("id"),
-                "self_destruct": "per the chat timer; see set_secret_chat_timer",
-            }
-        )
+
+        refusal = await require_ready_chat(client, int(chat_id))
+        if refusal:
+            return refusal
+
+        formatted = await formatted_text(client, message, parse_mode)
+        reply = await reply_to(client, int(chat_id), reply_to_message_id)
+
+        request = {
+            "@type": "sendMessage",
+            "chat_id": int(chat_id),
+            "input_message_content": {"@type": "inputMessageText", "text": formatted},
+        }
+        if reply:
+            request["reply_to"] = reply
+
+        sent = await client.request(request)
+        record = {
+            "sent": True,
+            "chat_id": int(chat_id),
+            "message_id": sent.get("id"),
+            "self_destruct": "per the chat timer; see set_secret_chat_timer",
+        }
+        if reply:
+            record["reply_to_message_id"] = int(reply_to_message_id)
+
+        dropped = await dropped_note(client, int(chat_id), formatted)
+        if dropped:
+            # Present only when something was actually lost, so a caller can
+            # branch on the field existing rather than on its length.
+            record["dropped_formatting"] = dropped
+            record["dropped_note"] = (
+                "The message was sent, but this formatting did not cross the encrypted "
+                "layer. Re-send it as plain words if it carried meaning."
+            )
+        return format_tool_result(record)
     except (NotSignedIn, TDLibUnavailable) as e:
         return _unavailable(e)
     except ValueError as e:
@@ -196,14 +240,21 @@ async def send_secret_message(chat_id: int, message: str, account: str = None) -
 async def send_secret_media(
     chat_id: int,
     file_path: str,
+    kind: str = None,
     self_destruct_seconds: int = 0,
     as_voice: bool = False,
     caption: str = "",
+    reply_to_message_id: int = None,
     account: str = None,
     ctx: Context = None,
 ) -> str:
     """
-    Send a photo or voice message into a secret chat.
+    Send a file of any kind a secret chat carries — all eight of them.
+
+    Photo, video, document, audio, animation, sticker, video note and voice
+    note. Those eight are the whole of what the encrypted protocol accepts; a
+    poll, a dice, a game, an invoice or a live location has no representation
+    there at all, which `secret_chat_status` reports in full.
 
     Everything sent here obeys the CHAT's self-destruct timer, set with
     `set_secret_chat_timer`. This tool used to say media could carry a timer of
@@ -215,13 +266,24 @@ async def send_secret_media(
         chat_id: From `create_secret_chat` or `list_secret_chats`.
         file_path: Path to the file, resolved under the same allowed roots as
             `upload_file` — this tool does not widen the filesystem surface.
+        kind: One of photo, video, document, audio, animation, sticker,
+            video_note, voice_note. Leave unset to choose from the file itself;
+            the result always reports which kind was actually sent. A kind the
+            file cannot be is refused before anything is uploaded, because
+            Telegram refuses it only after the bytes have crossed.
         self_destruct_seconds: NOT usable here. Telegram accepts a per-message
             timer only in ordinary private chats and refuses one in a secret
             chat; pass 0 and set the chat's timer with set_secret_chat_timer,
             which is the mechanism secret chats actually have. A non-zero value
             is refused with that instruction rather than silently ignored.
-        as_voice: Send the file as a voice note rather than a photo.
-        caption: Optional caption.
+        as_voice: Deprecated alias for `kind="voice_note"`, kept so existing
+            callers keep working. Passing it together with a different `kind`
+            is refused rather than resolved one way or the other.
+        caption: Optional caption. A sticker and a video note have no caption
+            field in the protocol, so one given with either is refused rather
+            than dropped in transit.
+        reply_to_message_id: A message id from `read_secret_messages` to reply
+            to, checked against this device's copy first.
     """
     # Before the client and before the filesystem: neither a TDLib start nor a
     # roots check should be spent on an argument that was never going to be
@@ -234,36 +296,38 @@ async def send_secret_media(
             "set_secret_chat_timer."
         )
 
+    # The deprecated flag and the new argument can disagree, and picking a
+    # winner silently would send the wrong kind under a caller's nose.
+    if as_voice and kind is not None and kind != "voice_note":
+        return (
+            f"as_voice=True and kind={kind!r} ask for different things. as_voice is the old "
+            "spelling of kind='voice_note'; pass one or the other. Nothing was sent."
+        )
+    if as_voice:
+        kind = "voice_note"
+
     try:
         label = _account_label(account)
         client = await secret_client(label)
+
+        refusal = await require_ready_chat(client, int(chat_id))
+        if refusal:
+            return refusal
 
         path, path_error = await _resolve_readable_file_path(
             raw_path=file_path, ctx=ctx, tool_name="send_secret_media"
         )
         if path_error:
             return path_error
-
-        file = {"@type": "inputFileLocal", "path": str(path)}
-        # The file goes one level DOWN, inside a per-kind wrapper - not straight
-        # into `photo`/`voice_note`. TDLib's own log is what settled it:
-        #
-        #     input_message_content = inputMessagePhoto {
-        #         photo = inputPhoto { photo = null
-        #
-        # `inputMessagePhoto.photo` is an `inputPhoto`, whose own `photo` holds
-        # the InputFile. Passing the file a level too high left that inner field
-        # null, and TDLib answered "InputFile is not specified" - an error that
-        # names the type it wanted and not the place it wanted it, which is why
-        # every path format, file id and remote id was tried first and none of
-        # them was ever the problem.
-        content = {"caption": {"@type": "formattedText", "text": caption}}
-        if as_voice:
-            content["@type"] = "inputMessageVoiceNote"
-            content["voice_note"] = {"@type": "inputVoiceNote", "voice_note": file}
-        else:
-            content["@type"] = "inputMessagePhoto"
-            content["photo"] = {"@type": "inputPhoto", "photo": file}
+        # The wrapper shape - the file goes one level DOWN, inside a per-kind
+        # wrapper - lives in `secret_media_content` now, where all eight kinds
+        # share one table and one set of tests. The bug it guards against is
+        # worth keeping in mind here: `inputMessagePhoto.photo` is an
+        # `inputPhoto`, whose OWN `photo` holds the InputFile, and passing the
+        # file a level too high answers "InputFile is not specified" - an error
+        # naming the type it wanted and not the place.
+        chosen = kind or infer_kind(str(path))
+        content = build_content(str(path), chosen, caption)
 
         if ttl:
             # Telegram refuses a per-message timer in a secret chat outright:
@@ -277,23 +341,29 @@ async def send_secret_media(
                 f"to every message sent after it. Nothing was sent."
             )
 
-        sent = await client.request(
-            {
-                "@type": "sendMessage",
-                "chat_id": int(chat_id),
-                "input_message_content": content,
-            },
-            timeout=120,
-        )
-        return format_tool_result(
-            {
-                "sent": True,
-                "chat_id": int(chat_id),
-                "message_id": sent.get("id"),
-                "self_destruct_seconds": ttl or "chat timer",
-                "kind": "voice" if as_voice else "photo",
-            }
-        )
+        reply = await reply_to(client, int(chat_id), reply_to_message_id)
+        request = {
+            "@type": "sendMessage",
+            "chat_id": int(chat_id),
+            "input_message_content": content,
+        }
+        if reply:
+            request["reply_to"] = reply
+
+        sent = await client.request(request, timeout=120)
+        record = {
+            "sent": True,
+            "chat_id": int(chat_id),
+            "message_id": sent.get("id"),
+            "self_destruct_seconds": ttl or "chat timer",
+            # Always reported, because an inferred kind is a decision this tool
+            # made on the caller's behalf and they cannot see it otherwise.
+            "kind": chosen,
+            "kind_chosen_by": "caller" if kind else "the file",
+        }
+        if reply:
+            record["reply_to_message_id"] = int(reply_to_message_id)
+        return format_tool_result(record)
     except (NotSignedIn, TDLibUnavailable) as e:
         return _unavailable(e)
     except ValueError as e:
