@@ -211,6 +211,10 @@ incoming_feed.jsonl
 
 # Hook Maker: local/private files (auto-managed)
 /.ai/
+# Spec Kit: infrastructure and per-feature planning artefacts. Local-only;
+# the chain rebuilds them in whatever checkout needs them.
+/.specify/
+/specs/
 # Advisor handoff plans: local working notes, not project deliverables.
 /plans/
 /secrets.md
