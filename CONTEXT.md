@@ -101,6 +101,15 @@ refused before a byte is uploaded, so a send that succeeded was sent as the kind
 that was asked for.
 _Avoid_: detected type, guessed kind, auto kind
 
+**Split send**:
+One request that becomes several Telegram messages. A media group carries one
+answer to "compressed or as a file" for everything in it, so entries whose kinds
+cannot share a group are sent as separate messages, in the order the caller wrote
+them. A photo beside a document is two messages; a voice note, video note or
+sticker is always its own. It is a property of the REQUEST, not a failure of it —
+nothing is refused and nothing is re-typed to make one message.
+_Avoid_: batch, chunk, fallback, partial send
+
 **Kind parity**:
 The property of this server that every media kind reachable on one send path is
 reachable on the others. A property of the server's surface, not of a chat or a
