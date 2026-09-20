@@ -80,6 +80,14 @@ A bot's entry point beside the message field, offered instead of or alongside it
 commands. A bot can have one and no commands at all.
 _Avoid_: menu, start button, app button
 
+**Rich message**:
+A message whose body is not carried in the message. It parses cleanly, reports no text, no
+entities and no media, raises nothing, and yet a client shows a table, headings or lists —
+because its content is a separate object fetched by chat and message id. Emptiness is
+therefore not evidence that a message is empty, and reading one is always two acts: notice,
+then fetch.
+_Avoid_: rich text, formatted message, table message
+
 ### Media
 
 **Media kind**:
