@@ -56,7 +56,7 @@ A music file whose tags were stripped is indistinguishable from a recording and 
 as a voice note. That is the accepted miss. The reverse — a real voice note demoted to
 a music file — cannot happen, because a recorder does not write music tags.
 
-**Correction, measured on real Telegram after this was written (2026-09-20).** The
+**Correction, and then a correction OF the correction — both measured (2026-09-20).** The
 sentence that used to stand here said `kind="audio"` names the exception for one
 argument. It does not, for this container. An OGG/Opus file is a voice message to
 Telegram whatever attribute is attached: the send carries
@@ -65,12 +65,26 @@ Telegram whatever attribute is attached: the send carries
 reports `voice`. The identical flags on an `.mp3` store as `audio`, so the rule
 belongs to the container and to Telegram's server, not to this code.
 
-So the detection decides correctly and then cannot express half of its answer: a
-tagged music `.ogg` arrives as a voice bubble, and the reply's "as audio" is wrong in
-that one case. The options — refuse `audio` for `.ogg`, say so in the reply, or leave
-it — are recorded in `.ai/BUGS.md` and are the owner's to choose. Nothing here is
-worked around, because a client-side workaround for a server-side rule would only
-move the surprise.
+**That blamed the wrong thing, and the owner disproved it** by producing a real
+`.ogg` in the wild that arrives as a track. Its only difference: `mime_type` is
+`audio/vorbis`, not `audio/ogg`.
+
+Telegram picks the renderer from the **MIME type** — not from the container, and not
+from `DocumentAttributeAudio.voice`. `mimetypes` guesses `audio/ogg` from the
+extension, and `audio/ogg` is Telegram's VOICE type, so every `.ogg` this server sent
+was asking to be a voice note whatever else it said. An `.ogg` asked for as a track
+now claims `audio/vorbis`; a voice note keeps `audio/ogg`; formats that are already
+tracks, like `.mp3`, are left alone.
+
+**Verified end to end**: the same `.ogg`, sent twice, stores as `audio` with
+`kind="audio"` and as `voice` with `kind="voice_note"`. So the detection can express
+its whole answer after all, and there is no owner decision left here.
+
+The lesson worth keeping is about the first conclusion, not the second: "the same
+flags behave differently on two containers" was read as a container rule, when the
+containers also differed in the field that actually decides. A difference that
+travels with the thing you are comparing is not evidence about the thing you are
+comparing.
 
 Reading the head of an upload puts the file pointer past it, and Telethon uploads from
 wherever the pointer is left. A peek that forgets to rewind truncates the file and the

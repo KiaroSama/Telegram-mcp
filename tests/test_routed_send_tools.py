@@ -147,7 +147,10 @@ async def test_an_ogg_with_music_tags_goes_as_audio_not_as_a_voice_note(wired):
 
     result = await media.send_file("AnyChat", "song.ogg")
 
-    assert client.calls[0]["flags"] == media_send.flags_for("audio")
+    # The flags now depend on the NAME too: an `.ogg` asked for as a track has to
+    # claim a track MIME, because `audio/ogg` is Telegram's voice type.
+    assert client.calls[0]["flags"] == media_send.flags_for("audio", file_name="song.ogg")
+    assert client.calls[0]["flags"]["mime_type"] == "audio/vorbis"
     assert "as audio" in result
 
 
