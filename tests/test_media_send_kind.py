@@ -222,3 +222,71 @@ def test_only_the_voice_family_is_read_at_all():
     every send for one family's ambiguity."""
     assert media_send.resolve_kind("song.mp3", None, "", header=_ogg_header()) == "audio"
     assert media_send.resolve_kind("pic.jpg", None, "", header=_ogg_header()) == "photo"
+
+
+# --- an mp3 is not a voice note -----------------------------------------------
+
+
+def test_an_mp3_cannot_be_asked_for_as_a_voice_note():
+    """The owner's ruling, 2026-09-20: "mp3 ویس نیست" — an mp3 is not a voice.
+
+    The family table used to allow it, and `quickstart.md` expected a refusal, so
+    the two contradicted each other. The real-client pass settled it the hard way:
+    asking for a 10 MB mp3 as a voice note was ACCEPTED and began uploading, which
+    is how the contradiction was found.
+    """
+    with pytest.raises(media_send.MediaKindError) as raised:
+        media_send.resolve_kind("track.mp3", "voice_note", caption="")
+
+    said = str(raised.value)
+    assert "track.mp3" in said and "voice_note" in said
+
+
+@pytest.mark.parametrize("name", ["track.mp3", "song.m4a", "rec.flac", "clip.wav", "x.aac"])
+def test_no_compressed_music_format_may_be_a_voice_note(name):
+    with pytest.raises(media_send.MediaKindError):
+        media_send.resolve_kind(name, "voice_note", caption="")
+
+
+def test_an_ogg_may_still_be_either(name="clip.ogg"):
+    """Telegram's own voice format genuinely carries both, which is the whole
+    reason the tag detection exists."""
+    assert media_send.resolve_kind(name, "voice_note", caption="") == "voice_note"
+    assert media_send.resolve_kind(name, "audio", caption="") == "audio"
+
+
+# --- and `audio` now says what it is on the wire -------------------------------
+
+
+def test_audio_carries_an_attribute_that_says_it_is_not_a_voice():
+    """The defect the real-client pass found. Telethon builds
+    `DocumentAttributeAudio` only when it can read the file's metadata, and
+    without a metadata reader installed it builds NOTHING - so `kind="audio"`
+    said nothing at all and Telegram guessed from the mime type, differently per
+    file: a small Opus arrived as a voice message, a tagged one as a document.
+    """
+    flags = media_send.flags_for("audio")
+    attributes = flags.get("attributes") or []
+    assert attributes, "audio sends no attribute, so it states nothing"
+    audio = attributes[0]
+    assert audio.voice is False
+
+
+def test_voice_note_and_video_note_still_need_no_attribute_of_their_own():
+    """Telethon force-creates those two itself, which is exactly why they worked
+    while `audio` did not. Adding a second one here would fight it."""
+    assert "attributes" not in media_send.flags_for("voice_note")
+    assert "attributes" not in media_send.flags_for("video_note")
+
+
+def test_an_ogg_header_gives_the_track_its_real_duration():
+    """A track that says 0:00 is the kind of thing an operator reports as broken.
+    The duration comes from the container this code already reads for the tags -
+    no decoder, no new dependency."""
+    flags = media_send.flags_for("audio", header=_ogg_header("TITLE=A Song"))
+    assert flags["attributes"][0].duration >= 0
+
+
+def test_a_kind_that_is_not_audio_ignores_the_header_entirely():
+    assert "attributes" not in media_send.flags_for("photo", header=_ogg_header())
+    assert "attributes" not in media_send.flags_for("document", header=_ogg_header())

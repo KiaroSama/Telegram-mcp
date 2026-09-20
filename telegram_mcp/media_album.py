@@ -19,7 +19,7 @@ __all__ = ["send_planned", "describe"]
 
 
 async def send_planned(
-    *, client, entity, sources, kinds, caption=None, reply_to=None, posting_as=None
+    *, client, entity, sources, kinds, headers=None, caption=None, reply_to=None, posting_as=None
 ):
     """Send one message per group, in the order the caller wrote.
 
@@ -30,7 +30,7 @@ async def send_planned(
     caption on its first item, and repeating it on each split message would put
     text in the chat the caller never wrote.
     """
-    plan = media_send.group_sends(kinds)
+    plan = media_send.group_sends(kinds, headers)
     receipts = []
     for position, (indices, flags) in enumerate(plan):
         group = [sources[index] for index in indices]
