@@ -17,6 +17,7 @@ from telegram_mcp.tools.moderation import *
 from telegram_mcp.tools.admin_rights import *
 from telegram_mcp.tools.invites import *
 from telegram_mcp.tools.media import *
+from telegram_mcp.tools.gifs import *
 from telegram_mcp.tools.profile import *
 from telegram_mcp.tools.profile_privacy import *
 from telegram_mcp.tools.photos import *
