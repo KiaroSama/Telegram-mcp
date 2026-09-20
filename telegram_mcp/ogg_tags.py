@@ -20,7 +20,7 @@ package — the one that holds ciphertext and a schema and deliberately no codec
 this exists rather than the two simpler answers (always voice, always audio).
 """
 
-__all__ = ["HEADER_BYTES", "MUSIC_TAGS", "looks_like_voice"]
+__all__ = ["HEADER_BYTES", "MUSIC_TAGS", "duration_seconds", "looks_like_voice"]
 
 #: How much of the file the answer needs. An Ogg page is capped at 65 307 bytes
 #: and the identification header plus the comment block sit in the first pages;
@@ -83,3 +83,44 @@ def _has_music_tag(header: bytes) -> bool:
                 return True
             start = found + 1
     return False
+
+
+#: Opus always reports its granule positions at 48 kHz, whatever the input rate
+#: was. §4 of RFC 7845: "the granule position of an Opus stream is the number of
+#: 48 kHz samples". Vorbis uses its own rate, which is why the rate is read for
+#: it rather than assumed.
+_OPUS_RATE = 48000
+
+
+def duration_seconds(header: bytes) -> int:
+    """How long the stream runs, from the container alone, or 0.
+
+    The last Ogg page's granule position is the sample count at the end of the
+    stream, so a duration costs one backwards scan for a page header - no
+    decoder, no dependency, and the same bytes this module already reads for the
+    tags.
+
+    Returns 0 rather than raising when the answer is not in these bytes: a
+    truncated read, a non-Ogg file, or a stream whose last page is past the
+    window. A track with no duration is still a track; a crash while deciding a
+    media kind is not.
+    """
+    if not header.startswith(b"OggS"):
+        return 0
+    last = header.rfind(b"OggS")
+    if last == -1 or last + 14 > len(header):
+        return 0
+    granule = int.from_bytes(header[last + 6 : last + 14], "little", signed=False)
+    if granule == 0 or granule == 0xFFFFFFFFFFFFFFFF:
+        return 0
+
+    rate = _OPUS_RATE
+    if b"OpusHead" not in header:
+        # Vorbis states its own sample rate in the identification header.
+        ident = header.find(b"\x01vorbis")
+        if ident == -1 or ident + 16 > len(header):
+            return 0
+        rate = int.from_bytes(header[ident + 12 : ident + 16], "little")
+    if rate <= 0:
+        return 0
+    return int(granule // rate)
