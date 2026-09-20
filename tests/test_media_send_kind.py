@@ -105,3 +105,67 @@ def test_an_unknown_extension_is_not_proof_a_kind_is_impossible():
 def test_anything_may_be_sent_as_a_document():
     for name in ("photo.jpg", "clip.mp4", "song.mp3", "mystery.qqq"):
         assert media_send.resolve_kind(name, "document", caption="") == "document"
+
+
+# --- one request, the messages Telegram will actually accept -----------------
+#
+# `force_document` is ONE flag per media group, so a file and a compressed photo
+# cannot share a message however they were asked for. The owner said it in their
+# own words: if one goes as a file and another compressed, they belong in two
+# separate messages. Splitting is the only honest answer - the alternatives are
+# refusing a request Telegram's own clients accept, or silently re-typing one of
+# the two.
+
+
+def _plan(kinds):
+    """The group each message carries, as a list of index lists."""
+    return [indices for indices, _ in media_send.group_sends(kinds)]
+
+
+def test_a_file_and_a_photo_become_two_messages_in_the_order_given():
+    assert _plan(["photo", "document"]) == [[0], [1]]
+    assert _plan(["document", "photo"]) == [[0], [1]]
+
+
+def test_three_photos_are_one_message():
+    assert _plan(["photo", "photo", "photo"]) == [[0, 1, 2]]
+
+
+def test_photos_and_videos_share_one_group():
+    """Telegram's own client does this, and so does every album a human sends."""
+    assert _plan(["photo", "video", "photo"]) == [[0, 1, 2]]
+
+
+def test_files_group_with_files_and_tracks_with_tracks():
+    assert _plan(["document", "document"]) == [[0, 1]]
+    assert _plan(["audio", "audio"]) == [[0, 1]]
+
+
+def test_an_album_of_files_does_not_absorb_a_track():
+    """Both are 'not compressed', which is not the same as 'the same group'."""
+    assert _plan(["document", "audio"]) == [[0], [1]]
+
+
+@pytest.mark.parametrize("kind", ["voice_note", "video_note", "sticker"])
+def test_the_kinds_with_no_group_always_travel_alone(kind):
+    """The protocol gives them no media group at all, so two in a row are two
+    messages - not one message that silently drops the second."""
+    assert _plan([kind, kind]) == [[0], [1]]
+    assert _plan(["photo", kind, "photo"]) == [[0], [1], [2]]
+
+
+def test_a_group_carries_the_flags_of_everything_in_it():
+    """One `send_file` call per message, so the group's members have to agree on
+    the flags - and they do by construction, because only kinds that share a
+    group are put together."""
+    ((_, flags),) = media_send.group_sends(["photo", "video"])
+    assert flags["force_document"] is False
+    assert flags["supports_streaming"] is True
+
+
+def test_every_kind_is_placed_by_the_planner():
+    """A kind nobody assigned would fall through and be grouped by accident."""
+    from telegram_mcp import media_kinds
+
+    for kind in media_kinds.KINDS:
+        assert _plan([kind]) == [[0]], f"{kind} has no place in the plan"
