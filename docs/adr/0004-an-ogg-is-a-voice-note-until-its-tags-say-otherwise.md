@@ -53,9 +53,24 @@ refuse-never-convert rule in `0003` applies here unchanged.
 ## Consequences
 
 A music file whose tags were stripped is indistinguishable from a recording and arrives
-as a voice note. That is the accepted miss, and `kind="audio"` names it explicitly for
-one argument. The reverse — a real voice note demoted to a music file — cannot happen,
-because a recorder does not write music tags.
+as a voice note. That is the accepted miss. The reverse — a real voice note demoted to
+a music file — cannot happen, because a recorder does not write music tags.
+
+**Correction, measured on real Telegram after this was written (2026-09-20).** The
+sentence that used to stand here said `kind="audio"` names the exception for one
+argument. It does not, for this container. An OGG/Opus file is a voice message to
+Telegram whatever attribute is attached: the send carries
+`DocumentAttributeAudio(voice=False)` — confirmed by calling Telethon's
+`get_attributes` on the flags this server produces — and the stored message still
+reports `voice`. The identical flags on an `.mp3` store as `audio`, so the rule
+belongs to the container and to Telegram's server, not to this code.
+
+So the detection decides correctly and then cannot express half of its answer: a
+tagged music `.ogg` arrives as a voice bubble, and the reply's "as audio" is wrong in
+that one case. The options — refuse `audio` for `.ogg`, say so in the reply, or leave
+it — are recorded in `.ai/BUGS.md` and are the owner's to choose. Nothing here is
+worked around, because a client-side workaround for a server-side rule would only
+move the surprise.
 
 Reading the head of an upload puts the file pointer past it, and Telethon uploads from
 wherever the pointer is left. A peek that forgets to rewind truncates the file and the
