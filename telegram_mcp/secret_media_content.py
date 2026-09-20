@@ -22,6 +22,18 @@ separate mechanism.
 
 from pathlib import Path
 
+# The names, the families and the caption rule live in `media_kinds` so they
+# outlive this file: TDLib is being removed and the vocabulary is not. Re-exported
+# under the names this module has always published, so existing importers are
+# untouched by the move.
+from telegram_mcp.media_kinds import (  # noqa: F401  (re-exported)
+    FAMILIES as _FAMILIES,
+    KINDS,
+    NO_CAPTION as _NO_CAPTION,
+    family_of,
+    infer_kind,
+)
+
 __all__ = ["KINDS", "build_content", "infer_kind"]
 
 
@@ -37,72 +49,10 @@ _SHAPE = {
     "voice_note": ("inputMessageVoiceNote", "voice_note", "inputVoiceNote"),
 }
 
-KINDS = tuple(_SHAPE)
 
 # The two with no caption field at all. A caption passed with either is refused
 # rather than dropped: a caller who wrote one and saw it vanish cannot find out
 # why, and that silent loss is the thing this feature exists to remove.
-_NO_CAPTION = frozenset({"sticker", "video_note"})
-
-# Extension -> the family it belongs to. Inference picks the family's default;
-# compatibility allows any kind within the family, because the default is a
-# guess and the caller's explicit kind is not.
-_FAMILIES = {
-    "image": {
-        "suffixes": {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic", ".heif"},
-        "default": "photo",
-        "allows": {"photo", "sticker", "document"},
-    },
-    "video": {
-        "suffixes": {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"},
-        "default": "video",
-        "allows": {"video", "video_note", "animation", "document"},
-    },
-    "audio": {
-        "suffixes": {".mp3", ".m4a", ".flac", ".wav", ".aac"},
-        "default": "audio",
-        "allows": {"audio", "voice_note", "document"},
-    },
-    # Telegram's voice format. Defaulting .ogg to a voice note rather than to
-    # music is the commoner intent by a wide margin, and `kind="audio"` is
-    # inside the same family, so the other reading costs one argument.
-    "voice": {
-        "suffixes": {".ogg", ".oga", ".opus"},
-        "default": "voice_note",
-        "allows": {"voice_note", "audio", "document"},
-    },
-    "animation": {
-        "suffixes": {".gif"},
-        "default": "animation",
-        "allows": {"animation", "video", "document"},
-    },
-    "sticker": {
-        "suffixes": {".tgs"},
-        "default": "sticker",
-        "allows": {"sticker", "document"},
-    },
-}
-
-
-def _family(path: str):
-    suffix = Path(path).suffix.lower()
-    for name, family in _FAMILIES.items():
-        if suffix in family["suffixes"]:
-            return name, family
-    return None, None
-
-
-def infer_kind(path: str) -> str:
-    """The kind to send ``path`` as when the caller did not choose one.
-
-    Anything unrecognised becomes ``document``, which carries any bytes at all.
-    Guessing a specific kind at an unknown extension would fail at the protocol
-    instead of simply arriving as a file.
-    """
-    _, family = _family(path)
-    return family["default"] if family else "document"
-
-
 def build_content(path: str, kind: str, caption: str = "") -> dict:
     """The ``input_message_content`` for one file.
 
@@ -120,11 +70,11 @@ def build_content(path: str, kind: str, caption: str = "") -> dict:
             "Nothing was sent."
         )
 
-    family_name, family = _family(path)
+    family = family_of(path)
     if family is not None and kind not in family["allows"]:
         suffix = Path(path).suffix.lower() or "that file"
         raise ValueError(
-            f"A {suffix} file cannot be sent as {kind}: it is {family_name} content, which "
+            f"A {suffix} file cannot be sent as {kind}: it is {family['name']} content, which "
             f"Telegram accepts as {', '.join(sorted(family['allows']))}. Telegram refuses "
             "this after the upload rather than before it, so it is refused here instead. "
             "Nothing was sent."
