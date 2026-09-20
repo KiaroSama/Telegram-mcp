@@ -115,3 +115,45 @@ def wire_client(monkeypatch):
         return client
 
     return _wire
+
+
+# The allow-list a test sets must survive the test.
+#
+# `refresh_server_roots()` runs on the path of EVERY file tool and rebuilds
+# `SERVER_ALLOWED_ROOTS` from the machine's configuration - but only when the
+# configuration string differs from `_last_named_roots`, a module-level cache.
+# So exactly one call per process does the rebuild and every later call returns
+# early, which is why this surfaced as an ordering bug rather than a failure:
+# whichever test happened to be FIRST through a file tool had its roots replaced
+# by the real ones, and every test after it was untouched.
+#
+# Measured on 2026-09-20: `pytest tests/test_file_roots.py tests/test_media_album.py`
+# failed with "send_file is disabled until allowed roots are configured" while
+# each file passed alone. On a machine with a configured root the test's root was
+# swapped for that one; in CI, where there is no configuration, the list was
+# emptied outright.
+#
+# The fix is to make the cache ALREADY CURRENT before each test, which is the
+# state a long-running server is in after its first call - so the rebuild does
+# not fire, and a test that genuinely exercises refreshing still works because it
+# changes the configuration itself. The contents are then restored afterwards,
+# because `runtime` and `main` star-import this list and hold the same object;
+# `file_roots.py`'s own module docstring says to patch the CONTENTS, never the
+# name, and 44 call sites in this suite do it the other way round.
+@pytest.fixture(autouse=True)
+def _allowed_roots_survive_the_test():
+    from telegram_mcp import file_roots
+
+    original_roots = list(file_roots.SERVER_ALLOWED_ROOTS)
+    original_cache = file_roots._last_named_roots
+    try:
+        file_roots._last_named_roots = file_roots._roots_from_file()
+    except Exception:
+        # A configuration this test cannot read is not a reason to fail it; the
+        # rebuild would have returned early for the same reason.
+        pass
+
+    yield
+
+    file_roots.SERVER_ALLOWED_ROOTS[:] = original_roots
+    file_roots._last_named_roots = original_cache
