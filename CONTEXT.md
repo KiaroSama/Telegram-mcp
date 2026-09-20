@@ -80,6 +80,34 @@ A bot's entry point beside the message field, offered instead of or alongside it
 commands. A bot can have one and no commands at all.
 _Avoid_: menu, start button, app button
 
+### Media
+
+**Media kind**:
+The shape Telegram gives one sent file: photo, video, document, audio, animation,
+sticker, video note or voice note. A property of the SENDING and never of the
+bytes — the same recording is an audio file with a play button or a voice note
+with a waveform depending only on what was asked for, and the same clip is a
+video, a round video note or a soundless animation. Eight names, because eight is
+what the encrypted protocol carries; every other Telegram message type has no
+representation there at all.
+_Avoid_: media type, file type, format, mime type
+
+**Inferred kind**:
+The media kind chosen from the file when the caller named none. One extension
+admits a SET of kinds and one of them is its default; the inferred kind is that
+default, and an extension the server does not recognise infers `document`, which
+carries any bytes at all. A caller who names a kind outside the file's set is
+refused before a byte is uploaded, so a send that succeeded was sent as the kind
+that was asked for.
+_Avoid_: detected type, guessed kind, auto kind
+
+**Kind parity**:
+The property of this server that every media kind reachable on one send path is
+reachable on the others. A property of the server's surface, not of a chat or a
+file: it is what stops a capability existing in a secret chat and silently
+missing from an ordinary one.
+_Avoid_: feature parity, coverage, completeness
+
 ### Secret chats
 
 **Secret layer**:
