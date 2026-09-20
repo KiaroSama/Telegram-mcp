@@ -227,6 +227,10 @@ An override that is not a usable number — zero, negative, `nan`, `inf`, or not
 ## Requirements
 
 - Python 3.11+ (the test suite imports `tomllib`, which arrived in 3.11)
+- `git` on PATH at install time. One dependency — the secret-chat package — is pinned
+  by git URL rather than by name, because PyPI serves a *different* project under that
+  name, so the installer builds it from the repository. Without `git` the install stops
+  at "Git executable not found"
 - Telegram API credentials from [my.telegram.org/apps](https://my.telegram.org/apps)
 - A Telegram session string or file-based session
 - An MCP client such as Claude Desktop, Cursor, or another MCP-compatible host
