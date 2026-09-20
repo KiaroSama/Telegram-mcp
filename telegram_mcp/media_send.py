@@ -15,7 +15,8 @@ It is a module of its own because `tools/media.py` stood at 789 lines when this 
 written, and the project closes a file to new code at about 700.
 """
 
-from telegram_mcp.media_kinds import KINDS, NO_CAPTION, family_of, infer_kind
+from telegram_mcp import ogg_tags
+from telegram_mcp.media_kinds import FAMILIES, KINDS, NO_CAPTION, family_of, infer_kind
 
 __all__ = ["MediaKindError", "flags_for", "group_sends", "resolve_kind"]
 
@@ -59,7 +60,7 @@ def flags_for(kind: str) -> dict:
     return dict(_FLAGS[kind])
 
 
-def resolve_kind(file_name: str, kind, caption: str = "") -> str:
+def resolve_kind(file_name: str, kind, caption: str = "", header: bytes = b"") -> str:
     """Settle the kind, or refuse - and refuse before a byte is uploaded.
 
     ``None`` infers from the name. A named kind is checked against what the file
@@ -73,6 +74,14 @@ def resolve_kind(file_name: str, kind, caption: str = "") -> str:
     """
     if kind is None:
         kind = infer_kind(file_name)
+        # `.ogg` is the one extension whose two readings are indistinguishable
+        # from the outside: a voice note and a music file are both Opus, mono
+        # and 48 kHz. Only there is the container worth reading, and only when
+        # the caller named nothing - an explicit kind is never second-guessed.
+        if header and family_of(file_name) is FAMILIES["voice"]:
+            voice = ogg_tags.looks_like_voice(header)
+            if voice is not None:
+                kind = "voice_note" if voice else "audio"
     elif kind not in KINDS:
         raise MediaKindError(
             f"'{kind}' is not a media kind. Use one of: {', '.join(KINDS)}. "

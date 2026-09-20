@@ -169,3 +169,56 @@ def test_every_kind_is_placed_by_the_planner():
 
     for kind in media_kinds.KINDS:
         assert _plan([kind]) == [[0]], f"{kind} has no place in the plan"
+
+
+# --- an .ogg is read before it is named ---------------------------------------
+#
+# The extension admits both voice_note and audio and cannot choose between them,
+# so when no kind is asked for the container header decides. Everything else keeps
+# choosing on the extension alone: no other family has two readings this close.
+
+
+def _ogg_header(*comments: str) -> bytes:
+    head = b"OggS" + b"\x00" * 24 + b"OpusHead" + b"\x01\x01" + b"\x00" * 16 + b"OpusTags"
+    block = (4).to_bytes(4, "little") + b"test" + len(comments).to_bytes(4, "little")
+    for comment in comments:
+        raw = comment.encode("utf-8")
+        block += len(raw).to_bytes(4, "little") + raw
+    return head + block
+
+
+def test_an_untagged_ogg_is_still_inferred_as_a_voice_note():
+    assert media_send.resolve_kind("clip.ogg", None, "", header=_ogg_header()) == "voice_note"
+
+
+def test_a_tagged_ogg_is_inferred_as_audio_instead():
+    """The owner's decision, 2026-09-20: tags mean music. Without this an `.ogg`
+    downloaded from a music site arrived as a voice message with a waveform."""
+    assert (
+        media_send.resolve_kind("song.ogg", None, "", header=_ogg_header("TITLE=A Song"))
+        == "audio"
+    )
+
+
+def test_an_explicit_kind_still_wins_over_what_the_header_says():
+    """Reading the file informs the DEFAULT. It never overrides the caller."""
+    tagged = _ogg_header("TITLE=A Song")
+    assert media_send.resolve_kind("song.ogg", "voice_note", "", header=tagged) == "voice_note"
+    assert media_send.resolve_kind("clip.ogg", "audio", "", header=_ogg_header()) == "audio"
+
+
+def test_no_header_falls_back_to_the_extension_default():
+    """A caller that cannot supply bytes gets exactly the old behaviour."""
+    assert media_send.resolve_kind("clip.ogg", None, "") == "voice_note"
+
+
+def test_a_header_that_says_nothing_falls_back_too():
+    assert media_send.resolve_kind("clip.ogg", None, "", header=b"not an ogg") == "voice_note"
+
+
+def test_only_the_voice_family_is_read_at_all():
+    """An mp3 is audio by extension and there is nothing in its header worth the
+    read; a jpg is a photo. Reading every file to place it would cost an I/O on
+    every send for one family's ambiguity."""
+    assert media_send.resolve_kind("song.mp3", None, "", header=_ogg_header()) == "audio"
+    assert media_send.resolve_kind("pic.jpg", None, "", header=_ogg_header()) == "photo"
