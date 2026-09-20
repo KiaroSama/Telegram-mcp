@@ -15,6 +15,8 @@ It is a module of its own because `tools/media.py` stood at 789 lines when this 
 written, and the project closes a file to new code at about 700.
 """
 
+import mimetypes
+
 from telethon.tl.types import DocumentAttributeAudio
 
 from telegram_mcp import ogg_tags
@@ -53,7 +55,20 @@ class MediaKindError(ValueError):
     """
 
 
-def flags_for(kind: str, header: bytes = b"") -> dict:
+#: What an `.ogg` must claim to be, to arrive as a track rather than a voice note.
+#:
+#: Telegram picks the renderer from the MIME TYPE, not from the container and not
+#: from `DocumentAttributeAudio.voice`. `mimetypes` guesses `audio/ogg` from the
+#: extension, and `audio/ogg` is Telegram's VOICE type: a file sent with it is a
+#: voice bubble however the attribute is set. Measured 2026-09-20, and corrected
+#: from an earlier conclusion that blamed the container - the owner produced a
+#: real `.ogg` in the wild that arrives as a track, and its only difference is
+#: `mime_type: audio/vorbis`.
+_TRACK_MIME = "audio/vorbis"
+_VOICE_MIME = "audio/ogg"
+
+
+def flags_for(kind: str, header: bytes = b"", file_name: str = "") -> dict:
     """The keywords that make one send arrive as ``kind``.
 
     A copy each time: the caller merges these into a call it is building, and a
@@ -73,6 +88,11 @@ def flags_for(kind: str, header: bytes = b"") -> dict:
     """
     flags = dict(_FLAGS[kind])
     if kind == "audio":
+        # The extension says voice; the caller asked for a track. Telegram reads
+        # the MIME, so saying `audio/ogg` here would be asking for one thing and
+        # getting the other.
+        if file_name and mimetypes.guess_type(file_name)[0] == _VOICE_MIME:
+            flags["mime_type"] = _TRACK_MIME
         flags["attributes"] = [
             DocumentAttributeAudio(
                 duration=ogg_tags.duration_seconds(header),
@@ -144,7 +164,7 @@ _GROUPS = {
 }
 
 
-def group_sends(kinds, headers=None):
+def group_sends(kinds, headers=None, names=None):
     """Split one request into the messages Telegram will actually accept.
 
     Takes the kinds in the order the caller wrote them and returns one
@@ -173,7 +193,7 @@ def group_sends(kinds, headers=None):
             # one where a per-file attribute is expressible at all.
             index = indices[0]
             head = headers[index] if headers and index < len(headers) else b""
-            planned.append((indices, flags_for(kinds[index], head)))
+            planned.append((indices, flags_for(kinds[index], head, names[index] if names else "")))
             continue
         # A real group. `attributes` describes ONE document, so it cannot be
         # merged across members; a grouped track therefore carries the same

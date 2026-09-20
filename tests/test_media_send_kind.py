@@ -290,3 +290,31 @@ def test_an_ogg_header_gives_the_track_its_real_duration():
 def test_a_kind_that_is_not_audio_ignores_the_header_entirely():
     assert "attributes" not in media_send.flags_for("photo", header=_ogg_header())
     assert "attributes" not in media_send.flags_for("document", header=_ogg_header())
+
+
+def test_an_ogg_asked_for_as_a_track_claims_a_track_mime():
+    """Telegram picks the renderer from the MIME, not from the container and not
+    from `DocumentAttributeAudio.voice`. `audio/ogg` is its VOICE type, so an
+    `.ogg` sent with the extension's own guess is a voice bubble whatever the
+    attribute says - which is exactly what the first real-client pass measured,
+    and why it wrongly blamed the container. A real `.ogg` in the wild that
+    arrives as a track differs only in carrying `audio/vorbis`.
+    """
+    flags = media_send.flags_for("audio", file_name="song.ogg")
+    assert flags["mime_type"] == "audio/vorbis"
+
+
+def test_a_voice_note_keeps_the_voice_mime():
+    """The override is for the track reading only. A voice note IS `audio/ogg`."""
+    assert "mime_type" not in media_send.flags_for("voice_note", file_name="note.ogg")
+
+
+def test_a_format_that_is_already_a_track_is_left_alone():
+    """An mp3 is `audio/mpeg`, which Telegram already renders as a track. Saying
+    anything else here would be a lie with no purpose."""
+    assert "mime_type" not in media_send.flags_for("audio", file_name="track.mp3")
+    assert "mime_type" not in media_send.flags_for("audio", file_name="song.m4a")
+
+
+def test_no_file_name_means_no_guess():
+    assert "mime_type" not in media_send.flags_for("audio")
