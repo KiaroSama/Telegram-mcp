@@ -57,7 +57,9 @@ def test_ogg_infers_a_voice_note_and_mp3_infers_audio():
     assert media_kinds.infer_kind("recording.ogg") == "voice_note"
     assert media_kinds.infer_kind("song.mp3") == "audio"
     assert "audio" in media_kinds.family_of("recording.ogg")["allows"]
-    assert "voice_note" in media_kinds.family_of("song.mp3")["allows"]
+    # The reverse is NOT true, and deliberately: an mp3 is not a voice message.
+    # Only Telegram's own OGG/Opus container carries both readings.
+    assert "voice_note" not in media_kinds.family_of("song.mp3")["allows"]
 
 
 def test_every_family_allows_document():
