@@ -105,7 +105,7 @@ predicted.
 | Posting as a channel | `list_send_as`, `set_default_send_as`, and a `send_as` argument on `send_message`, `reply_to_message` and `send_file` | `tools/messages.py`, `tools/media.py` |
 | Translation | `translate` | `tools/translation.py` |
 | Sticker-set management | `inspect_sticker_set`, `suggest_sticker_set_name`, `add_sticker_to_set`, `remove_sticker_from_set`, `move_sticker_in_set` | `tools/stickers.py` |
-| Packs on the account: install and remove | `install_sticker_set`, `uninstall_sticker_set`, `get_sticker_sets(kind=...)` | `tools/stickers.py`, `tools/media.py` |
+| Packs on the account: install and remove | `install_sticker_set`, `uninstall_sticker_set`, `get_sticker_sets(kind=...)` | `tools/stickers.py` |
 | Saved GIFs | `list_saved_gifs`, `save_gif`, `unsave_gif` | `tools/saved_gifs.py` |
 | Invite links with conditions | `create_invite_link`, `edit_invite_link`, `revoke_invite_link`, `list_invite_links`, `list_join_requests`, `approve_join_request` | `tools/invite_links.py` |
 | Channel ↔ discussion group | `set_discussion_group` | `tools/channel_admin.py` |
@@ -129,6 +129,7 @@ history rewrite here left the two with no merge base). Secret chats then took it
 | Editing a forum topic | `edit_forum_topic` | `tools/topics.py` |
 | Premium (custom-emoji) reactions | `send_reaction` and `react_to_story` take a `custom_emoji_id`; a message may carry several reactions at once. The read side already reported `custom:<id>` - only sending was missing. | `tools/messages_state.py`, `tools/stories.py` |
 | Premium emoji and effects in TEXT | `send_message`, `reply_to_message` and `edit_message` take `entities` (and the first two an `effect_id`). Until now only the scheduled pair accepted an entity list, so a message with custom emoji could be QUEUED and not sent. The rebuilder is `telegram_mcp/entities.py`, the write-side inverse of `describe_entities`. | `tools/messages.py`, `telegram_mcp/entities.py` |
+| Premium emoji in a CAPTION | `send_file` and `send_album` take `caption_entities`, built through the same `entities.build_send_entities` the text path uses. `send_file` was the last sending tool without one, so a caption needing a custom emoji had to be sent and then EDITED - and an edit marks the message "edited" in every client, permanently. Telegram imposes no such limit and neither does Telethon, whose `send_file` takes `formatting_entities`; only this server did. Measured 2026-09-20: a photo whose caption carries 52 custom-emoji entities now goes out in ONE call with no edited marker. | `tools/media.py`, `telegram_mcp/media_send.py`, `telegram_mcp/media_album.py` |
 | Choosing an effect rather than copying one | `list_message_effects` pages the hour-cached catalogue `get_message_effect` already loads. An effect id could previously only be lifted off a message that already used it. | `tools/effects.py` |
 
 ## The reads that could not be written back
