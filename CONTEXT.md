@@ -90,6 +90,10 @@ with a waveform depending only on what was asked for, and the same clip is a
 video, a round video note or a soundless animation. Eight names, because eight is
 what the encrypted protocol carries; every other Telegram message type has no
 representation there at all.
+A kind is asked for, not imposed: where the file cannot be it, the request is
+refused before anything is uploaded. Two of those limits are the file's own shape
+rather than its type — a video note has to be square, and an `.ogg` asked for as a
+track has to say so in its MIME, because `audio/ogg` is Telegram's voice type.
 _Avoid_: media type, file type, format, mime type
 
 **Inferred kind**:
