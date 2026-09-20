@@ -15,7 +15,11 @@ class _DummyClient:
     def __init__(self):
         self.sent = None
 
-    async def send_file(self, entity, file_paths, caption=None, reply_to=None):
+    async def send_file(self, entity, file_paths, caption=None, reply_to=None, **flags):
+        # `**flags` because production now names the media kind: `send_file`
+        # passes `force_document` and friends on every call. A double that
+        # accepts only what one caller used to send fails the moment the
+        # caller learns a new argument, and says TypeError rather than why.
         given = file_paths if isinstance(file_paths, list) else [file_paths]
         self.sent = {
             "entity": entity,
@@ -24,6 +28,7 @@ class _DummyClient:
             "bytes": [handle.read() for handle in given],
             "caption": caption,
             "reply_to": reply_to,
+            "flags": flags,
         }
 
 
@@ -119,7 +124,10 @@ async def test_send_file_passes_topic_id_as_reply_to(tmp_path, monkeypatch):
 
     result = await media.send_file("ForumChat", "doc.pdf", caption="hello", topic_id=42)
 
-    assert result == f"File sent to chat ForumChat from {path}."
+    # The kind is named in the reply now: a send that inferred one has to say
+    # which, or the caller cannot tell a document from a photo it did not choose.
+    assert result == f"File sent to chat ForumChat from {path} as document."
+    assert client.sent["flags"] == {"force_document": True}
     assert client.sent["entity"] == "entity:forum"
     assert client.sent["caption"] == "hello"
     assert client.sent["reply_to"] == 42
