@@ -50,6 +50,17 @@ dependencies = [
     # Linux and macOS; a platform without one cannot install this project, which
     # is the cost of not having those features be an afterthought.
     "tdjson>=1.8.67",
+    # MTProto 2.0 end-to-end encryption, which Telethon never implemented. Pinned
+    # BY GIT to this owner's repository and never declared by bare name: PyPI
+    # already serves a different `telethon-secret-chat` — painor's archived 0.2.4 —
+    # at a HIGHER version than this one, so a bare requirement resolves to the wrong
+    # project and no version constraint reveals the substitution.
+    #
+    # Taking a newer version is one edit here plus
+    # `uv lock --upgrade-package telethon-secret-chat`; nothing in this project's
+    # source should need to change, because `telegram_mcp/secret_backend.py` is the
+    # only module that imports it and a contract test pins what it relies on.
+    "telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@2b22ff9f19b560d2a187340c990053f4a41231d8",
 ]
 
 [project.optional-dependencies]
