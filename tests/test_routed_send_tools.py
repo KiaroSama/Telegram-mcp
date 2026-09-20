@@ -180,3 +180,62 @@ async def test_reading_the_header_leaves_the_whole_file_to_upload(wired):
         "the peek left the file pointer past the header, so Telethon would have "
         "uploaded a truncated file and still reported success"
     )
+
+
+# --- a caption can carry its own formatting ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_caption_carries_the_entities_it_was_given(wired):
+    """`send_file` was the one sending path with no entity argument, so a photo
+    whose caption needed a premium emoji had to be sent and then EDITED - which
+    marks the message "edited" in every client, on an ad the operator wanted to
+    look untouched. Telegram has no such limit and neither does Telethon, whose
+    `send_file` takes `formatting_entities`; only this tool did.
+    """
+    root, client = wired
+    (root / "pic.jpg").write_bytes(b"\xff\xd8\xff")
+
+    await media.send_file(
+        "AnyChat",
+        "pic.jpg",
+        caption="hello",
+        caption_entities=[{"type": "bold", "offset": 0, "length": 5}],
+        account=None,
+    )
+
+    sent = client.calls[0]["flags"].get("formatting_entities")
+    assert sent, "the caption went out with no entities at all"
+    assert len(sent) == 1
+    assert type(sent[0]).__name__ == "MessageEntityBold"
+
+
+@pytest.mark.asyncio
+async def test_a_caption_with_no_entities_sends_none(wired):
+    """The argument is optional and its absence must not change the call every
+    existing caller already makes."""
+    root, client = wired
+    (root / "pic.jpg").write_bytes(b"\xff\xd8\xff")
+
+    await media.send_file("AnyChat", "pic.jpg", caption="hello", account=None)
+
+    assert "formatting_entities" not in client.calls[0]["flags"]
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_caption_entity_refuses_before_uploading(wired):
+    """The same refusal the other sending paths give, rather than a caption that
+    silently arrives unformatted."""
+    root, client = wired
+    (root / "pic.jpg").write_bytes(b"\xff\xd8\xff")
+
+    result = await media.send_file(
+        "AnyChat",
+        "pic.jpg",
+        caption="hello",
+        caption_entities=[{"type": "bold", "offset": 0, "length": 999}],
+        account=None,
+    )
+
+    assert client.calls == []
+    assert "999" in result or "length" in result.lower() or "span" in result.lower()
