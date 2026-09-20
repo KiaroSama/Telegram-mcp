@@ -140,7 +140,7 @@ async def send_file(
                 # call every existing caller makes, and an unused feature that
                 # alters the call is not unused.
                 **({"send_as": posting_as} if posting_as is not None else {}),
-                **media_send.flags_for(sending_as, head),
+                **media_send.flags_for(sending_as, head, source.path.name),
             )
             return _sent_result(
                 sent, chat_id, f"File sent to chat {chat_id} from {source.path} as {sending_as}."
@@ -213,6 +213,7 @@ async def _send_album(
             sources=sources,
             kinds=kinds,
             headers=headers,
+            names=names,
             caption=caption,
             reply_to=topic_reply_to(topic_id),
             posting_as=posting_as,
