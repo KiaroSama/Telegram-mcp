@@ -52,11 +52,15 @@ FAMILIES = {
         "default": "video",
         "allows": {"video", "video_note", "animation", "document"},
     },
+    # No `voice_note`. A voice message is Telegram's own OGG/Opus recording, and
+    # an mp3 is not one - the owner's ruling on 2026-09-20 after the real-client
+    # pass accepted a 10 MB mp3 as a voice note and started uploading it. The
+    # `voice` family below is where both readings genuinely live.
     "audio": {
         "name": "audio",
         "suffixes": {".mp3", ".m4a", ".flac", ".wav", ".aac"},
         "default": "audio",
-        "allows": {"audio", "voice_note", "document"},
+        "allows": {"audio", "document"},
     },
     # Telegram's voice format. Defaulting .ogg to a voice note rather than to
     # music is the commoner intent by a wide margin, and `kind="audio"` is

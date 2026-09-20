@@ -15,6 +15,8 @@ It is a module of its own because `tools/media.py` stood at 789 lines when this 
 written, and the project closes a file to new code at about 700.
 """
 
+from telethon.tl.types import DocumentAttributeAudio
+
 from telegram_mcp import ogg_tags
 from telegram_mcp.media_kinds import FAMILIES, KINDS, NO_CAPTION, family_of, infer_kind
 
@@ -51,13 +53,33 @@ class MediaKindError(ValueError):
     """
 
 
-def flags_for(kind: str) -> dict:
+def flags_for(kind: str, header: bytes = b"") -> dict:
     """The keywords that make one send arrive as ``kind``.
 
     A copy each time: the caller merges these into a call it is building, and a
     shared dict would let one send's extra keyword leak into the next.
+
+    ``audio`` is the one kind with no flag behind it. Telethon has
+    ``voice_note=True`` and ``video_note=True`` and force-creates those
+    attributes itself, but for a track it builds ``DocumentAttributeAudio`` ONLY
+    when it can read the file's metadata - and with no metadata reader installed
+    it builds nothing, so the send stated nothing and Telegram guessed from the
+    mime type. Measured on real Telegram 2026-09-20: the same Opus recording
+    arrived as a voice message, and a tagged one as a document, both while the
+    reply said "as audio". So the attribute is built here instead.
+
+    ``header`` is the head of the file, when the caller has it. It only ever
+    refines a duration; without it the track is still a track.
     """
-    return dict(_FLAGS[kind])
+    flags = dict(_FLAGS[kind])
+    if kind == "audio":
+        flags["attributes"] = [
+            DocumentAttributeAudio(
+                duration=ogg_tags.duration_seconds(header),
+                voice=False,
+            )
+        ]
+    return flags
 
 
 def resolve_kind(file_name: str, kind, caption: str = "", header: bytes = b"") -> str:
@@ -122,7 +144,7 @@ _GROUPS = {
 }
 
 
-def group_sends(kinds):
+def group_sends(kinds, headers=None):
     """Split one request into the messages Telegram will actually accept.
 
     Takes the kinds in the order the caller wrote them and returns one
@@ -145,6 +167,18 @@ def group_sends(kinds):
 
     planned = []
     for _, indices in messages:
+        if len(indices) == 1:
+            # One file, one set of keywords - so it can carry the per-file
+            # attribute that `audio` needs. This is the common case and the only
+            # one where a per-file attribute is expressible at all.
+            index = indices[0]
+            head = headers[index] if headers and index < len(headers) else b""
+            planned.append((indices, flags_for(kinds[index], head)))
+            continue
+        # A real group. `attributes` describes ONE document, so it cannot be
+        # merged across members; a grouped track therefore carries the same
+        # flags it did before, and states no duration. Telegram groups audio
+        # with audio, so this only costs the duration, never the kind.
         flags = {}
         for index in indices:
             flags.update(_FLAGS[kinds[index]])
