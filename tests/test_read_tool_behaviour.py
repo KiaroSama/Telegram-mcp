@@ -255,7 +255,7 @@ async def test_get_sticker_sets_reports_the_short_name_a_write_tool_needs(monkey
     """A title cannot be turned back into a set. `inspect_sticker_set` and every
     sticker write tool address a set by `short_name`, so a listing without it is
     a listing of things that cannot then be opened."""
-    from telegram_mcp.tools import media as media_mod
+    from telegram_mcp.tools import stickers as stickers_mod
 
     covers = types.messages.AllStickers(
         hash=0,
@@ -278,9 +278,9 @@ async def test_get_sticker_sets_reports_the_short_name_a_write_tool_needs(monkey
             )
         ],
     )
-    client = _wire(monkeypatch, media_mod, Recorder(covers))
+    client = _wire(monkeypatch, stickers_mod, Recorder(covers))
 
-    result = await media_mod.get_sticker_sets()
+    result = await stickers_mod.get_sticker_sets()
 
     assert _last(client, functions.messages.GetAllStickersRequest).hash == 0
     assert "my_pack" in result, "the short name is the only usable identifier here"
@@ -296,7 +296,7 @@ async def test_emoji_packs_need_their_own_request_and_kind_selects_it(monkeypatc
     Emoji packs come from `messages.getEmojiStickers` instead. Nothing about a
     pack differs between the two; only which request finds it.
     """
-    from telegram_mcp.tools import media as media_mod
+    from telegram_mcp.tools import stickers as stickers_mod
 
     def _pack(short_name, emojis):
         return types.StickerSet(
@@ -333,20 +333,20 @@ async def test_emoji_packs_need_their_own_request_and_kind_selects_it(monkeypatc
         def is_connected(self):
             return True
 
-    _wire(monkeypatch, media_mod, _Both())
+    _wire(monkeypatch, stickers_mod, _Both())
 
-    stickers_only = await media_mod.get_sticker_sets()
+    stickers_only = await stickers_mod.get_sticker_sets()
     assert "sticker_pack" in stickers_only
     assert "emoji_pack" not in stickers_only, "the default must not change"
 
-    emoji_only = await media_mod.get_sticker_sets(kind="emoji")
+    emoji_only = await stickers_mod.get_sticker_sets(kind="emoji")
     assert "emoji_pack" in emoji_only
     assert "sticker_pack" not in emoji_only
 
-    both = await media_mod.get_sticker_sets(kind="both")
+    both = await stickers_mod.get_sticker_sets(kind="both")
     assert "emoji_pack" in both and "sticker_pack" in both
 
-    refused = await media_mod.get_sticker_sets(kind="masks")
+    refused = await stickers_mod.get_sticker_sets(kind="masks")
     assert "must be" in refused, "an unknown kind silently returned something"
 
 
