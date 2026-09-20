@@ -17,7 +17,7 @@ written, and the project closes a file to new code at about 700.
 
 from telegram_mcp.media_kinds import KINDS, NO_CAPTION, family_of, infer_kind
 
-__all__ = ["flags_for", "resolve_kind"]
+__all__ = ["MediaKindError", "flags_for", "group_sends", "resolve_kind"]
 
 # kind -> the Telethon `send_file` keywords that make it that kind.
 #
@@ -38,6 +38,16 @@ _FLAGS = {
     "video_note": {"video_note": True},
     "voice_note": {"voice_note": True},
 }
+
+
+class MediaKindError(ValueError):
+    """A kind that cannot be, said in words the caller can act on.
+
+    A type of its own rather than a bare ValueError because the tool layer has to
+    hand this text back verbatim while still redacting every other exception. The
+    refusals name the file and the kind on purpose; `mcp_errors.log` and an error
+    code do not, and a caller who cannot see which file was wrong cannot fix it.
+    """
 
 
 def flags_for(kind: str) -> dict:
@@ -64,24 +74,70 @@ def resolve_kind(file_name: str, kind, caption: str = "") -> str:
     if kind is None:
         kind = infer_kind(file_name)
     elif kind not in KINDS:
-        raise ValueError(
+        raise MediaKindError(
             f"'{kind}' is not a media kind. Use one of: {', '.join(KINDS)}. "
             "Leave kind unset to have it chosen from the file. Nothing was sent."
         )
 
     family = family_of(file_name)
     if family is not None and kind not in family["allows"]:
-        raise ValueError(
+        raise MediaKindError(
             f"{file_name} cannot be sent as {kind}: it is {family['name']} content, "
             f"which Telegram accepts as {', '.join(sorted(family['allows']))}. "
             "Nothing was sent, and nothing was converted."
         )
 
     if caption and kind in NO_CAPTION:
-        raise ValueError(
+        raise MediaKindError(
             f"A {kind} carries no caption - the protocol has no field a client would "
             f"show one in, so the text given with {file_name} would be dropped in "
             "transit with no error. Send it as its own message. Nothing was sent."
         )
 
     return kind
+
+
+# Which kinds may share ONE Telegram media group, and which travel alone.
+#
+# `force_document` is a property of the group, not of a file in it, so "send this
+# one as a file and that one compressed" is two messages or it is a lie. Telegram
+# groups compressed photos and videos together, files with files and tracks with
+# tracks; the three missing names below have no media group in the protocol at
+# all, so each is always its own message.
+_GROUPS = {
+    "photo": "media",
+    "video": "media",
+    "animation": "media",
+    "document": "file",
+    "audio": "track",
+}
+
+
+def group_sends(kinds):
+    """Split one request into the messages Telegram will actually accept.
+
+    Takes the kinds in the order the caller wrote them and returns one
+    ``(indices, flags)`` pair per message. Consecutive entries that can share a
+    group do; anything else starts a new message, and the order is never
+    rearranged to make fewer messages - the operator chose that order.
+
+    The flags are merged across the group, which is safe because only kinds that
+    share a group are ever put together and those agree on ``force_document`` by
+    construction; ``supports_streaming`` is read per document, so a photo beside
+    a video is unharmed by it.
+    """
+    messages = []
+    for index, kind in enumerate(kinds):
+        group = _GROUPS.get(kind)
+        if messages and group is not None and messages[-1][0] == group:
+            messages[-1][1].append(index)
+        else:
+            messages.append([group, [index]])
+
+    planned = []
+    for _, indices in messages:
+        flags = {}
+        for index in indices:
+            flags.update(_FLAGS[kinds[index]])
+        planned.append((indices, flags))
+    return planned
