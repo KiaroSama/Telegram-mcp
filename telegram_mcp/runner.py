@@ -270,6 +270,114 @@ def _stateless_http() -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _recoverable_sessions(app):
+    """Drop a session id from `initialize`, so an expired session has a way back.
+
+    `_stateless_http` below chose stateful HTTP for its 404: it is the one signal
+    that tells a client the server restarted and its cached tool list is stale,
+    "and the spec has the client re-initialise when it sees one". That sentence
+    was not true of this server. The SDK's session manager reaches its
+    new-session branch only when the header is ABSENT
+    (`mcp/server/streamable_http_manager.py`, the `request_mcp_session_id is None`
+    test), so an `initialize` carrying a stale id got the same 404 as any other
+    call and the client could never obtain a fresh one.
+
+    The client half makes it permanent rather than merely annoying: a 404 WITH a
+    session id becomes an ordinary JSON-RPC error - "Session terminated" - and the
+    transport is NOT torn down. The harness therefore keeps reporting the
+    connector as connected while every call fails identically. Measured on
+    2026-09-20, after four restarts in one session: `status: connected,
+    tool_count: 227` beside a `get_me` that answered `Session terminated`, with no
+    reconnect available because re-dialling is offered for connectors and this is
+    a plain server.
+
+    `initialize` is the method that CREATES a session, so an id on it is
+    meaningless by definition and dropping it costs nothing. Every other method
+    keeps its id and still earns the 404 - the signal survives intact; only the
+    way back is reopened.
+
+    Written as raw ASGI rather than Starlette middleware because the body has to
+    be read to see the method and then replayed unchanged to the app underneath;
+    a request that is not JSON, or not `initialize`, passes through untouched.
+    """
+    import json as _json
+
+    async def wrapped(scope, receive, send):
+        if scope.get("type") != "http" or scope.get("method") != "POST":
+            await app(scope, receive, send)
+            return
+        if not any(key == b"mcp-session-id" for key, _ in scope.get("headers", [])):
+            await app(scope, receive, send)
+            return
+
+        body, more = b"", True
+        while more:
+            message = await receive()
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+
+        try:
+            parsed = _json.loads(body)
+        except Exception:
+            # Not JSON, or not valid JSON. Not this layer's business to judge:
+            # a transport guard that rejected a request would be a worse defect
+            # than the one it exists to fix.
+            parsed = None
+
+        calls = parsed if isinstance(parsed, list) else [parsed]
+        initializing = any(
+            isinstance(one, dict) and one.get("method") == "initialize" for one in calls
+        )
+        if initializing:
+            scope = dict(scope)
+            scope["headers"] = [
+                (key, value) for key, value in scope["headers"] if key != b"mcp-session-id"
+            ]
+
+        replayed = False
+
+        async def replay():
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        await app(scope, replay, send)
+
+    return wrapped
+
+
+_SESSION_RECOVERY = "_telegram_mcp_session_recovery"
+
+
+def _install_session_recovery(server) -> None:
+    """Wrap `server`'s app builder so every app it builds carries the recovery.
+
+    The builder rather than the runner: `run_streamable_http_async` reaches
+    `streamable_http_app` through `self`, so shadowing it with an instance
+    attribute reaches the served app without taking over the call that
+    `tests/test_runtime.py` patches to keep `_serve` off a real port.
+
+    Idempotent by marker, because a second install would wrap the wrapper and
+    read the body twice.
+
+    A server with no builder is left alone rather than refused. The recovery only
+    means anything once a real app exists, and `_serve`'s own tests drive it with
+    a double that serves nothing - requiring the attribute there would make this
+    helper decide what a test may stand in for.
+    """
+    builder = getattr(server, "streamable_http_app", None)
+    if builder is None or getattr(builder, _SESSION_RECOVERY, False):
+        return
+
+    def build(*args, **kwargs):
+        return _recoverable_sessions(builder(*args, **kwargs))
+
+    setattr(build, _SESSION_RECOVERY, True)
+    server.streamable_http_app = build
+
+
 async def _serve(transport: str) -> None:
     """Run the MCP server on the selected transport.
 
@@ -322,6 +430,17 @@ async def _serve(transport: str) -> None:
             # the SDK's 10 000, so that leak has a ceiling and reaches it after
             # more reconnects than this server will see - and 503 at a known
             # bound beats a 404 at half an hour.
+            #
+            # `_recoverable_sessions` is installed by wrapping the APP BUILDER,
+            # not by replacing this call. `run_streamable_http_async` reaches the
+            # builder through `self`, so an instance attribute shadows it and the
+            # wrapper reaches the served app either way - while `_serve` keeps
+            # calling the one method `tests/test_runtime.py` monkeypatches to stop
+            # it binding a real port. Replacing the call instead was tried first
+            # and hung the suite: the patch no longer applied, `_serve` bound the
+            # port for real, and the run sat there with no output and almost no
+            # CPU until it was killed at 22 minutes.
+            _install_session_recovery(mcp)
             await mcp.run_streamable_http_async(
                 stateless_http=_stateless_http(), session_idle_timeout=None, **options
             )
