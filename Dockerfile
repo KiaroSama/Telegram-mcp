@@ -47,7 +47,19 @@ COPY pyproject.toml uv.lock ./
 # uv itself is pinned. An unpinned resolver is a dependency of every version
 # resolved below it, and the one input to this image that was still "whatever
 # PyPI served that day" - the very thing the lockfile exists to stop.
-RUN pip install --no-cache-dir uv==0.12.8 && uv sync --locked --no-dev --no-install-project
+# `git` is here for one requirement: the secret-chat package is pinned by git URL,
+# because PyPI serves a DIFFERENT project under the same name (painor's archived
+# `telethon-secret-chat`, at a higher version), so a bare requirement would install
+# the wrong one and no version constraint would reveal it. `python:*-slim` ships no
+# git, and uv answers "Git executable not found" rather than falling back. It is
+# removed again in the same layer so the image does not carry a build tool it never
+# runs.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir uv==0.12.8 \
+    && uv sync --locked --no-dev --no-install-project \
+    && apt-get purge -y git && apt-get autoremove -y
 
 # uv puts the environment in /app/.venv, so putting it first on PATH is what makes
 # the bare `python` in CMD below the interpreter holding the locked dependencies.

@@ -185,6 +185,7 @@ source = [
     "telegram_mcp.runner",
     "telegram_mcp.runtime",
     "telegram_mcp.sanitize",
+    "telegram_mcp.secret_backend",
     "telegram_mcp.secret_compose",
     "telegram_mcp.secret_limits",
     "telegram_mcp.secret_media_content",
