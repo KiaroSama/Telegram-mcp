@@ -17,9 +17,9 @@ written, and the project closes a file to new code at about 700.
 
 import mimetypes
 
-from telethon.tl.types import DocumentAttributeAudio
+from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeVideo
 
-from telegram_mcp import ogg_tags
+from telegram_mcp import ogg_tags, video_dims
 from telegram_mcp.media_kinds import FAMILIES, KINDS, NO_CAPTION, family_of, infer_kind
 
 __all__ = ["MediaKindError", "flags_for", "group_sends", "resolve_kind"]
@@ -64,11 +64,14 @@ class MediaKindError(ValueError):
 #: from an earlier conclusion that blamed the container - the owner produced a
 #: real `.ogg` in the wild that arrives as a track, and its only difference is
 #: `mime_type: audio/vorbis`.
+#: The kinds that travel as a video document, and so need a size stated.
+_VIDEO_KINDS = ("video", "video_note", "animation")
+
 _TRACK_MIME = "audio/vorbis"
 _VOICE_MIME = "audio/ogg"
 
 
-def flags_for(kind: str, header: bytes = b"", file_name: str = "") -> dict:
+def flags_for(kind: str, header: bytes = b"", file_name: str = "", tail: bytes = b"") -> dict:
     """The keywords that make one send arrive as ``kind``.
 
     A copy each time: the caller merges these into a call it is building, and a
@@ -99,10 +102,30 @@ def flags_for(kind: str, header: bytes = b"", file_name: str = "") -> dict:
                 voice=False,
             )
         ]
+    elif kind in _VIDEO_KINDS:
+        # Telethon fills this from `hachoir`, and with no metadata reader present
+        # it sends `w=1, h=1, duration=0` for every video. Telegram re-derives the
+        # real size so a viewer sees nothing wrong, but the attribute is wrong and
+        # a client that lays out from it gets a 1x1 box. Zeros here mean the
+        # container said nothing, and then no attribute is sent at all rather than
+        # a wrong one - which is exactly today's behaviour, so nothing regresses.
+        width, height, duration = video_dims.dimensions(header, tail)
+        if width and height:
+            flags["attributes"] = [
+                DocumentAttributeVideo(
+                    duration=duration,
+                    w=width,
+                    h=height,
+                    round_message=kind == "video_note",
+                    supports_streaming=kind == "video",
+                )
+            ]
     return flags
 
 
-def resolve_kind(file_name: str, kind, caption: str = "", header: bytes = b"") -> str:
+def resolve_kind(
+    file_name: str, kind, caption: str = "", header: bytes = b"", tail: bytes = b""
+) -> str:
     """Settle the kind, or refuse - and refuse before a byte is uploaded.
 
     ``None`` infers from the name. A named kind is checked against what the file
@@ -137,6 +160,21 @@ def resolve_kind(file_name: str, kind, caption: str = "", header: bytes = b"") -
             f"which Telegram accepts as {', '.join(sorted(family['allows']))}. "
             "Nothing was sent, and nothing was converted."
         )
+
+    if kind == "video_note" and header:
+        # Telegram does not refuse a rectangular video note - it silently drops
+        # the round flag and delivers an ordinary video, so the caller believes
+        # they sent one thing and the recipient sees another. Measured on real
+        # Telegram 2026-09-20: 640x360 with `video_note=True` arrived as `video`.
+        # Refusing here is the only point at which the caller can be told.
+        width, height, _ = video_dims.dimensions(header, tail)
+        if width and height and width != height:
+            raise MediaKindError(
+                f"{file_name} is {width}x{height}, and a video note has to be square. "
+                "Telegram would accept this and deliver it as an ordinary video without "
+                "saying so. Crop it to a square yourself, or send it as video. Nothing "
+                "was sent, and nothing was converted."
+            )
 
     if caption and kind in NO_CAPTION:
         raise MediaKindError(
