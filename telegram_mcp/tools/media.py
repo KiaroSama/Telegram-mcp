@@ -2,7 +2,7 @@
 
 from contextlib import AsyncExitStack
 
-from telegram_mcp import media_album, media_send
+from telegram_mcp import media_album, media_send, ogg_tags
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 from telegram_mcp.forum import topic_reply_to
@@ -34,6 +34,26 @@ def _sent_result(sent, chat_id, note: str) -> str:
 
 class _DownloadTooLarge(Exception):
     """Raised out of the progress callback to stop an over-cap stream mid-flight."""
+
+
+def _peek(handle) -> bytes:
+    """The head of an open upload, with the position put back where it was.
+
+    `resolve_kind` reads it to tell a voice note from a music file, which is the
+    one question an `.ogg`'s name cannot answer. Seeking back is the whole risk
+    here: Telethon uploads from wherever the pointer is left, so a peek that
+    forgets to rewind silently truncates the file it was inspecting.
+
+    A handle that cannot seek gets no peek and no exception - the caller then
+    falls back to the extension, exactly as before this existed.
+    """
+    try:
+        position = handle.tell()
+        head = handle.read(ogg_tags.HEADER_BYTES)
+        handle.seek(position)
+        return head
+    except (AttributeError, OSError, ValueError):
+        return b""
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Send File", openWorldHint=True, destructiveHint=True))
@@ -105,7 +125,9 @@ async def send_file(
             # Before the entity is resolved and before a byte moves: an
             # impossible kind costs nothing to refuse here and an upload to
             # refuse at Telegram, which names neither the file nor the kind.
-            sending_as = media_send.resolve_kind(source.path.name, kind, caption or "")
+            sending_as = media_send.resolve_kind(
+                source.path.name, kind, caption or "", header=_peek(source.handle)
+            )
             entity = await resolve_entity(chat_id, cl)
             posting_as = await resolve_entity(send_as, cl) if send_as else None
             sent = await cl.send_file(
@@ -176,7 +198,11 @@ async def _send_album(
             names.append(source.path.name)
             # Before the entity is resolved and before a byte moves, for every
             # member: one impossible kind must not leave the others sent.
-            kinds.append(media_send.resolve_kind(source.path.name, asked, caption or ""))
+            kinds.append(
+                media_send.resolve_kind(
+                    source.path.name, asked, caption or "", header=_peek(source.handle)
+                )
+            )
 
         entity = await resolve_entity(chat_id, cl)
         posting_as = await resolve_entity(send_as, cl) if send_as else None
@@ -467,17 +493,18 @@ async def send_voice(
             if path_error:
                 return path_error
 
-            mime, _ = mimetypes.guess_type(source.name)
-            lowered = source.name.lower()
-            if not (
-                mime
-                and (mime == "audio/ogg" or lowered.endswith(".ogg") or lowered.endswith(".opus"))
-            ):
-                return "Voice file must be .ogg or .opus format."
-
+            # No extension check here: `EXTENSION_ALLOWLISTS["send_voice"]` in
+            # file_roots refuses anything but .ogg/.opus at the gate, before the
+            # handle is opened, so the check this function used to make could
+            # never fire. The allow-list IS the promise the docstring makes.
             entity = await resolve_entity(chat_id, cl)
             sent = await cl.send_file(
-                entity, source.handle, voice_note=True, reply_to=topic_reply_to(topic_id)
+                entity,
+                source.handle,
+                reply_to=topic_reply_to(topic_id),
+                # One place decides what a voice note is on the wire. This tool
+                # is a route into that decision, not a second copy of it.
+                **media_send.flags_for("voice_note"),
             )
             return _sent_result(
                 sent, chat_id, f"Voice message sent to chat {chat_id} from {source.path}."
@@ -649,7 +676,10 @@ async def send_sticker(
 
             entity = await resolve_entity(chat_id, cl)
             sent = await cl.send_file(
-                entity, source.handle, force_document=False, reply_to=topic_reply_to(topic_id)
+                entity,
+                source.handle,
+                reply_to=topic_reply_to(topic_id),
+                **media_send.flags_for("sticker"),
             )
             return _sent_result(
                 sent, chat_id, f"Sticker sent to chat {chat_id} from {source.path}."

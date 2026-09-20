@@ -99,6 +99,10 @@ default, and an extension the server does not recognise infers `document`, which
 carries any bytes at all. A caller who names a kind outside the file's set is
 refused before a byte is uploaded, so a send that succeeded was sent as the kind
 that was asked for.
+One family is inferred from the file's CONTENT rather than its name: an `.ogg`
+holds a voice note and a piece of music in the same container, codec, channel
+count and sample rate, so the metadata decides — no music tags means a voice
+note, any music tag means audio. An explicit kind is never second-guessed.
 _Avoid_: detected type, guessed kind, auto kind
 
 **Split send**:
