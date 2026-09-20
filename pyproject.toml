@@ -157,6 +157,7 @@ source = [
     "telegram_mcp.handles",
     "telegram_mcp.install_guard",
     "telegram_mcp.gif_handles",
+    "telegram_mcp.media_album",
     "telegram_mcp.media_kinds",
     "telegram_mcp.media_preview",
     "telegram_mcp.media_send",

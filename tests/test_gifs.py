@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import pytest
 from telethon.tl.types import InputPeerUser, InputUser
 
-from telegram_mcp.tools import media as mod
+from telegram_mcp.tools import gifs as mod
 
 
 class _Client:
