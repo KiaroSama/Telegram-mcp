@@ -125,8 +125,9 @@ async def send_file(
             # Before the entity is resolved and before a byte moves: an
             # impossible kind costs nothing to refuse here and an upload to
             # refuse at Telegram, which names neither the file nor the kind.
+            head = _peek(source.handle)
             sending_as = media_send.resolve_kind(
-                source.path.name, kind, caption or "", header=_peek(source.handle)
+                source.path.name, kind, caption or "", header=head
             )
             entity = await resolve_entity(chat_id, cl)
             posting_as = await resolve_entity(send_as, cl) if send_as else None
@@ -139,7 +140,7 @@ async def send_file(
                 # call every existing caller makes, and an unused feature that
                 # alters the call is not unused.
                 **({"send_as": posting_as} if posting_as is not None else {}),
-                **media_send.flags_for(sending_as),
+                **media_send.flags_for(sending_as, head),
             )
             return _sent_result(
                 sent, chat_id, f"File sent to chat {chat_id} from {source.path} as {sending_as}."
@@ -187,7 +188,7 @@ async def _send_album(
     # Every member stays open for the whole upload: an album authorised one
     # name at a time and then re-read by Telethon is the same defect N times.
     async with AsyncExitStack() as stack:
-        sources, names, kinds = [], [], []
+        sources, names, kinds, headers = [], [], [], []
         for file_path, asked in zip(file_paths, kinds_asked):
             source, path_error = await stack.enter_async_context(
                 _open_verified_source(raw_path=file_path, ctx=ctx, tool_name="send_file")
@@ -198,10 +199,10 @@ async def _send_album(
             names.append(source.path.name)
             # Before the entity is resolved and before a byte moves, for every
             # member: one impossible kind must not leave the others sent.
+            head = _peek(source.handle)
+            headers.append(head)
             kinds.append(
-                media_send.resolve_kind(
-                    source.path.name, asked, caption or "", header=_peek(source.handle)
-                )
+                media_send.resolve_kind(source.path.name, asked, caption or "", header=head)
             )
 
         entity = await resolve_entity(chat_id, cl)
@@ -211,6 +212,7 @@ async def _send_album(
             entity=entity,
             sources=sources,
             kinds=kinds,
+            headers=headers,
             caption=caption,
             reply_to=topic_reply_to(topic_id),
             posting_as=posting_as,
