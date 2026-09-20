@@ -27,6 +27,7 @@ async def send_planned(
     headers=None,
     names=None,
     caption=None,
+    caption_flags=None,
     reply_to=None,
     posting_as=None,
 ):
@@ -51,6 +52,8 @@ async def send_planned(
                 # not what a lone voice note or sticker is.
                 group if len(group) > 1 else group[0],
                 caption=caption if position == 0 else None,
+                # The caption rides the first message, so its formatting does too.
+                **(caption_flags or {} if position == 0 else {}),
                 reply_to=reply_to,
                 **({"send_as": posting_as} if posting_as is not None else {}),
                 **flags,
