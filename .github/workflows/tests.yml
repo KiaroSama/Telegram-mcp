@@ -335,6 +335,21 @@ jobs:
         run: uv export --locked --no-dev --no-emit-project --format requirements-txt
           --output-file locked-production.txt
 
+      # pip-audit refuses a VCS requirement outright - "we don't have a way to hash
+      # version control repositories" - and fails the whole file rather than that one
+      # line. `telethon-secret-chat` is pinned by git because PyPI serves a DIFFERENT
+      # project under that name, so the pin is not negotiable here.
+      #
+      # Dropping it from the audited file costs nothing real: advisories are published
+      # against index releases, and this package has none to match against. It is the
+      # owner's own code and its own repository's CI is where it is scanned. Every
+      # third-party dependency still goes through pip-audit untouched.
+      - name: Set aside the git-pinned requirement pip-audit cannot hash
+        run: |
+          grep -c '^telethon-secret-chat @ git+' locked-production.txt
+          grep -v '^telethon-secret-chat @ git+' locked-production.txt > audited.txt
+          mv audited.txt locked-production.txt
+
       # Pinned, like every other tool here: an auditor that changes underneath
       # the project turns a green run into a claim about a different checker.
       - name: Refuse a known advisory in the locked graph
