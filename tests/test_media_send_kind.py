@@ -318,3 +318,63 @@ def test_a_format_that_is_already_a_track_is_left_alone():
 
 def test_no_file_name_means_no_guess():
     assert "mime_type" not in media_send.flags_for("audio")
+
+
+# --- a video note has to be square --------------------------------------------
+
+
+def _mp4(width: int, height: int) -> bytes:
+    """Just enough MP4 for the dimension reader; `tests/test_video_dims.py` owns
+    the format's details."""
+    mvhd_payload = b"\x00\x00\x00\x00" + b"\x00" * 8 + (1000).to_bytes(4, "big") + (5000).to_bytes(
+        4, "big"
+    )
+    mvhd = (len(mvhd_payload) + 8).to_bytes(4, "big") + b"mvhd" + mvhd_payload
+    tkhd_payload = (
+        b"\x00\x00\x00\x00"
+        + b"\x00" * 72
+        + (width << 16).to_bytes(4, "big")
+        + (height << 16).to_bytes(4, "big")
+    )
+    tkhd = (len(tkhd_payload) + 8).to_bytes(4, "big") + b"tkhd" + tkhd_payload
+    inner = mvhd + tkhd
+    return (
+        b"\x00\x00\x00\x14ftypisom"
+        + b"\x00" * 8
+        + (len(inner) + 8).to_bytes(4, "big")
+        + b"moov"
+        + inner
+    )
+
+
+def test_an_ordinary_landscape_video_is_refused_as_a_video_note():
+    """Measured on real Telegram 2026-09-20: a 640x360 sent with `video_note=True`
+    arrives as an ORDINARY VIDEO. Telegram does not error - it drops the round
+    flag and says nothing, so the caller believes they sent a video note and the
+    recipient sees a rectangle. Refusing before the upload is the only way the
+    caller finds out.
+    """
+    with pytest.raises(media_send.MediaKindError) as raised:
+        media_send.resolve_kind("clip.mp4", "video_note", header=_mp4(640, 360))
+
+    said = str(raised.value)
+    assert "clip.mp4" in said and "square" in said.lower()
+    assert "640" in said and "360" in said
+
+
+def test_a_square_video_is_accepted_as_a_video_note():
+    assert media_send.resolve_kind("clip.mp4", "video_note", header=_mp4(480, 480)) == "video_note"
+
+
+def test_a_video_whose_size_cannot_be_read_is_not_refused():
+    """An unreadable container is not evidence the video is the wrong shape, and
+    this server refuses only what it can show to be impossible."""
+    assert media_send.resolve_kind("clip.mp4", "video_note", header=b"") == "video_note"
+    assert media_send.resolve_kind("clip.mp4", "video_note", header=b"not a video") == "video_note"
+
+
+def test_the_square_rule_applies_only_to_the_round_kind():
+    """A landscape video is a perfectly good video, animation or document."""
+    wide = _mp4(640, 360)
+    for kind in ("video", "animation", "document"):
+        assert media_send.resolve_kind("clip.mp4", kind, header=wide) == kind
