@@ -2,6 +2,12 @@
 
 from contextlib import AsyncExitStack
 
+from telegram_mcp import media_send
+from telegram_mcp.gif_handles import (
+    account_label as _account_label,
+    gif_handle as _gif_handle,
+    parse_gif_handle as _parse_gif_handle,
+)
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 from telegram_mcp.forum import topic_reply_to, topic_reply_to_request
@@ -42,18 +48,30 @@ async def send_file(
     chat_id: Union[int, str],
     file_path: Union[str, List[str]],
     caption: str = None,
+    kind: Optional[str] = None,
     topic_id: Optional[int] = None,
     send_as: Optional[Union[int, str]] = None,
     ctx: Optional[Context] = None,
     account: str = None,
 ) -> str:
     """
-    Send a file to a chat.
+    Send a file to a chat, in any of the eight shapes Telegram gives one.
     Args:
         chat_id: The chat ID or username.
         file_path: Absolute or relative path to the file under allowed roots.
             Pass a list of 2-10 paths to send them as one Telegram media group.
         caption: Optional caption for the file or media group.
+        kind: How the file should ARRIVE, rather than what its bytes are - the
+            same recording is `audio` (a track with a play button) or
+            `voice_note` (a waveform) purely by what is asked for here, and the
+            same clip is `video`, `video_note` (round) or `animation`. One of
+            photo, video, document, audio, animation, sticker, video_note,
+            voice_note. `document` is "send as file" and takes anything. Leave
+            unset to choose from the extension; the reply says which kind went.
+            A kind the file cannot be is refused before anything is uploaded,
+            and nothing is ever converted to fit one. `sticker` and `video_note`
+            carry no caption, so one given with either is refused rather than
+            dropped in transit.
         topic_id: Optional forum topic ID (from list_topics). Sends into that topic
             in a forum-enabled community/supergroup. Also works as reply_to for a message.
         send_as: Post under a channel's identity rather than your own. The value
@@ -79,6 +97,10 @@ async def send_file(
         ):
             if path_error:
                 return path_error
+            # Before the entity is resolved and before a byte moves: an
+            # impossible kind costs nothing to refuse here and an upload to
+            # refuse at Telegram, which names neither the file nor the kind.
+            sending_as = media_send.resolve_kind(source.path.name, kind, caption or "")
             entity = await resolve_entity(chat_id, cl)
             posting_as = await resolve_entity(send_as, cl) if send_as else None
             sent = await cl.send_file(
@@ -90,8 +112,11 @@ async def send_file(
                 # call every existing caller makes, and an unused feature that
                 # alters the call is not unused.
                 **({"send_as": posting_as} if posting_as is not None else {}),
+                **media_send.flags_for(sending_as),
             )
-            return _sent_result(sent, chat_id, f"File sent to chat {chat_id} from {source.path}.")
+            return _sent_result(
+                sent, chat_id, f"File sent to chat {chat_id} from {source.path} as {sending_as}."
+            )
     except Exception as e:
         return log_and_format_error(
             "send_file",
@@ -615,44 +640,6 @@ _GIF_BOT = "gif"
 # on the session that produced it, and only until Telegram forgets the query. The
 # handle carries all three; the result id goes last so a colon inside it survives
 # the split.
-_GIF_HANDLE_PREFIX = "gif"
-
-
-def _account_label(account: Optional[str]) -> str:
-    """The label a GIF handle is scoped to. Single-account mode has no label."""
-    return (account or "default").lower()
-
-
-def _gif_handle(account: Optional[str], expires_at: int, query_id: int, result_id: str) -> str:
-    return f"{_GIF_HANDLE_PREFIX}:{_account_label(account)}:{expires_at}:{query_id}:{result_id}"
-
-
-def _parse_gif_handle(handle, account: Optional[str]) -> tuple:
-    """``((query_id, result_id), None)`` or ``(None, refusal)``."""
-    parts = str(handle).split(":", 4)
-    if len(parts) != 5 or parts[0] != _GIF_HANDLE_PREFIX:
-        return None, (
-            "gif_id must be the opaque handle get_gif_search returned. A Telegram "
-            "document id on its own cannot be sent: the access hash and file "
-            "reference are missing, and Telethon refuses to cast it to any InputMedia."
-        )
-    _, label, expires_at, query_id, result_id = parts
-    if label != _account_label(account):
-        return None, (
-            f"This GIF handle was obtained on account '{label}' and cannot be sent from "
-            f"'{_account_label(account)}': the inline query id belongs to that session. "
-            "Run get_gif_search again on this account."
-        )
-    try:
-        expires_at, query_id = int(expires_at), int(query_id)
-    except ValueError:
-        return None, "Malformed GIF handle. Run get_gif_search again."
-    if time.time() >= expires_at:
-        return None, (
-            "This GIF handle has expired: Telegram caches an inline query for a "
-            "limited time and then forgets its query id. Run get_gif_search again."
-        )
-    return (query_id, result_id), None
 
 
 @mcp.tool(
