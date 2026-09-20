@@ -326,8 +326,8 @@ def test_no_file_name_means_no_guess():
 def _mp4(width: int, height: int) -> bytes:
     """Just enough MP4 for the dimension reader; `tests/test_video_dims.py` owns
     the format's details."""
-    mvhd_payload = b"\x00\x00\x00\x00" + b"\x00" * 8 + (1000).to_bytes(4, "big") + (5000).to_bytes(
-        4, "big"
+    mvhd_payload = (
+        b"\x00\x00\x00\x00" + b"\x00" * 8 + (1000).to_bytes(4, "big") + (5000).to_bytes(4, "big")
     )
     mvhd = (len(mvhd_payload) + 8).to_bytes(4, "big") + b"mvhd" + mvhd_payload
     tkhd_payload = (
