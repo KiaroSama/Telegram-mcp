@@ -22,7 +22,7 @@ from telethon.tl.types import DocumentAttributeAudio, DocumentAttributeVideo
 from telegram_mcp import ogg_tags, video_dims
 from telegram_mcp.media_kinds import FAMILIES, KINDS, NO_CAPTION, family_of, infer_kind
 
-__all__ = ["MediaKindError", "flags_for", "group_sends", "resolve_kind"]
+__all__ = ["MediaKindError", "caption_flags", "flags_for", "group_sends", "resolve_kind"]
 
 # kind -> the Telethon `send_file` keywords that make it that kind.
 #
@@ -64,11 +64,11 @@ class MediaKindError(ValueError):
 #: from an earlier conclusion that blamed the container - the owner produced a
 #: real `.ogg` in the wild that arrives as a track, and its only difference is
 #: `mime_type: audio/vorbis`.
-#: The kinds that travel as a video document, and so need a size stated.
-_VIDEO_KINDS = ("video", "video_note", "animation")
-
 _TRACK_MIME = "audio/vorbis"
 _VOICE_MIME = "audio/ogg"
+
+#: The kinds that travel as a video document, and so need a size stated.
+_VIDEO_KINDS = ("video", "video_note", "animation")
 
 
 def flags_for(kind: str, header: bytes = b"", file_name: str = "", tail: bytes = b"") -> dict:
@@ -242,3 +242,29 @@ def group_sends(kinds, headers=None, names=None):
             flags.update(_FLAGS[kinds[index]])
         planned.append((indices, flags))
     return planned
+
+
+async def caption_flags(entities, caption: str, account=None) -> dict:
+    """The keyword that makes a caption carry its own formatting, or nothing.
+
+    `send_file` was the only sending path in this server with no entity
+    argument, so a caption needing a premium emoji had to be sent and then
+    EDITED - which marks the message "edited" in every client. Telegram has no
+    such limit and neither does Telethon, whose `send_file` takes
+    `formatting_entities`; only this server did.
+
+    Built through the same `build_send_entities` the send, edit, schedule and
+    quick-reply paths use, so a malformed span is refused here in the same words
+    rather than arriving as a caption with its formatting silently dropped.
+
+    Returns ``{}`` when no entities were asked for: an absent argument must not
+    change the call every existing caller already makes.
+    """
+    if not entities:
+        return {}
+    from telegram_mcp.entities import build_send_entities
+
+    built = await build_send_entities(entities, caption or "", account)
+    if isinstance(built, str):
+        raise MediaKindError(built)
+    return {"formatting_entities": built} if built else {}
