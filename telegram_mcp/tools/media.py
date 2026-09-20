@@ -2,7 +2,7 @@
 
 from contextlib import AsyncExitStack
 
-from telegram_mcp import media_album, media_send, ogg_tags
+from telegram_mcp import media_album, media_send, ogg_tags, video_dims
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 from telegram_mcp.forum import topic_reply_to
@@ -36,6 +36,26 @@ class _DownloadTooLarge(Exception):
     """Raised out of the progress callback to stop an over-cap stream mid-flight."""
 
 
+def _peek_tail(handle) -> bytes:
+    """The END of an open upload, with the position put back.
+
+    An MP4 written without faststart keeps its `moov` box - and so its real size
+    and duration - at the end of the file, which is most of what a phone records.
+    Reading only the head would have fixed the faststart case and quietly left
+    every other video at 1x1.
+    """
+    try:
+        position = handle.tell()
+        handle.seek(0, 2)
+        size = handle.tell()
+        handle.seek(max(0, size - video_dims.TAIL_BYTES))
+        tail = handle.read()
+        handle.seek(position)
+        return tail
+    except (AttributeError, OSError, ValueError):
+        return b""
+
+
 def _peek(handle) -> bytes:
     """The head of an open upload, with the position put back where it was.
 
@@ -49,7 +69,7 @@ def _peek(handle) -> bytes:
     """
     try:
         position = handle.tell()
-        head = handle.read(ogg_tags.HEADER_BYTES)
+        head = handle.read(max(ogg_tags.HEADER_BYTES, video_dims.HEAD_BYTES))
         handle.seek(position)
         return head
     except (AttributeError, OSError, ValueError):
@@ -140,7 +160,9 @@ async def send_file(
                 # call every existing caller makes, and an unused feature that
                 # alters the call is not unused.
                 **({"send_as": posting_as} if posting_as is not None else {}),
-                **media_send.flags_for(sending_as, head, source.path.name),
+                **media_send.flags_for(
+                    sending_as, head, source.path.name, _peek_tail(source.handle)
+                ),
             )
             return _sent_result(
                 sent, chat_id, f"File sent to chat {chat_id} from {source.path} as {sending_as}."
@@ -202,7 +224,13 @@ async def _send_album(
             head = _peek(source.handle)
             headers.append(head)
             kinds.append(
-                media_send.resolve_kind(source.path.name, asked, caption or "", header=head)
+                media_send.resolve_kind(
+                    source.path.name,
+                    asked,
+                    caption or "",
+                    header=head,
+                    tail=_peek_tail(source.handle),
+                )
             )
 
         entity = await resolve_entity(chat_id, cl)
