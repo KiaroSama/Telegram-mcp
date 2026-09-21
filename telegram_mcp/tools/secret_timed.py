@@ -29,19 +29,19 @@ otherwise.
 
 from typing import Optional
 
+from telegram_mcp import secret_history
 from telegram_mcp.file_roots import _resolve_readable_file_path
 from telegram_mcp.runtime import *
+from telegram_mcp.secret_backend import secret_manager
+from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
 from telegram_mcp.secret_compose import formatted_text
 from telegram_mcp.secret_limits import require_ready_chat
-from telegram_mcp.secret_media_content import build_content, infer_kind
-from telegram_mcp.tdlib import (
-    NotSignedIn,
-    TDLibError,
-    TDLibUnavailable,
-    secret_client,
-)
+from telegram_mcp.secret_media_content import infer_kind, validate_kind
 
-from telegram_mcp.tools.secret_chats import _account_label, _unavailable
+
+def _account_label(account=None) -> str:
+    return account_label(account)
+
 
 __all__ = ["send_timed_secret_media", "send_timed_secret_message"]
 
@@ -66,69 +66,53 @@ def _check_seconds(seconds: int) -> Optional[str]:
     return None
 
 
-async def _previous_timer(client, chat_id: int) -> int:
+async def _previous_timer(manager, chat_id: int) -> int:
     """The timer already on the chat, so the restore puts BACK rather than off.
 
     A chat the owner had deliberately armed must not come back disarmed because
     something passed through it.
     """
-    chat = await client.request({"@type": "getChat", "chat_id": int(chat_id)})
-    return int(chat.get("message_auto_delete_time") or 0)
+    return int(getattr(manager.status(int(chat_id)), "ttl", 0) or 0)
 
 
-async def _set_timer(client, chat_id: int, seconds: int) -> None:
-    await client.request(
-        {
-            "@type": "setChatMessageAutoDeleteTime",
-            "chat_id": int(chat_id),
-            "message_auto_delete_time": int(seconds),
-        }
-    )
+async def _send_under_timer(manager, chat_id: int, send, seconds: int):
+    """Arm, send, restore. Returns ``(sent_id, send_error, restore_error, previous)``.
 
-
-async def _send_under_timer(client, chat_id: int, content: dict, seconds: int, timeout: float):
-    """Arm, send, restore. Returns ``(sent, send_error, restore_error, previous)``.
-
-    The send's exception is CAUGHT rather than allowed to propagate, because a
-    caller needs to hear about an armed chat even when the reason they are
-    hearing from us at all is that the send failed. The ``finally`` covers what
-    the except cannot: a cancellation between arming and sending.
+    ``send`` is a no-argument coroutine function, so the two tools share this whole
+    sequence and differ only in what they hand it. Its exception is CAUGHT rather
+    than allowed to propagate, because a caller needs to hear about an armed chat
+    even when the reason they are hearing from us at all is that the send failed.
+    The ``finally`` covers what the except cannot: a cancellation between arming
+    and sending.
     """
-    previous = await _previous_timer(client, chat_id)
-    await _set_timer(client, chat_id, seconds)
+    previous = await _previous_timer(manager, chat_id)
+    await manager.set_ttl(int(chat_id), int(seconds))
 
-    sent = None
+    sent_id = None
     send_error = None
     restore_error = None
     try:
         try:
-            sent = await client.request(
-                {
-                    "@type": "sendMessage",
-                    "chat_id": int(chat_id),
-                    "input_message_content": content,
-                },
-                timeout=timeout,
-            )
+            sent_id = await send()
         except Exception as exc:
             send_error = exc
     finally:
         try:
-            await _set_timer(client, chat_id, previous)
+            await manager.set_ttl(int(chat_id), previous)
         except Exception as exc:
             restore_error = exc
 
-    return sent, send_error, restore_error, previous
+    return sent_id, send_error, restore_error, previous
 
 
-def _result(chat_id: int, seconds: int, previous: int, sent, send_error, restore_error, extra):
+def _result(chat_id, seconds, previous, sent_id, send_error, restore_error, extra):
     """One answer covering all four combinations of send and restore."""
     if restore_error is not None:
         # The loudest thing this server can say. The chat is not how the caller
         # left it, and only this reply can tell them.
         record = {
             "outcome": "unconfirmed",
-            "sent": sent is not None,
+            "sent": sent_id is not None,
             "chat_id": int(chat_id),
             "timer_left_on": int(seconds),
             "timer_should_have_been": int(previous),
@@ -147,17 +131,18 @@ def _result(chat_id: int, seconds: int, previous: int, sent, send_error, restore
         return format_tool_result(record)
 
     if send_error is not None:
-        if isinstance(send_error, TDLibError):
+        refusal = describe_refusal(send_error)
+        if refusal:
             return (
-                f"Telegram refused this: {send_error}. The chat's timer was put back to "
-                f"{previous}, so nothing about the conversation was left changed."
+                f"{refusal} The chat's timer was put back to {previous}, so nothing about "
+                "the conversation was left changed."
             )
         raise send_error
 
     record = {
         "sent": True,
         "chat_id": int(chat_id),
-        "message_id": (sent or {}).get("id"),
+        "message_id": sent_id,
         "timer_seconds": int(seconds),
         "timer_restored": True,
         "restored_to": int(previous),
@@ -210,27 +195,35 @@ async def send_timed_secret_message(
 
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(chat_id)
 
-        refusal = await require_ready_chat(client, int(chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
-        formatted = await formatted_text(client, message, parse_mode)
-        content = {"@type": "inputMessageText", "text": formatted}
+        text, entities = formatted_text(message, parse_mode)
 
-        sent, send_error, restore_error, previous = await _send_under_timer(
-            client, int(chat_id), content, int(seconds), timeout=30.0
+        sent_id, send_error, restore_error, previous = await _send_under_timer(
+            manager, secret_id, lambda: manager.send_message(secret_id, text, entities), seconds
         )
-        return _result(chat_id, seconds, previous, sent, send_error, restore_error, {})
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
+        if sent_id is not None:
+            secret_history.record(
+                label,
+                secret_id,
+                secret_history.entry(
+                    message_id=sent_id, is_outgoing=True, text=text, ttl=int(seconds)
+                ),
+            )
+        return _result(chat_id, seconds, previous, sent_id, send_error, restore_error, {})
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return f"Telegram refused this: {e}"
+    except KeyError:
+        return f"No secret chat {chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("send_timed_secret_message", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "send_timed_secret_message", e, chat_id=chat_id
+        )
 
 
 @mcp.tool(
@@ -276,9 +269,10 @@ async def send_timed_secret_media(
 
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(chat_id)
 
-        refusal = await require_ready_chat(client, int(chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
@@ -288,28 +282,42 @@ async def send_timed_secret_media(
         if path_error:
             return path_error
 
-        chosen = kind or infer_kind(str(path))
-        # Built BEFORE the timer moves: a refused kind or a caption on a sticker
+        # Checked BEFORE the timer moves: a refused kind or a caption on a sticker
         # must not leave the chat armed for a message that never existed.
-        content = build_content(str(path), chosen, caption)
+        chosen = validate_kind(str(path), kind or infer_kind(str(path)), caption)
 
-        sent, send_error, restore_error, previous = await _send_under_timer(
-            client, int(chat_id), content, int(seconds), timeout=120
+        sent_id, send_error, restore_error, previous = await _send_under_timer(
+            manager,
+            secret_id,
+            lambda: manager.send_file(secret_id, path, caption=caption, kind=chosen),
+            seconds,
         )
+        if sent_id is not None:
+            secret_history.record(
+                label,
+                secret_id,
+                secret_history.entry(
+                    message_id=sent_id,
+                    is_outgoing=True,
+                    text=caption,
+                    kind=chosen,
+                    ttl=int(seconds),
+                ),
+            )
         return _result(
             chat_id,
             seconds,
             previous,
-            sent,
+            sent_id,
             send_error,
             restore_error,
             {"kind": chosen, "kind_chosen_by": "caller" if kind else "the file"},
         )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return f"Telegram refused this: {e}"
+    except KeyError:
+        return f"No secret chat {chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("send_timed_secret_media", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "send_timed_secret_media", e, chat_id=chat_id
+        )

@@ -1,29 +1,29 @@
-"""One file path plus a kind, turned into the request body TDLib expects.
+"""One file path plus a kind, checked before a single byte is uploaded.
 
-Pure functions, deliberately. The mistake this module exists to prevent is
-structural rather than behavioural -- the file goes one level DOWN, inside a
-per-kind wrapper, never straight into the outer field:
-
-    inputMessagePhoto { photo = inputPhoto { photo = inputFileLocal { ... } } }
-
-Passing it a level too high leaves the inner field null, and TDLib answers
-"InputFile is not specified": an error that names the TYPE it wanted and not the
-PLACE it wanted it. That cost an evening once, when two kinds existed. There are
-eight now, so the shape lives in one table and is asserted for every one of
-them, in tests that never open a socket -- a live test would hide the bug behind
-an upload.
+Pure functions, deliberately, and the timing is the point. Telegram refuses a
+mismatched kind only AFTER the bytes have crossed the wire, and answers with an
+error naming neither the file nor the kind - so a caller who sent a photo as a
+voice note pays for the upload and learns nothing. Each of the three refusals here
+happens first, in front of the caller, with the reason.
 
 The kinds are the eight the encrypted protocol carries. Its media vocabulary is
 `Photo`, `Video`, `Audio`, `Document`, `ExternalDocument`, `Contact`, `GeoPoint`,
 `Venue`, `WebPage` and `Empty`; sticker, animation, video note and voice note all
 travel as `Document` with attributes, which is why they are kinds here and not a
 separate mechanism.
+
+This module used to also BUILD the request body, whose one hard-won lesson was that
+the file went a level deeper than it read. That shape belonged to the previous
+backend and went with it; the encryption package now builds its own, from the same
+eight-kind vocabulary. ADR 0003 made that vocabulary backend-neutral for exactly
+this moment, and it survived the swap untouched.
 """
 
 from pathlib import Path
 
 # The names, the families and the caption rule live in `media_kinds` so they
-# outlive this file: TDLib is being removed and the vocabulary is not. Re-exported
+# outlive this file: the previous backend was removed and the vocabulary was not.
+# Re-exported
 # under the names this module has always published, so existing importers are
 # untouched by the move.
 from telegram_mcp.media_kinds import (  # noqa: F401  (re-exported)
@@ -34,27 +34,11 @@ from telegram_mcp.media_kinds import (  # noqa: F401  (re-exported)
     infer_kind,
 )
 
-__all__ = ["KINDS", "build_content", "infer_kind"]
+__all__ = ["KINDS", "infer_kind", "validate_kind"]
 
 
-# kind -> (td_api content type, the field holding the wrapper, the wrapper's type)
-_SHAPE = {
-    "photo": ("inputMessagePhoto", "photo", "inputPhoto"),
-    "video": ("inputMessageVideo", "video", "inputVideo"),
-    "document": ("inputMessageDocument", "document", "inputDocument"),
-    "audio": ("inputMessageAudio", "audio", "inputAudio"),
-    "animation": ("inputMessageAnimation", "animation", "inputAnimation"),
-    "sticker": ("inputMessageSticker", "sticker", "inputSticker"),
-    "video_note": ("inputMessageVideoNote", "video_note", "inputVideoNote"),
-    "voice_note": ("inputMessageVoiceNote", "voice_note", "inputVoiceNote"),
-}
-
-
-# The two with no caption field at all. A caption passed with either is refused
-# rather than dropped: a caller who wrote one and saw it vanish cannot find out
-# why, and that silent loss is the thing this feature exists to remove.
-def build_content(path: str, kind: str, caption: str = "") -> dict:
-    """The ``input_message_content`` for one file.
+def validate_kind(path: str, kind: str, caption: str = "") -> str:
+    """The kind, once it is proved to be one this file and this protocol allow.
 
     Raises ``ValueError`` with a message meant for the caller -- every tool here
     already turns that into its reply -- when the kind is unknown, when the file
@@ -63,7 +47,7 @@ def build_content(path: str, kind: str, caption: str = "") -> dict:
     after the bytes have crossed the wire and answers with an error naming
     neither the file nor the kind.
     """
-    if kind not in _SHAPE:
+    if kind not in KINDS:
         raise ValueError(
             f"'{kind}' is not a kind a secret chat carries. Use one of: "
             f"{', '.join(KINDS)}. Leave kind unset to have it chosen from the file. "
@@ -88,12 +72,4 @@ def build_content(path: str, kind: str, caption: str = "") -> dict:
             "sent."
         )
 
-    content_type, field, wrapper = _SHAPE[kind]
-    content = {
-        "@type": content_type,
-        # One level down. See the module docstring; this is the whole point.
-        field: {"@type": wrapper, field: {"@type": "inputFileLocal", "path": str(path)}},
-    }
-    if kind not in _NO_CAPTION:
-        content["caption"] = {"@type": "formattedText", "text": caption or ""}
-    return content
+    return kind

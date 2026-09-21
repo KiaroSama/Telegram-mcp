@@ -7,8 +7,8 @@ note or a soundless animation. `CONTEXT.md` carries the term; this module is the
 list and the rules.
 
 It names no backend on purpose. These names lived inside `secret_media_content.py`
-until 2026-09-20, next to the TDLib request bodies that were their only consumer -
-and that file is deleted with TDLib, which would have taken the only description of
+until 2026-09-20, next to the request bodies that were their only consumer - and
+that builder is gone with the backend, which would have taken the only description of
 a complete media surface with it. `docs/adr/0003-the-media-kind-vocabulary-outlives-tdlib.md`
 records the move. Anything here that mentions a transport is a mistake, and
 `tests/test_media_kinds.py` says so mechanically.

@@ -22,13 +22,14 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
   as an assertion. A few examples, each of which had a wrong implementation first: Telegram
   **silently drops** admin rights newer than the TL layer a client announces; a message written
   with the new rich formatting arrives through MTProto **completely empty, with no error**; the
-  saved-GIF listing is a capped window and not a total; `can_be_saved` is advisory and TDLib
+  saved-GIF listing is a capped window and not a total; `can_be_saved` is advisory and the client
   downloads regardless. None of that is in anyone's documentation.
 - **A tool that cannot do a thing says so.** The alternative — returning something plausible —
   is worse than failing, because nothing downstream can tell. Refusals here name the reason and,
   where one exists, the tool that does work.
 - **Two libraries, because one is not enough.** Telethon covers most of Telegram. Where it
-  cannot reach — secret chats, block-formatted messages — the request goes over **TDLib**,
+  cannot reach — secret chats, block-formatted messages — the request goes over the owner's
+  own MTProto 2.0 package or a TL request Telethon carries but never reads,
   Telegram's own client library, which ships with the project.
   See [docs/api-coverage.md](docs/api-coverage.md).
 - **Many accounts, one server.** Every tool takes `account=`, read-only tools can fan out across
@@ -72,13 +73,13 @@ server deliberately does not. The tools group into these areas:
 - **Accounts:** list configured accounts and route tool calls by account label.
 - **Chats and groups:** list chats, inspect metadata, create groups/channels, join or leave chats, invite users, manage admins, bans, default permissions, slow mode, topics, invite links, common chats, read receipts, and message links.
 - **Messages:** send, schedule, edit, delete, forward, copy, pin, unpin, mark read, reply, search, inspect context, create polls, manage reactions, inspect inline buttons, and press inline callbacks. `copy_message` is a forward without the attribution header, made by the server, so custom (premium) emoji and any media arrive exactly as they were; with `when`, `repeat` and `topic_id` it is also the only way to put a RICH message (a table, a photo block) on a recurring schedule, which `schedule_message` cannot express - rebuilding the text locally cannot, because a premium emoji is a document id pinned to a UTF-16 offset. `send_message`, `reply_to_message`, and `edit_message` support classic formatting (`parse_mode='md'`/`'html'`) and server-side rich formatting (`parse_mode='rich'`/`'rich_markdown'`/`'rich_html'` — full Markdown/HTML with tables, headings, formulas, and collapsible sections). `send_message` also takes `rich_files`, a `{name: local path}` map for the media the markup names but cannot carry - `<img src="tg://photo?id=name">`, `<video src="tg://video?id=name">`, `<audio src="tg://audio?id=name">` and `<a href="tg://document?id=name">` - so the composer's Photo/Video, Audio and File attachments are sendable; a location needs no file (`<tg-map lat=".." long=".." zoom=".."/>`). Rich modes require Telegram Premium on the account; Premium is re-checked on every call, and without it nothing is sent — the tool returns a structured `telegram_premium_required` result so the agent can reformat with classic modes and retry.
-- **Every admin right, including the newest two:** `edit_admin_rights` sets all nineteen over ordinary MTProto, `manage_linked_peers` (flags.19) and `manage_welcome_messages` (flags.20) among them. That is not free of a ceiling — Telegram silently drops flags newer than the TL layer a client announces, measured rather than assumed: on Telethon 1.44 (layer 227) one request from a channel's own creator carrying flags.18, flags.19 and flags.20 was accepted and only flags.18 survived. Telethon 1.45 announces layer 229, the same layer TDLib does, so the ceiling has moved above every right this server can name. The rights are still read back after the write and anything Telegram declined is reported, because a request accepted in full and applied in part is the ordinary case for a broadcast channel.
+- **Every admin right, including the newest two:** `edit_admin_rights` sets all nineteen over ordinary MTProto, `manage_linked_peers` (flags.19) and `manage_welcome_messages` (flags.20) among them. That is not free of a ceiling — Telegram silently drops flags newer than the TL layer a client announces, measured rather than assumed: on Telethon 1.44 (layer 227) one request from a channel's own creator carrying flags.18, flags.19 and flags.20 was accepted and only flags.18 survived. Telethon 1.45 announces layer 229, so the ceiling has moved above every right this server can name. The rights are still read back after the write and anything Telegram declined is reported, because a request accepted in full and applied in part is the ordinary case for a broadcast channel.
 - **Mini Apps:** `open_mini_app` launches a bot's Mini App and returns the URL that renders it. Telegram never sends the page - it signs a launch URL, so that URL is what there is to hand back, and it is a **credential**: its `tgWebAppData` carries `initData` identifying the account to the app, and whoever holds the string can act as the account inside it until it expires. It is returned whole with that warning beside it, because truncating a credential makes it useless without making it safe. All three of Telegram's launch routes are covered and chosen by what you supply: the `url` an inline button carries (`inspect_buttons` publishes it), a `short_name` for a `t.me/<bot>/<app>` link, or neither for the bot's own profile app.
 - **Keeping a copy of disappearing media:** Telegram marks media in a timer-armed secret chat `can_be_saved=false`. `save_secret_media` keeps it anyway — a plain call with no extra arguments saves the file. `honour_sender_restriction=True` refuses instead.
 
-  That flag is **not** encryption, and this was measured rather than assumed: on a photo received with the chat timer armed, `can_be_saved` was false and TDLib's `downloadFile` answered anyway. The media is decrypted on the receiving device in order to be displayed, so the bytes are already there — `can_be_saved` is Telegram asking a well-behaved client not to keep them, and a screenshot has always defeated it. Deciding that for your own account is the account owner's call; the result reports `sender_restriction_overridden: true` when it applied, so the two cases stay distinguishable.
+  That flag is **not** encryption, and this was measured rather than assumed: on a photo received with the chat timer armed, `can_be_saved` was false and the download answered anyway. The media is decrypted on the receiving device in order to be displayed, so the bytes are already there — `can_be_saved` is Telegram asking a well-behaved client not to keep them, and a screenshot has always defeated it. Deciding that for your own account is the account owner's call; the result reports `sender_restriction_overridden: true` when it applied, so the two cases stay distinguishable.
 
-  Two further measured facts shape it. Downloading does **not** start the self-destruct countdown — `self_destruct_in` stayed 0 across the fetch; viewing is what starts it. And TDLib deletes its own copy when the message goes, so a path inside its database is a save that evaporates: media under a timer is copied out to `destination` (default `<first_root>/downloads/`) and that durable path is what comes back, with the ephemeral one reported separately as `tdlib_path`.
+  Two further measured facts shape it. Downloading does **not** start the self-destruct countdown — `self_destruct_in` stayed 0 across the fetch; viewing is what starts it. And the file's one-time key travels INSIDE its message, so the bytes can be fetched only while the server that received it is still running: the copy lands at `destination` (default `<first_root>/downloads/`), and a message from before a restart is reported as unfetchable rather than answered with an empty path.
 - **Invite links, the whole screen Telegram gives you:** `create_invite_link` mints a *named,
   additional* link carrying any condition Telegram supports — an admin-only title, an expiry,
   a cap on how many people may join, or a queue where every arrival waits for approval.
@@ -144,7 +145,7 @@ server deliberately does not. The tools group into these areas:
   makes a second shortcut instead of failing**, so the result says whether it created or
   appended.
 - **Tables and other rich blocks:** a message written with Telegram's newer rich formatting arrives through MTProto **completely empty** - no text, no entities, no media, and no error, because its body is not carried in the message at all: it rides `rich_message`, a field an ordinary read never asks for. Measured on a live message that renders as a bordered two-column table with premium emoji: `inspect_message` and `get_message_context` both reported `[empty]` and nothing was raised. `read_rich_message` fetches the same message by chat and message id - over plain MTProto since 2026-09-21, no second backend involved - and returns every block - a table as structured `rows` (each cell with its header flag and any colspan/rowspan) and as ready-made `markdown`. Nested formatting is flattened rather than dropped, so bold runs and a caption's link survive, and every other block the composer can produce is reported too: spoilers as `||text||`, inline and block formulas by their expression, lists, quotes and collapsible sections with their nested blocks, attached photos/video/audio/files by kind and file name, and a map by its coordinates and zoom. `download_rich_media` fetches those attachments - the block NAMES its file and the photo or document travels beside it on the message, so the two are matched there; the message itself is empty, so `download_media` has nothing to work with. The bytes land under your allowed roots, through the same guard every other download here uses.
-- **Secret chats:** everything Telegram's own client offers inside one. Create an end-to-end encrypted chat and close it; send text — formatted, and as a reply — or any of the eight file kinds the encrypted protocol carries (photo, video, document, audio, animation, sticker, video note, voice note); delete a message, clear the history, mark it read, show a typing indicator, search it, copy a message in, arm its self-destruct timer, or send one message under a temporary one. Three things are worth knowing before you start. **Formatting can be silently lost** — nine kinds never cross the encrypted layer and four more depend on how recent the other side's app is, so every send names what it dropped rather than letting it vanish. **Deleting and clearing always reach both sides**, because the protocol has no one-sided form. And **about a third of what an ordinary chat does is simply absent** — no editing a sent message, no reactions, no pinning, no scheduling, no forwarding out, no polls; `secret_chat_status` lists every one with the concrete reason, so an agent can tell "there is no tool" from "this cannot be done". These seventeen tools do not run on Telethon, which never implemented MTProto 2.0 — they run on TDLib, Telegram's own client library. `tdjson` ships with the project, so for an account added through `Manage-Accounts.ps1` there is nothing extra to do: the session generator signs the account in to TDLib as well, in the same run, reusing the two-step password you have just typed rather than asking for it again. TDLib cannot read a Telethon session and offers no way to import one, so the account does appear as another device — that part is the protocol. `secret_chat_status` says what is missing for an account that arrived some other way, and `scripts/secret_chat_login.py <account>` finishes one by hand.
+- **Secret chats:** everything Telegram's own client offers inside one. Create an end-to-end encrypted chat and close it; send text — formatted, and as a reply — or any of the eight file kinds the encrypted protocol carries (photo, video, document, audio, animation, sticker, video note, voice note); delete a message, clear the history, mark it read, show a typing indicator, search it, copy a message in, arm its self-destruct timer, or send one message under a temporary one. Three things are worth knowing before you start. **Formatting can be silently lost** — seven kinds never cross the encrypted layer and four more depend on how recent the other side's app is, so every send names what it dropped rather than letting it vanish. **Deleting and clearing always reach both sides**, because the protocol has no one-sided form. And **about a third of what an ordinary chat does is simply absent** — no editing a sent message, no reactions, no pinning, no scheduling, no forwarding out, no polls; `secret_chat_status` lists every one with the concrete reason, so an agent can tell "there is no tool" from "this cannot be done". The encryption itself is not Telethon's — it never implemented MTProto 2.0 — but it runs ON this server's Telethon connection, through the owner's own [Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat) package. So there is nothing extra to install, nothing extra to sign in to, and no second device on the account: an account that works here has secret chats. `secret_chat_status` reports the state and lists every operation the protocol does and does not carry.
 - **Rate limits are an instruction, not an error.** When Telegram limits the account, the tool returns the number of seconds and an explicit do-not-retry rather than an error code — an agent handed a code retries, and every retry inside the window extends the penalty.
 - **Contacts:** list, search, add, delete, block, unblock, import, export, inspect direct chats, find recent contact interactions, and remember contacts by the names you actually use (see below).
 
@@ -508,7 +509,7 @@ to their own location, so they work from any directory and from a shortcut.
 | Script | What it does |
 |---|---|
 | `start-mcp.ps1` | Runs the server through `uv` without losing the terminal's colours or its TTY. Works under Windows PowerShell 5.1 (`powershell.exe`) as well as `pwsh` 7. Keeps a timestamped log per run by default, in `logs/` inside the private state directory - never beside the source - recording only this server's own diagnostics. Pass `-NoLogToFile` (or set `TELEGRAM_MCP_LAUNCHER_LOG=off`) for a run that leaves nothing on disk. Exit code 75 means another instance already holds the session. |
-| `Manage-Accounts.ps1` | Menu for the accounts in `.env`: list, add, remove, rename, or generate a session string. The listing shows both halves per account, and every route that adds one finishes the TDLib half too (see below). |
+| `Manage-Accounts.ps1` | Menu for the accounts in `.env`: list, add, remove, rename, or generate a session string. One login per account, and one device. |
 
 `Manage-Accounts.ps1` edits only the `TELEGRAM_SESSION_*` lines and leaves the rest of
 `.env` byte-for-byte alone — comments, ordering and every key it does not recognise.
@@ -564,67 +565,25 @@ becomes part of an environment variable *name*, and python-dotenv refuses to par
 containing a space — it warns and drops the line, so a literal space would save an
 account that then never loads.
 
-### One code, both logins
+### One login, every capability
 
-Seventeen of the tools do not run on Telethon: the secret-chat tools, because Telethon
-never implemented MTProto 2.0. Those seventeen run on TDLib, which keeps its **own**
-authorisation and cannot read or import a Telethon session.
+Adding an account asks for **one** code and produces **one** device in the account's
+session list. There is no second half to finish, no separate sign-in for secret chats,
+and nothing in "List configured accounts" that can read `NOT finished`.
 
-That sounds like a second login code, and for a while it was. It is not: Telegram's
-device-linking flow lets a new client publish a login token and an **already authorised**
-client accept it, so the login you just completed authorises TDLib. Adding an account
-therefore asks for **one** code, and the manager finishes the second half itself. Nothing
-is displayed to scan — the protocol calls this QR login only because that is how the phone
-app surfaces the same exchange.
+That was not always true. Until 2026-09-21 the seventeen secret-chat tools and the two
+rich-message tools ran on TDLib, Telegram's own client library, which keeps its own
+authorisation and cannot import a Telethon session — so every account that used them
+showed two devices, and the manager had a whole second step to complete. Both halves
+are gone: `messages.getRichMessage` turned out to be reachable over ordinary MTProto,
+and the encryption now runs on this server's existing connection.
+`docs/adr/0006-one-authorization-carries-every-capability.md` records the removal.
 
-What it cannot remove is the **device**: TDLib is a separate client, so the account's
-session list gains an entry. That is the protocol, not a corner left uncut. An account
-with two-step verification is asked for its password once, because Telegram wants it even
-from a linked device.
-
-Both routes that add an account — "Add an account" and "Generate a session string only" —
-finish it, because the work happens inside the session generator itself rather than in a
-step afterwards. That is also what removes the second password prompt: the generator is
-already holding the password Telegram accepted seconds earlier, so it reuses it. There is
-no separate menu entry for this, and an account left half-finished by an interrupted run is
-picked up from wherever it stopped rather than started again. "List configured accounts"
-shows both halves per account, so `secret chats: NOT finished` is visible without running
-anything.
-
-For an account that arrived some other way — a session string pasted in, or one configured
-before this existed — it is one command, still without a code:
-
-```bash
-python scripts/secret_chat_login.py <label>
-```
-
-**The database is bound to the account it belongs to.** A label is a name in `.env`; a TDLib
-database is a signed-in Telegram account, and the database outlives `.env`. Reuse a label for
-a different person and the directory is still there under the old name, already at
-`authorizationStateReady` — signed in as the previous owner. Every login and every cached
-client now compares TDLib's `getMe.id` against the Telethon session's `get_me().id` before
-the client is used for anything, and refuses a mismatch by name:
-
-> The TDLib database for account 'work' is signed in as Telegram user 111, but the configured
-> session for that label is user 222.
-
-Nothing is changed when that happens — both accounts are real, and only you know which one
-the label was meant to name. Point the label back at the account the database holds, or move
-its directory aside yourself and run the login above to build a fresh one.
-
-The binding lives in `owner.json` beside the database and is written the first time an
-identity is proved, so a database made before this existed keeps working and gains its record
-on first use. Nothing is inferred from a directory name, and nothing is deleted for lacking
-the file.
-
-**A dead authorisation is quarantined, not deleted.** When Telegram answers
-`AUTH_KEY_UNREGISTERED`, `SESSION_REVOKED` or `SESSION_EXPIRED`, the database is *renamed* to
-`<label>.quarantined-<UTC timestamp>` and a fresh login starts beside it — once. The bytes may
-hold secret-chat keys that cannot be re-derived, so they are kept and the path is reported; if
-the rename fails (on Windows, an open handle), the login refuses rather than proceeding on a
-database it did not actually replace. Delete a quarantined directory yourself once you are
-satisfied the account works. If the fresh database is refused too, the run stops and says so
-instead of requesting authorisation after authorisation.
+**Where the keys live.** A secret chat's keys are written under the state directory, one
+file per account beside its session. They cannot be re-derived: a key store lost is that
+chat's history gone, on both sides, with no server copy to restore from. A state
+directory that moves takes them with it or leaves them behind, and startup says so when
+it finds an older one still holding an account's data.
 
 ## Multi-Account Setup
 
@@ -949,11 +908,8 @@ telegram_mcp/paging.py        # one limit rule for every list and search tool
 telegram_mcp/aliases.py       # calling a contact what the operator calls them
 telegram_mcp/alias_store.py   # that name on disk: addressing, locking, protection
 telegram_mcp/runner.py        # application startup
-telegram_mcp/tdlib_registry.py # which TDLib client serves an account, and closing them
-telegram_mcp/tdlib_runtime.py # the one tdjson handle and the one receive thread, per process
                               #   `stop_reader()` takes that thread out of the native
                               #   library before the process ends
-telegram_mcp/tdlib_identity.py # whose account a TDLib database is, and quarantining a dead one
 telegram_mcp/tools/           # tool modules grouped by domain
 telegram_mcp/tools/feed_lifecycle.py  # one feed consumer at a time, and who owns one that will not stop
 telegram_mcp/message_view.py  # deep structured message view
@@ -1313,7 +1269,7 @@ cannot be withdrawn, in either direction.
 - [Telethon](https://codeberg.org/Lonami/Telethon) — the MTProto client. It lives on Codeberg
   now, not GitHub, and v1 is described by its author as largely in maintenance mode: new
   Telegram layers still land, bug fixes are welcome, additions are rare.
-- [TDLib](https://core.telegram.org/tdlib) — Telegram's own client library, for what Telethon's
+- [Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat) — MTProto 2.0 end-to-end encryption on an existing Telethon client, for what Telethon's
   announced layer cannot carry
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 

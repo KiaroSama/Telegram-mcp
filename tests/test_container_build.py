@@ -198,31 +198,25 @@ def test_the_image_puts_sessions_outside_the_application_directory():
 
 
 def test_the_base_image_can_actually_install_the_dependencies():
-    """A musl base cannot build this image, and says so only in CI.
+    """A dependency pinned by git needs git, and says so only in CI.
 
-    `tdjson` is a required dependency — secret chats and the admin rights newer
-    than Telethon's TL layer have no other route — and it publishes manylinux
-    wheels with no musllinux wheel and no source distribution. On Alpine
-    `uv sync` fails with "doesn't have a source distribution or wheel for the
-    current platform", several minutes into a build, for a reason nothing in the
-    Dockerfile would have hinted at.
+    The encryption package is pinned BY GIT URL, because PyPI serves a different
+    project under the same name at a higher version. `python:*-slim` ships no
+    git, so `uv sync` fails with "Git executable not found" several minutes into
+    a build, for a reason nothing in the Dockerfile would have hinted at.
 
-    So the constraint is asserted here, where it costs a second: the base image
-    has to be a glibc one for as long as that dependency is required.
+    Asserted here, where it costs a second, for as long as any dependency is
+    fetched from a repository. The musl constraint this test used to carry is
+    gone with the native library that caused it — that dependency published
+    manylinux wheels only, and nothing here needs a wheel now.
     """
     dockerfile = (REPO / "Dockerfile").read_text(encoding="utf-8")
-
-    base = [line for line in dockerfile.splitlines() if line.strip().upper().startswith("FROM ")]
-    assert base, "the Dockerfile declares no base image"
-
-    for line in base:
-        assert "alpine" not in line.lower(), (
-            f"{line.strip()!r} is a musl base, which cannot install tdjson "
-            "(manylinux wheels only, no sdist). Use a glibc image such as -slim."
-        )
-
     manifest = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-    assert "tdjson" in manifest, (
-        "tdjson is no longer required, so this constraint may be lifted - delete "
-        "this test rather than leaving a rule whose reason has gone"
+
+    if "git+" not in manifest:
+        return  # No VCS dependency left; the constraint has nothing to protect.
+
+    assert "git" in dockerfile, (
+        "a dependency is pinned by git URL but the image never installs git, so "
+        '`uv sync` will fail with "Git executable not found"'
     )

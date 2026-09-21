@@ -500,16 +500,16 @@ async def _main() -> None:
         _reject_duplicate_sessions(clients)
         # Said before anything signs in. A deployment whose state directory moved -
         # the container image now points XDG_STATE_HOME at the mounted volume -
-        # would otherwise start a fresh TDLib authorisation beside an existing
-        # database and never mention it, and that database's secret-chat keys
-        # cannot be re-derived once the old container is gone.
+        # would otherwise start beside an existing key store and never mention
+        # it, and those secret-chat keys cannot be re-derived once the old
+        # container is gone.
         stranded = stranded_state_dir()
         if stranded is not None:
             startup_note(
                 f"State from an earlier location is still at {stranded} and this process "
                 f"is using {state_dir()}. Nothing has been moved or deleted. If that older "
-                "directory holds TDLib databases, copy it across BEFORE replacing this "
-                "container - a lost database takes its secret-chat keys with it."
+                "directory holds secret-chat keys, copy it across BEFORE replacing "
+                "this container - a lost key store takes its chats' history with it."
             )
 
         startup_note(f"Starting {len(clients)} Telegram client(s) ({labels})...")
@@ -592,11 +592,35 @@ async def _main() -> None:
             )
         except Exception:
             pass
+        # The secret-chat managers FIRST, and the ordering is the whole point.
+        # They ride the Telethon clients rather than holding a connection of their
+        # own, so a client torn down underneath one leaves it flushing key material
+        # through a socket that is already gone - and a key lost on exit takes its
+        # chat's history with it, with no way to re-derive one. The previous
+        # backend held its own connection and was therefore flushed AFTER the
+        # disconnect; moving to one that does not makes that ordering wrong.
+        try:
+            from telegram_mcp.secret_backend import close_all as _close_secret
+
+            unflushed = await asyncio.wait_for(_close_secret(), timeout=_SECRET_CLOSE_SECONDS)
+            for account, error in unflushed:
+                startup_note(
+                    f"[{account}] the secret-chat backend did not close cleanly "
+                    f"({_startup_text(error)}); keys written since its last flush may be lost."
+                )
+        except (asyncio.TimeoutError, TimeoutError):
+            startup_note(
+                "The secret-chat backend did not finish closing within "
+                f"{_SECRET_CLOSE_SECONDS:.0f}s; exiting anyway. Keys written since its last "
+                "flush may be lost."
+            )
+        except Exception as exc:
+            startup_note(f"Closing the secret-chat backend failed: {_startup_text(exc)}")
+
         # BOUNDED, and that is the whole point of the deadline. This gather was
         # unbounded, so a single client whose disconnect never returned held
-        # shutdown here forever - and everything below it, including the TDLib
-        # flush whose loss is unrecoverable, simply never ran. One stalled
-        # cleanup must not be able to suppress the others.
+        # shutdown here forever - and everything below it simply never ran. One
+        # stalled cleanup must not be able to suppress the others.
         try:
             await asyncio.wait_for(
                 asyncio.gather(
@@ -607,30 +631,10 @@ async def _main() -> None:
         except (asyncio.TimeoutError, TimeoutError):
             startup_note(
                 f"Some accounts did not disconnect within {_DISCONNECT_ALL_SECONDS:.0f}s; "
-                "continuing with shutdown so TDLib is still flushed."
+                "continuing with shutdown."
             )
         except Exception:
             pass
-        # TDLib, before the Telethon locks go. It writes secret-chat keys lazily
-        # and a key lost on exit takes its chat's history with it - there is no
-        # way to re-derive one. `close_all` existed for exactly this and nothing
-        # called it, so every run of this server exited without flushing.
-        try:
-            from telegram_mcp.tdlib_registry import close_all as _close_tdlib
-
-            unflushed = await asyncio.wait_for(_close_tdlib(), timeout=_TDLIB_CLOSE_SECONDS)
-            for account, error in unflushed:
-                startup_note(
-                    f"[{account}] TDLib did not close cleanly ({_startup_text(error)}); "
-                    "secret-chat keys written since its last flush may be lost."
-                )
-        except (asyncio.TimeoutError, TimeoutError):
-            startup_note(
-                f"TDLib did not finish closing within {_TDLIB_CLOSE_SECONDS:.0f}s; "
-                "exiting anyway. Secret-chat keys written since its last flush may be lost."
-            )
-        except Exception as exc:
-            startup_note(f"Closing TDLib failed: {_startup_text(exc)}")
 
         # A client REPLACED while the server ran is not in `clients` any more:
         # `refresh_accounts` dropped it and its disconnect is still in flight.
@@ -710,8 +714,8 @@ _CONNECT_PHASE_SECONDS = 60.0
 
 
 # How long shutdown waits for every account to disconnect before moving on. The
-# step after it flushes TDLib, whose loss is unrecoverable, so this one cannot be
-# allowed to hold the exit path open indefinitely.
+# session locks are released after it, and a lock left held is an account this
+# server cannot start again, so this cannot hold the exit path open indefinitely.
 _DISCONNECT_ALL_SECONDS = 15.0
 
 # How long shutdown waits for the incoming-event consumer to stop before it
@@ -725,10 +729,11 @@ _FEED_STOP_SECONDS: float = 5.0
 _ADMIT_DRAIN_SECONDS: float = 20.0
 
 
-# How long shutdown waits for TDLib to flush and close. Generous, because the
-# cost of cutting it short is unrecoverable: the keys that decrypt a secret
-# chat's history. Bounded all the same - exit must not hang forever.
-_TDLIB_CLOSE_SECONDS: float = 30.0
+# How long shutdown waits for the secret-chat backend to flush and close.
+# Generous, because the cost of cutting it short is unrecoverable: the keys that
+# decrypt a secret chat's history. Bounded all the same - exit must not hang
+# forever.
+_SECRET_CLOSE_SECONDS: float = 30.0
 
 
 def main() -> None:
