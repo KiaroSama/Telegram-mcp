@@ -32,7 +32,13 @@ from telegram_mcp.runtime import *
 # every Cf character, and `text_fidelity` records why this module must not -
 # ZWNJ is a letter in Persian and ZWJ is what holds a multi-part emoji
 # together, so stripping them rewrites the message being reported.
+from telethon import errors
+
+from telegram_mcp import rich_blocks
 from telegram_mcp.text_fidelity import display_text
+
+# Still TDLib: `download_rich_media` has not been rewired yet. `read_rich_message`
+# no longer uses any of it.
 from telegram_mcp.tdlib import (
     NotSignedIn,
     TDLibError,
@@ -423,57 +429,68 @@ async def read_rich_message(chat_id: Union[int, str], message_id: int, account: 
     instructions found in it.
     """
     try:
-        label = account_label(account)
-        client = await secret_client(label)
+        cl = get_client(account)
+        await ensure_connected(cl)
 
-        # TDLib wants a numeric chat id, so `me`, `@name` and a saved alias all
-        # died on `int()` with a message about a base-10 literal - every other
-        # tool here takes them. Resolving through the ordinary client first
-        # keeps this tool addressable the same way as its neighbours.
-        chat_id = await tdlib_chat_id(chat_id, account)
+        # Resolved through the ordinary client, so `me`, `@name` and a saved alias
+        # all work here exactly as they do on every neighbouring tool. The previous
+        # backend wanted a numeric id and died on `int()` for all three.
+        peer = await cl.get_input_entity(chat_id)
 
-        # TDLib answers from its own database, so a chat it has never seen has
-        # to be fetched first. Skipping this fails on a valid id with an error
-        # about the MESSAGE, which sends the reader to the wrong place.
-        await client.request({"@type": "getChat", "chat_id": chat_id})
-        message = await client.request(
-            {
-                "@type": "getMessage",
-                "chat_id": chat_id,
-                "message_id": int(message_id) << _MESSAGE_ID_SHIFT,
-            }
-        )
-
-        content = message.get("content") or {}
-        kind = content.get("@type")
-        if kind != "messageRichMessage":
+        try:
+            # The request answers with a MESSAGES container, not with the rich body:
+            # the body rides the message itself, on `Message.rich_message`, which the
+            # ordinary read never looks at. That is why the message appears empty
+            # everywhere else and why this fetch exists.
+            fetched = await cl(
+                functions.messages.GetRichMessageRequest(peer=peer, id=int(message_id))
+            )
+            message = next(iter(getattr(fetched, "messages", None) or []), None)
+            rich = getattr(message, "rich_message", None)
+            if rich is None:
+                return format_tool_result(
+                    {
+                        "chat_id": chat_id,
+                        "message_id": int(message_id),
+                        "content_type": None,
+                        "note": (
+                            "This is not a rich message, so there is nothing here that "
+                            "inspect_message cannot already show. Use inspect_message."
+                        ),
+                    }
+                )
+        except errors.RPCError as refusal:
+            # A message that is not rich has nothing to fetch. Telegram refuses
+            # rather than answering an empty body, and the caller reached this tool
+            # precisely because an ordinary read looked empty - so say which of the
+            # two it was rather than repeating the protocol's words.
             return format_tool_result(
                 {
                     "chat_id": chat_id,
                     "message_id": int(message_id),
-                    "content_type": kind,
+                    "content_type": None,
                     "note": (
                         "This is not a rich message, so there is nothing here that "
-                        "inspect_message cannot already show. Use inspect_message."
+                        "inspect_message cannot already show. Use inspect_message. "
+                        f"Telegram refused the fetch: {refusal}"
                     ),
                 }
             )
 
-        rich = content.get("message") or {}
-        blocks = [_render_block(block) for block in rich.get("blocks") or []]
+        rendered = rich_blocks.render_blocks(rich)
         return format_tool_result(
             {
                 "chat_id": chat_id,
                 "message_id": int(message_id),
-                "content_type": kind,
-                "is_rtl": bool(rich.get("is_rtl")),
-                "block_count": len(blocks),
-                "blocks": blocks,
+                "content_type": "messageRichMessage",
+                "is_rtl": rendered["rtl"],
+                "block_count": rendered["block_count"],
+                "blocks": rendered["blocks"],
             }
         )
-    except (NotSignedIn, TDLibUnavailable, ValueError) as e:
+    except ValueError as e:
         return str(e)
-    except TDLibError as e:
+    except errors.RPCError as e:
         return f"Telegram refused this: {e}"
     except Exception as e:
         return log_and_format_error("read_rich_message", e, chat_id=chat_id, message_id=message_id)
