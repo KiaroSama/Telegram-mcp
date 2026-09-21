@@ -1,54 +1,81 @@
 """Getting the BYTES out of a rich message.
 
-Its own file because it is its own job, and its own backend. A rich message's blocks
-NAME their photos and documents; fetching one is a second act with a second failure
-mode, and `download_rich_media` is still the one tool here that runs on TDLib -
-`read_rich_message` moved onto plain Telethon on 2026-09-21 and its tests went with it,
-leaving these behind as the only reason the TDLib wire is still built in this suite.
+Its own file because it is its own job: a rich message's blocks NAME their photos and
+documents rather than carrying them, so fetching one is a second act with a second
+failure mode. Splitting it out was not bookkeeping — `tests/test_rich_messages.py`
+crossed the 800-line ceiling, and "read the blocks" and "fetch what a block points at"
+are two responsibilities.
 
-Splitting it out was not bookkeeping: `tests/test_rich_messages.py` crossed the 800-line
-ceiling when the Telethon wire was added beside the TDLib one, and two backends in one
-file is exactly the responsibility the ceiling is asking about.
+What the rewire onto plain MTProto changed, and what these pin:
+
+* the block's pointer and the file itself arrive SEPARATELY — `photo_id` on the block,
+  the photo in the message's own `photos` list — so the two are matched here, and a
+  pointer with nothing to match is reported rather than silently returning nothing;
+* the bytes land under the operator's allowed roots through the project's own guard,
+  where the previous backend returned a path inside its private database directory.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from telethon import errors
+from telethon.tl import types
 
 from telegram_mcp.tools import rich_messages as rm
 
 
-class FakeTDLib:
-    def __init__(self, message=None, error=None, downloaded=None):
-        self.requests = []
-        self.message = message
-        self.error = error
-        self.downloaded = downloaded
+def _caption(text=""):
+    node = types.TextPlain(text) if text else types.TextEmpty()
+    return types.PageCaption(node, types.TextEmpty())
 
-    async def request(self, obj, timeout=30.0):
-        self.requests.append(obj)
-        if obj["@type"] == "getChat":
-            return {"@type": "chat", "id": obj["chat_id"]}
+
+def _photo(identifier):
+    return SimpleNamespace(id=identifier)
+
+
+class FakeTelethon:
+    """Records the fetch, and stands in for the download."""
+
+    def __init__(self, rich=None, error=None, saved="/downloads/out.jpg"):
+        self.requests = []
+        self.downloads = []
+        self.rich = rich
+        self.error = error
+        self.saved = saved
+
+    async def get_input_entity(self, chat_id):
+        return f"peer:{chat_id}"
+
+    async def __call__(self, request):
+        self.requests.append(request)
         if self.error:
             raise self.error
-        if obj["@type"] == "downloadFile":
-            return self.downloaded
-        return self.message
+        message = SimpleNamespace(id=getattr(request, "id", 0), rich_message=self.rich)
+        return SimpleNamespace(messages=[message], chats=[], users=[])
 
-    def types(self):
-        return [r["@type"] for r in self.requests]
+    async def download_media(self, handle, file=None):
+        self.downloads.append((handle, file))
+        return self.saved
 
 
 @pytest.fixture
-def wire(monkeypatch):
-    def _wire(message=None, error=None, downloaded=None):
-        client = FakeTDLib(message, error, downloaded)
-        monkeypatch.setattr(rm, "account_label", lambda account=None: "acct")
+def wire(monkeypatch, tmp_path):
+    def _wire(rich=None, error=None, saved=None):
+        # `is None`, not `or`: a test that asks for an empty path is asking for the
+        # "transfer produced nothing" case, and `or` would hand it the default.
+        default = str(tmp_path / "out.jpg")
+        client = FakeTelethon(rich, error, default if saved is None else saved)
+        monkeypatch.setattr(rm, "get_client", lambda account=None: client)
 
-        async def _client(label):
-            return client
+        async def _connected(cl):
+            return None
 
-        monkeypatch.setattr(rm, "secret_client", _client)
+        async def _resolve(**kwargs):
+            return tmp_path / kwargs["default_filename"], None
+
+        monkeypatch.setattr(rm, "ensure_connected", _connected)
+        monkeypatch.setattr(rm, "_resolve_writable_file_path", _resolve)
         return client
 
     return _wire
@@ -58,122 +85,107 @@ def _results(raw):
     return json.loads(raw)["results"]
 
 
-# --------------------------------------------------------------------------
-# Getting the bytes out of a rich message
-# --------------------------------------------------------------------------
-
-
-def _photo_message(file_obj):
-    return {
-        "content": {
-            "@type": "messageRichMessage",
-            "message": {
-                "blocks": [{"@type": "pageBlockPhoto", "photo": {"sizes": [{"photo": file_obj}]}}]
-            },
-        }
-    }
-
-
-def test_a_photo_blocks_file_is_found_under_its_last_size():
-    """A photo has no file of its own - the sizes ARE the picture - so indexing
-    the block key the way every other kind does returns nothing."""
-    handle = {"id": 7, "size": 99}
-    block = {
-        "@type": "pageBlockPhoto",
-        "photo": {"sizes": [{"photo": {"id": 1}}, {"photo": handle}]},
-    }
-
-    assert rm._block_file(block) is handle
-
-
-def test_a_voice_notes_file_is_not_under_the_block_key():
-    """TDLib calls it `voice`, not `voice_note`. Deriving the inner key from the
-    block key silently returned None for the one kind that differs."""
-    handle = {"id": 3}
-    block = {"@type": "pageBlockVoiceNote", "voice_note": {"voice": handle}}
-
-    assert rm._block_file(block) is handle
-
-
-def test_the_reader_publishes_the_file_id_so_it_can_be_fetched():
-    """It used to report a photo's width and height and drop the handle, leaving
-    a caller able to see the picture existed and unable to ask for it."""
-    block = {"@type": "pageBlockPhoto", "photo": {"sizes": [{"photo": {"id": 42}, "width": 8}]}}
-
-    assert rm._render_block(block)["media"]["file_id"] == 42
-
-
-def test_a_half_downloaded_file_reports_no_path():
-    """`path` is set while a transfer is still running, so trusting it without
-    `is_downloading_completed` hands back a partial file."""
-    partial = {"id": 1, "local": {"path": "C:/half.jpg", "is_downloading_completed": False}}
-    whole = {"id": 2, "local": {"path": "C:/whole.jpg", "is_downloading_completed": True}}
-
-    assert (
-        "local_path"
-        not in rm._render_block(
-            {"@type": "pageBlockPhoto", "photo": {"sizes": [{"photo": partial}]}}
-        )["media"]
-    )
-    assert (
-        rm._render_block({"@type": "pageBlockPhoto", "photo": {"sizes": [{"photo": whole}]}})[
-            "media"
-        ]["local_path"]
-        == "C:/whole.jpg"
+def _message(*blocks, photos=(), documents=()):
+    return types.RichMessage(
+        blocks=list(blocks), photos=list(photos), documents=list(documents), rtl=False
     )
 
 
 @pytest.mark.asyncio
-async def test_a_file_tdlib_already_holds_is_not_downloaded_again(wire):
-    cached = {
-        "id": 5,
-        "size": 12,
-        "local": {"path": "C:/have.jpg", "is_downloading_completed": True},
-    }
-    client = wire(_photo_message(cached))
+async def test_the_first_block_carrying_media_is_taken_when_none_is_named(wire):
+    """`block_index` is optional, and omitting it must not mean "the first block" —
+    a message whose table comes before its photo would download nothing."""
+    rich = _message(
+        types.PageBlockParagraph(types.TextPlain("words")),
+        types.PageBlockPhoto(photo_id=7, caption=_caption()),
+        photos=[_photo(7)],
+    )
+    client = wire(rich)
 
     answer = _results(await rm.download_rich_media(-100123, 970, account="acct"))
 
-    assert answer["path"] == "C:/have.jpg" and answer["file_id"] == 5
-    assert "downloadFile" not in client.types(), "asked for bytes it already had"
+    assert answer["saved"] is True
+    assert answer["block_index"] == 1, "the paragraph is not the block with the photo"
+    assert answer["file_id"] == "7"
+    assert client.downloads, "nothing was actually fetched"
 
 
 @pytest.mark.asyncio
-async def test_a_file_tdlib_lacks_is_fetched_and_its_path_returned(wire):
-    client = wire(
-        _photo_message({"id": 9, "local": {"is_downloading_completed": False}}),
-        downloaded={"size": 77, "local": {"path": "C:/got.jpg", "is_downloading_completed": True}},
+async def test_a_named_block_is_the_one_fetched(wire):
+    rich = _message(
+        types.PageBlockPhoto(photo_id=1, caption=_caption()),
+        types.PageBlockPhoto(photo_id=2, caption=_caption()),
+        photos=[_photo(1), _photo(2)],
     )
+    wire(rich)
 
-    answer = _results(await rm.download_rich_media(-100123, 970, account="acct"))
+    answer = _results(await rm.download_rich_media(-100123, 970, 1, account="acct"))
 
-    assert answer["path"] == "C:/got.jpg" and answer["size_bytes"] == 77
-    assert "downloadFile" in client.types()
+    assert answer["block_index"] == 1 and answer["file_id"] == "2"
 
 
 @pytest.mark.asyncio
-async def test_an_unfinished_transfer_is_reported_rather_than_returned(wire):
-    """A path from an incomplete download is a truncated file wearing the name
-    of a whole one."""
-    wire(
-        _photo_message({"id": 9, "local": {"is_downloading_completed": False}}),
-        downloaded={"local": {"path": "C:/partial.jpg", "is_downloading_completed": False}},
-    )
+async def test_a_block_index_outside_the_message_says_how_many_there_are(wire):
+    wire(_message(types.PageBlockPhoto(photo_id=1, caption=_caption()), photos=[_photo(1)]))
 
-    answer = _results(await rm.download_rich_media(-100123, 970, account="acct"))
+    answer = await rm.download_rich_media(-100123, 970, 9, account="acct")
 
-    assert answer["saved"] is False and "timeout" in answer["reason"]
+    assert "outside this message's 1 blocks" in answer
 
 
 @pytest.mark.asyncio
 async def test_a_block_without_media_says_so_instead_of_failing(wire):
-    wire(
-        {
-            "content": {
-                "@type": "messageRichMessage",
-                "message": {"blocks": [{"@type": "pageBlockDivider"}]},
-            }
-        }
+    wire(_message(types.PageBlockParagraph(types.TextPlain("just words"))))
+
+    answer = await rm.download_rich_media(-100123, 970, 0, account="acct")
+
+    assert "carries no media" in answer
+
+
+@pytest.mark.asyncio
+async def test_a_message_with_no_media_at_all_says_so(wire):
+    wire(_message(types.PageBlockParagraph(types.TextPlain("just words"))))
+
+    assert "No block in this message carries media" in await rm.download_rich_media(
+        -100123, 970, account="acct"
     )
 
-    assert "carries media" in await rm.download_rich_media(-100123, 970, account="acct")
+
+@pytest.mark.asyncio
+async def test_a_pointer_with_nothing_to_match_is_reported_not_swallowed(wire):
+    """The block names a file the message did not carry. Returning "saved: false" with
+    no reason, or an empty path, would read as a transfer problem rather than an
+    incomplete message."""
+    wire(_message(types.PageBlockPhoto(photo_id=42, caption=_caption()), photos=[]))
+
+    answer = await rm.download_rich_media(-100123, 970, account="acct")
+
+    assert "names file 42" in answer and "did not carry" in answer
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_message_is_sent_to_the_ordinary_tool(wire):
+    wire(None)
+
+    answer = await rm.download_rich_media(-100123, 970, account="acct")
+
+    assert "not a rich message" in answer and "download_media" in answer
+
+
+@pytest.mark.asyncio
+async def test_a_transfer_that_produced_no_file_is_reported_rather_than_claimed(wire):
+    wire(
+        _message(types.PageBlockPhoto(photo_id=7, caption=_caption()), photos=[_photo(7)]),
+        saved="",
+    )
+
+    answer = _results(await rm.download_rich_media(-100123, 970, account="acct"))
+
+    assert answer["saved"] is False and "produced no file" in answer["reason"]
+
+
+@pytest.mark.asyncio
+async def test_telegrams_refusal_is_shown_not_filed_under_a_code(wire):
+    wire(error=errors.RPCError(request=None, message="MESSAGE_ID_INVALID", code=400))
+
+    assert "MESSAGE_ID_INVALID" in await rm.download_rich_media(-100123, 970, account="acct")
