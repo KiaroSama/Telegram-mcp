@@ -245,7 +245,16 @@ def _list_items(block) -> list:
             blocks = [_paragraph(display_text(flatten(text)))]
         else:
             blocks = [render_block(b) for b in (getattr(item, "blocks", None) or [])]
-        items.append({"blocks": blocks, "label": str(label)})
+        entry = {"blocks": blocks, "label": str(label)}
+        # A checklist and a bullet list are the SAME block; only these two flags
+        # separate "todo" from "point". They are present only when the item has a
+        # box, so a plain bullet carries neither key - reporting `checkbox: false`
+        # on every bullet would turn an ordinary list into a to-do list with
+        # everything unticked.
+        if getattr(item, "checkbox", False):
+            entry["checkbox"] = True
+            entry["checked"] = bool(getattr(item, "checked", False))
+        items.append(entry)
     return items
 
 
@@ -306,9 +315,13 @@ def render_block(block) -> dict:
         return record
 
     if isinstance(block, types.PageBlockDetails):
-        record["title"] = display_text(flatten(getattr(block, "title", None)))
+        # `header` and `is_open`, not `title` and `open`: these are published field
+        # names and a collapsed section that reports neither reads as an open one.
+        header = flatten(getattr(block, "title", None))
+        if header:
+            record["header"] = display_text(header)
         record["blocks"] = [render_block(b) for b in (block.blocks or [])]
-        record["open"] = bool(getattr(block, "open", False))
+        record["is_open"] = bool(getattr(block, "open", False))
         return record
 
     if isinstance(block, (types.PageBlockCollage, types.PageBlockSlideshow)):
