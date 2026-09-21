@@ -20,13 +20,46 @@ shutdown is flushing races the flush for key material that cannot be recovered.
 """
 
 import asyncio
-from typing import Dict
+import logging
+from typing import Dict, List, Tuple
 
 from telethon_secret_chat import FileStorage, SecretChatManager
+from telethon_secret_chat.errors import (
+    ChatClosed,
+    ChatNotReady,
+    LayerUnsupported,
+    MessageRejected,
+    ParameterRejected,
+    ResendUnsatisfiable,
+    SecretChatError,
+    StorageRequired,
+)
+from telethon_secret_chat.schema import secret_tl
 
+from telegram_mcp import secret_history
 from telegram_mcp.settings import state_dir
 
-__all__ = ["SecretChatUnavailable", "close_all", "secret_manager"]
+logger = logging.getLogger(__name__)
+
+# Re-exported, because this module is the ONLY one allowed to import the package
+# and a test enforces that. Two callers need pieces of it - `secret_common` to tell
+# a refusal from a defect, and the typing tool to name one protocol action - and
+# letting either import it directly would turn "an upstream change is a one-file
+# edit" into "grep and hope".
+__all__ = [
+    "ChatClosed",
+    "ChatNotReady",
+    "LayerUnsupported",
+    "MessageRejected",
+    "ParameterRejected",
+    "ResendUnsatisfiable",
+    "SecretChatError",
+    "SecretChatUnavailable",
+    "StorageRequired",
+    "close_all",
+    "secret_manager",
+    "secret_tl",
+]
 
 
 class SecretChatUnavailable(RuntimeError):
@@ -122,10 +155,70 @@ async def secret_manager(account: str) -> SecretChatManager:
             await _stop(existing)
 
         manager = SecretChatManager(client, _storage_for(account))
+        manager.on("ChatRequested", _accept_incoming(manager, account))
+        manager.on("MessageReceived", _remember(account))
         await manager.start()
         _by_account[account] = manager
         _verified_against[account] = client
         return manager
+
+
+def _accept_incoming(manager: SecretChatManager, account: str):
+    """Answer an incoming secret-chat request, because no tool can.
+
+    The previous backend completed the handshake inside itself: an invitation arrived
+    and became a usable chat with nothing asked of this server. The package hands the
+    decision back instead, which is the better design for a library and a CAPABILITY
+    LOSS here - the published tool surface is frozen, so there is no
+    `accept_secret_chat` for a caller to reach for, and an unanswered request would sit
+    at `pending` until it expired with every tool correctly refusing to send into it.
+
+    Accepting restores exactly what the operator had. It is also what the account's
+    other clients do, and it commits nothing: a chat that is accepted and never used
+    costs one key, and `close_secret_chat` ends it.
+
+    A failure here is logged and dropped rather than raised. This runs inside the
+    package's own update dispatch, where an exception would take down the subscription
+    that every OTHER chat on this account also depends on, to punish one bad
+    invitation.
+    """
+
+    async def _handler(event):
+        try:
+            await manager.accept(event.chat_id)
+        except Exception:
+            logger.warning(
+                "could not accept incoming secret chat %s on %s; it stays pending",
+                getattr(event, "chat_id", "?"),
+                account,
+                exc_info=True,
+            )
+
+    return _handler
+
+
+def _remember(account: str):
+    """Write every arrived message into this server's own durable history.
+
+    The package keeps arrivals in memory, which dies with the process, and keeps no
+    record of what this side SENT because nothing arrives for it. `read_secret_messages`
+    published both directions across restarts for the whole life of the previous
+    backend, so :mod:`telegram_mcp.secret_history` holds them and this is where the
+    incoming half is caught - once, at the seam, rather than at each reading tool.
+
+    Failures are logged, never raised: this runs inside the package's update dispatch,
+    and a full disk must not tear down the subscription that decrypts every other chat.
+    """
+
+    async def _handler(event):
+        try:
+            secret_history.record_received(account, event)
+        except Exception:
+            logger.warning(
+                "could not record a received secret message on %s", account, exc_info=True
+            )
+
+    return _handler
 
 
 async def _stop(manager: SecretChatManager) -> None:
@@ -137,19 +230,29 @@ async def _stop(manager: SecretChatManager) -> None:
     await manager.stop()
 
 
-async def close_all() -> None:
+async def close_all() -> List[Tuple[str, BaseException]]:
     """Stop every manager, flushing key material. Idempotent.
 
-    Shutdown can be reached twice — once from a signal handler and once from the
-    runner's own path — so the second call must be a no-op rather than a failure.
+    Returns one ``(account, error)`` per manager that did NOT close cleanly, so the
+    caller can name each one. Collected rather than raised: the first account's
+    failure must not skip the flush of every account after it, and a key that is
+    never written is a chat's history gone for good.
+
+    Shutdown can be reached twice - once from a signal handler and once from the
+    runner's own path - so the second call must be a no-op rather than a failure.
     """
     global _closing
     _closing = True
 
+    failures: List[Tuple[str, BaseException]] = []
     async with _lock:
-        accounts = list(_by_account)
-        for account in accounts:
+        for account in list(_by_account):
             manager = _by_account.pop(account, None)
             _verified_against.pop(account, None)
-            if manager is not None:
+            if manager is None:
+                continue
+            try:
                 await _stop(manager)
+            except Exception as error:
+                failures.append((account, error))
+    return failures
