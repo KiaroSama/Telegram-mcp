@@ -7,10 +7,12 @@ would have tested the renderer against my idea of TDLib rather than TDLib.
 """
 
 import json
+from types import SimpleNamespace
 
 import pytest
+from telethon import errors
+from telethon.tl import types
 
-from telegram_mcp.tdlib import TDLibError
 from telegram_mcp.tools import rich_messages as rm
 
 
@@ -89,6 +91,8 @@ class FakeTDLib:
 
 @pytest.fixture
 def wire(monkeypatch):
+    """The TDLib wire, still used by `download_rich_media`."""
+
     def _wire(message=None, error=None, downloaded=None):
         client = FakeTDLib(message, error, downloaded)
         monkeypatch.setattr(rm, "account_label", lambda account=None: "acct")
@@ -97,6 +101,87 @@ def wire(monkeypatch):
             return client
 
         monkeypatch.setattr(rm, "secret_client", _client)
+        return client
+
+    return _wire
+
+
+# The same table as TABLE_MESSAGE, as MTProto hands it over. `read_rich_message`
+# moved onto plain Telethon, so its tests drive this shape; the TDLib fixture above
+# still serves `download_rich_media`, which has not moved yet.
+def _tcell(text, **kw):
+    return types.PageTableCell(text=text, **kw)
+
+
+RICH_TABLE = types.RichMessage(
+    blocks=[
+        types.PageBlockTable(
+            title=types.TextUrl(
+                types.TextPlain("ShaparakVPN | Services"), "https://t.me/shaparakvpn", 0
+            ),
+            rows=[
+                types.PageTableRow(
+                    [
+                        _tcell(
+                            types.TextConcat(
+                                [
+                                    types.TextBold(types.TextPlain("Chatgpt plus")),
+                                    types.TextPlain(" personal email"),
+                                ]
+                            )
+                        ),
+                        _tcell(types.TextPlain("v2ray residential")),
+                    ]
+                ),
+                types.PageTableRow(
+                    [
+                        _tcell(types.TextPlain("Gemini pro")),
+                        _tcell(types.TextPlain("panel | multi")),
+                    ]
+                ),
+                types.PageTableRow([_tcell(types.TextPlain("other subscriptions"), colspan=2)]),
+            ],
+            bordered=True,
+        )
+    ],
+    photos=[],
+    documents=[],
+    rtl=False,
+)
+
+
+class FakeTelethon:
+    """Enough of a client for the fetch: it records what was asked for."""
+
+    def __init__(self, rich=None, error=None):
+        self.requests = []
+        self.rich = rich
+        self.error = error
+
+    async def get_input_entity(self, chat_id):
+        return f"peer:{chat_id}"
+
+    async def __call__(self, request):
+        self.requests.append(request)
+        if self.error:
+            raise self.error
+        # A stand-in rather than a real `Message`: the tool reads exactly one field
+        # off it, and constructing the full type here would pin this test to a
+        # constructor signature it does not care about.
+        message = SimpleNamespace(id=getattr(request, "id", 0), rich_message=self.rich)
+        return SimpleNamespace(messages=[message], chats=[], users=[])
+
+
+@pytest.fixture
+def telethon_wire(monkeypatch):
+    def _wire(rich=None, error=None):
+        client = FakeTelethon(rich, error)
+        monkeypatch.setattr(rm, "get_client", lambda account=None: client)
+
+        async def _connected(cl):
+            return None
+
+        monkeypatch.setattr(rm, "ensure_connected", _connected)
         return client
 
     return _wire
@@ -112,29 +197,29 @@ def _results(raw):
 
 
 @pytest.mark.asyncio
-async def test_the_message_id_is_shifted_into_tdlibs_numbering(wire):
-    """TDLib stores `server_id << 20`. Passing the caller's id straight through
-    asks for a message roughly a million times younger - which exists, and is
-    somebody else's."""
-    client = wire(TABLE_MESSAGE)
+async def test_the_message_id_is_passed_through_untouched(telethon_wire):
+    """The previous backend numbered messages `server_id << 20`, so the id had to be
+    shifted on the way in and back on the way out. MTProto uses the id the caller
+    already has - the one in a t.me link - and shifting it now would ask for a message
+    roughly a million times younger, which exists and is somebody else's."""
+    client = telethon_wire(RICH_TABLE)
 
     await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
 
-    (asked,) = [r for r in client.requests if r["@type"] == "getMessage"]
-    assert asked["message_id"] == 4614680 << 20
-    assert asked["message_id"] != 4614680
+    (asked,) = client.requests
+    assert asked.id == 4614680
 
 
 @pytest.mark.asyncio
-async def test_the_chat_is_fetched_before_the_message(wire):
-    """TDLib answers from its own database. Skipping `getChat` on a chat it has
-    never seen fails with an error about the MESSAGE, which sends the reader to
-    check a message id that was right all along."""
-    client = wire(TABLE_MESSAGE)
+async def test_the_chat_is_resolved_through_the_ordinary_client(telethon_wire):
+    """`me`, `@name` and a saved alias all reach this tool, and all three died on the
+    previous backend's `int()`. Resolving through the client every neighbouring tool
+    uses is what keeps this one addressable the same way."""
+    client = telethon_wire(RICH_TABLE)
 
-    await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
+    await rm.read_rich_message(chat_id="me", message_id=4614680, account="acct")
 
-    assert client.types() == ["getChat", "getMessage"]
+    assert client.requests[0].peer == "peer:me"
 
 
 # --------------------------------------------------------------------------
@@ -143,8 +228,8 @@ async def test_the_chat_is_fetched_before_the_message(wire):
 
 
 @pytest.mark.asyncio
-async def test_every_cell_of_the_table_survives(wire):
-    wire(TABLE_MESSAGE)
+async def test_every_cell_of_the_table_survives(telethon_wire):
+    telethon_wire(RICH_TABLE)
 
     results = _results(
         await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
@@ -160,11 +245,11 @@ async def test_every_cell_of_the_table_survives(wire):
 
 
 @pytest.mark.asyncio
-async def test_a_merged_cell_is_reported_rather_than_faked(wire):
+async def test_a_merged_cell_is_reported_rather_than_faked(telethon_wire):
     """Markdown cannot express a colspan. Duplicating or dropping the cell to
     make the grid rectangular would misreport what the table actually says, so
     the span is carried in the structured rows instead."""
-    wire(TABLE_MESSAGE)
+    telethon_wire(RICH_TABLE)
 
     results = _results(
         await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
@@ -176,11 +261,11 @@ async def test_a_merged_cell_is_reported_rather_than_faked(wire):
 
 
 @pytest.mark.asyncio
-async def test_nested_formatting_is_flattened_not_dropped(wire):
+async def test_nested_formatting_is_flattened_not_dropped(telethon_wire):
     """A cell is a TREE: bold wrapping plain, beside more plain. A flattener that
     only handled the outer node would return an empty cell and nothing would say
     text had been lost."""
-    wire(TABLE_MESSAGE)
+    telethon_wire(RICH_TABLE)
 
     results = _results(
         await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
@@ -192,10 +277,10 @@ async def test_nested_formatting_is_flattened_not_dropped(wire):
 
 
 @pytest.mark.asyncio
-async def test_a_captions_link_keeps_its_destination(wire):
+async def test_a_captions_link_keeps_its_destination(telethon_wire):
     """ "ShaparakVPN | Services" without its URL is the half that does not
     matter."""
-    wire(TABLE_MESSAGE)
+    telethon_wire(RICH_TABLE)
 
     results = _results(
         await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
@@ -205,8 +290,8 @@ async def test_a_captions_link_keeps_its_destination(wire):
 
 
 @pytest.mark.asyncio
-async def test_the_markdown_view_is_a_usable_table(wire):
-    wire(TABLE_MESSAGE)
+async def test_the_markdown_view_is_a_usable_table(telethon_wire):
+    telethon_wire(RICH_TABLE)
 
     results = _results(
         await rm.read_rich_message(chat_id=-1002032650056, message_id=4614680, account="acct")
@@ -227,22 +312,27 @@ async def test_the_markdown_view_is_a_usable_table(wire):
 
 
 @pytest.mark.asyncio
-async def test_an_ordinary_message_is_sent_back_to_inspect_message(wire):
+async def test_an_ordinary_message_is_sent_back_to_inspect_message(telethon_wire):
     """This tool exists for one content type. Answering with an empty block list
     for anything else would read as "the message is empty", which is the very
-    confusion it was built to end."""
-    wire({"content": {"@type": "messageText", "text": {"text": "hello"}}})
+    confusion it was built to end.
+
+    A message that is not rich carries no rich body, so the fetch comes back with
+    nothing to render - and the answer says which of the two it was rather than an
+    empty block list that looks like a rich message with no content."""
+    telethon_wire(None)
 
     results = _results(await rm.read_rich_message(chat_id=1, message_id=2, account="acct"))
 
-    assert results["content_type"] == "messageText"
+    assert results["content_type"] is None
+    assert "inspect_message" in results["note"]
     assert "inspect_message" in results["note"]
     assert "blocks" not in results
 
 
 @pytest.mark.asyncio
-async def test_telegrams_refusal_is_shown_not_filed_under_a_code(wire):
-    wire(error=TDLibError(400, "MESSAGE_ID_INVALID"))
+async def test_telegrams_refusal_is_shown_not_filed_under_a_code(telethon_wire):
+    telethon_wire(error=errors.RPCError(request=None, message="MESSAGE_ID_INVALID", code=400))
 
     answer = await rm.read_rich_message(chat_id=1, message_id=2, account="acct")
 
