@@ -4,6 +4,10 @@ import os
 
 import pytest
 
+from telegram_mcp import secret_backend, secret_history
+
+from secret_fakes import SECRET_ID, FakeChat, FakeManager
+
 
 # The suite describes the CODE, never the machine it runs on.
 #
@@ -40,22 +44,22 @@ for _name in list(os.environ):
 
 
 @pytest.fixture(autouse=True)
-def _tdlib_not_shutting_down():
+def _secret_backend_not_shutting_down():
     """Clear the shutdown latch between tests.
 
-    `tdlib_registry.close_all()` sets `_closing` and deliberately never clears
-    it: once a shutdown has begun, starting a new native client against a
-    database being flushed is never right. That is correct for a process and
-    poisonous for a test session, where one suite calling `close_all` left every
-    later `secret_client` in any file answering "the server is shutting down" -
+    `secret_backend.close_all()` sets `_closing` and deliberately never clears
+    it: once a shutdown has begun, starting a new manager against a key store
+    being flushed is never right. That is correct for a process and poisonous
+    for a test session, where one suite calling `close_all` left every later
+    `secret_manager` in any file answering "the server is shutting down" -
     which CI found and a local run, in a different order, did not.
 
     Autouse and here rather than in each suite, because the leak is a property
     of the module rather than of any one test file.
     """
-    from telegram_mcp import admission, tdlib_registry
+    from telegram_mcp import admission, secret_backend
 
-    tdlib_registry._closing = False
+    secret_backend._closing = False
     # The same shape one module along: `admission.release_all()` closes the door
     # so a slow acquire cannot publish after shutdown, and every suite's cleanup
     # calls it. Without this, the first cleanup left every later admission in the
@@ -63,7 +67,7 @@ def _tdlib_not_shutting_down():
     admission.begin_serving()
     admission.unreleased_leases.clear()
     yield
-    tdlib_registry._closing = False
+    secret_backend._closing = False
     admission.begin_serving()
     admission.unreleased_leases.clear()
 
@@ -157,3 +161,38 @@ def _allowed_roots_survive_the_test():
 
     file_roots.SERVER_ALLOWED_ROOTS[:] = original_roots
     file_roots._last_named_roots = original_cache
+
+
+@pytest.fixture
+def backend(monkeypatch, tmp_path):
+    """Install a `FakeManager` behind `secret_manager`, with history in `tmp_path`.
+
+    Here rather than beside the fake it builds, because a fixture that is IMPORTED
+    shadows itself at every use site - sixty-seven `F811 redefinition of unused
+    backend` in one lint run. pytest finds it here without an import.
+
+    The history store is redirected too, because these tools now WRITE to it on
+    every send - a suite pointing at the operator's real state directory would be
+    a test that edits the machine it runs on.
+    """
+    monkeypatch.setattr(secret_history, "_cache", {})
+    monkeypatch.setattr(secret_history, "state_dir", lambda: tmp_path)
+
+    manager = FakeManager([FakeChat(SECRET_ID)])
+
+    async def _manager(account):
+        return manager
+
+    monkeypatch.setattr(secret_backend, "secret_manager", _manager)
+    for module in (
+        "telegram_mcp.tools.secret_chats",
+        "telegram_mcp.tools.secret_messaging",
+        "telegram_mcp.tools.secret_actions",
+        "telegram_mcp.tools.secret_timed",
+    ):
+        monkeypatch.setattr(f"{module}.secret_manager", _manager, raising=False)
+        # A function looks a name up in ITS OWN module globals, so a seam shared
+        # by four modules has to be patched in all four or the patch succeeds
+        # while missing the caller under test.
+        monkeypatch.setattr(f"{module}._account_label", lambda account=None: "acct", raising=False)
+    return manager

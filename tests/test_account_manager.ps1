@@ -447,78 +447,58 @@ try {
     }
     Write-Host 'ok  0 unwinds one level and exit leaves, changing nothing on the way'
 
-    # --- finishing the account against TDLib -------------------------------------
+    # --- one login, and nothing left to finish -----------------------------------
     #
-    # Secret chats and the newer admin rights run on TDLib, which keeps its own
-    # authorisation. That used to mean a second login code. It does not: Telegram's
-    # device-linking flow lets the login that just happened authorise this one, so
-    # the step asks for nothing. What it must NOT do is grow a phone-and-code
-    # prompt of its own - that would be the second code coming back.
+    # Secret chats and the newer admin rights ran on TDLib until 2026-09-21, which
+    # kept its own authorisation, so adding an account had a SECOND half: a launcher
+    # step, a generator call, and a listing that could read `secret chats: NOT
+    # finished`. Every one of those is gone (docs/adr/0006), and this asserts they
+    # stay gone - a re-introduced second sign-in would put a second device back on
+    # the account, which is the exact thing Principle I forbids.
 
     $source = Get-LauncherSource -Root $projectRoot
+    $generator = [IO.File]::ReadAllText((Join-Path $projectRoot 'session_string_generator.py'))
 
-    if ($source -notmatch 'function Invoke-SecretChatLogin') {
-        throw 'Adding an account no longer finishes it against TDLib.'
-    }
-    if ($source -notmatch 'Invoke-SecretChatLogin -Label \$label') {
-        throw 'Invoke-SecretChatLogin exists but Add-Account never calls it.'
-    }
-    Write-Host 'ok  adding an account finishes it against TDLib too'
-
-    $step = [regex]::Match($source, '(?ms)^function Invoke-SecretChatLogin \{.*?^\}').Value
-    if (-not $step) { throw 'Could not isolate Invoke-SecretChatLogin.' }
-    # The doc comment explains the mechanism and mentions "the phone app", so it
-    # has to come out before looking for a prompt - otherwise the prose that says
-    # no code is asked for is itself read as asking for one.
-    $code = [regex]::Replace($step, '(?ms)<#.*?#>', '')
-    foreach ($asked in @('Read-Host', 'phone', 'Phone', 'code:')) {
-        if ($code -match [regex]::Escape($asked)) {
-            throw "The TDLib step asks for '$asked' - the second code is back."
+    foreach ($dead in @('Invoke-SecretChatLogin', 'Get-SecretChatStates', 'Get-SecretChatSummary')) {
+        if ($source -match [regex]::Escape($dead)) {
+            throw "The launcher still carries '$dead'; there is only one login now."
         }
     }
-    if ($step -notmatch 'secret_chat_login\.py') {
-        throw 'The TDLib step does not run the login script.'
+    foreach ($dead in @('_finish_secret_chats', 'secret_chat_login')) {
+        if ($generator -match [regex]::Escape($dead)) {
+            throw "The generator still carries '$dead'; there is only one login now."
+        }
     }
-    Write-Host 'ok  it asks for nothing: the existing login authorises TDLib'
+    if (($source -match 'tdlib') -or ($generator -match 'tdlib')) {
+        throw 'A TDLib reference survives in the account path.'
+    }
+    Write-Host 'ok  adding an account asks for one code and finishes there'
+
+    # A removed account must not leave its secret-chat keys behind. They outlive
+    # `.env`, so reusing a label for a different person would hand the new account
+    # the old one's chats - and the history file beside them holds decrypted text.
+    if ($source -notmatch 'function Remove-SecretChatKeys') {
+        throw 'Removing an account no longer clears its secret-chat state.'
+    }
+    if ($source -notmatch 'Remove-SecretChatKeys -Label \$label') {
+        throw 'Remove-SecretChatKeys exists but Remove-Account never calls it.'
+    }
+    $removal = [regex]::Match($source, '(?ms)^function Remove-SecretChatKeys \{.*?^\}').Value
+    if ($removal -notmatch 'history\.json') {
+        throw 'The removal clears the keys but leaves the decrypted history beside them.'
+    }
+    Write-Host 'ok  removing an account clears its keys and its decrypted history'
 
     # `Read-Confirmation` is already in scope: the harness above dot-sources every
     # function block, which is how this file drives an interactive script at all.
-    $onEnter = & { function Read-Host { param($Prompt) '' }; Read-Confirmation 'finish it now?' }
+    $onEnter = & { function Read-Host { param($Prompt) '' }; Read-Confirmation 'proceed?' }
     if (-not $onEnter) { throw 'Enter no longer means yes for the ordinary confirmation.' }
-    $onNo = & { function Read-Host { param($Prompt) 'n' }; Read-Confirmation 'finish it now?' }
+    $onNo = & { function Read-Host { param($Prompt) 'n' }; Read-Confirmation 'proceed?' }
     if ($onNo) { throw 'A typed no was ignored.' }
     Write-Host 'ok  Enter accepts and a typed n declines'
 
-    # Every route that puts an account into .env must finish the TDLib half.
-    #
-    # The property is unchanged; the mechanism moved. It used to be a launcher
-    # step that spawned the login script and asked for the two-step password a
-    # SECOND time - seconds after the generator had already collected it and
-    # Telegram had accepted it. That reads as the tool not paying attention, and
-    # every extra attempt counts against the account's own limits. So the
-    # generator, which is holding the password and an authorised client, now
-    # finishes both halves itself, and the separate menu entry is gone.
-    $generator = [IO.File]::ReadAllText((Join-Path $projectRoot 'session_string_generator.py'))
-
-    if ($generator -notmatch '_finish_secret_chats\(client, safe_label, password\)') {
-        throw 'The generator no longer finishes the TDLib half - that is the original gap, reopened.'
-    }
-    # The load-bearing part: the password is REUSED, not asked for again.
-    if ($generator -notmatch 'complete_login\(label, client, password=password\)') {
-        throw 'The generator no longer passes the password through, so it would ask a second time.'
-    }
-    # `\s*$` rather than `$`: the file is CRLF, and `$` closes before the \n with
-    # the \r still to match. That gotcha has cost this suite a false failure before.
-    if ($generator -notmatch '(?m)^\s+return pw\s*$') {
-        throw 'The sign-in no longer hands the accepted password back, so nothing can reuse it.'
-    }
-    # A pasted session string is the one case with no password to reuse, so that
-    # path keeps its own prompt.
-    if ($source -notmatch 'Invoke-SecretChatLogin -Label \$label') {
-        throw 'The pasted-session path no longer offers the TDLib half at all.'
-    }
     if ($source -match "'6' = ") {
-        throw 'Menu entry 6 is back; the generator is supposed to make it unnecessary.'
+        throw 'Menu entry 6 is back; there is no second half for it to finish.'
     }
 
     $dispatch = [regex]::Match($source, '(?ms)switch \(\$choice\) \{.*?^        \}').Value
@@ -529,15 +509,15 @@ try {
 ]*\}").Value
         if (-not $branch) { throw "Menu entry $entry has no dispatch branch." }
     }
-    Write-Host 'ok  the generator finishes both halves and reuses the password it already took'
+    Write-Host 'ok  every menu entry the table lists has a dispatch branch'
 
     # No message may name a menu entry that does not exist.
     #
     # This shipped: the entry for finishing an account was removed, and the
     # listing kept telling the owner to choose it. That is worse than silence -
     # they scanned the menu for a line that was not there and reported the tool
-    # as broken, which is exactly what it was. `NotSignedIn` in tdlib.py named
-    # the same dead entry.
+    # as broken, which is exactly what it was. A refusal in the removed TDLib
+    # module named the same dead entry.
     #
     # Checked against the menu table itself, so removing or renumbering an entry
     # cannot leave a message pointing at a hole.
@@ -550,10 +530,9 @@ try {
 
     $titles = @($entries | ForEach-Object { $_.Title })
     $numbers = @($entries | ForEach-Object { $_.Number })
-    $tdlibSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'telegram_mcp/tdlib.py'))
+    foreach ($text in @($source, $generator)) {
+        foreach ($quoted in [regex]::Matches($text, '"([^"
 
-    foreach ($text in @($source, $tdlibSource)) {
-        foreach ($quoted in [regex]::Matches($text, '"([^"
 ]{8,80})"')) {
             $phrase = $quoted.Groups[1].Value
             # Only phrases that read like a menu instruction are candidates.
@@ -566,7 +545,7 @@ try {
     }
     foreach ($dead in @('Finish an account for secret chats')) {
         if ($titles -contains $dead) { continue }
-        if ($source -match [regex]::Escape($dead) -or $tdlibSource -match [regex]::Escape($dead)) {
+        if ($source -match [regex]::Escape($dead) -or $generator -match [regex]::Escape($dead)) {
             throw "A message still names the removed menu entry '$dead'."
         }
     }
@@ -582,10 +561,7 @@ try {
     # listing numbers, which is why both take one.
     $sample = [ordered] @{ 'kgb_verifier' = 'K'; 'work' = 'W'; 'default' = 'D' }
 
-    $listing = & {
-        function Get-SecretChatStates { @{} }
-        Show-Accounts -Accounts $sample 6>&1 | ForEach-Object { "$_" }
-    }
+    $listing = & { Show-Accounts -Accounts $sample 6>&1 | ForEach-Object { "$_" } }
     $numbered = @($listing | Where-Object { $_ -match '^\s+\d+\.\s' })
     if ($numbered.Count -ne 3) {
         throw "The listing did not number every account; got $($numbered.Count) numbered lines of 3."
@@ -641,28 +617,32 @@ try {
     # Removing an account must clear BOTH stores.
     #
     # This is the defect that cost the owner four real logins. An account lives
-    # in `.env` AND in a TDLib database; removal cleared only the first, so the
-    # database outlived the account and the next login inherited its dead auth
-    # key. Telegram then answered AUTH_KEY_UNREGISTERED on every attempt - a
-    # state no amount of logging in again can clear.
+    # in `.env` AND in a key store; removal cleared only the first, so the store
+    # outlived the account. Reuse the label for a different person and the new
+    # account inherits chats it cannot decrypt, under a name that now means
+    # someone else - and the history file beside them holds decrypted text.
     #
     # The owner's workflow is "delete it and log in again", so that path is the
     # one that has to work, not the repair path they were offered instead.
-    $stateRoot = Join-Path (Get-StateDirectory) 'tdlib'
+    $stateRoot = Join-Path (Get-StateDirectory) 'secret-chats'
     $victim = Join-Path $stateRoot 'a_test_label_that_is_not_real'
-    [void] (New-Item -ItemType Directory -Path (Join-Path $victim 'files') -Force)
-    Set-Content -LiteralPath (Join-Path $victim 'td.binlog') -Value 'stale' -Encoding utf8
+    [void] (New-Item -ItemType Directory -Path $victim -Force)
+    Set-Content -LiteralPath (Join-Path $victim 'keys.json') -Value 'stale' -Encoding utf8
+    $victimHistory = Join-Path $stateRoot 'a_test_label_that_is_not_real-history.json'
+    Set-Content -LiteralPath $victimHistory -Value '{}' -Encoding utf8
 
-    Remove-TdlibDatabase -Label 'a_test_label_that_is_not_real'
-    if (Test-Path -LiteralPath $victim) {
-        Remove-Item -LiteralPath $victim -Recurse -Force -ErrorAction SilentlyContinue
-        throw 'Removing an account left its TDLib database behind.'
+    Remove-SecretChatKeys -Label 'a_test_label_that_is_not_real'
+    foreach ($left in @($victim, $victimHistory)) {
+        if (Test-Path -LiteralPath $left) {
+            Remove-Item -LiteralPath $left -Recurse -Force -ErrorAction SilentlyContinue
+            throw "Removing an account left '$left' behind."
+        }
     }
-    Write-Host 'ok  removing an account clears its TDLib database too'
+    Write-Host 'ok  removing an account clears its keys and its history file'
 
-    # A label with no database is the ordinary case and must not throw.
-    Remove-TdlibDatabase -Label 'a_label_with_no_database_at_all'
-    Write-Host 'ok  a missing database is not an error'
+    # A label with no store is the ordinary case and must not throw.
+    Remove-SecretChatKeys -Label 'a_label_with_no_store_at_all'
+    Write-Host 'ok  a missing key store is not an error'
 
     # The two languages must agree on the path, or the removal above deletes
     # nothing and the whole class of bug returns in silence.
@@ -670,19 +650,19 @@ try {
     if (Test-Path -LiteralPath $python -PathType Leaf) {
         Push-Location -LiteralPath $projectRoot
         try {
-            $fromPython = & $python -c "from telegram_mcp.tdlib import database_dir_for; print(database_dir_for('probe'))" 2>$null
+            $fromPython = & $python -c "from telegram_mcp.secret_backend import _storage_for; print(_storage_for('probe').path)" 2>$null
         }
         finally { Pop-Location }
         $fromPowerShell = Join-Path $stateRoot 'probe'
         if ("$fromPython".Trim() -ne $fromPowerShell) {
-            throw "The two halves disagree on the database path: PowerShell '$fromPowerShell' vs Python '$fromPython'."
+            throw "The two halves disagree on the key store path: PowerShell '$fromPowerShell' vs Python '$fromPython'."
         }
-        Write-Host 'ok  PowerShell and Python resolve the same database directory'
+        Write-Host 'ok  PowerShell and Python resolve the same key store'
     }
 
     $removeBlock = [regex]::Match($source, '(?ms)^function Remove-Account \{.*?^\}').Value
-    if ($removeBlock -notmatch 'Remove-TdlibDatabase -Label \$label') {
-        throw 'Remove-Account no longer clears the TDLib database.'
+    if ($removeBlock -notmatch 'Remove-SecretChatKeys -Label \$label') {
+        throw 'Remove-Account no longer clears the secret-chat state.'
     }
 
 
@@ -707,15 +687,18 @@ try {
     }
     Write-Host 'ok  no message claims a restart is needed, and the reload is still wired in'
 
-    # A status probe attached to a listing must never take the listing down.
-    $probe = [regex]::Match($source, '(?ms)^function Get-SecretChatStates \{.*?^\}').Value
-    if ($probe -notmatch 'IsNullOrWhiteSpace\(\$PSScriptRoot\)') {
-        throw 'Get-SecretChatStates no longer tolerates a missing script root.'
+    # The listing must not spawn a probe at all any more. It used to shell out to
+    # Python for each account's second-half state, which is why it needed a
+    # missing-script-root guard and a catch: a status probe attached to a listing
+    # could take the listing down. There is no second half, so there is no probe.
+    $show = [regex]::Match($source, '(?ms)^function Show-Accounts \{.*?^\}').Value
+    if (-not $show) { throw 'Could not isolate Show-Accounts.' }
+    foreach ($spawn in @('Start-Process', '& $python', 'python.exe')) {
+        if ($show -match [regex]::Escape($spawn)) {
+            throw "Show-Accounts spawns '$spawn'; listing accounts must not run anything."
+        }
     }
-    if ($probe -notmatch 'catch') {
-        throw 'Get-SecretChatStates can throw, which would break Show-Accounts.'
-    }
-    Write-Host 'ok  the status probe degrades to unknown instead of breaking the list'
+    Write-Host 'ok  listing accounts runs nothing and cannot be taken down by a probe'
 
 
 }

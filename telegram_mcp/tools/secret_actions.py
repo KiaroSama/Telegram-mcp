@@ -1,52 +1,44 @@
 """What you do TO a secret chat, as opposed to what you send through it.
 
-Delete, clear, mark read, show a typing indicator, search, copy a message in.
-Six operations Telegram's own client offers inside a secret chat and this server
-could not reach at all, and every one of them behaves differently enough from
-its ordinary-chat twin that a caller carrying habits across gets it wrong.
+Delete, clear, mark read, show a typing indicator, search, copy a message in. Six
+operations Telegram's own client offers inside a secret chat, and every one of them
+behaves differently enough from its ordinary-chat twin that a caller carrying habits
+across gets it wrong.
 
 **Deletion always reaches both sides.** The encrypted protocol defines
 `decryptedMessageActionDeleteMessages` and nothing else -- there is no
-delete-for-me-only, and TDLib does not even forward the `revoke` flag when the
-chat is secret. So these tools do not offer a choice that does not exist; they
-say what will happen instead.
+delete-for-me-only. So these tools do not offer a choice that does not exist; they say
+what will happen instead.
 
-**Reading is addressed by a MOMENT, not by a message.** TDLib's
-`read_history_on_server_impl` takes the message's `date` and sends that, so
-marking one message read marks every message at or before its timestamp. A
-result claiming "message 5 is read" would be false, which is why these report
-`read_up_to_date`.
+**Reading is addressed by a moment, not by one message.** `mark_secret_read` marks
+everything at or before the named message, and reports `read_up_to_date` rather than a
+single id, because saying "message 5 is read" would be false about the four before it.
 
-**Searching reads the only copy there is.** A secret chat has no server-side
-history, so an empty answer means either that nothing matched or that this
-login never received the messages in question -- and the difference matters
-enough to say out loud every time.
+**Searching reads the only copy there is.** A secret chat has no server-side history,
+so an empty answer means either that nothing matched or that this login never received
+the messages in question -- and the difference matters enough to say out loud every
+time. The search itself runs here, over this server's own record: the encrypted
+protocol has no search, and it never did. The previous backend's dedicated search call
+was that client searching its own local database, which is exactly what this does.
 
-**Copying in is a copy, and Telegram decides whether it is allowed.** The
-encrypted message has no attribution field at all, so a forward is impossible
-and what arrives looks like an original. Whether a given message may cross at
-all is `can_be_copied_to_secret_chat`, which TDLib computes from the content
-type; asking it is the difference between a refusal the caller can act on and
-this server guessing at a rule it does not own.
+**Copying in is a copy, and the protocol decides what can cross.** The encrypted
+message has no attribution field at all, so a forward is impossible and what arrives
+looks like an original. The eight media kinds and text can cross; a poll, a live
+location, a game or an invoice has no encrypted form, and is refused by name.
 
-The readiness guard applies to everything here that mutates, and deliberately
-not to `search_secret_messages`: a closed chat's history still exists in this
-device's database, and refusing to read the last copy in order to satisfy a rule
-about sending would be the wrong trade.
+The readiness guard applies to everything here that mutates, and deliberately not to
+`search_secret_messages`: a closed chat's history still exists on this device, and
+refusing to read the last copy in order to satisfy a rule about sending would be the
+wrong trade.
 """
 
+from telegram_mcp import secret_history
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
+from telegram_mcp.secret_backend import secret_manager, secret_tl
+from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
 from telegram_mcp.secret_limits import require_ready_chat
-from telegram_mcp.tdlib import (
-    NotSignedIn,
-    TDLibError,
-    TDLibUnavailable,
-    secret_client,
-)
-
-from telegram_mcp.tools.secret_chats import _account_label, _unavailable
-from telegram_mcp.tools.secret_messaging import _message_record
+from telegram_mcp.secret_media_content import infer_kind
 
 __all__ = [
     "clear_secret_history",
@@ -58,28 +50,40 @@ __all__ = [
 ]
 
 
-# The seven Telegram draws, in the owner's words rather than TDLib's. `cancel`
-# is included because an indicator left running looks like someone who walked
-# away mid-sentence.
-_ACTIONS = {
-    "typing": "chatActionTyping",
-    "recording_voice": "chatActionRecordingVoiceNote",
-    "recording_video": "chatActionRecordingVideoNote",
-    "uploading_photo": "chatActionUploadingPhoto",
-    "uploading_video": "chatActionUploadingVideo",
-    "uploading_document": "chatActionUploadingDocument",
-    "cancel": "chatActionCancel",
-}
+def _account_label(account=None) -> str:
+    return account_label(account)
 
 
-def _refusal(name: str, error: TDLibError) -> str:
-    """Telegram's own words, not an error code.
+def _typing_action(chosen: str):
+    """The protocol object for one indicator name.
 
-    Consistent with every other tool in this family: the API's verdict - "have
-    no write access", "MESSAGE_DELETE_FORBIDDEN" - is the one sentence the
-    caller needs, and hiding it behind a code sends them to a log to find it.
+    Taken from the seam rather than from the package: `secret_backend` is the one
+    module allowed to import it, and a test enforces that.
     """
-    return f"Telegram refused this: {error}"
+    tl = secret_tl
+
+    return {
+        "typing": tl.SendMessageTypingAction,
+        "recording_voice": tl.SendMessageRecordAudioAction,
+        "recording_video": tl.SendMessageRecordRoundAction,
+        "uploading_photo": tl.SendMessageUploadPhotoAction,
+        "uploading_video": tl.SendMessageUploadVideoAction,
+        "uploading_document": tl.SendMessageUploadDocumentAction,
+        "cancel": tl.SendMessageCancelAction,
+    }[chosen]()
+
+
+# The seven Telegram draws, in the owner's words. `cancel` is included because an
+# indicator left running looks like someone who walked away mid-sentence.
+_ACTIONS = (
+    "typing",
+    "recording_voice",
+    "recording_video",
+    "uploading_photo",
+    "uploading_video",
+    "uploading_document",
+    "cancel",
+)
 
 
 @mcp.tool(
@@ -107,23 +111,18 @@ async def delete_secret_message(chat_id: int, message_id: int, account: str = No
     """
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(chat_id)
 
-        refusal = await require_ready_chat(client, int(chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
-        await client.request(
-            {
-                "@type": "deleteMessages",
-                "chat_id": int(chat_id),
-                "message_ids": [int(message_id)],
-                # Sent for the ordinary-chat code path's sake; TDLib does not
-                # forward it for a secret chat, where deletion is both-sided by
-                # construction.
-                "revoke": True,
-            }
-        )
+        await manager.delete_messages(secret_id, [int(message_id)])
+        # And from this server's own record. A delete that left the text in a
+        # local file would be a delete in name only, and `read_secret_messages`
+        # would keep showing what both devices had just destroyed.
+        secret_history.forget(label, secret_id, [int(message_id)])
         return format_tool_result(
             {
                 "deleted": True,
@@ -132,14 +131,14 @@ async def delete_secret_message(chat_id: int, message_id: int, account: str = No
                 "reached": "both sides — a secret chat has no delete-for-me-only",
             }
         )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return _refusal("delete_secret_message", e)
+    except KeyError:
+        return f"No secret chat {chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("delete_secret_message", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "delete_secret_message", e, chat_id=chat_id
+        )
 
 
 @mcp.tool(
@@ -166,7 +165,7 @@ async def clear_secret_history(chat_id: int, confirm_chat_id: int, account: str 
         confirm_chat_id: The same id again. A mismatch clears nothing.
     """
     if int(chat_id) != int(confirm_chat_id):
-        # Before the client and before any request: a mistyped id must cost
+        # Before the backend and before any request: a mistyped id must cost
         # nothing at all, and the whole point of the second argument is that it
         # is checked while being wrong is still free.
         return (
@@ -177,37 +176,31 @@ async def clear_secret_history(chat_id: int, confirm_chat_id: int, account: str 
 
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(chat_id)
 
-        refusal = await require_ready_chat(client, int(chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
-        await client.request(
-            {
-                "@type": "deleteChatHistory",
-                "chat_id": int(chat_id),
-                # Emptying a chat and removing it are different acts, and only
-                # one of them was asked for.
-                "remove_from_chat_list": False,
-                "revoke": True,
-            }
-        )
+        await manager.flush_history(secret_id)
+        removed = secret_history.clear(label, secret_id)
         return format_tool_result(
             {
                 "cleared": True,
                 "chat_id": int(chat_id),
+                "messages_removed_here": removed,
                 "reached": "both sides — and there is no server copy to restore from",
             }
         )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return _refusal("clear_secret_history", e)
+    except KeyError:
+        return f"No secret chat {chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("clear_secret_history", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "clear_secret_history", e, chat_id=chat_id
+        )
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Mark Secret Read", openWorldHint=True))
@@ -216,9 +209,9 @@ async def mark_secret_read(chat_id: int, message_id: int = None, account: str = 
     """
     Tell the other side a secret chat has been read, up to a moment in time.
 
-    **This is not per-message.** The encrypted protocol carries a timestamp, so
-    marking one message read marks every message at or before its moment. The
-    result reports `read_up_to_date` rather than a message id, because saying
+    **This is not per-message.** Marking one message read marks every message at
+    or before it, which is what a read receipt means everywhere in Telegram. The
+    result reports `read_up_to_date` rather than a single id, because saying
     "message 5 is read" would be false about the four before it.
 
     Reading here is also what starts a self-destruct countdown on the other
@@ -232,81 +225,62 @@ async def mark_secret_read(chat_id: int, message_id: int = None, account: str = 
     """
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(chat_id)
 
-        refusal = await require_ready_chat(client, int(chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
-        if message_id is None:
-            history = await client.request(
-                {
-                    "@type": "getChatHistory",
-                    "chat_id": int(chat_id),
-                    "from_message_id": 0,
-                    "offset": 0,
-                    "limit": 1,
-                    "only_local": True,
-                }
-            )
-            messages = history.get("messages") or []
-            if not messages:
-                return format_tool_result(
-                    {
-                        "marked": False,
-                        "reason": "This device holds no messages for that chat, so there "
-                        "is nothing to mark read and nothing was sent.",
-                    }
-                )
-            target = messages[0]
-        else:
-            target = await client.request(
-                {
-                    "@type": "getMessage",
-                    "chat_id": int(chat_id),
-                    "message_id": int(message_id),
-                }
-            )
-
-        date = target.get("date") or 0
-        if not date:
-            # TDLib's own path logs an error and sends nothing when it has no
-            # date. Reporting success would claim a receipt the other side
-            # never received.
+        held = secret_history.read(label, secret_id, 10_000)
+        # Only what the OTHER side sent can be read: a receipt for your own
+        # message would start a countdown on your own copy and tell the peer
+        # nothing.
+        incoming = [m for m in held if not m["is_outgoing"]]
+        if not incoming:
             return format_tool_result(
                 {
                     "marked": False,
-                    "reason": "That message carries no date, and the read receipt a secret "
-                    "chat sends IS a date — so there is nothing to send. Nothing was sent.",
+                    "reason": "This device holds no incoming messages for that chat, so "
+                    "there is nothing to mark read and nothing was sent.",
                 }
             )
 
-        await client.request(
-            {
-                "@type": "viewMessages",
-                "chat_id": int(chat_id),
-                "message_ids": [int(target.get("id"))],
-                "force_read": True,
-            }
-        )
+        if message_id is None:
+            target = incoming[-1]
+        else:
+            wanted = int(message_id)
+            target = next((m for m in incoming if m["message_id"] == wanted), None)
+            if target is None:
+                return format_tool_result(
+                    {
+                        "marked": False,
+                        "reason": f"Message {wanted} is not among the messages this device "
+                        "received in that chat, so there is nothing to acknowledge. "
+                        "read_secret_messages shows what is here. Nothing was sent.",
+                    }
+                )
+
+        # Everything at or before that moment, which is what a receipt means -
+        # and the protocol carries the list, so the list is what is sent.
+        up_to = [m["message_id"] for m in incoming if m["date"] <= target["date"]]
+        await manager.mark_read(secret_id, up_to)
         return format_tool_result(
             {
                 "marked": True,
                 "chat_id": int(chat_id),
-                "read_up_to_message_id": target.get("id"),
-                "read_up_to_date": date,
-                "note": "Everything sent at or before that moment is now marked read; the "
-                "protocol carries a timestamp rather than a list of messages.",
+                "read_up_to_message_id": target["message_id"],
+                "read_up_to_date": target["date"],
+                "messages_acknowledged": len(up_to),
+                "note": "Everything received at or before that moment is now marked read.",
             }
         )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return _refusal("mark_secret_read", e)
+    except KeyError:
+        return f"No secret chat {chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("mark_secret_read", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error("mark_secret_read", e, chat_id=chat_id)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Send Secret Typing", openWorldHint=True))
@@ -333,19 +307,14 @@ async def send_secret_typing(chat_id: int, action: str = "typing", account: str 
 
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(chat_id)
 
-        refusal = await require_ready_chat(client, int(chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
-        await client.request(
-            {
-                "@type": "sendChatAction",
-                "chat_id": int(chat_id),
-                "action": {"@type": _ACTIONS[chosen]},
-            }
-        )
+        await manager.set_typing(secret_id, _typing_action(chosen))
         return format_tool_result(
             {
                 "shown": chosen,
@@ -353,14 +322,14 @@ async def send_secret_typing(chat_id: int, action: str = "typing", account: str 
                 "note": "Indicators expire after a few seconds; send it again to keep it up.",
             }
         )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return _refusal("send_secret_typing", e)
+    except KeyError:
+        return f"No secret chat {chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("send_secret_typing", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "send_secret_typing", e, chat_id=chat_id
+        )
 
 
 @mcp.tool(
@@ -375,14 +344,15 @@ async def search_secret_messages(
     """
     Search one secret chat's messages, in this device's local copy.
 
-    Telegram has a search call dedicated to secret chats; the ordinary one
-    answers a secret chat with an error, so this is a different route rather
-    than a flag.
+    The search runs here rather than at Telegram, because there is nothing at
+    Telegram to search: the encrypted protocol has no search call and a secret
+    chat has no server-side history. Matching is case-insensitive over text and
+    captions.
 
     **An empty result has two meanings.** Either nothing matched, or this login
-    never received the messages that would have — a secret chat has no
-    server-side history, so a gap is permanent and invisible. The answer says so
-    rather than letting "no results" read as "never sent".
+    never received the messages that would have — a gap is permanent and
+    invisible. The answer says so rather than letting "no results" read as
+    "never sent".
 
     A closed chat is still searchable: its history is local, and that local copy
     is the only one that exists.
@@ -401,39 +371,34 @@ async def search_secret_messages(
 
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        secret_id = to_secret_id(chat_id)
+        await secret_manager(label)
 
-        found = await client.request(
-            {
-                "@type": "searchSecretMessages",
-                "chat_id": int(chat_id),
-                "query": query,
-                "offset": "",
-                "limit": bound.value,
-            }
-        )
-        messages = found.get("messages") or []
-        if not messages:
+        needle = str(query).casefold()
+        matches = [
+            message
+            for message in secret_history.read(label, secret_id, 10_000)
+            if needle in (message.get("text", "") + message.get("caption", "")).casefold()
+        ]
+        if not matches:
             return (
                 f"No message on this device matches {query!r}. That is not proof none was "
                 "ever sent: a secret chat keeps no server-side history, so anything this "
                 "login did not receive is not here to find."
             )
 
-        # The shared record builder, not a second one: it is what routes text
-        # and captions through the sanitiser every other message tool uses.
-        records = [_message_record(m) for m in messages]
+        # `total_count` is every match, not the page - a caller deciding whether to
+        # raise the limit needs to know what it is choosing between.
+        page = matches[-bound.value :]
         return format_tool_result(
-            {"messages": records, "total_count": found.get("total_count"), **bound.metadata}
+            {"messages": page, "total_count": len(matches), **bound.metadata}
         )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return _refusal("search_secret_messages", e)
     except Exception as e:
-        return log_and_format_error("search_secret_messages", e, chat_id=chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "search_secret_messages", e, chat_id=chat_id
+        )
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Copy Into Secret Chat", openWorldHint=True))
@@ -449,9 +414,10 @@ async def copy_into_secret_chat(
     the other side sees it as something you wrote. If the original's author
     matters, say so in your own words.
 
-    Not every message can cross. Telegram decides per message, from its content
-    type — a poll or a live location has no encrypted form — and this asks
-    Telegram rather than guessing, so a refusal names the real reason.
+    Not every message can cross. Text and the eight media kinds a secret chat
+    carries can; a poll, a live location, a game, an invoice or a contact card
+    has no encrypted form at all, and is refused by name rather than sent as
+    something it is not.
 
     Args:
         from_chat_id: The chat holding the original.
@@ -460,55 +426,77 @@ async def copy_into_secret_chat(
     """
     try:
         label = _account_label(account)
-        client = await secret_client(label)
+        client = get_client(account)
+        await ensure_connected(client)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(to_chat_id)
 
-        refusal = await require_ready_chat(client, int(to_chat_id))
+        refusal = require_ready_chat(manager, secret_id)
         if refusal:
             return refusal
 
-        properties = await client.request(
-            {
-                "@type": "getMessageProperties",
-                "chat_id": int(from_chat_id),
-                "message_id": int(message_id),
-            }
-        )
-        if not properties.get("can_be_copied_to_secret_chat", False):
+        source = await client.get_messages(int(from_chat_id), ids=int(message_id))
+        if source is None:
             return (
-                f"Telegram says message {message_id} cannot be copied into a secret chat. "
-                "That is a judgement about its CONTENT: several kinds — polls, live "
-                "locations, games, invoices — have no encrypted form at all, and content "
-                "the sender protected cannot be copied anywhere. Nothing was sent."
+                f"Message {message_id} is not in chat {from_chat_id}, or this account "
+                "cannot see it. Nothing was sent."
             )
 
-        sent = await client.request(
-            {
-                "@type": "forwardMessages",
-                "chat_id": int(to_chat_id),
-                "from_chat_id": int(from_chat_id),
-                "message_ids": [int(message_id)],
-                # A copy, because the encrypted message has nowhere to put the
-                # original's author.
-                "send_copy": True,
-                "remove_caption": False,
-            },
-            timeout=120,
-        )
-        copies = sent.get("messages") or []
-        return format_tool_result(
-            {
-                "copied": True,
-                "to_chat_id": int(to_chat_id),
-                "message_id": copies[0].get("id") if copies and copies[0] else None,
-                "attribution": "none — the encrypted protocol carries no forwarding "
-                "information, so it arrives as though you wrote it",
-            }
-        )
-    except (NotSignedIn, TDLibUnavailable) as e:
-        return _unavailable(e)
+        text = source.message or ""
+        if source.media is None:
+            if not text:
+                return (
+                    f"Message {message_id} carries neither text nor media a secret chat can "
+                    "hold — a poll, a live location, a game and an invoice have no encrypted "
+                    "form at all. Nothing was sent."
+                )
+            sent_id = await manager.send_message(secret_id, text, source.entities)
+            secret_history.record(
+                label,
+                secret_id,
+                secret_history.entry(message_id=sent_id, is_outgoing=True, text=text),
+            )
+            kind = None
+        else:
+            # Down and up again, because the encrypted layer's file key is made
+            # here: the original's bytes sit on Telegram under a key this chat
+            # has no access to, so a copy is genuinely a re-send rather than a
+            # pointer. The scratch copy goes as soon as it has crossed.
+            downloaded = await client.download_media(source, file=bytes)
+            if not downloaded:
+                return (
+                    f"Message {message_id} carries media that could not be fetched, so there "
+                    "is nothing to copy. Nothing was sent."
+                )
+            suffix = getattr(getattr(source, "file", None), "ext", None) or ""
+            scratch = Path(tempfile.gettempdir()) / f"tgmcp_copy_{int(time.time())}{suffix}"
+            scratch.write_bytes(downloaded)
+            try:
+                kind = infer_kind(str(scratch))
+                sent_id = await manager.send_file(secret_id, scratch, caption=text, kind=kind)
+            finally:
+                scratch.unlink(missing_ok=True)
+            secret_history.record(
+                label,
+                secret_id,
+                secret_history.entry(message_id=sent_id, is_outgoing=True, text=text, kind=kind),
+            )
+
+        record = {
+            "copied": True,
+            "to_chat_id": int(to_chat_id),
+            "message_id": sent_id,
+            "attribution": "none — the encrypted protocol carries no forwarding "
+            "information, so it arrives as though you wrote it",
+        }
+        if kind:
+            record["kind"] = kind
+        return format_tool_result(record)
     except ValueError as e:
         return str(e)
-    except TDLibError as e:
-        return _refusal("copy_into_secret_chat", e)
+    except KeyError:
+        return f"No secret chat {to_chat_id} for this login. `list_secret_chats` shows them."
     except Exception as e:
-        return log_and_format_error("copy_into_secret_chat", e, to_chat_id=to_chat_id)
+        return describe_refusal(e) or log_and_format_error(
+            "copy_into_secret_chat", e, to_chat_id=to_chat_id
+        )
