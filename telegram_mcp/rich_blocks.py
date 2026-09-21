@@ -17,13 +17,19 @@ clearest case: one names a type (`pageBlockHorizontalAlignmentCenter`) and the o
 sets a flag (`align_center=True`), and both mean "centre".
 """
 
-from typing import Any
+from typing import Any, Optional
 
 from telethon.tl import types
 
 from telegram_mcp.text_fidelity import display_text
 
-__all__ = ["render_blocks", "flatten"]
+__all__ = [
+    "file_catalogue",
+    "flatten",
+    "named_file",
+    "published_name",
+    "render_blocks",
+]
 
 #: What each block is CALLED in the answer this tool has always published.
 #:
@@ -56,10 +62,27 @@ _BLOCK_NAMES = {
     "PageBlockVideo": "pageBlockVideo",
     "PageBlockAudio": "pageBlockAudio",
     "PageBlockEmbedPost": "pageBlockEmbedPost",
+    "PageBlockDocument": "pageBlockDocument",
+    "PageBlockMap": "pageBlockMap",
+    "PageBlockMath": "pageBlockMathematicalExpression",
+    "PageBlockEmbed": "pageBlockEmbedded",
+    "PageBlockCover": "pageBlockCover",
+    "PageBlockChannel": "pageBlockChatLink",
+    "PageBlockRelatedArticles": "pageBlockRelatedArticles",
+    "PageBlockButtonRow": "pageBlockButtonRow",
+    "PageBlockBlockquoteBlocks": "pageBlockBlockQuote",
+    "PageBlockUnsupported": "pageBlockUnsupported",
+    # The six heading levels are one published name, as they were before.
+    "PageBlockHeading1": "pageBlockHeader",
+    "PageBlockHeading2": "pageBlockSubheader",
+    "PageBlockHeading3": "pageBlockSubheader",
+    "PageBlockHeading4": "pageBlockSubheader",
+    "PageBlockHeading5": "pageBlockSubheader",
+    "PageBlockHeading6": "pageBlockSubheader",
 }
 
 
-def _published_name(block) -> str:
+def published_name(block) -> str:
     """The block's name as this tool has always reported it."""
     return _BLOCK_NAMES.get(type(block).__name__, type(block).__name__)
 
@@ -103,6 +126,38 @@ _EMPHASIS = {
 }
 
 
+def named_file(block) -> Optional[int]:
+    """The id of the file this block names, or None when it names none.
+
+    A block does not CARRY its photo or document; it points at one that travels
+    beside it on the message. This is the pointer, and `file_catalogue` turns it into
+    the object.
+    """
+    for attribute in ("photo_id", "video_id", "audio_id", "document_id", "webpage_id"):
+        value = getattr(block, attribute, None)
+        if value:
+            return value
+    return None
+
+
+def file_catalogue(rich) -> dict:
+    """Every photo and document the message carries, by id.
+
+    Both lists travel on the message rather than inside the blocks, so a block's
+    pointer is resolved here. A block naming a file that is not in either list is a
+    message that arrived incomplete - the caller is told, rather than handed nothing
+    and left to guess.
+    """
+    catalogue = {}
+    for item in list(getattr(rich, "photos", None) or []) + list(
+        getattr(rich, "documents", None) or []
+    ):
+        identifier = getattr(item, "id", None)
+        if identifier:
+            catalogue[identifier] = item
+    return catalogue
+
+
 def flatten(node: Any) -> str:
     """One string from a `RichText` tree, with its formatting kept as markers.
 
@@ -143,6 +198,18 @@ def flatten(node: Any) -> str:
         alt = node.alt or ""
         emoji_id = getattr(node, "document_id", None)
         return f"{alt}<tg-emoji id={emoji_id}>" if emoji_id else alt
+    if isinstance(node, types.TextButton):
+        # A button is NOT text with a link: the label hangs off the button and the
+        # destination off its type, so nothing sits under `text` in the usual shape
+        # and the generic fallback returned "" - a whole button read back as an
+        # empty paragraph. Written like the custom-emoji marker so the two read
+        # alike.
+        label = flatten(node.text)
+        target = (
+            getattr(getattr(node, "type", None), "url", None)
+            or type(getattr(node, "type", None)).__name__
+        )
+        return f"[{label}]<tg-button url={target}>" if label else ""
     if isinstance(node, types.TextMath):
         # Not under `text` like every other node - a bare expression string.
         return f"${node.source or ''}$"
@@ -266,23 +333,33 @@ def _caption_text(caption) -> str:
 
 
 def _media_record(block, kind: str) -> dict:
-    """A block that names a file, reported by kind and by what identifies the file."""
-    record = {"type": type(block).__name__, "kind": kind}
+    """A block that names a file, reported by kind and by what identifies it.
+
+    The shape is the published one: the facts sit under `media`, not at the top of
+    the record, so a caller reads a photo and a track the same way. `file_id` is what
+    `download_rich_media` resolves against the message's own photo and document
+    lists.
+    """
+    record: dict = {"type": published_name(block), "media": {"kind": kind}}
+    named = named_file(block)
+    if named is not None:
+        record["media"]["file_id"] = str(named)
+    for flag in ("spoiler", "auto_play", "loop"):
+        if getattr(block, flag, False):
+            record[f"has_{flag}" if flag == "spoiler" else flag] = True
+    url = getattr(block, "url", None)
+    if url:
+        record["url"] = url
     caption = _caption_text(getattr(block, "caption", None))
     if caption:
         record["caption"] = display_text(caption)
-    for attribute in ("photo_id", "video_id", "audio_id", "webpage_id"):
-        value = getattr(block, attribute, None)
-        if value:
-            record["file_id"] = str(value)
-            break
     return record
 
 
 def render_block(block) -> dict:
     """One page block as a structured record plus a rendered view."""
     name = type(block).__name__
-    record: dict = {"type": _published_name(block)}
+    record: dict = {"type": published_name(block)}
 
     if isinstance(block, types.PageBlockTable):
         rows = _table_rows(block)
@@ -332,6 +409,27 @@ def render_block(block) -> dict:
         return record
 
     if isinstance(block, types.PageBlockDivider):
+        return record  # nothing to carry; the type IS the content
+
+    if isinstance(block, types.PageBlockMath):
+        record["expression"] = getattr(block, "source", "") or ""
+        return record
+
+    if isinstance(block, types.PageBlockMap):
+        # A map is the one block whose content is neither text nor a file. Reporting
+        # only its type read as an empty block, so where it points is the content.
+        where = getattr(block, "geo", None)
+        record["location"] = {
+            "latitude": getattr(where, "lat", None),
+            "longitude": getattr(where, "long", None),
+        }
+        for key in ("zoom", "w", "h"):
+            value = getattr(block, key, None)
+            if value:
+                record[{"w": "width", "h": "height"}.get(key, key)] = value
+        caption = _caption_text(getattr(block, "caption", None))
+        if caption:
+            record["caption"] = display_text(caption)
         return record
 
     if name in _MEDIA_BLOCKS:
