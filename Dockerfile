@@ -1,15 +1,15 @@
-# A glibc base, and that is a requirement rather than a preference.
+# A Debian base, and the reason changed on 2026-09-21.
 #
-# This was `python:3.14-alpine` while every dependency was pure Python. It cannot
-# be any more: `tdjson` - Telegram's own client library, which secret chats and
-# the post-layer-227 admin rights have no other route to - ships manylinux wheels
-# and NO musllinux wheel, and no source distribution either. On Alpine the build
-# fails at `uv sync` with "doesn't have a source distribution or wheel for the
-# current platform", which is a clear message arriving several minutes late.
+# It was a REQUIREMENT while a native dependency shipped manylinux wheels with no
+# musllinux wheel and no source distribution: on Alpine the build failed at
+# `uv sync` with "doesn't have a source distribution or wheel for the current
+# platform", several minutes in. That dependency is gone with TDLib, and every
+# remaining one is pure Python, so nothing here needs glibc any more.
 #
-# `-slim` is Debian, so the manylinux wheels install. The image is larger than
-# the Alpine one; that is the price of the native library, not an oversight.
-# tests/test_container_build.py fails if this line goes back to a musl base.
+# It stays `-slim` because a move to Alpine is an untested change with no measured
+# benefit, not because it is still forced. What IS still required is `git`, for the
+# encryption package's VCS pin - see the layer below, and
+# tests/test_container_build.py, which asserts it.
 FROM python:3.14-slim
 
 # Set the working directory in the container
@@ -77,9 +77,9 @@ COPY telegram_mcp ./telegram_mcp
 # `/data/state` is the second half, and without it the volume was persisting
 # only one of the two things worth persisting. `state_dir()` resolves under
 # `XDG_STATE_HOME`, which defaulted to the container user's home - so the
-# Telethon session survived a container replacement while the TDLib databases,
+# Telethon session survived a container replacement while the secret-chat keys,
 # the identity notes beside them, any quarantined database, the alias store and
-# the event feed all went with the old container. Losing a TDLib database is not
+# the event feed all went with the old container. Losing a key store is not
 # a re-login: it takes the secret-chat keys, and those cannot be re-derived.
 RUN mkdir -p /data /data/state
 
@@ -87,7 +87,7 @@ RUN mkdir -p /data /data/state
 RUN adduser --disabled-password --gecos "" appuser && chown -R appuser:appuser /app /data
 USER appuser
 
-# Private: the state directory holds session files and TDLib databases, each of
+# Private: the state directory holds session files and secret-chat keys, each of
 # which IS the account to whoever can read it.
 RUN chmod 700 /data/state
 
@@ -101,7 +101,7 @@ ENV TELEGRAM_API_HASH=""
 # Default session path. Absolute and under /data on purpose: a bare filename
 # would land in WORKDIR and be lost on every container replacement.
 ENV TELEGRAM_SESSION_NAME="/data/telegram_mcp_session"
-# Everything `state_dir()` resolves - TDLib databases, owner.json, quarantined
+# Everything `state_dir()` resolves - secret-chat keys, owner.json, quarantined
 # databases, the alias store, the event feed, the error log - lands under the
 # mounted volume rather than in the container's own filesystem.
 ENV XDG_STATE_HOME="/data/state"

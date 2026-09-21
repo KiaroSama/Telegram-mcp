@@ -71,18 +71,16 @@ function Show-Accounts {
     }
     Write-Host ''
     Write-Host "Configured accounts ($($accounts.Count)):" -ForegroundColor Cyan
-    # Both halves, because "is this account actually usable" is the question the
-    # list is opened to answer, and the Telethon half alone leaves eleven tools
-    # dark without saying so.
-    $states = Get-SecretChatStates
     $unfinished = @()
     $number = 0
     foreach ($label in $accounts.Keys) {
         $number++
         $note = if ($label -eq 'default') { '  (used when a tool is called without account=)' } else { '' }
         Write-Host ("  {0,2}. {1,-16} {2}{3}" -f $number, $label, $accounts[$label], $note)
-        $state = if ($states.ContainsKey($label)) { $states[$label] } else { '' }
-        $summary = Get-SecretChatSummary -State $state
+        # One login per account since 2026-09-21: a configured account has every
+        # capability, secret chats included, so there is no second half to report.
+        $state = 'authorizationStateReady'
+        $summary = 'ready'
         # Indented under the name, past the number, so the two lines read as one
         # entry rather than as two accounts.
         $continuation = '      {0,-16} {1}'
@@ -185,124 +183,6 @@ function Invoke-SessionGenerator {
     }
 }
 
-function Get-SecretChatStates {
-    <#
-      Which accounts have finished their TDLib half, as label -> state.
-
-      Read from the code rather than guessed from a file's existence: a TDLib
-      database can exist and hold a half-finished authorisation, which is
-      exactly the state this project spent an afternoon in.
-    #>
-    # Never throws. This is a status probe attached to a listing, and a listing
-    # that dies because a probe could not run is worse than one that says
-    # "unknown" - which is what an empty result renders as.
-    $states = @{}
-    if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) { return $states }
-    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return $states }
-
-    Push-Location -LiteralPath $PSScriptRoot
-    try {
-        $lines = & $python (Join-Path 'scripts' 'secret_chat_login.py') '--status' 2>$null
-    }
-    catch { $lines = @() }
-    finally { Pop-Location }
-
-    foreach ($line in $lines) {
-        if ($line -match '^\s*([A-Za-z0-9_]+)=(\w+)\s*$') { $states[$Matches[1]] = $Matches[2] }
-    }
-    return $states
-}
-
-
-function Get-SecretChatSummary {
-    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $State)
-    switch ($State) {
-        'authorizationStateReady' { return 'secret chats: ready' }
-        '' { return 'secret chats: unknown' }
-        default { return 'secret chats: NOT finished' }
-    }
-}
-
-
-function Invoke-SecretChatLogin {
-    <#
-      Finish the account by signing it in to TDLib too, which is what secret
-      chats and the newer admin rights run on.
-
-      This asks for NOTHING. TDLib keeps its own authorisation and cannot import
-      a Telethon session - but Telegram's device-linking flow lets a new client
-      publish a login token and an already-authorised client accept it, so the
-      login that just happened authorises this one. No second code, and no QR
-      code is shown or scanned: that name is only what the phone app calls the
-      same exchange.
-
-      What it does add is a DEVICE in the account's session list, because TDLib
-      is a separate client. That part is the protocol. Declining is free and the
-      same script runs later.
-    #>
-    param(
-        [Parameter(Mandatory)] [string] $Label,
-        # The caller has already put the question. Asking again here is the same
-        # question twice in a row, which is what a caller reports as noise.
-        [switch] $AlreadyConfirmed
-    )
-
-    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return }
-
-    # Ask the code which prerequisite is missing rather than guessing: the
-    # library is an optional extra, and "not installed" and "not signed in" are
-    # fixed in completely different places.
-    $probe = 'from telegram_mcp.tdlib import tdjson_status; print("yes" if tdjson_status()["available"] else "no")'
-    Push-Location -LiteralPath $PSScriptRoot
-    try { $available = (& $python -c $probe 2>$null | Select-Object -Last 1) }
-    catch { $available = 'no' }
-    finally { Pop-Location }
-
-    Write-Host ''
-    if ($available -ne 'yes') {
-        Write-Hint 'Telegram''s own library is not usable here, so secret chats are off.'
-        Write-Hint '  Repair:   uv pip install -e .'
-        Write-Hint "  Sign in:  python scripts\secret_chat_login.py $Label"
-        Write-Log "TDLib login for '$Label' not offered: the library is not usable here" -Level WARNING
-        return
-    }
-
-    if (-not $AlreadyConfirmed) {
-        Write-Host 'One step left: sign this account in to TDLib as well.' -ForegroundColor Cyan
-        Write-Hint 'That is what secret chats and the newer admin rights run on. It uses the'
-        Write-Hint 'login you just did - no second code, and nothing to scan.'
-        Write-Hint 'It does add one device to this account''s Telegram session list.'
-        Write-Host ''
-    }
-    if (-not $AlreadyConfirmed -and -not (Read-Confirmation 'Finish it now?')) {
-        Write-Host "Skipped. Run scripts\secret_chat_login.py $Label whenever you want it."
-        Write-Log "TDLib login for '$Label' offered and declined"
-        return
-    }
-
-    $code = $null
-    Push-Location -LiteralPath $PSScriptRoot
-    try {
-        & $python (Join-Path 'scripts' 'secret_chat_login.py') $Label
-        $code = $LASTEXITCODE
-    }
-    finally { Pop-Location }
-
-    Write-Host ''
-    if ($code -eq 0) {
-        Write-Host "Done - secret chats are ready for '$Label'." -ForegroundColor Green
-        Write-Log "TDLib login completed for '$Label'"
-    }
-    else {
-        Write-Failure 'That sign-in did not finish, so secret chats are not available yet.'
-        Write-Hint "Nothing else was affected - '$Label' still works for every other tool."
-        Write-Hint "Run scripts\secret_chat_login.py $Label to try again."
-        Write-Log "TDLib login for '$Label' attempted and did not finish (exit $code)" -Level WARNING
-    }
-}
-
 function Test-SessionString {
     <#
       Ask Telethon whether this parses as a session, rather than guessing from its
@@ -348,23 +228,6 @@ function Add-Account {
     if (-not $label) { Write-Host 'Cancelled.'; return }
 
     if ($accounts.Contains($label)) {
-        # An account whose Telethon half works and whose TDLib half does not needs
-        # neither a new scan nor a new session string - only the two-step password
-        # Telegram wants even from a linked device. Offering "replace it all" for
-        # that was the whole reason a half-finished account had nowhere to go once
-        # the separate menu entry was removed.
-        $states = Get-SecretChatStates
-        $half = if ($states.ContainsKey($label)) { $states[$label] } else { '' }
-        if ($half -and $half -ne 'authorizationStateReady') {
-            Write-Host ''
-            Write-Host "'$label' is already configured; only its secret-chat half is unfinished." -ForegroundColor Yellow
-            Write-Hint 'Finishing it needs no scan and no code - just the two-step password.'
-            Write-Host ''
-            if (Read-Confirmation 'Finish that half now?') {
-                Invoke-SecretChatLogin -Label $label -AlreadyConfirmed
-                return
-            }
-        }
         Write-Host "An account labelled '$label' already exists ($($accounts[$label]))." -ForegroundColor Yellow
         if (-not (Read-Confirmation 'Replace its session string?')) { Write-Host 'Cancelled.'; return }
     }
@@ -424,9 +287,6 @@ function Add-Account {
         Write-Host 'You now have more than one account, so write tools will require' -ForegroundColor Yellow
         Write-Host "account=<label> from here on - for example account=$label." -ForegroundColor Yellow
     }
-
-    # Last, because the account is already usable without it.
-    Invoke-SecretChatLogin -Label $label
 }
 
 
@@ -460,31 +320,36 @@ function Read-AccountNumber {
     }
 }
 
-function Remove-TdlibDatabase {
+function Remove-SecretChatKeys {
     <#
-      Delete the account's TDLib database along with its .env line.
+      Delete the account's secret-chat key store along with its .env line.
 
-      These are two stores and only one used to be cleared. The database
-      outlived the account, so removing an account and adding it again handed
-      the NEW session the OLD one's dead auth key, and every attempt after that
-      failed with AUTH_KEY_UNREGISTERED - a state no amount of logging in again
-      can clear, while each attempt costs a real login.
+      These are two stores and only one used to be cleared. The store outlives
+      the account, so removing a label and reusing it for a different person left
+      the new account holding the old one's chats - keys that decrypt nothing,
+      under a name that now means someone else.
 
       Best effort by design: the account is already gone from `.env` by this
-      point, and a leftover database is a nuisance rather than a failure. The
-      code recovers from one anyway (`telegram_mcp.tdlib.complete_login`), so a
+      point, and a leftover store is a nuisance rather than a failure, so a
       failure here must not abort a removal that has already happened.
+
+      The history file beside it goes too. It holds decrypted message text, and
+      leaving one behind for an account that was just removed would be the one
+      place this machine still remembers a conversation the owner ended.
     #>
     param([Parameter(Mandatory)] [string] $Label)
 
-    $database = Join-Path (Join-Path (Get-StateDirectory) 'tdlib') $Label
-    if (-not (Test-Path -LiteralPath $database)) { return }
-    try {
-        Remove-Item -LiteralPath $database -Recurse -Force -ErrorAction Stop
-        Write-Log "Removed the TDLib database for '$Label'"
-    }
-    catch {
-        Write-Log "Could not remove the TDLib database for '$Label': $($_.Exception.Message)" -Level WARNING
+    $root = Join-Path (Get-StateDirectory) 'secret-chats'
+    foreach ($item in @($Label, "$Label-history.json")) {
+        $path = Join-Path $root $item
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop
+            Write-Log "Removed secret-chat state '$item' for '$Label'"
+        }
+        catch {
+            Write-Log "Could not remove secret-chat state '$item' for '$Label': $($_.Exception.Message)" -Level WARNING
+        }
     }
 }
 
@@ -513,7 +378,7 @@ function Remove-Account {
 
     $backup = Backup-EnvFile
     Remove-EnvKey -Key $accounts[$label]
-    Remove-TdlibDatabase -Label $label
+    Remove-SecretChatKeys -Label $label
     Write-Log "Removed account '$label' ($($accounts[$label]))"
     Write-Host ''
     Write-Host "Removed '$label'." -ForegroundColor Green

@@ -104,22 +104,10 @@ def test_state_dir_follows_the_override(container_like):
     assert settings.state_dir() == container_like / "state" / "telegram-mcp"
 
 
-def test_a_tdlib_database_lands_under_the_mount(container_like):
-    from telegram_mcp import tdlib
+def test_a_secret_chat_key_store_lands_under_the_mount(container_like):
+    from telegram_mcp import secret_backend
 
-    assert container_like in tdlib.database_dir_for("work").parents
-
-
-def test_the_identity_note_lands_beside_its_database(container_like):
-    from telegram_mcp import tdlib_identity
-
-    assert container_like in tdlib_identity.identity_path("work").parents
-
-
-def test_a_quarantined_database_lands_under_the_mount(container_like):
-    from telegram_mcp import tdlib_identity
-
-    assert container_like in tdlib_identity.quarantine_path("work").parents
+    assert container_like in secret_backend._storage_for("work").path.parents
 
 
 def test_the_event_feed_lands_under_the_mount(container_like, monkeypatch):
@@ -150,7 +138,7 @@ def test_state_left_in_the_previous_location_is_reported_not_moved(monkeypatch, 
     """Nothing here relocates a TDLib database. Its secret-chat keys cannot be
     re-derived, so the answer to finding one is to say so - never to tidy it."""
     home = tmp_path / "home"
-    legacy = home / ".local" / "state" / "telegram-mcp" / "tdlib" / "work"
+    legacy = home / ".local" / "state" / "telegram-mcp" / "secret-chats" / "work"
     legacy.mkdir(parents=True)
     (legacy / "td.binlog").write_bytes(b"keys that cannot be re-derived")
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
