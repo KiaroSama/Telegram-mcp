@@ -182,6 +182,7 @@ source = [
     "telegram_mcp.proxy",
     "telegram_mcp.reconnect",
     "telegram_mcp.retirement",
+    "telegram_mcp.rich_blocks",
     "telegram_mcp.runner",
     "telegram_mcp.runtime",
     "telegram_mcp.sanitize",
