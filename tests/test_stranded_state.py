@@ -32,8 +32,8 @@ def locations(tmp_path, monkeypatch):
     return legacy, current
 
 
-def _tdlib_database(root: Path, account: str = "work") -> None:
-    directory = root / "tdlib" / account
+def _secret_key_store(root: Path, account: str = "work") -> None:
+    directory = root / "secret-chats" / account
     directory.mkdir(parents=True, exist_ok=True)
     (directory / "td.binlog").write_bytes(b"keys that cannot be re-derived")
 
@@ -43,7 +43,7 @@ def test_a_log_file_in_the_new_location_does_not_hide_an_old_database(locations)
     `_main` asks - so on every real deployment the check answered "nothing
     here" while a TDLib database sat in the old location."""
     legacy, current = locations
-    _tdlib_database(legacy)
+    _secret_key_store(legacy)
     (current / "mcp_errors.log").write_text("starting up\n", encoding="utf-8")
 
     assert settings.stranded_state_dir() == legacy
@@ -69,7 +69,7 @@ def test_a_completed_migration_reports_nothing(locations):
     the old directory still exists and still has a stale log in it."""
     legacy, current = locations
     (legacy / "mcp_errors.log").write_text("old log\n", encoding="utf-8")
-    _tdlib_database(current)
+    _secret_key_store(current)
 
     assert settings.stranded_state_dir() is None
 
@@ -78,7 +78,7 @@ def test_a_partial_migration_is_still_reported(locations):
     """The session was copied and the TDLib database was not. That is exactly
     the case where saying nothing costs the secret chats."""
     legacy, current = locations
-    _tdlib_database(legacy)
+    _secret_key_store(legacy)
     (current / "telegram_mcp_session.session").write_bytes(b"an authorisation")
 
     assert settings.stranded_state_dir() == legacy
@@ -106,7 +106,7 @@ def test_nothing_is_reported_when_the_location_never_moved(tmp_path, monkeypatch
     home = tmp_path / "home"
     legacy = home / ".local" / "state" / "telegram-mcp"
     legacy.mkdir(parents=True)
-    _tdlib_database(legacy)
+    _secret_key_store(legacy)
     monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
 
@@ -115,8 +115,8 @@ def test_nothing_is_reported_when_the_location_never_moved(tmp_path, monkeypatch
 
 def test_nothing_is_moved_or_removed_by_the_check(locations):
     legacy, _current = locations
-    _tdlib_database(legacy)
+    _secret_key_store(legacy)
 
     settings.stranded_state_dir()
 
-    assert (legacy / "tdlib" / "work" / "td.binlog").exists()
+    assert (legacy / "secret-chats" / "work" / "td.binlog").exists()

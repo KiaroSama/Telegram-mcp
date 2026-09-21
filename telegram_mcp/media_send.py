@@ -3,7 +3,7 @@
 `media_kinds` says which kinds exist and which files may take them, and names no
 backend. This says what each one becomes on the wire for an ORDINARY chat, which is
 Telethon's business - the same question has a different answer in
-`secret_media_content.py` for TDLib and in the Telethon Secret Chat package for the
+`secret_media_content.py` here and in the Telethon Secret Chat package for the
 encrypted protocol.
 
 Every flag below already existed on `send_file`. None was ever passed: this server

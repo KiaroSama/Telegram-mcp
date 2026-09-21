@@ -278,9 +278,9 @@ async def test_one_stalled_disconnect_does_not_suppress_the_rest_of_shutdown():
             )
         except (asyncio.TimeoutError, TimeoutError):
             pass
-        ran_after.append("tdlib flush")
+        ran_after.append("secret-chat flush")
 
     await asyncio.wait_for(_shutdown(), timeout=2)
 
-    assert ran_after == ["tdlib flush"]
+    assert ran_after == ["secret-chat flush"]
     stalled.cancel()

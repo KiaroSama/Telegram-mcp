@@ -219,7 +219,7 @@ no number from this API means "how many GIFs are saved", and the tools report
 | Terminating active sessions | Reading the device list is harmless; ending sessions is a security action for a human. |
 | Login / QR / auth flow | Session creation already belongs to the operator's setup, and putting it behind a tool widens what a compromised agent can do. |
 | Group and video calls | Needs WebRTC and a media stack, not just TL. Out of proportion to any agent benefit. |
-| ~~Secret chats~~ | No longer a gap. Telethon still has no E2E implementation and never will — the project is archived — so these seventeen tools run on TDLib instead. See Phase 4 below. |
+| ~~Secret chats~~ | No longer a gap. Telethon still has no E2E implementation and never will — the project is archived — so these seventeen tools run on the owner's own [Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat), which implements MTProto 2.0 ON an existing Telethon client. They ran on TDLib until 2026-09-21; `docs/adr/0006` records the removal and what changed with it. |
 
 ## Administering a channel or group: what already ships
 
@@ -473,28 +473,33 @@ like a solution. Auditing it, or writing the E2E layer here, each meant owning a
 cryptographic implementation this project has no business owning. Both were
 correctly refused.
 
-The move was to stop looking at Telethon. **TDLib is Telegram's own client library**
-— the code their official clients are built on, Boost-licensed, and it implements
-secret chats completely. It ships as a pre-built binary (`tdjson`, with Windows
-wheels), and 1.8.67 speaks layer 229 - which Telethon 1.44 did not, and 1.45 does.
-Nothing about the cryptography is written or reviewed here.
+The move was to stop looking at Telethon. Two answers followed, a month apart.
+
+**First, TDLib** — Telegram's own client library, the code their official clients are
+built on, which implements secret chats completely and ships as a pre-built binary. It
+worked, and it cost a second authorization per account: TDLib cannot read a Telethon
+session and offers no import path, so an account needed one additional sign-in and
+appeared as another device.
+
+**Then, on 2026-09-21, the owner's own package** —
+[Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat), which
+implements MTProto 2.0 **on an existing Telethon client**. TDLib is removed; the second
+authorization, the native binary and the extra device go with it, and the tools keep
+their names, arguments and answer shapes. `docs/adr/0006` records the removal and the
+four things that had to be built because a library is not a server.
 
 That answers the three questions this section said had to be settled first, which is
 what makes it a real resolution rather than a shortcut:
 
-- **Where per-device keys live** — in TDLib's own database, one per account under
-  `state_dir()/tdaccount-manager/<account>`, never the shared Telethon session file.
-- **What happens when a key is lost** — the chat's history is unrecoverable, which
-  is why `TDLibClient.close` exists and is called on shutdown rather than left to
-  process exit.
-- **Who reviews the crypto** — Telegram, because it is Telegram's code. This
-  codebase reviews the transport around it and nothing else.
+- **Where per-device keys live** — one file per account under
+  `state_dir()/secret-chats/<account>`, never the shared Telethon session file.
+- **What happens when a key is lost** — the chat's history is unrecoverable, which is
+  why `secret_backend.close_all()` runs at shutdown, before the clients disconnect,
+  rather than being left to process exit.
+- **Who reviews the crypto** — it is the owner's own implementation of Telegram's
+  published protocol, with its own test suite, kept in its own repository and pinned
+  here by commit. This codebase reviews the transport around it and nothing else.
 
-The cost, which is real and is stated in every tool that hits it: TDLib cannot read a
-Telethon session and offers no import path, so an account needs one additional
-sign-in through `scripts/secret_chat_login.py`, appearing as another device. The
-dependency is required as of 2026-08-31 (`tdjson`); before that it was optional. Every other
-tool is unaffected, and `secret_chat_status` says which prerequisite is missing.
 
 Seventeen tools, all for the chats themselves. The chat: `secret_chat_status`,
 `create_secret_chat`, `list_secret_chats`, `set_secret_chat_timer`, `close_secret_chat`
@@ -504,7 +509,7 @@ Seventeen tools, all for the chats themselves. The chat: `secret_chat_status`,
 `clear_secret_history`, `mark_secret_read`, `send_secret_typing`,
 `search_secret_messages`, `copy_into_secret_chat` (`tools/secret_actions.py`). And the
 two timed sends: `send_timed_secret_message`, `send_timed_secret_media`
-(`tools/secret_timed.py`). Transport for all seventeen is `telegram_mcp/tdlib.py`.
+(`tools/secret_timed.py`). Transport for all seventeen is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
 
 **The boundary is the protocol's, not this server's.** MTProto's encrypted layer has a
 closed vocabulary — thirteen `decryptedMessageAction*` constructors and ten
@@ -512,23 +517,23 @@ closed vocabulary — thirteen `decryptedMessageAction*` constructors and ten
 Editing a sent message, reactions, pinning, scheduled send, forwarding out, threads,
 polls, dice, games, invoices, live location, read-by, chat title and photo, and blocking
 from inside the chat are therefore absent by construction rather than unimplemented.
-`secret_chat_status` reports each with its evidence, read off the shipped `tdjson` 1.8.67
-binary: an absent constructor, or the refusal TDLib itself emits ("Secret chats can't have
-pinned messages", "Can't schedule messages in secret chats", "Can't get message viewers in
-secret chats"). Screenshot notification is the one genuinely ambiguous case — the protocol
-defines the action, but this build exposes no `td_api` function to send it, so it is
-reported as unavailable rather than guessed at.
+`secret_chat_status` reports each with its evidence: an absent constructor in the
+encrypted schema, or a refusal measured against Telegram ("Secret chats can't have pinned
+messages", "Can't schedule messages in secret chats", "Can't get message viewers in secret
+chats"). Screenshot notification is the one genuinely ambiguous case — the protocol defines
+the action and the backend can send it, but nothing here takes screenshots, so there is
+never anything to notify about and no tool sends it.
 
 Two admin-rights tools used to sit here as well, because layer 227 could not carry
 `manage_linked_peers` or `manage_welcome_messages`. Telethon 1.45 announces layer 229 and
-`edit_admin_rights` sets both over MTProto, so they were removed — secret chats are TDLib's
-only remaining reason to exist in this project.
+`edit_admin_rights` sets both over MTProto, so they were removed — which left secret chats
+as TDLib's only remaining reason to exist here, and then that went too.
 
 ### Measured: `can_be_saved` is advisory
 
-Telegram marks media in a timer-armed secret chat `can_be_saved=false`, and TDLib
-reports it and then downloads the file anyway — measured on a live chat, 3638
-bytes written while the flag was false. The media is decrypted on the receiving
+Telegram marks media in a timer-armed secret chat `can_be_saved=false`, and the client
+downloads the file anyway — measured on a live chat, 3638 bytes written while the
+flag was false. The media is decrypted on the receiving
 device in order to be displayed, so the bytes are already there; the flag is
 Telegram asking a well-behaved client not to keep them, which a screenshot has
 always defeated.
@@ -538,9 +543,10 @@ always defeated.
 `sender_restriction_overridden` so a save under a restriction cannot read as an
 ordinary one. Two more
 facts from the same measurement shape it: downloading does **not** start the
-self-destruct countdown (`self_destruct_in` stayed 0; viewing starts it), and
-TDLib deletes its own copy when the message goes, so media under a timer is copied
-out of its database and the ephemeral path is reported separately.
+self-destruct countdown (`self_destruct_in` stayed 0; viewing starts it), and the
+file's one-time key travels INSIDE its message, so the bytes are fetchable only while
+the server that received it is still running - which `save_secret_media` reports
+plainly rather than answering with an empty path.
 
 ### Not in the plan
 

@@ -105,17 +105,6 @@ def log_and_format_error(
             "username, or use an account that is a member."
         )
 
-    # A database that belongs to another account is an ANSWER too, and the one
-    # sentence that carries it names both Telegram users and the directory to
-    # move aside. Reduced to an error code it becomes unactionable, which for a
-    # refusal that has just stopped a tool from running as the wrong person is
-    # the worst possible outcome.
-    if type(error).__name__ == "IdentityMismatch":
-        log_event(
-            logging.WARNING, "refused a TDLib database from another account", tool=function_name
-        )
-        return str(error)
-
     # A rate limit is an INSTRUCTION, not a failure to report and move on from.
     # An agent handed a generic error code retries, and every retry inside the
     # window extends the penalty - the failure mode this exists to prevent is a

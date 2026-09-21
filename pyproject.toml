@@ -43,13 +43,6 @@ dependencies = [
     "python-json-logger>=4.2.0",
     "qrcode>=8.2",
     "telethon>=1.45.0",
-    # Telegram's own client library. Required rather than optional because two
-    # things here have no other route: secret chats (Telethon never implemented
-    # MTProto 2.0) and the admin rights newer than the TL layer Telethon
-    # announces. It ships a ~12 MB native TDLib build with wheels for Windows,
-    # Linux and macOS; a platform without one cannot install this project, which
-    # is the cost of not having those features be an afterthought.
-    "tdjson>=1.8.67",
     # MTProto 2.0 end-to-end encryption, which Telethon never implemented. Pinned
     # BY GIT to this owner's repository and never declared by bare name: PyPI
     # already serves a different `telethon-secret-chat` — painor's archived 0.2.4 —
@@ -60,7 +53,7 @@ dependencies = [
     # `uv lock --upgrade-package telethon-secret-chat`; nothing in this project's
     # source should need to change, because `telegram_mcp/secret_backend.py` is the
     # only module that imports it and a contract test pins what it relies on.
-    "telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@2b22ff9f19b560d2a187340c990053f4a41231d8",
+    "telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@8ce73e9d66b08aa997e08ab91584b614592b063c",
 ]
 
 [project.optional-dependencies]
@@ -74,9 +67,10 @@ proxy = [
 lottie = [
     "rlottie-python>=1.3.8",
 ]
-# `secret` was an extra until secret chats stopped being optional; tdjson is a
-# plain dependency now. Kept as an empty alias so `pip install -e .[secret]`,
-# which the docs recommended, does not start failing for anyone who copied it.
+# `secret` was an extra until secret chats stopped being optional, and the
+# encryption is a plain dependency now. Kept as an empty alias so
+# `pip install -e .[secret]`, which the docs recommended, does not start failing
+# for anyone who copied it.
 secret = []
 
 [project.urls]
@@ -187,19 +181,16 @@ source = [
     "telegram_mcp.runtime",
     "telegram_mcp.sanitize",
     "telegram_mcp.secret_backend",
+    "telegram_mcp.secret_common",
     "telegram_mcp.secret_compose",
+    "telegram_mcp.secret_history",
     "telegram_mcp.secret_limits",
     "telegram_mcp.secret_media_content",
     "telegram_mcp.safe_log",
     "telegram_mcp.sent",
     "telegram_mcp.session_files",
     "telegram_mcp.session_pool",
-    "telegram_mcp.tdlib",
     "telegram_mcp.tool_budget",
-    "telegram_mcp.tdlib_lease",
-    "telegram_mcp.tdlib_registry",
-    "telegram_mcp.tdlib_runtime",
-    "telegram_mcp.tdlib_identity",
     "telegram_mcp.settings",
     "telegram_mcp.syscalls",
     "telegram_mcp.singleton",
