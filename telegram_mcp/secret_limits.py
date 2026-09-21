@@ -12,22 +12,22 @@ way -- silently, in the direction of promising too much:
 
 **Which formatting survives** depends on the LAYER the two devices negotiated
 for that one chat, so the same message is whole in one chat and thinned in
-another. TDLib's `get_input_secret_message_entities` drops nine kinds outright
-as empty `case ... break;` arms; two of those, blockquote and its expandable
-form, have their `push_back` written and then commented out, which is as
+another. Five kinds have no encrypted entity at all, and blockquote and its
+expandable form have one written into every client and then disabled, which is as
 deliberate as a drop gets. Four more are gated on the layer.
 
 **Which operations exist** is fixed by the protocol. Every `impossible` verdict
-below cites either an absent constructor or the refusal TDLib itself emits --
-never "not supported", which is the absence of a reason rather than one.
+below cites an absent constructor or a measured refusal -- never "not supported",
+which is the absence of a reason rather than one.
 
 The rounding direction is the load-bearing decision. A layer this server could
 not read is treated as the protocol FLOOR, never as current: reporting a format
 as delivered when it was dropped is exactly the failure this module exists to
 prevent, while the opposite error costs one redundant re-send.
 
-Evidence: td/telegram/MessageEntity.cpp and td/telegram/SecretChatLayer.h in
-TDLib, plus the refusal strings in the shipped tdjson 1.8.67 library.
+Evidence: the MTProto secret-chat schema's `DecryptedMessageAction` and
+`DecryptedMessageMedia` vocabularies, the layer constants below, and refusals
+measured against Telegram on this owner's own accounts.
 """
 
 from typing import Optional
@@ -53,46 +53,47 @@ _PROTOCOL_GAP = "the encrypted protocol has no such formatting"
 _OLD_APP = "the other side's app is too old to receive it"
 
 
-# The nine with no representation at all. Blockquote and its expandable form
-# reach TDLib's layer check and then find the push_back commented out, so they
-# belong here rather than among the gated four: no layer delivers them.
+# The kinds with no representation at all in the encrypted layer. Blockquote and
+# its expandable form reach the layer check in every client and then find the
+# push_back commented out, so they belong here rather than among the gated four:
+# no layer delivers them.
+#
+# Keyed on Telethon's entity classes because that is what the sender now parses
+# into. Two rows the previous backend had are GONE rather than renamed: media
+# timestamp and formatted date were synthesised by that client and have no
+# MTProto entity, so they can no longer arrive here to be dropped.
 _NEVER_CARRIED = {
-    "textEntityTypeCashtag": "cashtag",
-    "textEntityTypeBotCommand": "bot command",
-    "textEntityTypePhoneNumber": "phone number",
-    "textEntityTypeBankCardNumber": "bank card number",
-    "textEntityTypeMentionName": "mention by name",
-    "textEntityTypeMediaTimestamp": "media timestamp",
-    # td_api calls it DateTime; TDLib's own enum calls it FormattedDate. Keyed
-    # on the td_api name because that is what `parseTextEntities` returns.
-    "textEntityTypeDateTime": "formatted date",
-    "textEntityTypeBlockQuote": "blockquote",
-    "textEntityTypeExpandableBlockQuote": "expandable blockquote",
+    "MessageEntityCashtag": "cashtag",
+    "MessageEntityBotCommand": "bot command",
+    "MessageEntityPhone": "phone number",
+    "MessageEntityBankCard": "bank card number",
+    "MessageEntityMentionName": "mention by name",
+    "InputMessageEntityMentionName": "mention by name",
+    "MessageEntityBlockquote": "blockquote",
 }
 
 # Carried, but only once the chat's negotiated layer reaches the floor beside it.
 _NEEDS_LAYER = {
-    "textEntityTypeUnderline": ("underline", NEW_ENTITIES_LAYER),
-    "textEntityTypeStrikethrough": ("strikethrough", NEW_ENTITIES_LAYER),
-    "textEntityTypeSpoiler": ("spoiler", SPOILER_AND_CUSTOM_EMOJI_LAYER),
-    "textEntityTypeCustomEmoji": ("custom emoji", SPOILER_AND_CUSTOM_EMOJI_LAYER),
+    "MessageEntityUnderline": ("underline", NEW_ENTITIES_LAYER),
+    "MessageEntityStrike": ("strikethrough", NEW_ENTITIES_LAYER),
+    "MessageEntitySpoiler": ("spoiler", SPOILER_AND_CUSTOM_EMOJI_LAYER),
+    "MessageEntityCustomEmoji": ("custom emoji", SPOILER_AND_CUSTOM_EMOJI_LAYER),
 }
 
 # Carried at every layer including the floor. Listed explicitly rather than
-# inferred as "everything else", so a NEW entity type TDLib adds later lands in
-# the unknown branch below instead of being waved through as safe.
+# inferred as "everything else", so a NEW entity type Telegram adds later lands
+# in the unknown branch below instead of being waved through as safe.
 _ALWAYS_CARRIED = frozenset(
     {
-        "textEntityTypeMention",
-        "textEntityTypeHashtag",
-        "textEntityTypeUrl",
-        "textEntityTypeEmailAddress",
-        "textEntityTypeBold",
-        "textEntityTypeItalic",
-        "textEntityTypeCode",
-        "textEntityTypePre",
-        "textEntityTypePreCode",
-        "textEntityTypeTextUrl",
+        "MessageEntityMention",
+        "MessageEntityHashtag",
+        "MessageEntityUrl",
+        "MessageEntityEmail",
+        "MessageEntityBold",
+        "MessageEntityItalic",
+        "MessageEntityCode",
+        "MessageEntityPre",
+        "MessageEntityTextUrl",
     }
 )
 
@@ -112,10 +113,10 @@ def _effective_layer(layer: Optional[int]) -> int:
 def dropped_entities(entities, layer: Optional[int]) -> list:
     """Every format in ``entities`` that a chat at ``layer`` will not carry.
 
-    ``entities`` are td_api ``textEntity`` objects, exactly as
-    ``parseTextEntities`` returns them. The result is one record per OCCURRENCE,
-    not per kind: two spoilers in one message are two losses, and a caller
-    rewriting the text needs to know it is not one.
+    ``entities`` are Telethon ``MessageEntity*`` objects, exactly as the client's
+    own parser returns them. The result is one record per OCCURRENCE, not per
+    kind: two spoilers in one message are two losses, and a caller rewriting the
+    text needs to know it is not one.
 
     An empty list is returned when nothing is dropped, so the caller's signal is
     the field's presence rather than its contents.
@@ -124,12 +125,18 @@ def dropped_entities(entities, layer: Optional[int]) -> list:
     dropped = []
 
     for entity in entities or []:
-        type_name = (entity or {}).get("type", {}).get("@type")
+        type_name = type(entity).__name__
         if type_name in _ALWAYS_CARRIED:
             continue
 
         if type_name in _NEVER_CARRIED:
-            dropped.append({"kind": _NEVER_CARRIED[type_name], "reason": _PROTOCOL_GAP})
+            kind = _NEVER_CARRIED[type_name]
+            # One class, two published kinds: an expandable blockquote is an
+            # ordinary one with a flag, and a caller rewriting the message is
+            # rewriting a different thing in each case.
+            if type_name == "MessageEntityBlockquote" and getattr(entity, "collapsed", False):
+                kind = "expandable blockquote"
+            dropped.append({"kind": kind, "reason": _PROTOCOL_GAP})
             continue
 
         if type_name in _NEEDS_LAYER:
@@ -138,7 +145,7 @@ def dropped_entities(entities, layer: Optional[int]) -> list:
                 dropped.append({"kind": kind, "reason": _OLD_APP, "needs_layer": floor})
             continue
 
-        # Not in any of the three tables. TDLib gains entity types and this
+        # Not in any of the three tables. Telegram gains entity types and this
         # module does not update itself, so an unrecognised one is reported as
         # unknown rather than assumed safe -- assuming safe is precisely how a
         # newly droppable format becomes a silent loss all over again.
@@ -300,69 +307,75 @@ CAPABILITIES = [
     {
         "operation": "notify the other side that a screenshot was taken",
         "verdict": "impossible",
-        "note": "the protocol defines the action, but the installed TDLib exposes no "
-        "function to send it -- 'sendChatScreenshotTakenNotification' is absent "
-        "from this build. Reported as unavailable rather than guessed at.",
+        "note": "the protocol defines the action and the encryption backend can send "
+        "it, but nothing here takes screenshots, so there is never anything to "
+        "notify about. No tool sends it, and one that did would be announcing an "
+        "act this server did not perform.",
     },
 ]
 
 
-async def secret_chat_layer(client, chat_id: int) -> int:
+async def secret_chat_layer(manager, chat_id: int) -> int:
     """The layer this one chat negotiated, or the floor when it cannot be read.
 
-    Never raises for a missing or malformed answer: a formatting report is a
-    courtesy attached to a send, and it must not be the reason the send fails.
+    Read at SEND time, never cached from when the chat opened, and that timing is
+    the whole point. The layer is the PEER's capability: it starts at the initial
+    value and rises only when the peer announces it with a `notifyLayer` service
+    message. Measured on a real chat between two of this owner's accounts, the two
+    sides reported 46 and 144 for the same ready chat, seconds apart, because only
+    one had seen the other's announcement yet.
+
+    A layer still below the floor therefore means NOT YET KNOWN, and rounding it
+    down to the floor is what keeps the report honest: a chat that has in fact
+    negotiated 144 is told its spoilers may not cross, which costs one redundant
+    re-send, while the opposite error tells a caller their custom emoji arrived
+    when it did not.
+
+    Never raises for a missing chat: a formatting report is a courtesy attached to
+    a send, and it must not be the reason the send fails.
     """
     try:
-        chat = await client.request({"@type": "getChat", "chat_id": int(chat_id)})
-        secret_chat_id = chat.get("type", {}).get("secret_chat_id")
-        if secret_chat_id is None:
-            return FLOOR_LAYER
-        secret = await client.request({"@type": "getSecretChat", "secret_chat_id": secret_chat_id})
-        return _effective_layer(secret.get("layer"))
+        return _effective_layer(manager.status(int(chat_id)).layer)
     except Exception:
         # Rounding down on failure, for the same reason as everywhere else here.
         return FLOOR_LAYER
 
 
-async def require_ready_chat(client, chat_id: int) -> Optional[str]:
+def require_ready_chat(manager, chat_id: int) -> Optional[str]:
     """``None`` when the chat is ready, otherwise a refusal to hand back.
 
     Applied to every tool that SENDS or MUTATES, and deliberately not to the two
-    that read. A closed chat's history still exists in this device's database,
-    and refusing to read it would destroy the last copy's usefulness in order to
-    satisfy a rule about sending.
+    that read. A closed chat's history still exists on this device, and refusing to
+    read it would destroy the last copy's usefulness in order to satisfy a rule
+    about sending.
 
-    The point is the error the caller gets. Without this, a send into a chat
-    whose key exchange has not finished fails inside the protocol with a message
-    that names neither the chat nor the state, and an agent cannot tell "wait a
-    moment" from "this will never work".
+    The point is the error the caller gets. Without this, a send into a chat whose
+    key exchange has not finished fails inside the protocol with a message that
+    names neither the chat nor the state, and an agent cannot tell "wait a moment"
+    from "this will never work".
     """
-    chat = await client.request({"@type": "getChat", "chat_id": int(chat_id)})
-    chat_type = chat.get("type", {})
-    if chat_type.get("@type") != "chatTypeSecret":
+    try:
+        chat = manager.status(int(chat_id))
+    except KeyError:
         return (
-            f"Chat {chat_id} is not a secret chat, so this tool does not apply to it. "
-            "The ordinary message tools serve that chat; using them is the difference "
-            "between an encrypted message and a plain one, so it is not assumed here. "
-            "list_secret_chats shows the secret chats this login can see."
+            f"No secret chat {chat_id} for this login. Secret chats are per-device, so one "
+            "that exists on the account's phone is not visible here and never will be. "
+            "list_secret_chats shows the ones this login can see."
         )
 
-    secret = await client.request(
-        {"@type": "getSecretChat", "secret_chat_id": chat_type.get("secret_chat_id")}
-    )
-    state = secret.get("state", {}).get("@type", "")
-
-    if state == "secretChatStateReady":
+    state = getattr(chat.state, "value", str(chat.state))
+    if state in ("ready", "rekeying"):
+        # Rekeying sends. The exchange holds two keys and the message goes out
+        # under whichever one settles; refusing here would make a routine key
+        # rotation look like an outage.
         return None
-    if state == "secretChatStatePending":
+    if state in ("requested", "pending"):
         return (
-            f"Secret chat {chat_id} is still pending: the other side has not opened it, so "
-            "the key exchange is not finished and nothing can be sent yet. This is not an "
-            "error to retry immediately - it clears when they open the chat. "
-            "list_secret_chats reports the state."
+            f"Secret chat {chat_id} is still {state}: the key exchange is not finished, so "
+            "nothing can be sent yet. This is not an error to retry immediately - it clears "
+            "when the other side opens the chat. list_secret_chats reports the state."
         )
-    if state == "secretChatStateClosed":
+    if state == "closed":
         return (
             f"Secret chat {chat_id} is closed. The key was discarded on both sides, so it "
             "cannot be reopened and nothing can be sent into it - a new chat with the same "

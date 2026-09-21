@@ -1,84 +1,79 @@
 """Composing one outgoing secret message: its text, its reply, and what is lost.
 
-Three steps every send through a secret chat shares, and which the timed sends
-in :mod:`telegram_mcp.tools.secret_timed` need identically. They live here
-rather than in the tool module because that module reached 700 lines -- the
-point at which this project closes a file to new code -- and because a helper
-cannot live in two places at once.
+Three steps every send through a secret chat shares, and which the timed sends in
+:mod:`telegram_mcp.tools.secret_timed` need identically. They live here rather than in
+the tool module because that module reached 700 lines -- the point at which this
+project closes a file to new code -- and because a helper cannot live in two places at
+once.
 
-The reply step is the one worth reading. TDLib translates a reply's message id
-into the wire id the encrypted protocol uses by looking the original up in THIS
-device's database, and when it cannot find it, `create_message_to_send` resets
-`input_reply_to` and sends an ordinary message instead. No error, no warning, a
-reply that is not a reply. A secret chat's history is local-only and
-permanently gappy, so a target this login never received is an ordinary
-situation rather than an exotic one -- which is why the lookup happens up front.
+The reply step is the one worth reading, and it changed shape with the backend. The
+encrypted layer has **no message ids**: a reply points at the `random_id` its sender
+chose (`reply_to_random_id`), which is exactly the id this server publishes as
+`message_id`. So the translation is an identity - but the LOOKUP still matters, because
+a secret chat's history is local-only and permanently gappy, and a reply to a message
+this login never received would arrive as an ordinary message with no error and no
+warning. A reply that is not a reply is the silent loss this step exists to refuse.
 """
 
 from typing import Optional
 
+from telethon import utils as telethon_utils
+
+from telegram_mcp import secret_history
 from telegram_mcp.secret_limits import dropped_entities, secret_chat_layer
-from telegram_mcp.tdlib import TDLibError
 
 __all__ = ["dropped_note", "formatted_text", "reply_to"]
 
 
-async def formatted_text(client, message: str, parse_mode: Optional[str]) -> dict:
-    """``message`` as a TDLib ``formattedText``, parsed when a mode was asked for.
+def formatted_text(message: str, parse_mode: Optional[str]):
+    """``(text, entities)`` for one outgoing message.
 
-    TDLib does the parsing, not this server: ``parseTextEntities`` is the same
-    code path the official clients use, so a caller's markdown behaves here
-    exactly as it does in Telegram.
+    Parsed with the same parser every other send in this server uses, so a caller's
+    markdown behaves in a secret chat exactly as it does in an ordinary one. Which
+    of the resulting entities actually cross is a separate question, answered by
+    `dropped_note` - parsing never silently drops anything here.
     """
     if not parse_mode:
-        return {"@type": "formattedText", "text": message}
+        return message, None
 
-    wanted = str(parse_mode).strip().lower()
-    if wanted in ("markdown", "md", "markdownv2"):
-        mode = {"@type": "textParseModeMarkdown", "version": 2}
-    elif wanted == "html":
-        mode = {"@type": "textParseModeHTML"}
-    else:
+    try:
+        parser = telethon_utils.sanitize_parse_mode(parse_mode)
+    except (TypeError, ValueError):
         raise ValueError(
             f"parse_mode must be 'markdown' or 'html', not {parse_mode!r}. Leave it unset "
             "to send the text exactly as written. Nothing was sent."
         )
-    return await client.request(
-        {"@type": "parseTextEntities", "text": message, "parse_mode": mode}
-    )
+    return parser.parse(message)
 
 
-async def reply_to(client, chat_id: int, message_id: Optional[int]) -> Optional[dict]:
-    """The ``reply_to`` for a send, after proving the target is really there.
+def reply_to(account: str, chat_id: int, message_id: Optional[int]) -> Optional[int]:
+    """The id to reply to, after proving the target is really there.
 
-    ``None`` when no reply was asked for. Raises ``ValueError`` when the target
-    is not in this device's copy, rather than letting Telegram silently
-    downgrade the reply to an ordinary message.
+    ``None`` when no reply was asked for. Raises ``ValueError`` when the target is
+    not in this device's copy, rather than letting the reply arrive as an ordinary
+    message.
     """
     if message_id is None:
         return None
-    try:
-        await client.request(
-            {"@type": "getMessage", "chat_id": int(chat_id), "message_id": int(message_id)}
-        )
-    except TDLibError:
+    wanted = int(message_id)
+    known = {m["message_id"] for m in secret_history.read(account, chat_id, 10_000)}
+    if wanted not in known:
         raise ValueError(
             f"Message {message_id} is not in this device's copy of that chat, so it cannot "
             "be replied to. A secret chat has no server-side history to fetch it from, and "
-            "Telegram would silently send this as an ordinary message rather than a reply. "
+            "the reply would arrive as an ordinary message rather than a reply. "
             "read_secret_messages shows what this login actually received. Nothing was sent."
         )
-    return {"@type": "inputMessageReplyToMessage", "message_id": int(message_id)}
+    return wanted
 
 
-async def dropped_note(client, chat_id: int, formatted: dict) -> list:
+async def dropped_note(manager, chat_id: int, entities) -> list:
     """Which of the caller's formatting this chat will not carry.
 
-    Costs nothing on an unformatted message: with no entities there is nothing
-    to drop, so the chat's layer is never fetched.
+    Costs nothing on an unformatted message: with no entities there is nothing to
+    drop, so the chat's layer is never read.
     """
-    entities = (formatted or {}).get("entities") or []
     if not entities:
         return []
-    layer = await secret_chat_layer(client, int(chat_id))
+    layer = await secret_chat_layer(manager, int(chat_id))
     return dropped_entities(entities, layer)

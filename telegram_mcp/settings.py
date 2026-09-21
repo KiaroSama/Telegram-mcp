@@ -126,8 +126,8 @@ def stranded_state_dir() -> Optional[Path]:
     Deployments that pointed `XDG_STATE_HOME` somewhere new - the container
     image now sets it to `/data/state`, under the mounted volume - leave
     whatever was in the old location exactly where it was. That is the right
-    thing to do with it: a TDLib database is not re-creatable, because its
-    secret-chat keys cannot be re-derived, so nothing here moves or deletes one.
+    thing to do with it: a secret-chat key store is not re-creatable, because
+    the keys cannot be re-derived, so nothing here moves or deletes one.
 
     What must not happen is the server quietly signing in afresh beside it and
     the operator never learning the old one existed. Returning the path is how
@@ -152,21 +152,21 @@ def _account_state_in(root: Path) -> set:
 
     And it is not a single yes/no for the whole directory, because a PARTIAL
     migration is the expensive case: the session file copied across and the
-    TDLib database left behind reads as "the new location is in use" while the
+    key store left behind reads as "the new location is in use" while the
     secret-chat keys sit in the old one. Naming each piece is what lets the
     caller subtract one set from the other.
 
-    What counts is what cannot be re-created: a TDLib database per account (its
-    keys cannot be re-derived), a Telethon session (it IS the login), and the
-    alias store.
+    What counts is what cannot be re-created: a secret-chat key store per
+    account (its keys cannot be re-derived), a Telethon session (it IS the
+    login), and the alias store.
     """
     found = set()
     try:
         if not root.is_dir():
             return found
-        for database in (root / "tdlib").glob("*"):
+        for database in (root / "secret-chats").glob("*"):
             if database.is_dir() and any(database.iterdir()):
-                found.add(f"tdlib:{database.name}")
+                found.add(f"secret-chats:{database.name}")
         for entry in root.iterdir():
             if entry.suffix == ".session":
                 found.add(f"session:{entry.stem}")
