@@ -600,9 +600,9 @@ async def _main() -> None:
         # backend held its own connection and was therefore flushed AFTER the
         # disconnect; moving to one that does not makes that ordering wrong.
         try:
-            from telegram_mcp.secret_backend import close_all as _close_secret
+            from telegram_mcp.secret_backend import close_all as _close_managers
 
-            unflushed = await asyncio.wait_for(_close_secret(), timeout=_SECRET_CLOSE_SECONDS)
+            unflushed = await asyncio.wait_for(_close_managers(), timeout=_BACKEND_CLOSE_SECONDS)
             for account, error in unflushed:
                 startup_note(
                     f"[{account}] the secret-chat backend did not close cleanly "
@@ -611,11 +611,11 @@ async def _main() -> None:
         except (asyncio.TimeoutError, TimeoutError):
             startup_note(
                 "The secret-chat backend did not finish closing within "
-                f"{_SECRET_CLOSE_SECONDS:.0f}s; exiting anyway. Keys written since its last "
+                f"{_BACKEND_CLOSE_SECONDS:.0f}s; exiting anyway. Keys written since its last "
                 "flush may be lost."
             )
         except Exception as exc:
-            startup_note(f"Closing the secret-chat backend failed: {_startup_text(exc)}")
+            startup_note(f"Closing the encrypted-chat backend failed: {_startup_text(exc)}")
 
         # BOUNDED, and that is the whole point of the deadline. This gather was
         # unbounded, so a single client whose disconnect never returned held
@@ -733,7 +733,7 @@ _ADMIT_DRAIN_SECONDS: float = 20.0
 # Generous, because the cost of cutting it short is unrecoverable: the keys that
 # decrypt a secret chat's history. Bounded all the same - exit must not hang
 # forever.
-_SECRET_CLOSE_SECONDS: float = 30.0
+_BACKEND_CLOSE_SECONDS: float = 30.0
 
 
 def main() -> None:

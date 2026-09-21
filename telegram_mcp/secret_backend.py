@@ -37,9 +37,8 @@ from telethon_secret_chat.errors import (
 from telethon_secret_chat.schema import secret_tl
 
 from telegram_mcp import secret_history
+from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import state_dir
-
-logger = logging.getLogger(__name__)
 
 # Re-exported, because this module is the ONLY one allowed to import the package
 # and a test enforces that. Two callers need pieces of it - `secret_common` to tell
@@ -186,12 +185,13 @@ def _accept_incoming(manager: SecretChatManager, account: str):
     async def _handler(event):
         try:
             await manager.accept(event.chat_id)
-        except Exception:
-            logger.warning(
-                "could not accept incoming secret chat %s on %s; it stays pending",
-                getattr(event, "chat_id", "?"),
-                account,
-                exc_info=True,
+        except Exception as error:
+            log_event(
+                logging.WARNING,
+                "could not accept an incoming secret chat; it stays pending",
+                account=account,
+                chat_id=getattr(event, "chat_id", None),
+                error=error,
             )
 
     return _handler
@@ -213,9 +213,12 @@ def _remember(account: str):
     async def _handler(event):
         try:
             secret_history.record_received(account, event)
-        except Exception:
-            logger.warning(
-                "could not record a received secret message on %s", account, exc_info=True
+        except Exception as error:
+            log_event(
+                logging.WARNING,
+                "could not record a received secret message",
+                account=account,
+                error=error,
             )
 
     return _handler
