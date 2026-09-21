@@ -270,7 +270,7 @@ def _seconds_until_expiry(qr) -> float:
     return max(1.0, remaining - 1.0)
 
 
-def _qr_login(client: TelegramClient) -> Optional[str]:
+def _qr_login(client: TelegramClient) -> None:
     qr = client.qr_login()
     _render_qr(qr)
 
@@ -284,7 +284,8 @@ def _qr_login(client: TelegramClient) -> Optional[str]:
             print(note("That QR code expired. Here is a fresh one."))
             _render_qr(qr)
         except errors.SessionPasswordNeededError:
-            return _sign_in_with_password(client)
+            _sign_in_with_password(client)
+            return
             return
 
     print()
@@ -293,7 +294,7 @@ def _qr_login(client: TelegramClient) -> Optional[str]:
     sys.exit(1)
 
 
-def _sign_in_with_password(client: TelegramClient) -> Optional[str]:
+def _sign_in_with_password(client: TelegramClient) -> None:
     """Ask for the 2FA password until it is accepted or the attempts run out.
 
     Shared by BOTH login paths on purpose. This loop used to exist only in the QR
@@ -316,11 +317,12 @@ def _sign_in_with_password(client: TelegramClient) -> Optional[str]:
             continue
         try:
             client.sign_in(password=pw)
-            # Returned, not discarded: the caller reports on it and an
-            # interrupted run must not ask for a password Telegram just accepted
-            # seconds from now, and asking again for one Telegram just accepted
-            # spends another attempt against the account's own limits.
-            return pw
+            # Accepted, and not carried any further. It used to be RETURNED, so
+            # a second authorisation could reuse it rather than ask again; there
+            # is no second authorisation now, and a password travelling across
+            # three functions for nobody is how one ends up somewhere it was
+            # never meant to be.
+            return
         except errors.PasswordHashInvalidError:
             print(failure(f"That password was not accepted. {remaining - 1} attempt(s) left."))
 
@@ -336,7 +338,7 @@ def _sign_in_with_password(client: TelegramClient) -> Optional[str]:
     sys.exit(1)
 
 
-def _phone_login(client: TelegramClient) -> Optional[str]:
+def _phone_login(client: TelegramClient) -> None:
     phone = input("Please enter your phone (or bot token): ")
 
     try:
@@ -361,7 +363,8 @@ def _phone_login(client: TelegramClient) -> Optional[str]:
     try:
         client.sign_in(phone, code)
     except errors.SessionPasswordNeededError:
-        return _sign_in_with_password(client)
+        _sign_in_with_password(client)
+        return
     return None
 
 
@@ -464,12 +467,11 @@ def main() -> None:
         client = TelegramClient(StringSession(), API_ID, API_HASH, **client_identity_kwargs())
         client.connect()
 
-        password = None
         if not client.is_user_authorized():
             if method == "1":
-                password = _qr_login(client)
+                _qr_login(client)
             else:
-                password = _phone_login(client)
+                _phone_login(client)
 
         session_string = StringSession.save(client.session)
 
