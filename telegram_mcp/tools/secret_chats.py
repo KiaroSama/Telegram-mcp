@@ -38,6 +38,7 @@ from telegram_mcp.secret_common import (
     peer_title,
     to_secret_id,
 )
+from telegram_mcp.secret_compose import timer_lock
 from telegram_mcp.secret_limits import CAPABILITIES
 from telegram_mcp.settings import state_dir
 from telegram_mcp.runtime import *
@@ -263,7 +264,9 @@ async def set_secret_chat_timer(chat_id: int, seconds: int, account: str = None)
     try:
         label = _account_label(account)
         manager = await secret_manager(label)
-        await manager.set_ttl(to_secret_id(chat_id), int(seconds))
+        secret_id = to_secret_id(chat_id)
+        async with timer_lock(manager, secret_id):  # waits out a timed send in flight
+            await manager.set_ttl(secret_id, int(seconds))
         return format_tool_result(
             {
                 "chat_id": int(chat_id),
