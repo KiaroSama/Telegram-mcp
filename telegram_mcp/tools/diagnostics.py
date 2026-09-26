@@ -103,7 +103,11 @@ def _roots_advice(status: str) -> str:
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Get File Roots Status", openWorldHint=False, readOnlyHint=True
+        title="Get File Roots Status",
+        openWorldHint=False,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 async def get_file_roots_status(ctx: Optional[Context] = None) -> str:
