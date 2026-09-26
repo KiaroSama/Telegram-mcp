@@ -665,7 +665,8 @@ permanently invalidate that session for both clients.
 
 ## Message Links
 
-`TELEGRAM_LINK_DOMAIN` sets the domain used to build message permalinks; the default is
+`TELEGRAM_LINK_DOMAIN` sets the domain of every link the tools return - message
+permalinks, public usernames, sticker and emoji packs, search results; the default is
 `t.me`. It is overridable because that default is a single point of failure: on
 2026-07-13 the .me registry put `t.me` on serverHold over an OFAC listing and every
 `t.me` link on earth broke for about a day, while `telegram.me` kept resolving.
