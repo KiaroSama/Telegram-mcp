@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from telegram_mcp import taint
+from telegram_mcp.safeguard import taint
 
 
 @pytest.fixture(autouse=True)

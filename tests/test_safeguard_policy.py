@@ -10,7 +10,7 @@ reaches for the approval channel itself is refused outright.
 
 import pytest
 
-from telegram_mcp import safeguard_policy as policy
+from telegram_mcp.safeguard import policy
 from telegram_mcp.tools import mcp  # noqa: F401  (registers every tool)
 
 
@@ -185,3 +185,44 @@ def test_the_sixth_distinct_chat_within_a_minute_is_bulk():
     assert not window.is_bulk("other", "send_message", 99)  # per account
     now[0] = 61.0
     assert not window.is_bulk("acct", "send_message", 99)  # the minute has passed
+
+
+# --- the kernel's own files are out of reach (FR-024) --------------------------------
+
+
+def _protected():
+    import os
+
+    import telegram_mcp.safeguard as package
+
+    return os.path.dirname(package.__file__)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        lambda root: root + "/policy.py",
+        lambda root: root,
+        lambda root: root.upper() + r"\policy.py",
+        lambda root: root + "/../safeguard/channels.py",
+        lambda root: "telegram_mcp/safeguard/policy.py",
+        lambda root: r".\TELEGRAM_MCP\Safeguard\__init__.py",
+    ],
+)
+def test_a_path_into_the_safeguard_package_is_refused(path):
+    target = path(_protected())
+    decision = _decide(
+        "download_media",
+        {"chat_id": 5, "message_id": 1, "file_path": target},
+        protected_paths=(_protected(),),
+    )
+    assert (decision.outcome, decision.reasons) == ("refuse", ["touches_safeguard_files"])
+
+
+def test_a_path_elsewhere_is_not_refused():
+    decision = _decide(
+        "download_media",
+        {"chat_id": 5, "message_id": 1, "file_path": "C:/Users/someone/Downloads/a.jpg"},
+        protected_paths=(_protected(),),
+    )
+    assert decision.outcome == "run"

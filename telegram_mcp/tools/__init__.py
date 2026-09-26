@@ -58,4 +58,11 @@ from telegram_mcp.tools.authorizations import *
 # into this package, which would otherwise shadow the submodule of the same name.
 from telegram_mcp.tools.translation import *
 
+# Last, once every tool is registered and runtime has installed the time budget: the
+# safeguard goes IN FRONT of the budget, so a five-minute approval is not cut at 55 s.
+from telegram_mcp.runtime import mcp as _mcp  # noqa: E402
+from telegram_mcp.safeguard import install as _install_safeguard  # noqa: E402
+
+_install_safeguard(_mcp)
+
 __all__ = [name for name in globals() if not name.startswith("_")]
