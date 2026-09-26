@@ -66,6 +66,8 @@ def _wire(monkeypatch, backend, client, owners=None):
     monkeypatch.setattr(backend, "_telethon_client", lambda account: client)
     monkeypatch.setattr(backend, "_storage_for", lambda account: MemoryStorage())
     monkeypatch.setattr(backend, "_owner_path", lambda account: owners / f"{account}.owner.json")
+    monkeypatch.setattr(backend, "_store_lock_dir", lambda: owners)
+    monkeypatch.setattr(backend, "_store_locks", {}, raising=False)
     return owners
 
 
@@ -198,10 +200,42 @@ async def test_a_label_reused_for_another_account_does_not_open_the_old_keys(bac
     now names a different Telegram account must not decrypt the old account's chats."""
     owners = _wire(monkeypatch, backend, _Client(user_id=1001))
     await backend.secret_manager("acct")
+    # A restart: the old process's managers and store locks are gone.
     backend._by_account.clear()
     backend._verified_against.clear()
+    for lock in backend._store_locks.values():
+        lock.release()
 
     _wire(monkeypatch, backend, _Client(name="b", user_id=2002), owners=owners)
     with pytest.raises(backend.SecretChatUnavailable, match="different Telegram account"):
         await backend.secret_manager("acct")
     assert "acct" not in backend._by_account
+
+
+@pytest.mark.asyncio
+async def test_a_key_store_another_process_holds_is_refused(backend, monkeypatch):
+    """Two server processes must never open one account's key store (27.md): the
+    second is told who holds it instead of writing keys the first will overwrite."""
+    from telegram_mcp.singleton import SessionLock
+
+    owners = _wire(monkeypatch, backend, _Client())
+    other_process = SessionLock(backend._store_identity("acct"), lock_dir=owners)
+    other_process.acquire(grace_seconds=0.1, poll_interval=0.05)
+    try:
+        with pytest.raises(backend.SecretChatUnavailable, match="another telegram-mcp process"):
+            await backend.secret_manager("acct")
+    finally:
+        other_process.release()
+
+
+@pytest.mark.asyncio
+async def test_the_store_lock_is_released_at_shutdown(backend, monkeypatch):
+    from telegram_mcp.singleton import SessionLock
+
+    owners = _wire(monkeypatch, backend, _Client())
+    await backend.secret_manager("acct")
+    await backend.close_all()
+
+    after = SessionLock(backend._store_identity("acct"), lock_dir=owners)
+    after.acquire(grace_seconds=0.1, poll_interval=0.05)  # free again
+    after.release()
