@@ -65,7 +65,15 @@ def _live_message(manager, chat_id: int, message_id: int):
     return None
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Send Secret Message", openWorldHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Send Secret Message",
+        openWorldHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+    )
+)
 @with_account(readonly=False)
 async def send_secret_message(
     chat_id: int,
@@ -150,7 +158,15 @@ async def send_secret_message(
         )
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Send Secret Media", openWorldHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Send Secret Media",
+        openWorldHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+    )
+)
 @with_account(readonly=False)
 async def send_secret_media(
     chat_id: int,
@@ -277,7 +293,11 @@ async def send_secret_media(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Read Secret Messages", openWorldHint=True, readOnlyHint=True
+        title="Read Secret Messages",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 @with_account(readonly=True)
@@ -368,7 +388,13 @@ async def _keep_copy(manager, message, raw_destination, ctx):
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Save Secret Media", openWorldHint=True, readOnlyHint=False)
+    annotations=ToolAnnotations(
+        title="Save Secret Media",
+        openWorldHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=False)
 async def save_secret_media(

@@ -36,7 +36,13 @@ __all__ = ["download_rich_media", "read_rich_message"]
 # Listed so the flattener can say which formatting it saw rather than silently
 # dropping the distinction, and so an unknown wrapper is visible as unknown.
 @mcp.tool(
-    annotations=ToolAnnotations(title="Read Rich Message", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Read Rich Message",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")
@@ -131,7 +137,15 @@ async def read_rich_message(chat_id: Union[int, str], message_id: int, account: 
         return log_and_format_error("read_rich_message", e, chat_id=chat_id, message_id=message_id)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Download Rich Media", openWorldHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Download Rich Media",
+        openWorldHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=False)
 async def download_rich_media(
     chat_id: Union[int, str],

@@ -164,7 +164,13 @@ def _require_message_id(message_id) -> tuple:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="List Inline Buttons", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="List Inline Buttons",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")
@@ -201,7 +207,11 @@ async def list_inline_buttons(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Press Inline Button", openWorldHint=True, destructiveHint=True
+        title="Press Inline Button",
+        openWorldHint=True,
+        destructiveHint=True,
+        readOnlyHint=False,
+        idempotentHint=False,
     )
 )
 @with_account(readonly=False)
@@ -283,7 +293,11 @@ async def press_inline_button(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Pin Message", openWorldHint=True, destructiveHint=True, idempotentHint=True
+        title="Pin Message",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=True,
+        readOnlyHint=False,
     )
 )
 @with_account(readonly=False)
@@ -303,7 +317,11 @@ async def pin_message(chat_id: Union[int, str], message_id: int, account: str = 
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Unpin Message", openWorldHint=True, destructiveHint=True, idempotentHint=True
+        title="Unpin Message",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=True,
+        readOnlyHint=False,
     )
 )
 @with_account(readonly=False)
@@ -327,6 +345,7 @@ async def unpin_message(chat_id: Union[int, str], message_id: int, account: str 
         openWorldHint=True,
         destructiveHint=True,
         idempotentHint=True,
+        readOnlyHint=False,
     )
 )
 @with_account(readonly=False)
@@ -351,7 +370,13 @@ async def unpin_all_messages(chat_id: Union[int, str], account: str = None) -> s
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Create Poll", openWorldHint=True, destructiveHint=True)
+    annotations=ToolAnnotations(
+        title="Create Poll",
+        openWorldHint=True,
+        destructiveHint=True,
+        readOnlyHint=False,
+        idempotentHint=False,
+    )
 )
 @with_account(readonly=False)
 @validate_id("chat_id")
@@ -522,7 +547,11 @@ async def create_poll(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Send Reaction", openWorldHint=True, destructiveHint=False, idempotentHint=True
+        title="Send Reaction",
+        openWorldHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        readOnlyHint=False,
     )
 )
 @with_account(readonly=False)
@@ -633,7 +662,11 @@ async def send_reaction(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Remove Reaction", openWorldHint=True, destructiveHint=True, idempotentHint=True
+        title="Remove Reaction",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=True,
+        readOnlyHint=False,
     )
 )
 @with_account(readonly=False)
@@ -667,7 +700,11 @@ async def remove_reaction(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Get Message Reactions", openWorldHint=True, readOnlyHint=True, idempotentHint=True
+        title="Get Message Reactions",
+        openWorldHint=True,
+        readOnlyHint=True,
+        idempotentHint=True,
+        destructiveHint=False,
     )
 )
 @with_account(readonly=True)

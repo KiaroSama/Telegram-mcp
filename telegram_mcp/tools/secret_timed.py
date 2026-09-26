@@ -158,7 +158,11 @@ def _result(chat_id, seconds, previous, sent_id, send_error, restore_error, extr
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Send Timed Secret Message", openWorldHint=True, destructiveHint=True
+        title="Send Timed Secret Message",
+        openWorldHint=True,
+        destructiveHint=True,
+        readOnlyHint=False,
+        idempotentHint=False,
     )
 )
 @with_account(readonly=False)
@@ -228,7 +232,11 @@ async def send_timed_secret_message(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Send Timed Secret Media", openWorldHint=True, destructiveHint=True
+        title="Send Timed Secret Media",
+        openWorldHint=True,
+        destructiveHint=True,
+        readOnlyHint=False,
+        idempotentHint=False,
     )
 )
 @with_account(readonly=False)

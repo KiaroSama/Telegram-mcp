@@ -276,7 +276,11 @@ def _not_a_channel(chat_id, entity):
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Check Channel Username", openWorldHint=True, readOnlyHint=True
+        title="Check Channel Username",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 @with_account(readonly=True)
@@ -494,7 +498,11 @@ async def set_channel_username(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Get Channel Statistics", openWorldHint=True, readOnlyHint=True
+        title="Get Channel Statistics",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 @with_account(readonly=True)
@@ -606,7 +614,11 @@ async def get_channel_statistics(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Get Similar Channels", openWorldHint=True, readOnlyHint=True
+        title="Get Similar Channels",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 @with_account(readonly=True)
@@ -682,6 +694,7 @@ async def get_similar_channels(
         openWorldHint=True,
         readOnlyHint=False,
         idempotentHint=True,
+        destructiveHint=True,
     )
 )
 @with_account(readonly=False)
