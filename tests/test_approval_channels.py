@@ -333,10 +333,10 @@ def test_the_deadline_defaults_to_five_minutes():
 @pytest.mark.parametrize(
     "press, outcome, line",
     [
-        ("once", "approved_once", "✅ تأیید شد"),
-        ("always", "approved_always", "♾ همیشه تأیید شد"),
-        ("deny", "declined", "❌ رد شد"),
-        (None, "timed_out", "⏱ مهلت تمام شد؛ انجام نشد"),
+        ("once", "approved_once", "✅ Approved"),
+        ("always", "approved_always", "♾ Always approved"),
+        ("deny", "declined", "❌ Denied"),
+        (None, "timed_out", "⏱ Timed out - not run"),
     ],
 )
 def test_a_closed_request_shows_its_outcome_on_every_copy(press, outcome, line):
@@ -390,3 +390,15 @@ def test_the_quote_names_the_accounts_username_with_an_at(monkeypatch, me, expec
     monkeypatch.setattr(wiring, "_me", _me)
     monkeypatch.setattr(wiring, "_identities", {})
     assert asyncio.run(wiring.identity("refx_nexus_3")) == expected
+
+
+def test_everything_the_bot_and_saved_messages_show_is_english():
+    """FR-041: the approval texts are English - buttons, outcome lines, tap answers."""
+    import re
+
+    shown = [ac._APPROVE, ac._DENY, ac._ALWAYS, ac._CLOSED_LINE, ac.ANSWERED, ac.NOT_OPEN]
+    shown += list(ac._OUTCOME_LINES.values())
+    request = _request()
+    shown += [request.text(), request.html()]
+    assert all(not re.search(r"[؀-ۿ]", text) for text in shown), shown
+    assert [ac._APPROVE, ac._DENY, ac._ALWAYS] == ["✅ Approve", "❌ Deny", "♾ Always approve"]
