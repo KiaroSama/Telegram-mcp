@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.safeguard import channels as approvals
-from telegram_mcp.safeguard import ghost, grants, policy, taint
+from telegram_mcp.safeguard import folders, ghost, grants, policy, taint
 
 __all__ = ["Safeguard", "install", "refusal"]
 
@@ -49,7 +49,15 @@ _REFUSALS = {
         "This would touch the safeguard's own files, which no tool may do.",
         "None - this is never allowed through tools.",
     ),
+    "touches_protected_folder": (
+        "The path is inside the installation (code, kernel, .env, secrets) or the "
+        "server's state directory, which no tool may touch.",
+        "Use files/outbox to send a file and files/downloads to save one, or a folder "
+        "outside the installation (the owner is asked once).",
+    ),
 }
+
+_FOLDER_REASON = "outside_project_folder"
 
 
 def _wait_text(seconds: float) -> str:
@@ -78,7 +86,7 @@ def _target(arguments: Dict[str, Any]) -> Any:
     return None
 
 
-def describe(name: str, arguments: Dict[str, Any], chat: Any, tainted) -> str:
+def describe(name: str, arguments: Dict[str, Any], chat: Any, tainted, outside=()) -> str:
     """The effect in plain words for the owner; never the message text itself."""
     where = f" in {chat}" if chat is not None else ""
     if name in ("delete_message", "delete_messages_bulk", "delete_secret_message"):
@@ -95,6 +103,8 @@ def describe(name: str, arguments: Dict[str, Any], chat: Any, tainted) -> str:
         effect = "turns ghost mode off: read markers and presence become visible"
     else:
         effect = name.replace("_", " ") + where
+    if outside:
+        effect += "; " + folders.describe(outside)
     for source in tainted:
         effect += (
             f"; carries a {source['kind']} that came from a message in {source['source_chat']}"
@@ -146,6 +156,7 @@ class Safeguard:
         self._window = policy.SendWindow()
 
     async def _facts(self, name, category, read_only, account, chat, arguments):
+        verdict = folders.judge(arguments)
         is_send = category == "send" and chat is not None
         first = False
         if is_send and "secret" not in name:
@@ -161,6 +172,8 @@ class Safeguard:
             approval_chats=self._approval_chats(),
             pending_codes=approvals.pending_codes(),
             protected_paths=self._protected,
+            protected_folder=verdict.protected,
+            outside_folders=verdict.outside,
         )
 
     async def __call__(self, ctx, call_next):
@@ -188,7 +201,13 @@ class Safeguard:
         if decision.outcome == "ask":
             # An "always" grant never covers words someone else wrote: one approval
             # for a chat must not wave through every link injected into it later.
-            granted = "tainted" not in decision.reasons and grants.is_granted(account, name, chat)
+            # Nor does a tool grant cover a folder: that is the folder's own grant.
+            tool_reasons = [r for r in decision.reasons if r != _FOLDER_REASON]
+            granted = (
+                _FOLDER_REASON not in decision.reasons
+                and "tainted" not in decision.reasons
+                and grants.is_granted(account, name, chat)
+            )
             if granted:
                 outcome, kind, failures = "approved_always", "grant", []
             else:
@@ -200,7 +219,7 @@ class Safeguard:
                     name,
                     account,
                     None if chat is None else str(chat),
-                    describe(name, arguments, chat, decision.tainted),
+                    describe(name, arguments, chat, decision.tainted, facts.outside_folders),
                     decision.reasons,
                     identity=who,
                 )
@@ -221,10 +240,14 @@ class Safeguard:
             if outcome not in approvals.APPROVED:
                 return refusal(name, outcome, timeout=self._timeout, failures=failures)
             if outcome == "approved_always" and not granted:
-                grants.add(account, name, chat)
+                if tool_reasons:
+                    grants.add(account, name, chat)
+                for folder in facts.outside_folders:
+                    grants.add_folder(folder)
 
         try:
-            return await call_next(ctx)
+            with folders.approved_for_this_call(facts.outside_folders):
+                return await call_next(ctx)
         finally:
             if category == "send" and chat is not None:
                 self._window.record(account or "", name, chat)
