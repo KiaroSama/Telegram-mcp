@@ -20,6 +20,8 @@ __all__ = [
     "channels_for",
     "first_message",
     "ghost_on",
+    "note_records",
+    "note_rendered",
     "tool_hints",
 ]
 
@@ -147,3 +149,36 @@ def channels_for(ctx: Any, account: Optional[str]) -> list:
         _BOT,
         _saved_for(account),
     ]
+
+
+def note_rendered(msg: Any, account: Optional[str] = None) -> None:
+    """Remember an incoming message a read tool is about to show the model.
+
+    Called at every place a tool turns a message's text into output. The account comes
+    from the message's own client when the caller does not know it. Never raises: a
+    read must not fail because this bookkeeping did.
+    """
+    try:
+        from telegram_mcp.runtime import _account_for_client
+        from telegram_mcp.safeguard import taint
+
+        label = account or _account_for_client(getattr(msg, "_client", None))
+        if label is not None:
+            taint.note_message(label.lower(), msg)
+    except Exception:
+        pass
+
+
+def note_records(account: Optional[str], chat: Any, records: Any) -> None:
+    """The same for secret-chat history records (``is_outgoing`` marks the owner's own)."""
+    try:
+        from telegram_mcp.safeguard import taint
+
+        for record in records or ():
+            if record.get("is_outgoing"):
+                continue
+            text = " ".join(filter(None, (record.get("text"), record.get("caption"))))
+            if account and text:
+                taint.note_text(account.lower(), chat, text)
+    except Exception:
+        pass

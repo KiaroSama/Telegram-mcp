@@ -1,5 +1,6 @@
 """Contacts MCP tools."""
 
+from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.runtime import *
 from typing import Optional
 
@@ -331,6 +332,7 @@ async def get_last_interaction(contact_id: Union[int, str], account: Optional[st
 
         records = []
         for msg in messages:
+            note_rendered(msg)
             records.append(
                 {
                     "date": msg.date,

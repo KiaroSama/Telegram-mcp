@@ -5,9 +5,8 @@ Everything here is a query. A tool belongs in this module when its job is to
 ``get_history``), filtering it (``list_messages``), reconstructing the
 conversation around one message (``get_message_context``), searching inside one
 chat or across all public ones (``search_messages``, ``search_global``), or
-listing what is pinned (``get_pinned_messages``). ``mark_as_read`` sits here
-too: it writes nothing to the conversation, it only moves the caller's own read
-cursor, which is the tail end of having read the chat.
+listing what is pinned (``get_pinned_messages``). ``mark_as_read`` moved to
+``read_receipts``: the sender sees it, so it is a seen signal, not a read.
 
 The rendering helpers these tools share — ``format_message_line``,
 ``message_to_dict``, ``get_media_label``, ``get_reply_quote`` — stay in
@@ -16,6 +15,7 @@ The rendering helpers these tools share — ``format_message_line``,
 and a helper cannot live in two places at once.
 """
 
+from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.forum import reply_target_of
 from telegram_mcp.paging import LIMITS, bounded, bounded_page, page_metadata
 from telegram_mcp.runtime import *
@@ -259,6 +259,7 @@ async def list_messages(
 
         records = []
         for msg in messages:
+            note_rendered(msg)
             record = {
                 "id": msg.id,
                 "sender": get_sender_info(msg),
@@ -349,6 +350,7 @@ async def get_message_context(
         all_messages.sort(key=lambda m: m.id)
         records = []
         for msg in all_messages:
+            note_rendered(msg)
             sender_name = get_sender_name(msg)
             record = {
                 "id": msg.id,
@@ -380,6 +382,7 @@ async def get_message_context(
                     # topic post, and presented it as the message replied to.
                     replied_msg = await cl.get_messages(chat, ids=reply_to_id)
                     if replied_msg:
+                        note_rendered(replied_msg)
                         replied_record = {
                             "sender": get_sender_name(replied_msg),
                             "text": sanitize_user_content(replied_msg.message),
@@ -409,30 +412,6 @@ async def get_message_context(
             message_id=message_id,
             context_size=context_size,
         )
-
-
-@mcp.tool(
-    annotations=ToolAnnotations(
-        title="Mark As Read",
-        openWorldHint=True,
-        destructiveHint=True,
-        idempotentHint=True,
-        readOnlyHint=False,
-    )
-)
-@with_account(readonly=False)
-@validate_id("chat_id")
-async def mark_as_read(chat_id: Union[int, str], account: str = None) -> str:
-    """
-    Mark all messages as read in a chat.
-    """
-    try:
-        cl = get_client(account)
-        entity = await resolve_entity(chat_id, cl)
-        await cl.send_read_acknowledge(entity)
-        return f"Marked all messages as read in chat {chat_id}."
-    except Exception as e:
-        return log_and_format_error("mark_as_read", e, chat_id=chat_id)
 
 
 @mcp.tool(
@@ -517,6 +496,7 @@ async def search_messages(
 
         records = []
         for msg in messages:
+            note_rendered(msg)
             record = {
                 "id": msg.id,
                 "sender": get_sender_info(msg),
@@ -628,6 +608,7 @@ async def search_global(
             chat_name = (
                 getattr(chat, "title", None) or getattr(chat, "first_name", "") or str(msg.chat_id)
             )
+            note_rendered(msg)
             record = {
                 "chat_name": sanitize_name(chat_name),
                 "chat_id": msg.chat_id,
@@ -706,6 +687,7 @@ async def search_posts(
         for msg in getattr(result, "messages", []):
             chat_id = utils.get_peer_id(msg.peer_id) if msg.peer_id else None
             username = usernames.get(chat_id)
+            note_rendered(msg, account)
             record = {
                 "chat_id": chat_id,
                 "chat_name": names.get(chat_id, str(chat_id)),
@@ -815,6 +797,7 @@ async def get_pinned_messages(chat_id: Union[int, str], account: str = None) -> 
 
         records = []
         for msg in messages:
+            note_rendered(msg)
             record = {
                 "id": msg.id,
                 "sender": get_sender_info(msg),
@@ -840,7 +823,6 @@ __all__ = [
     "get_messages",
     "list_messages",
     "get_message_context",
-    "mark_as_read",
     "search_messages",
     "search_global",
     "search_posts",

@@ -9,5 +9,6 @@
 """
 
 from telegram_mcp.safeguard.middleware import Safeguard, install
+from telegram_mcp.safeguard.wiring import note_records, note_rendered
 
-__all__ = ["Safeguard", "install"]
+__all__ = ["Safeguard", "install", "note_records", "note_rendered"]

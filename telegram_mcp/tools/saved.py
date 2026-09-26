@@ -16,6 +16,7 @@ import os
 from typing import Any, List, Union
 
 from telegram_mcp.paging import LIMITS, bounded
+from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.runtime import *
 from telegram_mcp.message_view import describe_media_label, display_name, display_text
 
@@ -188,6 +189,7 @@ async def get_saved_history(peer_id: Union[int, str], limit: int = 30, account: 
 
         records = []
         for msg in messages:
+            note_rendered(msg, account)
             record = {
                 "message_id": getattr(msg, "id", None),
                 "date": (

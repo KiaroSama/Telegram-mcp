@@ -222,7 +222,7 @@ def test_a_path_into_the_safeguard_package_is_refused(path):
 def test_a_path_elsewhere_is_not_refused():
     decision = _decide(
         "download_media",
-        {"chat_id": 5, "message_id": 1, "file_path": "C:/Users/someone/Downloads/a.jpg"},
+        {"chat_id": 5, "message_id": 1, "file_path": "D:/media/downloads/a.jpg"},
         protected_paths=(_protected(),),
     )
     assert decision.outcome == "run"
