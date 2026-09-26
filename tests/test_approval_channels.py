@@ -76,6 +76,7 @@ class _Client:
     def __init__(self, fail_for=()):
         self.sent = []
         self.edited = []
+        self.edited_text = []
         self.handlers = []
         self.fail_for = set(fail_for)
 
@@ -87,6 +88,7 @@ class _Client:
 
     async def edit_message(self, peer, message_id, text=None, **kwargs):
         self.edited.append((peer, message_id, kwargs))
+        self.edited_text.append(text)
 
     def add_event_handler(self, handler, event=None):
         self.handlers.append(handler)
@@ -326,3 +328,65 @@ def test_the_deadline_defaults_to_five_minutes():
     assert ac.timeout_seconds("30") == 30
     assert ac.timeout_seconds("nonsense") == 300
     assert ac.timeout_seconds("-5") == 300
+
+
+@pytest.mark.parametrize(
+    "press, outcome, line",
+    [
+        ("once", "approved_once", "✅ تأیید شد"),
+        ("always", "approved_always", "♾ همیشه تأیید شد"),
+        ("deny", "declined", "❌ رد شد"),
+        (None, "timed_out", "⏱ مهلت تمام شد؛ انجام نشد"),
+    ],
+)
+def test_a_closed_request_shows_its_outcome_on_every_copy(press, outcome, line):
+    """FR-039: no buttons left, and one line saying what happened."""
+    client = _Client()
+    bot = _bot(client, 111, 222)
+    request = _request()
+
+    async def run():
+        task = asyncio.create_task(bot.ask(request, 5 if press else 0.05))
+        if press:
+            await _answer_when_sent(
+                client, lambda: bot.handle_callback(111, f"sg:{request.nonce}:{press}"), 2
+            )
+        return await task
+
+    assert asyncio.run(run()) == outcome
+    assert sorted(peer for peer, _, _ in client.edited) == [111, 222]
+    assert all(kwargs.get("buttons") is None for _, _, kwargs in client.edited)
+    assert all(text.endswith(line) and "delete_message" in text for text in client.edited_text)
+
+
+@pytest.mark.parametrize(
+    "me, expected",
+    [
+        (
+            SimpleNamespace(id=5899781975, username="refx_nexus_3", usernames=None),
+            "refx_nexus_3 · 5899781975 · @refx_nexus_3",
+        ),
+        (
+            SimpleNamespace(
+                id=5899781975,
+                username=None,
+                usernames=[
+                    SimpleNamespace(username="old_name", active=False),
+                    SimpleNamespace(username="refx_nexus_3", active=True),
+                ],
+            ),
+            "refx_nexus_3 · 5899781975 · @refx_nexus_3",
+        ),
+        (SimpleNamespace(id=7, username=None, usernames=None), "refx_nexus_3 · 7"),
+    ],
+)
+def test_the_quote_names_the_accounts_username_with_an_at(monkeypatch, me, expected):
+    """The bot quote shows @username even when Telegram keeps it only in `usernames`."""
+    from telegram_mcp.safeguard import wiring
+
+    async def _me(account):
+        return me
+
+    monkeypatch.setattr(wiring, "_me", _me)
+    monkeypatch.setattr(wiring, "_identities", {})
+    assert asyncio.run(wiring.identity("refx_nexus_3")) == expected

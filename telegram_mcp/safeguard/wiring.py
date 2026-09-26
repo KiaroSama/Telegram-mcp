@@ -119,6 +119,17 @@ async def _me(account: str):
     return await asyncio.wait_for(get_client(account).get_me(), _FIRST_MESSAGE_SECONDS)
 
 
+def _username_of(me: Any) -> Optional[str]:
+    """The account's username; with several (or a collectible one) Telegram leaves
+    `username` empty and lists them in `usernames`, the active one first."""
+    if getattr(me, "username", None):
+        return me.username
+    for entry in getattr(me, "usernames", None) or []:
+        if getattr(entry, "active", False) and getattr(entry, "username", None):
+            return entry.username
+    return None
+
+
 async def identity(account: Optional[str]) -> str:
     """ "label · user id · @username" - the quote that tells the owner which account."""
     if not account:
@@ -126,8 +137,9 @@ async def identity(account: Optional[str]) -> str:
     if account not in _identities:
         me = await _me(account)
         parts = [account, str(me.id)]
-        if getattr(me, "username", None):
-            parts.append("@" + me.username)
+        username = _username_of(me)
+        if username:
+            parts.append("@" + username)
         _identities[account] = " · ".join(parts)
     return _identities[account]
 

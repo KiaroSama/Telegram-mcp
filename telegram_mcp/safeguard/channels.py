@@ -53,6 +53,14 @@ _WORDS = {"yes": "approved_once", "always": "approved_always", "no": "declined"}
 _REPLY = re.compile(r"^\s*(yes|always|no)\s+([A-Za-z0-9]{4})\s*$", re.IGNORECASE)
 # The owner reads these on the phone.
 _APPROVE, _DENY, _ALWAYS = "✅ تأیید", "❌ رد", "♾ همیشه تأیید"
+# FR-039: the line a closed bot request gains on every copy, so the owner sees what counted.
+_OUTCOME_LINES = {
+    "approved_once": "✅ تأیید شد",
+    "approved_always": "♾ همیشه تأیید شد",
+    "declined": "❌ رد شد",
+    "timed_out": "⏱ مهلت تمام شد؛ انجام نشد",
+}
+_CLOSED_LINE = "⏹ بسته شد؛ انجام نشد"
 
 _pending: Set[str] = set()
 
@@ -231,6 +239,7 @@ class BotChannel:
             [press("always", _ALWAYS, "primary")],
         ]
         sent = []
+        outcome = None
         try:
             for owner in sorted(self.owner_ids):
                 try:
@@ -242,13 +251,15 @@ class BotChannel:
                     continue  # this account never started the bot; try the others
             if not sent:
                 raise RuntimeError("no allowed account could be reached by the approval bot")
-            return await _wait(future, timeout)
+            outcome = await _wait(future, timeout)
+            return outcome
         finally:
             self._waiting.pop(request.nonce, None)
+            closed = request.html() + "\n\n" + _OUTCOME_LINES.get(outcome, _CLOSED_LINE)
             for owner, message_id in sent:
                 try:  # take the buttons away so a late press cannot look like an answer
                     await client.edit_message(
-                        owner, message_id, request.html(), parse_mode="html", buttons=None
+                        owner, message_id, closed, parse_mode="html", buttons=None
                     )
                 except Exception:
                     pass
