@@ -101,6 +101,10 @@ def _probe_client(connection: type, argument: Any, timeout: float):
 
 def _reason(error: BaseException) -> str:
     text = str(error).strip().splitlines()[0] if str(error).strip() else ""
+    # Telethon's own words when every attempt failed; with retries off it reads
+    # "failed 0 time(s)", which says nothing about the proxy.
+    if text.startswith("Connection to Telegram failed"):
+        return "could not connect through it"
     return (text or type(error).__name__)[:80]
 
 
