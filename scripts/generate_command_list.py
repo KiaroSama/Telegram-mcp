@@ -64,8 +64,10 @@ def render() -> str:
         "(not purely additive, in MCP's sense), **I**dempotent, **O**pen-world; `-` means "
         "false. **Safeguard** says what happens when an agent calls the tool: see "
         "[INSTALL.md](INSTALL.md#the-safeguard). Any write call is also held when its "
-        "arguments carry text another person wrote, and refused outright when it would "
-        "touch the approval channel or the safeguard's own files.",
+        "arguments carry text another person wrote, a file tool is held when its path "
+        "leaves `files/outbox` and `files/downloads`, and a call is refused outright when "
+        "it would touch the approval channel, the safeguard's own files, the rest of the "
+        "installation or the state directory.",
         "",
     ]
     for module in sorted(groups):

@@ -107,6 +107,7 @@ FREE_WRITES = frozenset(
     {
         "add_chat_to_folder",
         "add_contact",
+        "add_proxies",
         "add_quick_reply",
         "add_sticker_to_set",
         "approve_join_request",
@@ -147,6 +148,7 @@ FREE_WRITES = frozenset(
         "promote_admin",
         "react_to_story",
         "remove_chat_from_folder",
+        "remove_proxies",
         "remove_reaction",
         "rename_quick_reply",
         "reorder_folders",
@@ -171,6 +173,7 @@ FREE_WRITES = frozenset(
         "set_signatures",
         "set_view_forum_as_messages",
         "subscribe_public_channel",
+        "test_proxies",
         "toggle_slow_mode",
         "unarchive_chat",
         "unban_user",
