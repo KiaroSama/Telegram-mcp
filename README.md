@@ -710,8 +710,11 @@ MTProxy:
 TELEGRAM_PROXY_TYPE=mtproxy
 TELEGRAM_PROXY_HOST=mtproxy.example
 TELEGRAM_PROXY_PORT=443
-TELEGRAM_PROXY_SECRET=ee0123456789abcdef...
+TELEGRAM_PROXY_SECRET=dd0123456789abcdef0123456789abcdef
 ```
+
+A FakeTLS (`ee`) proxy works through the proxy pool below; the single `.env` proxy
+passes its secret to Telethon unchanged, as it always has.
 
 Per-account overrides use the same `_<LABEL>` suffix as session variables and
 take precedence over the unsuffixed defaults:
@@ -730,6 +733,16 @@ Misconfigured proxy settings (unknown type, missing host/port, invalid port,
 missing MTProxy secret, or a missing `python-socks` package) cause the server
 to fail fast at startup with a clear error message instead of silently
 bypassing the proxy.
+
+### Proxy pool and failover
+
+Beyond the one `.env` proxy, the server keeps a pool: add proxies from links, a
+pasted list or a proxy channel (`add_proxies`), test them (`test_proxies`), prune
+them (`remove_proxies`), and see each account's route (`get_connection_route`).
+An account tries the `.env` proxy, then direct, then the pool fastest first, and
+moves to the next one on its own when the proxy in use dies. MTProto plain, `dd`
+and FakeTLS (`ee`), SOCKS5/4 and HTTP are supported; secrets never appear in an
+answer or a log. Details: [docs/INSTALL.md](docs/INSTALL.md#proxies).
 
 ## File Path Security
 

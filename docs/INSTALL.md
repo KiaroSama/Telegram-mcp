@@ -187,6 +187,33 @@ for this chat". The tools are `set_ghost_mode` and `get_ghost_mode`; the most sp
 setting wins (chat, then account, then everyone). Turning it **on** runs at once;
 turning it **off** asks you first.
 
+## Proxies
+
+When Telegram is blocked where you are, give the server a **proxy pool**. Each account
+then connects in this order: the proxy in `.env` (`TELEGRAM_PROXY_*`) if you set one,
+then direct, then the pool's proxies fastest first. When the one in use dies, the next
+reconnect moves on by itself and marks the dead one; when nothing works, the answer
+lists every route it tried and the server waits 30 seconds before trying again.
+
+Tell the agent, for example:
+
+- "add these proxies" and paste links or a list - `add_proxies(text=...)`;
+- "take the proxies from @ProxyDaemi" - `add_proxies(source=...)` reads the channel's
+  last 200 posts, hidden links and buttons included, without marking anything seen;
+- "which proxies work?" - `test_proxies` (16 at once, 10 seconds each);
+- "remove the dead ones" - `remove_proxies(unhealthy=True)`;
+- "how is the work account connected?" - `get_connection_route`.
+
+Accepted: `tg://proxy` and `t.me/proxy` (MTProto: plain, `dd`, and `ee` FakeTLS),
+`tg://socks` and `t.me/socks`, `socks5://`, `socks4://`, `http://host:port`, and bare
+`host:port:secret` lines; secrets in hex or base64. `list_proxies` and every other answer
+show a short id instead of the secret or password. The pool lives in your state
+directory, readable only by you; `pool="<account>"` gives one account its own pool,
+which it then uses instead of the shared one.
+
+SOCKS and HTTP proxies need the `proxy` extra: `uv sync --extra proxy`. MTProto,
+including FakeTLS, needs nothing extra.
+
 ## Updating
 
 ```bash
