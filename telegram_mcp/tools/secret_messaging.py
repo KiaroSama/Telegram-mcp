@@ -124,7 +124,7 @@ async def send_secret_message(
         reply = reply_to(label, secret_id, reply_to_message_id)
 
         sent_id = await manager.send_message(secret_id, text, entities, reply_to=reply)
-        secret_history.record(
+        local_copy = secret_history.record_sent(
             label,
             secret_id,
             secret_history.entry(message_id=sent_id, is_outgoing=True, text=text),
@@ -136,6 +136,8 @@ async def send_secret_message(
             "message_id": sent_id,
             "self_destruct": "per the chat timer; see set_secret_chat_timer",
         }
+        if local_copy:
+            record["local_copy"] = local_copy
         if reply is not None:
             record["reply_to_message_id"] = reply
 
@@ -265,7 +267,7 @@ async def send_secret_media(
         sent_id = await manager.send_file(
             secret_id, path, caption=caption, kind=chosen, reply_to=reply
         )
-        secret_history.record(
+        local_copy = secret_history.record_sent(
             label,
             secret_id,
             secret_history.entry(message_id=sent_id, is_outgoing=True, text=caption, kind=chosen),
@@ -281,6 +283,8 @@ async def send_secret_media(
             "kind": chosen,
             "kind_chosen_by": "caller" if kind else "the file",
         }
+        if local_copy:
+            record["local_copy"] = local_copy
         if reply is not None:
             record["reply_to_message_id"] = reply
         return format_tool_result(record)
