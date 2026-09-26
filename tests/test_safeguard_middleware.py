@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from telegram_mcp import safeguard
-from telegram_mcp.safeguard import middleware, taint
+from telegram_mcp.safeguard import grants, middleware, taint
 from telegram_mcp.tool_budget import ToolCallBudget
 
 HINTS = {
@@ -19,6 +19,7 @@ HINTS = {
     "send_message": (False, True),
     "delete_message": (False, True),
     "mark_as_read": (False, True),
+    "download_media": (False, True),
 }
 
 
@@ -40,6 +41,10 @@ class _Channel:
 after_calls = []
 
 
+async def _identity(account):
+    return f"{account} · 7 · @{account}_user"
+
+
 def _guard(channel=None, *, first_message=False, ghost=True, approval_chats=()):
     channel = channel or _Channel()
 
@@ -54,6 +59,7 @@ def _guard(channel=None, *, first_message=False, ghost=True, approval_chats=()):
         approval_chats=lambda: frozenset(approval_chats),
         account_of=lambda arguments: arguments.get("account", "main"),
         after=lambda account: after_calls.append(account),
+        identity=_identity,
         timeout=300,
     )
     return guard, channel
@@ -80,10 +86,13 @@ def _text(result):
 
 
 @pytest.fixture(autouse=True)
-def _fresh():
+def _fresh(tmp_path, monkeypatch):
     taint.clear()
+    monkeypatch.setattr(grants, "grants_path", lambda: tmp_path / "always-approvals.json")
+    grants.reset_cache()
     yield
     taint.clear()
+    grants.reset_cache()
 
 
 def test_other_messages_pass_untouched():
@@ -135,15 +144,43 @@ def test_every_ending_but_approval_is_a_refusal(outcome, sentence, advice):
     assert "Nothing was changed on Telegram." in text
 
 
-def test_a_session_approval_covers_that_tool_in_that_chat_only():
-    guard, channel = _guard(_Channel("approved_session"))
+def test_always_approve_covers_that_tool_in_that_chat_even_after_a_restart():
+    guard, channel = _guard(_Channel("approved_always"))
     _call(guard, "delete_message", {"chat_id": -100, "message_id": 3})
     _call(guard, "delete_message", {"chat_id": -100, "message_id": 4})
     assert len(channel.requests) == 1
+    grants.reset_cache()
+    fresh, fresh_channel = _guard(_Channel("declined"))  # a restarted server
+    assert _call(fresh, "delete_message", {"chat_id": -100, "message_id": 5})[1] == [
+        "delete_message"
+    ]
+    assert fresh_channel.requests == []
     _call(guard, "delete_message", {"chat_id": -200, "message_id": 4})
     assert len(channel.requests) == 2
     _call(guard, "delete_message", {"chat_id": -100, "message_id": 5, "account": "other"})
     assert len(channel.requests) == 3
+
+
+def test_approve_once_does_not_carry_over():
+    guard, channel = _guard(_Channel("approved_once"))
+    _call(guard, "delete_message", {"chat_id": -100, "message_id": 3})
+    _call(guard, "delete_message", {"chat_id": -100, "message_id": 4})
+    assert len(channel.requests) == 2
+
+
+def test_the_request_names_the_account_it_acts_for():
+    guard, channel = _guard()
+    _call(guard, "delete_message", {"chat_id": -100, "message_id": 3, "account": "work"})
+    assert channel.requests[0].identity == "work · 7 · @work_user"
+
+
+def test_a_state_file_path_is_refused():
+    guard, channel = _guard()
+    path = str(grants.grants_path())
+    result, ran = _call(
+        guard, "download_media", {"chat_id": 5, "message_id": 1, "file_path": path}
+    )
+    assert ran == [] and "safeguard's own files" in _text(result)
 
 
 def test_touching_the_approval_channel_is_refused_without_asking():

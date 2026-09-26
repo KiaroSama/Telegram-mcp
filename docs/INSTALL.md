@@ -85,22 +85,34 @@ The safeguard asks you before risky actions. In Claude Code the question appears
 dialog. In clients that cannot show one, it comes to your phone through a bot of your own:
 
 1. In Telegram, open **@BotFather**, send `/newbot`, pick a name. Copy the token.
-2. Open the new bot and press **Start** once, so it may message you.
-3. Find your numeric user id (for example with the `get_me` tool).
-4. Add to `.env`, then restart the server:
+2. Write the bot's name, username and token into the **Approval bot** section of your local
+   `secrets.md` (never committed). Optionally list the user ids allowed to answer; leave it
+   empty to allow every account this server runs.
+3. From **every account that should receive requests**, open the bot and press **Start**
+   once, so the bot may message it.
+4. The values go into `.env` (an agent can copy them for you), then restart the server:
 
    ```env
    TELEGRAM_APPROVAL_BOT_TOKEN=...
-   TELEGRAM_APPROVAL_OWNER_ID=...
+   TELEGRAM_APPROVAL_BOT_USERNAME=...
+   TELEGRAM_APPROVAL_BOT_NAME=...
+   TELEGRAM_APPROVAL_OWNER_IDS=...   # optional, comma-separated user ids
    ```
+
+One bot serves every account of this server. Each request opens with a quote naming the
+account it acts for (label, user id, @username) and carries three inline buttons:
+**تأیید** (approve once), **رد** (deny) and **همیشه تأیید** (always approve this tool in
+this chat). The bot answers only allowed users; anyone else who finds it gets no reply at
+all, and their button presses do nothing.
 
 Without the bot, approvals fall back to a short code in your Saved Messages (below).
 
 ## For an AI agent setting this up
 
 - Follow the steps above in order; ask the owner for everything in steps 3, 4 and 7.
-  You never read, print, log or commit `.env`, a session string, the API hash or the bot
-  token. The owner types them.
+  You never print, log or commit `.env`, a session string, the API hash or the bot
+  token, and you read or copy them only when the owner asks you to (for example moving
+  the bot fields from `secrets.md` into `.env`), without showing the values.
 - Do not install from PyPI (see the warning at the top).
 - After starting the server, call `list_accounts` and then `safeguard_status` to confirm
   the server answers and the safeguard is installed.
@@ -131,10 +143,14 @@ MCP client, not only Claude.
 **Where the question appears**, first that works:
 
 1. **A dialog in your client** (Claude Code and other clients with MCP elicitation).
-2. **The approval bot** on your phone: *Allow once*, *Allow in this chat for this
-   session*, *Deny*.
+2. **The approval bot** on your phone: *approve*, *deny*, *always approve*.
 3. **Saved Messages**: the account posts `Approval K7Q2: ...`. From another device,
-   reply `yes K7Q2`, `session K7Q2` or `no K7Q2`.
+   reply `yes K7Q2`, `always K7Q2` or `no K7Q2`.
+
+**Always approve** covers one tool in one chat of one account and survives restarts.
+`safeguard_status` lists every such grant and `revoke_always_approval` removes one. It
+never covers a call that carries text someone else wrote: that call is asked about
+again, so one approval cannot wave through every link later injected into the chat.
 
 If none is available, the call is refused. No answer within 5 minutes is a refusal
 (`TELEGRAM_APPROVAL_TIMEOUT_SECONDS` changes it). Nothing the model writes can answer an
