@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-__all__ = ["ghost_path", "grants_path", "write_private_json"]
+__all__ = ["ghost_path", "grants_path", "sealed_path", "write_private_json"]
 
 
 def _state_dir() -> Path:
@@ -30,6 +30,11 @@ def ghost_path() -> Path:
 
 def grants_path() -> Path:
     return _state_dir() / "always-approvals.json"
+
+
+def sealed_path() -> Path:
+    """Approval codes issued and approval messages posted (FR-036, FR-037)."""
+    return _state_dir() / "approval-messages.json"
 
 
 def write_private_json(path: Path, data: Any) -> None:
