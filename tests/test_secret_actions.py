@@ -15,6 +15,8 @@ this server's own record would be a delete in name only.
 """
 
 import json
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -272,3 +274,27 @@ def _wire_source(monkeypatch, message, downloaded=b""):
         return None
 
     monkeypatch.setattr(sa, "ensure_connected", _connected)
+
+
+@pytest.mark.asyncio
+async def test_the_media_scratch_copy_lives_in_a_private_directory_that_is_removed(
+    backend, monkeypatch
+):
+    """A fixed, guessable name in the shared temp dir could be pre-created or read by
+    another local user; a private directory of its own cannot, and it goes with the copy."""
+    _wire_source(
+        monkeypatch,
+        SimpleNamespace(
+            message="",
+            media=object(),
+            entities=None,
+            file=SimpleNamespace(name="p.jpg", ext=".jpg"),
+        ),
+        downloaded=b"\xff\xd8\xff",
+    )
+
+    await sa.copy_into_secret_chat(-100, 5, CHAT_ID, account="acct")
+
+    sent = Path(backend.files[-1].path)
+    assert sent.parent != Path(tempfile.gettempdir()), "not straight in the shared temp dir"
+    assert not sent.parent.exists(), "the private directory goes with the copy"
