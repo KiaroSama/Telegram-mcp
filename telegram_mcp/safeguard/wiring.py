@@ -202,7 +202,7 @@ async def _bot_client():
             if not _BOT.is_allowed(event.sender_id):
                 return
             answered = _BOT.handle_callback(event.sender_id, event.data)
-            await event.answer("ثبت شد." if answered else "این درخواست دیگر باز نیست.")
+            await event.answer(approvals.ANSWERED if answered else approvals.NOT_OPEN)
 
         client.add_event_handler(_on_press, events.CallbackQuery())
         _bot_state["client"] = client
