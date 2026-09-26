@@ -20,7 +20,9 @@ shutdown is flushing races the flush for key material that cannot be recovered.
 """
 
 import asyncio
+import json
 import logging
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 from telethon_secret_chat import FileStorage, SecretChatManager
@@ -37,6 +39,7 @@ from telethon_secret_chat.errors import (
 from telethon_secret_chat.schema import secret_tl
 
 from telegram_mcp import secret_history
+from telegram_mcp.alias_store import restrict_to_owner
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import state_dir
 
@@ -115,6 +118,41 @@ def _storage_for(account: str) -> FileStorage:
     return FileStorage(path)
 
 
+def _owner_path(account: str) -> Path:
+    """Which Telegram account a label's key store was written for."""
+    return state_dir() / "secret-chats" / f"{account}.owner.json"
+
+
+async def _bind_store(account: str, client) -> None:
+    """Refuse a key store written for a different Telegram account.
+
+    The store is found by LABEL, and a label can be re-pointed at another account in
+    `.env`. Without this the new account would open - and try to decrypt with - the
+    old account's keys. A store with no record yet (every store written before this
+    check existed) is adopted by the account using it now.
+    """
+    me = await client.get_me(input_peer=True)
+    user_id = getattr(me, "user_id", None) or getattr(me, "id", None)
+    path = _owner_path(account)
+    if path.exists():
+        try:
+            recorded = json.loads(path.read_text(encoding="utf-8")).get("user_id")
+        except (OSError, ValueError, AttributeError):
+            recorded = None
+        if recorded is not None and user_id is not None and int(recorded) != int(user_id):
+            raise SecretChatUnavailable(
+                account,
+                "this label's secret-chat keys belong to a different Telegram account "
+                f"(user {recorded}, not {user_id}); move state/secret-chats/{account}* "
+                "aside or give this account its own label",
+            )
+        if recorded is not None:
+            return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"user_id": user_id}), encoding="utf-8")
+    restrict_to_owner(path)
+
+
 async def secret_manager(account: str) -> SecretChatManager:
     """The account's started secret-chat manager.
 
@@ -153,6 +191,7 @@ async def secret_manager(account: str) -> SecretChatManager:
             # stores for one conversation.
             await _stop(existing)
 
+        await _bind_store(account, client)
         manager = SecretChatManager(client, _storage_for(account))
         manager.on("ChatRequested", _accept_incoming(manager, account))
         manager.on("MessageReceived", _remember(account))

@@ -19,6 +19,9 @@ package's business and its own suite owns it. What is tested here is the boundar
 """
 
 import asyncio
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,9 +39,13 @@ def backend(monkeypatch):
 class _Client:
     """Enough of a Telethon client for the manager to be constructed over."""
 
-    def __init__(self, name="a"):
+    def __init__(self, name="a", user_id=1001):
         self.name = name
+        self.user_id = user_id
         self.handlers = []
+
+    async def get_me(self, input_peer=False):
+        return SimpleNamespace(user_id=self.user_id, id=self.user_id)
 
     def add_event_handler(self, handler, *args, **kwargs):
         self.handlers.append(handler)
@@ -51,12 +58,15 @@ class _Client:
         return True
 
 
-def _wire(monkeypatch, backend, client):
+def _wire(monkeypatch, backend, client, owners=None):
     """Point the seam at one client, and keep its storage off the disk."""
     from telethon_secret_chat import MemoryStorage
 
+    owners = owners or Path(tempfile.mkdtemp())
     monkeypatch.setattr(backend, "_telethon_client", lambda account: client)
     monkeypatch.setattr(backend, "_storage_for", lambda account: MemoryStorage())
+    monkeypatch.setattr(backend, "_owner_path", lambda account: owners / f"{account}.owner.json")
+    return owners
 
 
 @pytest.mark.asyncio
@@ -171,3 +181,27 @@ async def test_concurrent_callers_get_one_manager(backend, monkeypatch):
 
     assert len({id(m) for m in managers}) == 1
     assert len(client.handlers) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_key_store_remembers_which_account_it_belongs_to(backend, monkeypatch):
+    owners = _wire(monkeypatch, backend, _Client(user_id=1001))
+
+    await backend.secret_manager("acct")
+
+    assert '"user_id": 1001' in (owners / "acct.owner.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_a_label_reused_for_another_account_does_not_open_the_old_keys(backend, monkeypatch):
+    """Constitution II: the store is bound to the account that wrote it. A label that
+    now names a different Telegram account must not decrypt the old account's chats."""
+    owners = _wire(monkeypatch, backend, _Client(user_id=1001))
+    await backend.secret_manager("acct")
+    backend._by_account.clear()
+    backend._verified_against.clear()
+
+    _wire(monkeypatch, backend, _Client(name="b", user_id=2002), owners=owners)
+    with pytest.raises(backend.SecretChatUnavailable, match="different Telegram account"):
+        await backend.secret_manager("acct")
+    assert "acct" not in backend._by_account
