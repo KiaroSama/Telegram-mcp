@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from telegram_mcp.sanitize import sanitize_name
+from telegram_mcp.permalinks import channel_link_id, message_permalink  # noqa: F401  (re-exported)
 
 # The topic rule lives in one place because the send path needs it read
 # backwards; two copies of "which id means the topic" drift the first time
@@ -604,40 +605,6 @@ def describe_topic(msg) -> Optional[dict[str, Any]]:
     if topic_id is None:
         return None
     return {"is_topic_message": True, "topic_id": topic_id}
-
-
-def channel_link_id(chat_id: int) -> int:
-    """The bare channel id a ``/c/`` permalink needs.
-
-    ``abs(chat_id) % 10**10`` happened to strip the ``-100`` prefix only while
-    the bare id stayed under 10^10. Telegram's peer space is 64-bit, and past
-    that the modulo silently yields a DIFFERENT valid-looking id, so the link
-    points at another chat.
-
-    Only a negative id carries the marker. Callers hand this either a marked id
-    (the forward path) or an entity's already-bare ``.id`` (the view path), and
-    a bare id may itself begin with 100.
-    """
-    if chat_id >= 0:
-        return chat_id
-    text = str(-chat_id)
-    return int(text[3:]) if text.startswith("100") and len(text) > 3 else int(text)
-
-
-def message_permalink(msg, chat: Any = None, link_domain: str = "t.me") -> Optional[str]:
-    """Canonical ``t.me`` link for the message, when one can be built."""
-    chat = chat if chat is not None else getattr(msg, "chat", None)
-    if chat is None:
-        return None
-    username = getattr(chat, "username", None)
-    if username:
-        return f"https://{link_domain}/{username}/{msg.id}"
-    chat_id = getattr(chat, "id", None)
-    if chat_id is None:
-        return None
-    if not (getattr(chat, "broadcast", False) or getattr(chat, "megagroup", False)):
-        return None
-    return f"https://{link_domain}/c/{channel_link_id(chat_id)}/{msg.id}"
 
 
 def deep_message_dict(

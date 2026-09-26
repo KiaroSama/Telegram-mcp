@@ -27,7 +27,7 @@ from telegram_mcp.text_fidelity import display_name
 # The one place that knows the `/c/` permalink id shape, so the two builders
 # cannot drift. The edge back from message_view into this module is deferred
 # (see message_view.describe_media_label), so this direction stays safe.
-from telegram_mcp.message_view import channel_link_id
+from telegram_mcp.permalinks import post_link
 
 # A URL is a machine value: bounded so a hostile link cannot flood the context,
 # but far above display_name's prose default, which cuts real Mini App links in
@@ -274,11 +274,11 @@ def message_to_dict(msg) -> dict:
         # form that only resolves for members.
         if post_id is not None:
             if finfo.get("from_username"):
-                finfo["post_link"] = f"https://{LINK_DOMAIN}/{finfo['from_username']}/{post_id}"
-            elif finfo.get("from_chat_id") is not None:
-                finfo["post_link"] = (
-                    f"https://{LINK_DOMAIN}/c/{channel_link_id(finfo['from_chat_id'])}/{post_id}"
+                finfo["post_link"] = post_link(
+                    LINK_DOMAIN, post_id, username=finfo["from_username"]
                 )
+            elif finfo.get("from_chat_id") is not None:
+                finfo["post_link"] = post_link(LINK_DOMAIN, post_id, chat_id=finfo["from_chat_id"])
 
         d["forwarded"] = finfo or True
 
