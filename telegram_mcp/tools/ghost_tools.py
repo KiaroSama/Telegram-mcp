@@ -11,7 +11,7 @@ from typing import Optional, Union
 from telegram_mcp import connection
 from telegram_mcp.runtime import *
 from telegram_mcp.safeguard import channels as approvals
-from telegram_mcp.safeguard import ghost, policy, taint
+from telegram_mcp.safeguard import ghost, grants, policy, taint
 
 
 def _known_account(account: Optional[str]) -> Optional[str]:
@@ -133,8 +133,8 @@ async def get_ghost_mode(account: str = None, chat_id: Union[int, str] = None) -
 async def safeguard_status(account: str = None) -> str:
     """
     Show how the safeguard is set up: which approval channels exist, the approval time
-    limit, how many "this chat for this session" approvals are held, and the bulk-send
-    and untrusted-content thresholds. Never shows a token, a code, or message text.
+    limit, every "always approve" grant (tool, chat, account), and the bulk-send and
+    untrusted-content thresholds. Never shows a token, a code, or message text.
 
     Args:
         account: An account label for its Saved Messages channel and untrusted-content
@@ -142,9 +142,8 @@ async def safeguard_status(account: str = None) -> str:
     """
     try:
         label = _known_account(account)
-        token, owner = approvals.bot_settings()
+        token, owners = approvals.bot_settings()
         guard = next((m for m in mcp.middleware if type(m).__name__ == "Safeguard"), None)
-        grants = sorted(getattr(guard, "_grants", ()), key=str)
         labels = [label] if label else list(connection.clients)
         window = policy.SendWindow()
         return json.dumps(
@@ -152,13 +151,16 @@ async def safeguard_status(account: str = None) -> str:
                 "installed": guard is not None,
                 "channels": {
                     "dialog": "used when the client supports approval dialogs",
-                    "approval_bot": (
-                        "configured" if token and owner is not None else "not configured"
-                    ),
+                    "approval_bot": {
+                        "configured": bool(token),
+                        "allowed_users": (
+                            len(owners) if owners else "every account this server runs"
+                        ),
+                    },
                     "saved_messages": {name: "available" for name in labels},
                 },
                 "approval_timeout_seconds": approvals.timeout_seconds(),
-                "session_grants": [{"account": a, "tool": t, "chat": c} for a, t, c in grants],
+                "always_approved": grants.list_all(),
                 "bulk_send": {"chats": window.limit, "within_seconds": window.window},
                 "untrusted_content": {
                     "passage_characters": taint.PASSAGE_LENGTH,
@@ -171,4 +173,38 @@ async def safeguard_status(account: str = None) -> str:
         return log_and_format_error("safeguard_status", e, account=account)
 
 
-__all__ = ["set_ghost_mode", "get_ghost_mode", "safeguard_status"]
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Revoke Always Approval",
+        openWorldHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        readOnlyHint=False,
+    )
+)
+async def revoke_always_approval(tool: str, chat_id: Union[int, str], account: str = None) -> str:
+    """
+    Stop an "always approve" for one tool in one chat, so the safeguard asks again.
+
+    Runs without asking: it only makes the safeguard stricter. `safeguard_status` lists
+    every grant.
+
+    Args:
+        tool: The tool name the grant covers, e.g. "delete_message".
+        chat_id: The chat the grant covers, as listed by safeguard_status.
+        account: The account the grant belongs to; omit when only one account runs.
+    """
+    try:
+        label = _known_account(account)
+        if label is None and len(connection.clients) == 1:
+            label = next(iter(connection.clients))
+        removed = grants.revoke(label, tool, chat_id)
+        return json.dumps(
+            {"revoked": removed, "account": label, "tool": tool, "chat_id": chat_id},
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return log_and_format_error("revoke_always_approval", e, tool=tool, chat_id=chat_id)
+
+
+__all__ = ["set_ghost_mode", "get_ghost_mode", "safeguard_status", "revoke_always_approval"]

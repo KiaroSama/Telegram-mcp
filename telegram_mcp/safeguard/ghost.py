@@ -15,12 +15,12 @@ is a gated call, and a setting any tool could flip would make that gate decorati
 
 import asyncio
 import json
-import os
-import tempfile
 import threading
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
+
+from telegram_mcp.safeguard import state_files
 
 __all__ = [
     "Presence",
@@ -47,9 +47,7 @@ _cache: Dict[str, Any] = {}
 
 
 def settings_path() -> Path:
-    from telegram_mcp.settings import state_dir
-
-    return state_dir() / "ghost.json"
+    return state_files.ghost_path()
 
 
 def _empty() -> Dict[str, Any]:
@@ -139,20 +137,7 @@ def set_mode(enabled: bool, account: Optional[str] = None, chat: Any = None) -> 
 
 
 def _write(data: Dict[str, Any]) -> None:
-    from telegram_mcp.alias_store import restrict_to_owner
-
-    path = settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temporary = tempfile.mkstemp(dir=str(path.parent), prefix="ghost.", suffix=".tmp")
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(data, fh, indent=1, sort_keys=True)
-        if not restrict_to_owner(temporary):
-            raise PermissionError("ghost.json could not be made readable only by its owner")
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    state_files.write_private_json(settings_path(), data)
     reset_cache()
 
 

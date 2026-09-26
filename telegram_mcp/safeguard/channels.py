@@ -24,6 +24,7 @@ silence past the deadline. A channel that fails hands over to the next one.
 
 import asyncio
 import os
+from html import escape as html_escape
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -42,12 +43,14 @@ __all__ = [
     "timeout_seconds",
 ]
 
-APPROVED = ("approved_once", "approved_session")
+APPROVED = ("approved_once", "approved_always")
 TIMEOUT_SECONDS_DEFAULT = 300.0
 _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I lookalikes
-_CHOICES = {"once": "approved_once", "session": "approved_session", "deny": "declined"}
-_WORDS = {"yes": "approved_once", "session": "approved_session", "no": "declined"}
-_REPLY = re.compile(r"^\s*(yes|session|no)\s+([A-Za-z0-9]{4})\s*$", re.IGNORECASE)
+_CHOICES = {"once": "approved_once", "always": "approved_always", "deny": "declined"}
+_WORDS = {"yes": "approved_once", "always": "approved_always", "no": "declined"}
+_REPLY = re.compile(r"^\s*(yes|always|no)\s+([A-Za-z0-9]{4})\s*$", re.IGNORECASE)
+# The owner reads these on the phone.
+_APPROVE, _DENY, _ALWAYS = "✅ تأیید", "❌ رد", "♾ همیشه تأیید"
 
 _pending: Set[str] = set()
 
@@ -75,24 +78,49 @@ class ApprovalRequest:
     reasons: List[str] = field(default_factory=list)
     code: str = ""
     nonce: str = ""
+    identity: str = ""  # "name · user id · @username" of the account acting
 
     def text(self) -> str:
         why = "; ".join(self.reasons) or "gated"
         return (
-            f"{self.account or 'account'} — {self.effect}\n"
+            f"Account: {self.identity or self.account or '-'}\n"
+            f"{self.effect}\n"
             f"Tool: {self.tool}   Chat: {self.chat or '-'}\n"
+            f"Why asked: {why}"
+        )
+
+    def html(self) -> str:
+        """The same, for the bot: the account quoted first, so one bot can serve many."""
+        why = html_escape("; ".join(self.reasons) or "gated")
+        return (
+            f"<blockquote>{html_escape(self.identity or self.account or '-')}</blockquote>\n"
+            f"<b>{html_escape(self.effect)}</b>\n"
+            f"Tool: <code>{html_escape(self.tool)}</code>   "
+            f"Chat: <code>{html_escape(self.chat or '-')}</code>\n"
             f"Why asked: {why}"
         )
 
 
 def new_request(
-    tool: str, account: Optional[str], chat: Optional[str], effect: str, reasons: List[str]
+    tool: str,
+    account: Optional[str],
+    chat: Optional[str],
+    effect: str,
+    reasons: List[str],
+    identity: str = "",
 ) -> ApprovalRequest:
     code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
     while code in _pending:  # two open requests never share a code
         code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
     return ApprovalRequest(
-        tool, account, chat, effect, list(reasons), code=code, nonce=secrets.token_hex(8)
+        tool,
+        account,
+        chat,
+        effect,
+        list(reasons),
+        code=code,
+        nonce=secrets.token_hex(8),
+        identity=identity,
     )
 
 
@@ -113,8 +141,8 @@ class DialogChannel:
             "decision": {
                 "type": "string",
                 "title": "Allow this action?",
-                "enum": ["once", "session", "deny"],
-                "enumNames": ["Allow once", "Allow in this chat for this session", "Deny"],
+                "enum": ["once", "always", "deny"],
+                "enumNames": ["Approve once", "Always approve (this tool, this chat)", "Deny"],
             }
         },
         "required": ["decision"],
@@ -146,25 +174,33 @@ class DialogChannel:
 
 
 class BotChannel:
-    """An approval bot that asks the owner with buttons."""
+    """An approval bot that asks the owner's accounts with inline buttons.
+
+    It acts only for allowed user ids. Anyone else - someone who found the bot and
+    pressed Start, or a forwarded button - gets nothing: no message, no answer.
+    """
 
     kind = "bot"
 
     def __init__(
         self,
-        owner_id: Optional[int],
+        owners_provider: Callable[[], Awaitable[frozenset]],
         client_provider: Optional[Callable[[], Awaitable[Any]]],
     ) -> None:
-        self.owner_id = owner_id
+        self.owners_provider = owners_provider
         self.client_provider = client_provider
+        self.owner_ids: frozenset = frozenset()
         self._waiting: Dict[str, "asyncio.Future[str]"] = {}
 
     def available(self) -> bool:
-        return self.owner_id is not None and self.client_provider is not None
+        return self.client_provider is not None
+
+    def is_allowed(self, sender_id: Any) -> bool:
+        return sender_id in self.owner_ids
 
     def handle_callback(self, sender_id: Any, data: Any) -> bool:
-        """A button press; True only when it answered an open request of the owner's."""
-        if sender_id != self.owner_id:
+        """A button press; True only when an allowed user answered an open request."""
+        if not self.is_allowed(sender_id):
             return False
         if isinstance(data, bytes):
             data = data.decode("utf-8", "replace")
@@ -180,27 +216,40 @@ class BotChannel:
     async def ask(self, request: ApprovalRequest, timeout: float) -> str:
         from telethon import Button
 
+        self.owner_ids = frozenset(await self.owners_provider())
         client = await self.client_provider()
         future = asyncio.get_running_loop().create_future()
         self._waiting[request.nonce] = future
+
+        def press(choice: str, label: str, style: str):
+            return Button.inline(label, f"sg:{request.nonce}:{choice}".encode(), style=style)
+
+        buttons = [
+            [press("once", _APPROVE, "success"), press("deny", _DENY, "danger")],
+            [press("always", _ALWAYS, "primary")],
+        ]
+        sent = []
         try:
-            await client.send_message(
-                self.owner_id,
-                request.text(),
-                buttons=[
-                    [Button.inline("Allow once", f"sg:{request.nonce}:once".encode())],
-                    [
-                        Button.inline(
-                            "Allow in this chat for this session",
-                            f"sg:{request.nonce}:session".encode(),
-                        )
-                    ],
-                    [Button.inline("Deny", f"sg:{request.nonce}:deny".encode())],
-                ],
-            )
+            for owner in sorted(self.owner_ids):
+                try:
+                    message = await client.send_message(
+                        owner, request.html(), parse_mode="html", buttons=buttons
+                    )
+                    sent.append((owner, message.id))
+                except Exception:
+                    continue  # this account never started the bot; try the others
+            if not sent:
+                raise RuntimeError("no allowed account could be reached by the approval bot")
             return await _wait(future, timeout)
         finally:
             self._waiting.pop(request.nonce, None)
+            for owner, message_id in sent:
+                try:  # take the buttons away so a late press cannot look like an answer
+                    await client.edit_message(
+                        owner, message_id, request.html(), parse_mode="html", buttons=None
+                    )
+                except Exception:
+                    pass
 
 
 class SavedMessagesChannel:
@@ -243,7 +292,7 @@ class SavedMessagesChannel:
             sent = await client.send_message(
                 "me",
                 f"Approval {request.code}: {request.text()}\n\n"
-                f"Reply `yes {request.code}`, `session {request.code}` or `no {request.code}` "
+                f"Reply `yes {request.code}`, `always {request.code}` or `no {request.code}` "
                 "from another device.",
             )
             self._sent.add(sent.id)
@@ -286,15 +335,17 @@ async def request_approval(
         _pending.discard(request.code)
 
 
-def bot_settings() -> Tuple[Optional[str], Optional[int]]:
-    """``(bot token, owner user id)`` from the environment, or ``None`` for either.
+def bot_settings() -> Tuple[Optional[str], frozenset]:
+    """``(bot token, allowed user ids)`` from the environment.
 
-    The token is returned to be used, never logged.
+    The token is returned to be used, never logged. An empty set of ids means "every
+    account this server runs" - the caller fills that in.
     """
     token = os.getenv("TELEGRAM_APPROVAL_BOT_TOKEN") or None
-    raw_owner = os.getenv("TELEGRAM_APPROVAL_OWNER_ID", "").strip()
-    try:
-        owner = int(raw_owner) if raw_owner else None
-    except ValueError:
-        owner = None
-    return token, owner
+    raw = os.getenv("TELEGRAM_APPROVAL_OWNER_IDS") or os.getenv("TELEGRAM_APPROVAL_OWNER_ID") or ""
+    owners = set()
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if part.lstrip("-").isdigit():
+            owners.add(int(part))
+    return token, frozenset(owners)
