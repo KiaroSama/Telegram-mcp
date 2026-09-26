@@ -191,6 +191,8 @@ source = [
     "telegram_mcp.session_files",
     "telegram_mcp.session_pool",
     "telegram_mcp.tool_budget",
+    "telegram_mcp.taint",
+    "telegram_mcp.safeguard_policy",
     "telegram_mcp.settings",
     "telegram_mcp.syscalls",
     "telegram_mcp.singleton",
