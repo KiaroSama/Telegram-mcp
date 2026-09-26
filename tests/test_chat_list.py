@@ -329,3 +329,11 @@ async def test_pinning_a_chat_not_in_the_list_says_so(client):
     client.dialogs.pop(0)
     text = await mod.pin_chat(chat="@NumeraGroup4Bot")
     assert "not in your chat list" in text and client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_deleted_chat_still_answering_with_an_empty_dialog_is_not_listed(client):
+    """Live 2026-09-27: after delete_chat, Telegram's search still returned the bot and
+    GetPeerDialogs still answered with a dialog for it - one with no last message."""
+    client.dialogs[0].dialog.top_message = 0
+    assert "No chat" in await mod.search_my_chats(query="numeragroup4")
