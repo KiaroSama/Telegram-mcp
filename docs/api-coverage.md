@@ -229,7 +229,8 @@ assumed missing and is not. Nothing below needs building.
 | Operation | Tool |
 |---|---|
 | Create a channel, private or public | `create_channel` (an optional `username` makes it public; the name is checked BEFORE the chat exists) |
-| Create a group / community | `create_group`, then `enable_forum_topics` for topic mode |
+| Create a group | `create_group`, then `enable_forum_topics` for topic mode |
+| A Telegram community (groups channels, groups and bots) | `list_my_communities`, `get_community_chats`, `create_community`, `rename_community`, `set_community_photo`, `delete_community_photo`, `set_community_who_can_add`, `delete_community`; linking with `add_chat_to_community` (visibility required, permanent) and `remove_chat_from_community`; `get_community_link_requests`, `approve_community_link_request`, `reject_community_link_request` (one or all); `ban_community_member` (optionally from the chats joined through it), `unban_community_member` |
 | Ban, unban, list bans | `ban_user`, `unban_user`, `get_banned_users` |
 | Block / unblock a user | `block_user`, `unblock_user`, `get_blocked_users` |
 | Promote, demote, set rights | `promote_admin`, `demote_admin`, `edit_admin_rights`, `get_admins` |
