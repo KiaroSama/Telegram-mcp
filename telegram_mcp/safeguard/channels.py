@@ -51,16 +51,18 @@ _CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # no 0/O, 1/I lookalikes
 _CHOICES = {"once": "approved_once", "always": "approved_always", "deny": "declined"}
 _WORDS = {"yes": "approved_once", "always": "approved_always", "no": "declined"}
 _REPLY = re.compile(r"^\s*(yes|always|no)\s+([A-Za-z0-9]{4})\s*$", re.IGNORECASE)
-# The owner reads these on the phone.
-_APPROVE, _DENY, _ALWAYS = "✅ تأیید", "❌ رد", "♾ همیشه تأیید"
+# The owner reads these on the phone; English, like every approval text (FR-041).
+_APPROVE, _DENY, _ALWAYS = "✅ Approve", "❌ Deny", "♾ Always approve"
+# The answer a tap shows, from wiring's callback handler.
+ANSWERED, NOT_OPEN = "Recorded.", "This request is no longer open."
 # FR-039: the line a closed bot request gains on every copy, so the owner sees what counted.
 _OUTCOME_LINES = {
-    "approved_once": "✅ تأیید شد",
-    "approved_always": "♾ همیشه تأیید شد",
-    "declined": "❌ رد شد",
-    "timed_out": "⏱ مهلت تمام شد؛ انجام نشد",
+    "approved_once": "✅ Approved",
+    "approved_always": "♾ Always approved",
+    "declined": "❌ Denied",
+    "timed_out": "⏱ Timed out - not run",
 }
-_CLOSED_LINE = "⏹ بسته شد؛ انجام نشد"
+_CLOSED_LINE = "⏹ Closed - not run"
 
 _pending: Set[str] = set()
 
