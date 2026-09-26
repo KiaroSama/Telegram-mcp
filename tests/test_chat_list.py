@@ -94,11 +94,11 @@ class FakeClient:
         self.filters = filters
         self.sent = []
         self.answers = {}
+        self.peer_dialog_calls = 0
 
     async def iter_dialogs(self, *args, **kwargs):
-        assert kwargs.get("archived") is None and kwargs.get("folder") is None
-        for d in self.dialogs:
-            yield d
+        raise AssertionError("walking every dialog outlives the tool budget on a real account")
+        yield  # pragma: no cover
 
     async def get_me(self, input_peer=False):
         return types.InputPeerUser(user_id=1, access_hash=1)
@@ -107,10 +107,30 @@ class FakeClient:
         if isinstance(request, functions.messages.GetDialogFiltersRequest):
             return types.messages.DialogFilters(filters=list(self.filters))
         if isinstance(request, functions.messages.GetPeerDialogsRequest):
-            wanted = utils.get_peer_id(request.peers[0].peer)
-            d = next(d for d in self.dialogs if d.id == wanted)
+            self.peer_dialog_calls += 1
+            wanted = {utils.get_peer_id(p.peer) for p in request.peers}
             return types.messages.PeerDialogs(
-                dialogs=[d.dialog], messages=[], chats=[], users=[], state=None
+                dialogs=[d.dialog for d in self.dialogs if d.id in wanted],
+                messages=[],
+                chats=[],
+                users=[],
+                state=None,
+            )
+        if isinstance(request, functions.contacts.SearchRequest):
+            # Telegram's own search: the owner's chats in my_results, strangers in results.
+            q = request.q.casefold()
+            hits = [
+                d.entity
+                for d in self.dialogs
+                if q in d.name.casefold()
+                or q in (getattr(d.entity, "username", "") or "").casefold()
+            ]
+            stranger = types.User(id=99, first_name="Numera Stranger", access_hash=9)
+            return types.contacts.Found(
+                my_results=[utils.get_peer(e) for e in hits],
+                results=[utils.get_peer(stranger)],
+                chats=[e for e in hits if not isinstance(e, types.User)],
+                users=[e for e in hits if isinstance(e, types.User)] + [stranger],
             )
         self.sent.append(request)
         return self.answers.get(type(request), True)
@@ -157,6 +177,21 @@ async def test_search_matches_name_or_username_ignoring_case(client):
     assert rows[0]["type"] == "bot" and rows[0]["id"] == 8695614338
     assert rows[0]["folders"] == ["My Bots", "Robot"]
     assert rows[0]["archived"] is False
+    assert rows[0]["pinned"] is False and rows[0]["unread"] == 0
+    assert rows[0]["muted_until"] is None and rows[0]["silent"] is False
+    assert client.peer_dialog_calls == 1, "the found chats' dialogs are read in one request"
+
+
+@pytest.mark.asyncio
+async def test_strangers_from_the_global_search_are_not_listed(client):
+    rows = _rows(await mod.search_my_chats(query="numera"))
+    assert "Numera Stranger" not in [r["name"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_a_muted_chat_shows_until_when(client):
+    row = _rows(await mod.search_my_chats(query="announce"))[0]
+    assert row["muted_until"] is not None and row["muted_until"].endswith("UTC")
 
 
 @pytest.mark.asyncio
