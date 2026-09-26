@@ -38,7 +38,7 @@ def test_grants_survive_a_restart(store):
     grants.reset_cache()  # a new process reads the file again
     assert grants.is_granted("main", "delete_message", "-100")
     data = json.loads(store.read_text(encoding="utf-8"))
-    assert data == {"grants": [["main", "delete_message", "-100"]]}
+    assert data == {"grants": [["main", "delete_message", "-100"]], "folders": []}
     assert not list(store.parent.glob("*.tmp"))
 
 

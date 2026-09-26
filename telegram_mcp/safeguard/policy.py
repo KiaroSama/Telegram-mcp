@@ -210,6 +210,8 @@ class Facts:
     approval_chats: FrozenSet[str] = frozenset()  # normalised ids / usernames
     pending_codes: FrozenSet[str] = frozenset()
     protected_paths: Sequence[str] = ()  # directories no tool may name
+    protected_folder: bool = False  # a path argument in the installation or state dir
+    outside_folders: Sequence[str] = ()  # folders outside the project that need the owner
 
 
 @dataclass(frozen=True)
@@ -282,6 +284,8 @@ def decide(
         return Decision("refuse", ["touches_approval_channel"])
     if _touches_protected_path(arguments, facts):
         return Decision("refuse", ["touches_safeguard_files"])
+    if facts.protected_folder:
+        return Decision("refuse", ["touches_protected_folder"])
 
     category = categorize(name, read_only, destructive)
     reasons: List[str] = []
@@ -303,6 +307,8 @@ def decide(
     tainted = list(facts.tainted) if not read_only else []
     if tainted:
         reasons.append("tainted")
+    if facts.outside_folders:
+        reasons.append("outside_project_folder")
     return Decision("ask" if reasons else "run", reasons, tainted)
 
 

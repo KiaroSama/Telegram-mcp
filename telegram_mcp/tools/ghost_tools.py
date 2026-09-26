@@ -133,8 +133,8 @@ async def get_ghost_mode(account: str = None, chat_id: Union[int, str] = None) -
 async def safeguard_status(account: str = None) -> str:
     """
     Show how the safeguard is set up: which approval channels exist, the approval time
-    limit, every "always approve" grant (tool, chat, account), and the bulk-send and
-    untrusted-content thresholds. Never shows a token, a code, or message text.
+    limit, every "always approve" grant (tool, chat, account), every folder granted
+    "always allow", and the bulk-send and untrusted-content thresholds. Never shows a token, a code, or message text.
 
     Args:
         account: An account label for its Saved Messages channel and untrusted-content
@@ -161,6 +161,7 @@ async def safeguard_status(account: str = None) -> str:
                 },
                 "approval_timeout_seconds": approvals.timeout_seconds(),
                 "always_approved": grants.list_all(),
+                "always_allowed_folders": grants.list_folders(),
                 "bulk_send": {"chats": window.limit, "within_seconds": window.window},
                 "untrusted_content": {
                     "passage_characters": taint.PASSAGE_LENGTH,
@@ -182,19 +183,32 @@ async def safeguard_status(account: str = None) -> str:
         readOnlyHint=False,
     )
 )
-async def revoke_always_approval(tool: str, chat_id: Union[int, str], account: str = None) -> str:
+async def revoke_always_approval(
+    tool: str = None, chat_id: Union[int, str] = None, account: str = None, folder: str = None
+) -> str:
     """
-    Stop an "always approve" for one tool in one chat, so the safeguard asks again.
+    Stop an "always approve" (one tool in one chat) or an "always allow" (one folder),
+    so the safeguard asks again.
 
     Runs without asking: it only makes the safeguard stricter. `safeguard_status` lists
-    every grant.
+    every grant and every allowed folder.
 
     Args:
-        tool: The tool name the grant covers, e.g. "delete_message".
+        tool: The tool name the grant covers, e.g. "delete_message". With chat_id.
         chat_id: The chat the grant covers, as listed by safeguard_status.
         account: The account the grant belongs to; omit when only one account runs.
+        folder: A folder granted "always allow", exactly as safeguard_status lists it.
+            Give this instead of tool and chat_id.
     """
     try:
+        if folder:
+            removed = grants.revoke_folder(folder)
+            return json.dumps({"revoked": removed, "folder": folder}, ensure_ascii=False)
+        if not tool or chat_id in (None, ""):
+            return (
+                "Give either folder (an always-allowed folder) or tool and chat_id "
+                "(an always-approved tool in a chat); safeguard_status lists both."
+            )
         label = _known_account(account)
         if label is None and len(connection.clients) == 1:
             label = next(iter(connection.clients))
