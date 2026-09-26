@@ -236,3 +236,42 @@ _Avoid_: join request (that is a person asking to join a chat)
 **Community ban**:
 Removing a person from a community so they cannot return until unbanned.
 _Avoid_: kick, remove member
+
+### The chat list
+
+**Folder**:
+A named tab in the owner's chat list that shows chats chosen one by one, chats matching
+its rules (all bots, all groups, ...), or both.
+_Avoid_: filter, category, the Archive (that is a separate place, not a folder)
+
+**Pinned chat**:
+A chat held at the top of All chats, or at the top of one folder. Pinning in one place
+does not pin it in the other.
+_Avoid_: pinned message (that is a message pinned inside a chat)
+
+**Mute**:
+Stopping a chat's notifications until a chosen moment, or forever.
+_Avoid_: silence, disable
+
+**Silent chat**:
+A chat whose notifications still arrive, but without sound.
+_Avoid_: muted chat
+
+**Chat tone**:
+The sound a chat's notifications play: the default, none, or one of the owner's saved
+sounds.
+_Avoid_: ringtone (that is a call)
+
+**Clear history**:
+Removing a chat's messages while the chat stays in the list.
+_Avoid_: delete chat
+
+**Delete chat**:
+Removing a chat from the owner's list; for a group or channel that means leaving it. The
+group or channel itself goes on existing.
+_Avoid_: clear history, delete group
+
+**Both sides**:
+Whether a deletion also removes the other person's copy. Never assumed: the owner says
+so each time.
+_Avoid_: revoke, for everyone

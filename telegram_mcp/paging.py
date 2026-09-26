@@ -56,6 +56,7 @@ LIMITS: dict[str, int] = {
     # Chat and dialog listings: one record per chat, cheap but numerous.
     "get_chats": 200,
     "list_chats": 200,
+    "search_my_chats": 100,  # rows after filtering by name; every dialog is walked either way
     "list_saved_dialogs": 100,
     "search_public_chats": 100,
     "list_topics": 200,

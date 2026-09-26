@@ -61,6 +61,9 @@ from telegram_mcp.tools.poll_creation import *
 from telegram_mcp.tools.channel_stats import *
 from telegram_mcp.tools.ghost_tools import *
 from telegram_mcp.tools.proxy_tools import *
+from telegram_mcp.tools.chat_list import *
+from telegram_mcp.tools.chat_notifications import *
+from telegram_mcp.tools.chat_removal import *
 from telegram_mcp.tools.communities import *
 from telegram_mcp.tools.community_moderation import *
 
