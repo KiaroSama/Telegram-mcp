@@ -11,7 +11,7 @@
 [![Platform: Linux | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey?style=flat-square)](.github/workflows/tests.yml)
 ![MCP Badge](https://badge.mcpx.dev)
 [![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama-telegram-mcp-1sxyic)](https://m8ven.ai/mcp/kiarosama-telegram-mcp-1sxyic)
-[![M8ven Verified 75/100](https://img.shields.io/badge/M8ven%20Verified-75%2F100-e8a33d)](https://m8ven.ai/verified/verify?id=5b4f6df32ae086dd)
+[![M8ven Verified](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp?variant=verified)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
 [![Last commit](https://img.shields.io/github/last-commit/KiaroSama/Telegram-mcp?style=flat-square)](https://github.com/KiaroSama/Telegram-mcp/commits/main)
 [![Built with Telethon 1.45+](https://img.shields.io/badge/built%20with-Telethon%201.45%2B-2CA5E0?style=flat-square)](https://codeberg.org/Lonami/Telethon)
 [![MCP SDK 2.2+](https://img.shields.io/badge/MCP%20SDK-2.2%2B-6E56CF?style=flat-square)](https://github.com/modelcontextprotocol/python-sdk)
