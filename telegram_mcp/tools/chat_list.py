@@ -163,9 +163,11 @@ async def search_my_chats(
         more = False
         for key in mine:
             entity, raw = entities[key], raws.get(key)
-            if raw is None:
-                # Found by Telegram's search but not in the chat list (never opened, or
-                # deleted): not one of the owner's chats.
+            if raw is None or not raw.top_message:
+                # Found by Telegram's search but not in the chat list: never opened, or
+                # deleted - Telegram still answers with an empty dialog for a deleted
+                # chat (measured 2026-09-27). ponytail: a cleared chat with no message
+                # left is hidden too, until its next message arrives.
                 continue
             if inside is not None and not _shows(inside, key, entity, raw, self_id):
                 continue
