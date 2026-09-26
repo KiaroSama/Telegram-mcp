@@ -115,14 +115,18 @@ def test_read_returns_a_detached_snapshot():
 
 
 @pytest.mark.parametrize("payload", ["{", "[]", "null", '{"7": {}}', '{"7": [null]}'])
-def test_corrupt_history_is_preserved_instead_of_overwritten(payload):
+def test_corrupt_history_is_moved_aside_and_the_chat_keeps_working(payload):
+    """A corrupt history costs the history, never the chat (FR-012): the bytes are
+    kept beside it for recovery, and recording carries on from empty."""
     path = history._path("acct")
     path.parent.mkdir(parents=True)
     path.write_text(payload, encoding="utf-8")
-    with pytest.raises((ValueError, TypeError)):
-        history.record("acct", 7, _item(1))
-    assert path.read_text(encoding="utf-8") == payload
-    assert "acct" not in history._cache
+
+    history.record("acct", 7, _item(1))
+
+    kept = list(path.parent.glob(path.name + ".corrupt-*"))
+    assert len(kept) == 1 and kept[0].read_text(encoding="utf-8") == payload
+    assert [m["message_id"] for m in history.read("acct", 7, 10)] == [1]
 
 
 def test_unreadable_history_is_not_replaced_with_an_empty_one(monkeypatch):
@@ -163,3 +167,20 @@ def test_concurrent_writers_do_not_lose_each_others_committed_messages():
     assert json.loads(history._path("acct").read_text(encoding="utf-8"))["7"] == actual
     history._cache.clear()
     assert history.read("acct", 7, 100) == actual
+
+
+def test_record_sent_never_raises_and_says_what_was_not_kept(monkeypatch):
+    """The message is already delivered when this runs; failing here would invite the
+    caller to send it again (FR-002)."""
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(history, "record", broken)
+    warning = history.record_sent("acct", 7, _item(1))
+    assert "was delivered" in warning and "OSError" in warning
+
+
+def test_record_sent_is_silent_when_the_copy_is_kept():
+    assert history.record_sent("acct", 7, _item(1)) is None
+    assert [m["message_id"] for m in history.read("acct", 7, 10)] == [1]

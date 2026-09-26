@@ -211,15 +211,17 @@ async def send_timed_secret_message(
         sent_id, send_error, restore_error, previous = await _send_under_timer(
             manager, secret_id, lambda: manager.send_message(secret_id, text, entities), seconds
         )
+        local_copy = None
         if sent_id is not None:
-            secret_history.record(
+            local_copy = secret_history.record_sent(
                 label,
                 secret_id,
                 secret_history.entry(
                     message_id=sent_id, is_outgoing=True, text=text, ttl=int(seconds)
                 ),
             )
-        return _result(chat_id, seconds, previous, sent_id, send_error, restore_error, {})
+        extra = {"local_copy": local_copy} if local_copy else {}
+        return _result(chat_id, seconds, previous, sent_id, send_error, restore_error, extra)
     except ValueError as e:
         return str(e)
     except KeyError:
@@ -300,8 +302,9 @@ async def send_timed_secret_media(
             lambda: manager.send_file(secret_id, path, caption=caption, kind=chosen),
             seconds,
         )
+        local_copy = None
         if sent_id is not None:
-            secret_history.record(
+            local_copy = secret_history.record_sent(
                 label,
                 secret_id,
                 secret_history.entry(
@@ -319,7 +322,11 @@ async def send_timed_secret_media(
             sent_id,
             send_error,
             restore_error,
-            {"kind": chosen, "kind_chosen_by": "caller" if kind else "the file"},
+            {
+                "kind": chosen,
+                "kind_chosen_by": "caller" if kind else "the file",
+                **({"local_copy": local_copy} if local_copy else {}),
+            },
         )
     except ValueError as e:
         return str(e)
