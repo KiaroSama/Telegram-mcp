@@ -44,7 +44,8 @@ MAX_MACHINE_VALUE = 2048
 # `message_to_dict` reads this name out of THIS module, so an override has to be
 # applied here. Setting the copy that `messages` re-exports rebinds a second name
 # and changes nothing the builder below reads.
-LINK_DOMAIN = os.getenv("TELEGRAM_LINK_DOMAIN", "t.me")
+# The one link domain, owned by permalinks; re-exported here for the modules that import it.
+from telegram_mcp.permalinks import LINK_DOMAIN  # noqa: E402
 
 
 def get_media_label(msg) -> str:

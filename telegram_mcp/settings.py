@@ -88,7 +88,7 @@ def _require_credential(name: str) -> str:
         raise ValidationError(
             f"{name} is not set. Put it in the .env file next to the server. "
             "Get both TELEGRAM_API_ID and TELEGRAM_API_HASH from "
-            "https://my.telegram.org/apps."
+            "my.telegram.org/apps (log in there, open API development tools)."
         )
     return value
 
@@ -102,7 +102,7 @@ except ValueError:
     raise ValidationError(
         "TELEGRAM_API_ID must be a number, but .env has "
         f"{_RAW_TELEGRAM_API_ID[:40]!r}. Copy the numeric App api_id from "
-        "https://my.telegram.org/apps."
+        "my.telegram.org/apps (log in there, open API development tools)."
     ) from None
 
 TELEGRAM_API_HASH = _require_credential("TELEGRAM_API_HASH")

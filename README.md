@@ -1075,13 +1075,14 @@ approval bot is set up - the same Telegram network for the bot. It has no HTTP c
 sends nothing to any other service. `test_proxies` connects only to proxy addresses you
 supply.
 
-Three host names appear in the source without being connections:
+No web address for these hosts is written into the source; each is configuration or
+plain text:
 
 | Host | Where | What it is |
 |---|---|---|
-| `t.me` | message and profile links | the link domain Telegram uses; `TELEGRAM_LINK_DOMAIN` changes it |
-| `my.telegram.org` | the setup error message | where you create the API ID and hash; never contacted |
-| `127.0.0.1:18765` | `scripts/emoji_studio.py` | the default address of YOUR running server for that local helper; `TELEGRAM_MCP_URL` or `--url` changes it |
+| `t.me` | every link the tools return | the link domain, read once from `TELEGRAM_LINK_DOMAIN` (default `t.me`); message, username, sticker-pack and search links all use it |
+| `my.telegram.org` | the setup error message | named as the page where you create the API ID and hash; never contacted |
+| your server's address | `scripts/emoji_studio.py` | that local helper talks to YOUR running server, at `TELEGRAM_MCP_URL` or `--url`; it has no default |
 
 ### Prompt Injection Protection
 

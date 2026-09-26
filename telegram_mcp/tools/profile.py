@@ -2,6 +2,7 @@
 
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
+from telegram_mcp.permalinks import public_link
 
 
 def _business_summary(full_user) -> Optional[dict]:
@@ -285,7 +286,7 @@ async def get_full_user(username: Union[int, str], account: str = None) -> str:
                 ch = await cl.get_entity(personal_channel_id)
                 ch_username = getattr(ch, "username", None)
                 personal_channel = (
-                    f"https://t.me/{ch_username}" if ch_username else str(personal_channel_id)
+                    public_link(ch_username) if ch_username else str(personal_channel_id)
                 )
             except Exception:
                 personal_channel = str(personal_channel_id)

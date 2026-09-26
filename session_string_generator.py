@@ -397,7 +397,11 @@ def main() -> None:
 
     if not API_ID or not API_HASH:
         print(failure("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env."))
-        print(hint("Get them from https://my.telegram.org/apps, then put them in .env."))
+        print(
+            hint(
+                "Get them from my.telegram.org/apps (API development tools), then put them in .env."
+            )
+        )
         sys.exit(1)
 
     try:
