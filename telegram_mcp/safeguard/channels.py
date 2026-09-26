@@ -30,6 +30,8 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
+from telegram_mcp.safeguard import sealed
+
 __all__ = [
     "APPROVED",
     "ApprovalRequest",
@@ -257,8 +259,14 @@ class SavedMessagesChannel:
 
     kind = "saved_messages"
 
-    def __init__(self, client_provider: Optional[Callable[[], Awaitable[Any]]]) -> None:
+    def __init__(
+        self,
+        client_provider: Optional[Callable[[], Awaitable[Any]]],
+        on_posted: Optional[Callable[[int, str], Any]] = None,
+    ) -> None:
         self.client_provider = client_provider
+        # Seals the posted request (FR-036): no tool may act on it afterwards.
+        self.on_posted = on_posted
         self._sent: Set[int] = set()
         self._waiting: Dict[str, "asyncio.Future[str]"] = {}
 
@@ -296,6 +304,13 @@ class SavedMessagesChannel:
                 "from another device.",
             )
             self._sent.add(sent.id)
+            if self.on_posted is not None:
+                try:
+                    result = self.on_posted(sent.id, request.code)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    pass  # the code is already sealed; the id is a second line of defence
             return await _wait(future, timeout)
         finally:
             client.remove_event_handler(self._on_event, events.NewMessage(chats="me"))
@@ -316,6 +331,8 @@ async def request_approval(
     failures: List[str] = []
     tried = False
     _pending.add(request.code)
+    # Before any channel shows it: from here on no tool result carries this code (FR-037).
+    sealed.remember_code(request.code)
     try:
         for channel in channels:
             if not channel.available():

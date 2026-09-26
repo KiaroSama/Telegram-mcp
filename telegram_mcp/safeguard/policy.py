@@ -215,6 +215,7 @@ class Facts:
     protected_paths: Sequence[str] = ()  # directories no tool may name
     protected_folder: bool = False  # a path argument in the installation or state dir
     outside_folders: Sequence[str] = ()  # folders outside the project that need the owner
+    approval_message: bool = False  # the call acts on an approval message in Saved Messages
 
 
 @dataclass(frozen=True)
@@ -236,7 +237,17 @@ def _scalars(value: Any) -> Iterable[Any]:
 
 
 def normalize_chat(value: Any) -> str:
-    return str(value).strip().lstrip("@").lower()
+    """One spelling for a chat: `@Name`, `t.me/name?start=x`, `tg://resolve?domain=name` -> `name`."""
+    text = str(value).strip()
+    link = _CHAT_LINK.match(text)
+    if link:
+        text = link.group(1)
+    return text.lstrip("@").lower()
+
+
+_CHAT_LINK = re.compile(
+    r"(?i)^(?:(?:https?://)?(?:www\.)?(?:t|telegram)\.me/|tg://resolve\?domain=)([^/?&#\s]+)"
+)
 
 
 def _touches_approval_channel(arguments: Any, facts: Facts) -> bool:
@@ -283,7 +294,7 @@ def _touches_protected_path(arguments: Any, facts: Facts) -> bool:
 def decide(
     name: str, read_only: bool, destructive: bool, arguments: Any, facts: Facts
 ) -> Decision:
-    if _touches_approval_channel(arguments, facts):
+    if facts.approval_message or _touches_approval_channel(arguments, facts):
         return Decision("refuse", ["touches_approval_channel"])
     if _touches_protected_path(arguments, facts):
         return Decision("refuse", ["touches_safeguard_files"])

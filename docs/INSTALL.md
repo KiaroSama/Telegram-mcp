@@ -141,7 +141,7 @@ MCP client, not only Claude.
 | A file in `files/outbox` or `files/downloads` (or a folder you configured or always-allowed) | Runs. |
 | A file in any other folder, reading or writing | **Asks you**: *allow*, *deny*, *always allow*. |
 | A file anywhere else in the installation (code, `.env`, `secrets.md`) or in the state directory | **Refused.** Never allowed through tools. |
-| Anything touching the approval bot, a pending approval code, or the safeguard's own files | **Refused.** Never allowed through tools. |
+| Anything touching the approval bot (any spelling, links included), an approval message in Saved Messages, a pending approval code, or the safeguard's own files | **Refused.** Never allowed through tools. |
 
 **Where the question appears**, first that works:
 
@@ -163,6 +163,12 @@ that folder and everything under it, for every file tool, until
 `revoke_always_approval(folder=...)` removes it. Folders you list in
 `TELEGRAM_FILE_ROOTS` count as always allowed. A fresh install starts with only
 `files/`: your grants and your `.env` are local to your machine.
+
+**Only you can answer.** The agent cannot reach the approval bot's chat, cannot edit,
+delete, reply to, forward or react to an approval message in Saved Messages, and cannot
+read one: every tool result shows it as `[approval request - hidden]`, and no approval code
+ever appears in anything the agent sees. The server remembers which messages are approval
+requests across restarts, including ones posted before this protection existed.
 
 If none is available, the call is refused. No answer within 5 minutes is a refusal
 (`TELEGRAM_APPROVAL_TIMEOUT_SECONDS` changes it). Nothing the model writes can answer an

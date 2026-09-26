@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.safeguard import channels as approvals
-from telegram_mcp.safeguard import folders, ghost, grants, policy, taint
+from telegram_mcp.safeguard import folders, ghost, grants, policy, sealed, taint
 
 __all__ = ["Safeguard", "install", "refusal"]
 
@@ -126,11 +126,12 @@ class Safeguard:
         account_of: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
         after: Optional[Callable[[Optional[str]], None]] = None,
         identity=None,
+        sealed_target=None,
         protected_paths=None,
         timeout: Optional[float] = None,
     ) -> None:
         defaults = (hints, channels, first_message, ghost_on, approval_chats, account_of, after)
-        if None in defaults or identity is None:
+        if None in defaults or identity is None or sealed_target is None:
             from telegram_mcp.safeguard import wiring
 
             hints = hints or wiring.tool_hints
@@ -141,6 +142,7 @@ class Safeguard:
             account_of = account_of or wiring.account_of
             after = after or wiring.after_call
             identity = identity or wiring.identity
+            sealed_target = sealed_target or wiring.sealed_target
         self._hints = hints
         self._channels = channels
         self._first_message = first_message
@@ -149,6 +151,7 @@ class Safeguard:
         self._account_of = account_of
         self._after = after
         self._identity = identity
+        self._sealed_target = sealed_target
         self._protected = (
             tuple(protected_paths) if protected_paths is not None else _protected_paths()
         )
@@ -157,6 +160,10 @@ class Safeguard:
 
     async def _facts(self, name, category, read_only, account, chat, arguments):
         verdict = folders.judge(arguments)
+        try:
+            touches_approval = bool(await self._sealed_target(account, arguments))
+        except Exception:  # cannot tell -> treat it as the approval message
+            touches_approval = True
         is_send = category == "send" and chat is not None
         first = False
         if is_send and "secret" not in name:
@@ -173,6 +180,7 @@ class Safeguard:
             pending_codes=approvals.pending_codes(),
             protected_paths=self._protected,
             protected_folder=verdict.protected,
+            approval_message=touches_approval,
             outside_folders=verdict.outside,
         )
 
@@ -247,7 +255,8 @@ class Safeguard:
 
         try:
             with folders.approved_for_this_call(facts.outside_folders):
-                return await call_next(ctx)
+                # No result reaches the model with an approval request or code in it.
+                return sealed.redact_result(await call_next(ctx))
         finally:
             if category == "send" and chat is not None:
                 self._window.record(account or "", name, chat)
@@ -265,6 +274,7 @@ def _protected_paths() -> Tuple[str, ...]:
         os.path.dirname(os.path.abspath(__file__)),
         str(ghost.settings_path()),
         str(grants.grants_path()),
+        str(sealed.sealed_path()),
     )
 
 
