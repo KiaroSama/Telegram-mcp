@@ -26,6 +26,7 @@ delete that left the text here would be a delete in name only.
 
 from copy import deepcopy
 import json
+import logging
 import os
 import tempfile
 import threading
@@ -33,6 +34,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import state_dir
 
 __all__ = ["clear", "forget", "read", "record", "record_received"]
@@ -75,21 +77,29 @@ def _load(account: str) -> dict:
     except FileNotFoundError:
         state = {}
     else:
-        # A failed read is not an empty history. Do not cache a substitute that
-        # the next write would persist over the operator's recoverable bytes.
+        # An unreadable file (the read itself raised) propagates: it may be locked or
+        # denied for a moment, and it is not ours to replace. Readable but corrupt
+        # content is different - it will never parse - so its bytes are moved aside
+        # for recovery and the chat carries on with an empty history. A corrupt
+        # history costs the history, never the chat.
         try:
             state = json.loads(text)
-        except ValueError:
-            raise ValueError(
-                "Secret-chat history is invalid; the existing file was preserved."
-            ) from None
-        if not isinstance(state, dict) or any(
-            not isinstance(messages, list) or any(not isinstance(item, dict) for item in messages)
-            for messages in state.values()
-        ):
-            raise ValueError(
-                "Secret-chat history has an invalid shape; the existing file was preserved."
+            valid = isinstance(state, dict) and all(
+                isinstance(messages, list) and all(isinstance(item, dict) for item in messages)
+                for messages in state.values()
             )
+        except ValueError:
+            valid = False
+        if not valid:
+            aside = path.with_name(f"{path.name}.corrupt-{int(time.time() * 1000)}")
+            path.replace(aside)
+            log_event(
+                logging.WARNING,
+                "secret-chat history was corrupt; moved aside and started empty",
+                account=account,
+                kept_as=aside.name,
+            )
+            state = {}
     _cache[account] = state
     return state
 
@@ -221,6 +231,29 @@ def record(account: str, chat_id: int, item: dict) -> None:
         if len(messages) > _PER_CHAT_LIMIT:
             del messages[: len(messages) - _PER_CHAT_LIMIT]
         _commit(account, state)
+
+
+def record_sent(account: str, chat_id: int, item: dict) -> Optional[str]:
+    """Record a message that was ALREADY DELIVERED; never raises.
+
+    Returns ``None`` when the copy was kept, else a sentence for the tool's answer.
+    Raising here would turn a delivered message into an error, and an agent that sees
+    an error retries - which sends the message twice.
+    """
+    try:
+        record(account, chat_id, item)
+        return None
+    except Exception as error:
+        log_event(
+            logging.WARNING,
+            "a delivered secret message could not be kept in local history",
+            account=account,
+            error=error,
+        )
+        return (
+            f"The message was delivered, but this device could not keep a local copy "
+            f"({type(error).__name__}); read_secret_messages will not show it."
+        )
 
 
 def record_received(account: str, message) -> None:

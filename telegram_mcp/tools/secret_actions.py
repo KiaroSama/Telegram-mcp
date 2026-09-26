@@ -489,7 +489,7 @@ async def copy_into_secret_chat(
                     "form at all. Nothing was sent."
                 )
             sent_id = await manager.send_message(secret_id, text, source.entities)
-            secret_history.record(
+            local_copy = secret_history.record_sent(
                 label,
                 secret_id,
                 secret_history.entry(message_id=sent_id, is_outgoing=True, text=text),
@@ -514,7 +514,7 @@ async def copy_into_secret_chat(
                 sent_id = await manager.send_file(secret_id, scratch, caption=text, kind=kind)
             finally:
                 scratch.unlink(missing_ok=True)
-            secret_history.record(
+            local_copy = secret_history.record_sent(
                 label,
                 secret_id,
                 secret_history.entry(message_id=sent_id, is_outgoing=True, text=text, kind=kind),
@@ -527,6 +527,8 @@ async def copy_into_secret_chat(
             "attribution": "none — the encrypted protocol carries no forwarding "
             "information, so it arrives as though you wrote it",
         }
+        if local_copy:
+            record["local_copy"] = local_copy
         if kind:
             record["kind"] = kind
         return format_tool_result(record)
