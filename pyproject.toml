@@ -169,6 +169,7 @@ source = [
     "telegram_mcp.media_send",
     "telegram_mcp.media_transfer",
     "telegram_mcp.message_view",
+    "telegram_mcp.permalinks",
     "telegram_mcp.ogg_tags",
     "telegram_mcp.owner_only",
     "telegram_mcp.paging",
