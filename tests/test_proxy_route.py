@@ -402,3 +402,15 @@ def test_probing_many_stops_at_its_total_bound_and_marks_the_rest_not_tested():
     assert {outcome for outcome, _ in results.values()} == {"not_tested"}
     assert all(row["last_result"] is None for row in pool.describe()), "nothing stored"
     assert all(client.disconnected for *_, client in made)
+
+
+def test_telethons_retry_count_message_becomes_a_plain_reason():
+    made = []
+
+    async def telethon_gave_up():
+        raise ConnectionError("Connection to Telegram failed 0 time(s)")
+
+    result = asyncio.run(
+        route.probe(_mt("1.1.1.1"), factory=_factory(lambda a: telethon_gave_up, made))
+    )
+    assert result == ("failed:could not connect through it", None)
