@@ -214,3 +214,25 @@ A channel whose posts are read for proxy links, named by the owner by username, 
 or link.
 _Avoid_: proxy channel, feed
 
+
+### Communities
+
+**Community**:
+A Telegram container that groups channels, groups and bots under one title and photo.
+It has members of its own; it is not a group and carries no messages.
+_Avoid_: folder, supergroup, hub
+
+**Linked chat**:
+A channel, group or bot attached to a community, either visible to every member or
+hidden from all but invited members and community admins. The choice is made once,
+when it is linked, and cannot be changed afterwards.
+_Avoid_: member chat, child chat, sub-chat
+
+**Link request**:
+A chat's pending request to become a linked chat, waiting for an admin to approve or
+reject it. It exists only when adding chats is restricted to admins.
+_Avoid_: join request (that is a person asking to join a chat)
+
+**Community ban**:
+Removing a person from a community so they cannot return until unbanned.
+_Avoid_: kick, remove member
