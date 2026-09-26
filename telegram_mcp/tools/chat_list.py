@@ -16,6 +16,7 @@ from datetime import datetime, timezone  # noqa: E402  after the star import, so
 from telegram_mcp.tools.folders import _folder_lock, _peer_key
 
 _FOLDERS = (DialogFilter, DialogFilterChatlist)
+_NOT_LISTED = "That chat is not in your chat list, so there is nothing to pin or unpin."
 
 
 def _title(folder) -> str:
@@ -162,6 +163,10 @@ async def search_my_chats(
         more = False
         for key in mine:
             entity, raw = entities[key], raws.get(key)
+            if raw is None:
+                # Found by Telegram's search but not in the chat list (never opened, or
+                # deleted): not one of the owner's chats.
+                continue
             if inside is not None and not _shows(inside, key, entity, raw, self_id):
                 continue
             if len(rows) == bound.value:
@@ -201,7 +206,7 @@ async def _dialog(cl, peer):
     result = await cl(
         functions.messages.GetPeerDialogsRequest(peers=[types.InputDialogPeer(peer=peer)])
     )
-    return result.dialogs[0]
+    return result.dialogs[0] if result.dialogs else None
 
 
 async def _pin_in_folder(tool, chat, folder_name, pin: bool, account) -> str:
@@ -223,19 +228,22 @@ async def _pin_in_folder(tool, chat, folder_name, pin: bool, account) -> str:
         was_pinned = len(pinned) != len(target.pinned_peers)
         if was_pinned == pin:
             return f"No change: the chat is already {'pinned' if pin else 'not pinned'} in {_title(target)!r}."
+        raw = await _dialog(cl, peer)
+        if raw is None:
+            return _NOT_LISTED
         if pin:
-            raw = await _dialog(cl, peer)
             if not _shows(target, key, entity, raw, self_id):
                 return (
                     f"The chat is not in folder {_title(target)!r}, so it cannot be pinned "
                     "there. Add it with add_chat_to_folder first."
                 )
             pinned.append(peer)
-        else:
-            # Unpinned, it stays in the folder, as in Telegram's own apps.
-            included.append(peer)
         updated = copy.copy(target)
         updated.pinned_peers, updated.include_peers = pinned, included
+        if not pin and not _shows(updated, key, entity, raw, self_id):
+            # Unpinned, it stays in the folder, as in Telegram's own apps - named
+            # explicitly only when the folder's rules would not show it anyway.
+            updated.include_peers = included + [peer]
         await cl(functions.messages.UpdateDialogFilterRequest(id=target.id, filter=updated))
         return f"Chat {'pinned' if pin else 'unpinned'} in folder {_title(target)!r}."
 
@@ -246,7 +254,10 @@ async def _pin(tool, chat, folder, pin: bool, account) -> str:
             return await _pin_in_folder(tool, chat, folder, pin, account)
         cl = get_client(account)
         peer = utils.get_input_peer(await resolve_entity(chat, cl))
-        if bool((await _dialog(cl, peer)).pinned) == pin:
+        raw = await _dialog(cl, peer)
+        if raw is None:
+            return _NOT_LISTED
+        if bool(raw.pinned) == pin:
             return (
                 f"No change: the chat is already {'pinned' if pin else 'not pinned'} in All chats."
             )
