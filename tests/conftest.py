@@ -201,16 +201,21 @@ def backend(monkeypatch, tmp_path):
 # The safeguard's folder rule (FR-030..FR-034) must not reach the real machine from a
 # test: `files/downloads` would be created inside the checkout, and the owner's real
 # "always allow" folders would silently widen what a test's file tool may open. Each
-# test gets its own installation folder and its own grants file.
+# test gets its own installation folder, grants file and approval-message registry.
 @pytest.fixture(autouse=True)
 def _folders_are_the_tests_own(tmp_path_factory, monkeypatch):
-    from telegram_mcp.safeguard import folders, grants
+    from telegram_mcp.safeguard import folders, grants, sealed
 
     install = tmp_path_factory.mktemp("install")
     monkeypatch.setattr(folders, "install_dir", lambda: install)
     monkeypatch.setattr(
         grants, "grants_path", lambda: install.parent / f"{install.name}-grants.json"
     )
+    monkeypatch.setattr(
+        sealed, "sealed_path", lambda: install.parent / f"{install.name}-sealed.json"
+    )
     grants.reset_cache()
+    sealed.reset_cache()
     yield install
     grants.reset_cache()
+    sealed.reset_cache()

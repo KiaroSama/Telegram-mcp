@@ -20,6 +20,7 @@ tools never needs to open it.
 | `ghost.py` | Ghost mode settings and the offline-after-activity presence report. |
 | `grants.py` | "Always approve" grants (one tool, one chat, one account) and "always allow" folders, kept across restarts. |
 | `folders.py` | Which folders a file tool may use freely, which ask the owner, and which are never reachable. |
+| `sealed.py` | Approval messages and codes the agent may never touch or see: refusal before the call, redaction after it. |
 | `state_files.py` | Where ghost settings and grants live, and the owner-only atomic writer. |
 
 Why approval must come from a channel the model cannot answer:

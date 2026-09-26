@@ -14,6 +14,7 @@ import os
 from typing import Any, Dict, Optional, Set, Tuple
 
 from telegram_mcp.safeguard import channels as approvals
+from telegram_mcp.safeguard import sealed
 
 __all__ = [
     "account_of",
@@ -204,8 +205,60 @@ def _saved_for(account: Optional[str]) -> approvals.SavedMessagesChannel:
 
             return get_client(account)
 
-        _saved[account] = approvals.SavedMessagesChannel(client_provider=provide)
+        async def posted(message_id: int, code: str) -> None:
+            selves = []
+            try:
+                me = await _me(account)
+                selves = [me.id, getattr(me, "username", None) or ""]
+            except Exception:
+                pass
+            sealed.remember_request(account, code, message_id, selves=selves)
+
+        _saved[account] = approvals.SavedMessagesChannel(client_provider=provide, on_posted=posted)
     return _saved[account]
+
+
+_adopted: set = set()
+_ADOPT_SECONDS = 10.0
+
+
+async def _adopt(account: Optional[str]) -> None:
+    """Seal approval messages already in Saved Messages (posted before this was tracked)."""
+    key = (account or "").lower()
+    if key in _adopted:
+        return
+    from telegram_mcp.connection import get_client
+
+    client = get_client(account)
+    me = await _me(account)
+    selves = [me.id, getattr(me, "username", None) or ""]
+
+    async def scan():
+        async for message in client.iter_messages("me", search="Approval", limit=200):
+            if sealed.looks_like_request(getattr(message, "message", None)):
+                sealed.remember_message(account, message.id, selves=selves)
+
+    await asyncio.wait_for(scan(), _ADOPT_SECONDS)
+    _adopted.add(key)
+
+
+async def sealed_target(account: Optional[str], arguments: Any) -> bool:
+    """FR-036: the call acts on an approval message in Saved Messages."""
+    if not isinstance(arguments, dict):
+        return False
+    if sealed.is_sealed_target(account, arguments):
+        return True
+    chats = [
+        str(v).strip().lstrip("@").lower() for k, v in arguments.items() if "chat" in k.lower()
+    ]
+    names_message = any("message" in k.lower() or "reply_to" in k.lower() for k in arguments)
+    if not names_message or not any(c in ("me", "self") or c.lstrip("-").isdigit() for c in chats):
+        return False
+    try:
+        await _adopt(account)
+    except Exception:
+        pass  # what this process posted is sealed regardless
+    return sealed.is_sealed_target(account, arguments)
 
 
 def channels_for(ctx: Any, account: Optional[str]) -> list:
