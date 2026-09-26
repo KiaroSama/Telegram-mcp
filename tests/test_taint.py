@@ -130,3 +130,81 @@ def test_memory_is_bounded():
 def test_a_message_without_text_is_ignored():
     taint.note_message("acct", SimpleNamespace(message=None, out=False, chat_id=1))
     assert taint.fragment_count("acct") == 0
+
+
+def test_a_forward_the_owner_sent_is_still_someone_elses_words():
+    """`out` says who pressed send, not who wrote it."""
+    taint.note_message(
+        "acct",
+        SimpleNamespace(message="https://evil.example/f", out=True, chat_id=9, fwd_from=object()),
+    )
+    assert taint.find_tainted("acct", {"m": "https://evil.example/f"})
+
+
+# --- wiring: every read path that shows someone's message feeds the memory ----------
+
+
+def _live_message(text, out=False):
+    from telegram_mcp import connection
+
+    client = next(iter(connection.clients.values()), None) or object()
+    return (
+        SimpleNamespace(
+            id=1,
+            message=text,
+            out=out,
+            chat_id=-42,
+            date=None,
+            sender=None,
+            sender_id=7,
+            _client=client,
+            fwd_from=None,
+            reply_to=None,
+            media=None,
+            entities=None,
+        ),
+        client,
+    )
+
+
+@pytest.mark.parametrize("builder", ["message_to_dict", "format_message_line"])
+def test_the_record_builders_feed_incoming_messages(builder, monkeypatch):
+    from telegram_mcp import runtime
+    from telegram_mcp.tools import messages_view
+
+    msg, client = _live_message("pay at https://evil.example/b")
+    monkeypatch.setattr(runtime, "_account_for_client", lambda c: "acct" if c is client else None)
+    try:
+        getattr(messages_view, builder)(msg)
+    except Exception:
+        pass  # a fake message may not render fully; recording happens first
+    assert taint.find_tainted("acct", {"m": "https://evil.example/b"})
+
+
+def test_every_function_that_renders_message_text_records_it():
+    """A reader added later without the call would hand the model someone's words as
+    if they were the owner's; this finds it by what the function does, not its name."""
+    import ast
+    import pathlib
+    import re
+
+    renders = re.compile(
+        r"(?:sanitize_user_content|display_text)\(\s*(?:[\w.]*\.message\b|getattr\(\w+, \"message\")"
+    )
+    records = re.compile(r"note_rendered\(|note_records\(")
+    missing = []
+    import telegram_mcp.tools as tools_pkg
+
+    checked = 0
+    for path in sorted(pathlib.Path(tools_pkg.__file__).parent.glob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body = ast.get_source_segment(source, node) or ""
+                if renders.search(body):
+                    checked += 1
+                if renders.search(body) and not records.search(body):
+                    missing.append(f"{path.name}:{node.name}")
+    allowed = {"messages_queue.py:get_drafts"}  # drafts are the owner's own words
+    assert set(missing) <= allowed, sorted(set(missing) - allowed)
+    assert checked >= 10, f"only {checked} renderers found; the pattern has gone stale"

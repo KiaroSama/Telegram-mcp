@@ -23,6 +23,7 @@ and it says so plainly when the process that received one has since restarted.
 
 from typing import Optional, Union
 
+from telegram_mcp.safeguard import note_records
 from telegram_mcp import secret_history
 from telegram_mcp.file_roots import (
     _open_verified_directory,
@@ -332,6 +333,7 @@ async def read_secret_messages(chat_id: int, limit: int = 30, account: str = Non
         records = secret_history.read(label, secret_id, bound.value)
         if not records:
             return "No messages in this secret chat on this device."
+        note_records(label, chat_id, records)
         return format_tool_result({"messages": records, **bound.metadata})
     except ValueError as e:
         return str(e)

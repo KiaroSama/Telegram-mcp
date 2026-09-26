@@ -153,8 +153,12 @@ def note_text(account: str, source_chat: Any, text: str) -> None:
 
 
 def note_message(account: str, msg: Any) -> None:
-    """Remember an incoming message; the owner's own (outgoing) messages are skipped."""
-    if getattr(msg, "out", False):
+    """Remember a message someone else wrote; the owner's own words are skipped.
+
+    ``out`` says who pressed send, not who wrote it: a forward the owner sent, or one
+    sitting in Saved Messages, carries another person's words and is remembered.
+    """
+    if getattr(msg, "out", False) and getattr(msg, "fwd_from", None) is None:
         return
     text = getattr(msg, "message", None) or getattr(msg, "text", None)
     if not isinstance(text, str) or not text:
