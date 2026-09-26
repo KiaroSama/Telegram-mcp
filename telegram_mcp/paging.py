@@ -67,6 +67,7 @@ LIMITS: dict[str, int] = {
     # many. Telegram caps the join-request importers request itself at 100.
     "list_invite_links": 100,
     "list_join_requests": 100,
+    "get_community_link_requests": 100,  # one small record per pending chat
     # Per-message detail: a request each, so the ceiling is what one screenful of
     # reasoning can actually use.
     "get_poll_voters": 200,
