@@ -51,9 +51,9 @@ def _parse_invite_hash(link: str) -> tuple:
         # the hash.
         return raw.lstrip("+"), None
 
-    # urlparse only fills `netloc` when a scheme is present, and "t.me/+HASH" is
-    # a form people paste constantly.
-    parsed = urlparse(raw if "//" in raw else f"https://{raw}")
+    # urlparse only fills `netloc` after "//", and "t.me/+HASH" is a form people
+    # paste constantly; a scheme-less "//" is enough, no URL is invented.
+    parsed = urlparse(raw if "//" in raw else "//" + raw)
     scheme = parsed.scheme.lower()
     host = parsed.hostname.lower() if parsed.hostname else ""
 

@@ -507,13 +507,13 @@ async def copy_into_secret_chat(
                     "is nothing to copy. Nothing was sent."
                 )
             suffix = getattr(getattr(source, "file", None), "ext", None) or ""
-            scratch = Path(tempfile.gettempdir()) / f"tgmcp_copy_{int(time.time())}{suffix}"
-            scratch.write_bytes(downloaded)
-            try:
+            # A private directory of its own, not a guessable name in the shared temp
+            # dir; it is removed with everything in it once the copy has crossed.
+            with tempfile.TemporaryDirectory(prefix="tgmcp_copy_") as private:
+                scratch = Path(private) / f"media{suffix}"
+                scratch.write_bytes(downloaded)
                 kind = infer_kind(str(scratch))
                 sent_id = await manager.send_file(secret_id, scratch, caption=text, kind=kind)
-            finally:
-                scratch.unlink(missing_ok=True)
             local_copy = secret_history.record_sent(
                 label,
                 secret_id,
