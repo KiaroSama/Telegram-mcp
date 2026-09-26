@@ -28,7 +28,6 @@ __all__ = [
     "FREE_WRITES",
     "Facts",
     "GATED",
-    "NOT_YET_REGISTERED",
     "SEEN_SIGNAL",
     "SEND",
     "SendWindow",
@@ -184,9 +183,6 @@ FREE_WRITES = frozenset(
         "vote_in_poll",
     }
 )
-
-# Named above before its module exists; emptied once it is registered.
-NOT_YET_REGISTERED: FrozenSet[str] = frozenset({"set_ghost_mode"})
 
 
 def categorize(name: str, read_only: bool, destructive: bool) -> str:

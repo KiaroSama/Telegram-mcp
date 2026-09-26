@@ -16,6 +16,7 @@ from telegram_mcp.safeguard import channels as approvals
 
 __all__ = [
     "account_of",
+    "after_call",
     "approval_chats",
     "channels_for",
     "first_message",
@@ -51,9 +52,33 @@ def account_of(arguments: Dict[str, Any]) -> Optional[str]:
 
 
 def ghost_on(account: Optional[str], chat: Any) -> bool:
-    # ponytail: ghost settings land with T018; until then ghost mode is always on,
-    # which is the specified default and the safe side.
-    return True
+    from telegram_mcp.safeguard import ghost
+
+    return ghost.is_on(account, chat)
+
+
+_presence: Dict[str, Any] = {}
+
+
+async def _send_offline(account: str) -> None:
+    from telethon.tl.functions.account import UpdateStatusRequest
+
+    from telegram_mcp.connection import get_client
+
+    await get_client(account)(UpdateStatusRequest(offline=True))
+
+
+def after_call(account: Optional[str]) -> None:
+    """After a tool call: report each touched ghost-mode account offline (FR-018)."""
+    from telegram_mcp import connection
+    from telegram_mcp.safeguard import ghost
+
+    labels = [account] if account else list(connection.clients)
+    for label in labels:
+        if ghost.is_on(label):
+            if "p" not in _presence:
+                _presence["p"] = ghost.Presence(_send_offline)
+            _presence["p"].after_activity(label)
 
 
 async def first_message(account: Optional[str], chat: Any) -> bool:

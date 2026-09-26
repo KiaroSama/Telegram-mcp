@@ -37,6 +37,9 @@ class _Channel:
         return self.outcome
 
 
+after_calls = []
+
+
 def _guard(channel=None, *, first_message=False, ghost=True, approval_chats=()):
     channel = channel or _Channel()
 
@@ -50,6 +53,7 @@ def _guard(channel=None, *, first_message=False, ghost=True, approval_chats=()):
         ghost_on=lambda account, chat: ghost,
         approval_chats=lambda: frozenset(approval_chats),
         account_of=lambda arguments: arguments.get("account", "main"),
+        after=lambda account: after_calls.append(account),
         timeout=300,
     )
     return guard, channel
@@ -226,3 +230,11 @@ def test_every_kernel_file_carries_the_do_not_edit_notice():
     ]
     assert not missing, missing
     assert "you may not modify" in (folder / "README.md").read_text(encoding="utf-8")
+
+
+def test_presence_follows_a_call_that_ran_and_not_a_refused_one():
+    after_calls.clear()
+    guard, _ = _guard(_Channel("declined"))
+    _call(guard, "get_history", {"chat_id": 5, "account": "work"})
+    _call(guard, "delete_message", {"chat_id": 5, "message_id": 1, "account": "work"})
+    assert after_calls == ["work"]

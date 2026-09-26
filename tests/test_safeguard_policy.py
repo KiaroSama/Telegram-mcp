@@ -45,7 +45,7 @@ def test_every_registered_write_tool_is_named_in_exactly_one_set():
 def test_the_table_names_no_tool_that_does_not_exist():
     registered = {t.name for t in _registered()}
     named = policy.GATED | policy.SEEN_SIGNAL | policy.SEND | policy.FREE_WRITES
-    assert not named - registered - policy.NOT_YET_REGISTERED
+    assert not named - registered
 
 
 def test_read_only_tools_are_free():
