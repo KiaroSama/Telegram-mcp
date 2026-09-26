@@ -6,6 +6,7 @@
 [![Licence: GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Tests](https://github.com/KiaroSama/telegram-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/KiaroSama/telegram-mcp/actions/workflows/tests.yml)
 [![Python Lint & Format Check](https://github.com/KiaroSama/telegram-mcp/actions/workflows/python-lint-format.yml/badge.svg)](https://github.com/KiaroSama/telegram-mcp/actions/workflows/python-lint-format.yml)
+[![Python 3.11 | 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue?style=flat-square)](.github/workflows/tests.yml)
 [![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama-telegram-mcp-1sxyic)](https://m8ven.ai/mcp/kiarosama-telegram-mcp-1sxyic)
 
 Drive a **real Telegram account** from an MCP client. Not a bot account — your account, with
@@ -57,6 +58,7 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
   - [Content types beyond plain messages](#content-types-beyond-plain-messages)
   - [Message Links](#message-links)
 - [Safety](#safety)
+  - [Safeguard and ghost mode](docs/INSTALL.md#the-safeguard)
   - [File Path Security](#file-path-security)
   - [Security Notes](#security-notes)
 - [Development](#development)
@@ -239,6 +241,9 @@ An override that is not a usable number — zero, negative, `nan`, `inf`, or not
 - Optional: [uv](https://docs.astral.sh/uv/) for local development
 
 ## Quick Start
+
+**Step by step, for a person or an AI agent doing the setup:** [docs/INSTALL.md](docs/INSTALL.md).
+**Every tool, with what the safeguard does to it:** [docs/COMMANDS.md](docs/COMMANDS.md).
 
 > Do not install this server with `uvx telegram-mcp`, `uvx --from telegram-mcp`,
 > or `pip install telegram-mcp`. The `telegram-mcp` name on PyPI is currently
@@ -1044,6 +1049,12 @@ uv run flake8 .
   If `TELEGRAM_PROXY_*` is configured, Telegram traffic is routed through the
   configured SOCKS/HTTP/MTProxy proxy instead.
 - User-generated Telegram content is sanitized before being returned to MCP clients.
+- **Safeguard.** Risky tool calls (deleting, leaving, banning, sessions, profile and
+  privacy, invite joins, bulk sends, a first message to a stranger, and any write that
+  carries text from someone else's message) wait for the owner's approval in a channel
+  the model cannot answer. **Ghost mode**, on by default, sends no read markers or other
+  seen signals. See [docs/INSTALL.md](docs/INSTALL.md#the-safeguard). AI agents may not
+  edit `telegram_mcp/safeguard/` unless the owner explicitly asks for that change.
 
 ### Prompt Injection Protection
 

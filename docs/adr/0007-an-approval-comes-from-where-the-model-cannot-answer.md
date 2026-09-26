@@ -62,3 +62,15 @@ already provides the human channel inside the protocol.
 
 **Refuse dangerous tools outright, no approvals.** Rejected by the requirement: the owner
 must be able to say yes.
+
+## Addendum 2026-09-26: the kernel is its own package
+
+The owner asked that the rules deciding what may run live apart from the tools and say,
+where an agent will see it, that they are not an agent's to change. They live in
+`telegram_mcp/safeguard/`. Every file there opens with a do-not-edit notice, the
+package README repeats it, `.github/CODEOWNERS` makes the owner the reviewer of that
+path, and `docs/INSTALL.md` tells agents the same: an AI agent may change the kernel
+only when the owner explicitly asked for that exact change in the current conversation.
+The server also refuses any tool call whose arguments point into that folder, so no
+tool of this server can overwrite it. A notice cannot stop an agent with a shell; it
+makes an unasked-for edit a visible breach of an instruction rather than an accident.
