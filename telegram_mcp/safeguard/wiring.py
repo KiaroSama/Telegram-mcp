@@ -10,6 +10,7 @@ tests run without Telegram.
 """
 
 import asyncio
+import os
 from typing import Any, Dict, Optional, Set, Tuple
 
 from telegram_mcp.safeguard import channels as approvals
@@ -21,6 +22,7 @@ __all__ = [
     "channels_for",
     "first_message",
     "ghost_on",
+    "identity",
     "note_records",
     "note_rendered",
     "tool_hints",
@@ -30,6 +32,7 @@ _FIRST_MESSAGE_SECONDS = 10.0
 _known_chats: Set[Tuple[Optional[str], str]] = set()
 _saved: Dict[Optional[str], approvals.SavedMessagesChannel] = {}
 _bot_state: Dict[str, Any] = {"client": None, "username": None, "lock": None}
+_identities: Dict[str, str] = {}
 
 
 def tool_hints(name: str) -> Optional[Tuple[bool, bool]]:
@@ -109,18 +112,56 @@ async def first_message(account: Optional[str], chat: Any) -> bool:
     return first
 
 
+async def _me(account: str):
+    from telegram_mcp.connection import get_client
+
+    return await asyncio.wait_for(get_client(account).get_me(), _FIRST_MESSAGE_SECONDS)
+
+
+async def identity(account: Optional[str]) -> str:
+    """ "label · user id · @username" - the quote that tells the owner which account."""
+    if not account:
+        return ""
+    if account not in _identities:
+        me = await _me(account)
+        parts = [account, str(me.id)]
+        if getattr(me, "username", None):
+            parts.append("@" + me.username)
+        _identities[account] = " · ".join(parts)
+    return _identities[account]
+
+
+async def owner_ids() -> frozenset:
+    """Who the approval bot may act for: the configured ids, else every account here."""
+    _, configured = approvals.bot_settings()
+    if configured:
+        return configured
+    from telegram_mcp import connection
+
+    connection.refresh_accounts()
+    ids = set()
+    for label in list(connection.clients):
+        try:
+            ids.add((await _me(label)).id)
+        except Exception:
+            continue
+    return frozenset(ids)
+
+
 def approval_chats() -> frozenset:
     """The approval bot's chat, as every spelling a tool argument could use."""
     token, _ = approvals.bot_settings()
     if not token:
         return frozenset()
     names = {token.split(":", 1)[0]}
-    if _bot_state["username"]:
-        names.add(_bot_state["username"].lower())
+    configured = os.getenv("TELEGRAM_APPROVAL_BOT_USERNAME", "").strip().lstrip("@").lower()
+    for name in (_bot_state["username"], configured):
+        if name:
+            names.add(name.lower())
     return frozenset(names)
 
 
-_BOT = approvals.BotChannel(owner_id=None, client_provider=None)
+_BOT = approvals.BotChannel(owners_provider=owner_ids, client_provider=None)
 
 
 async def _bot_client():
@@ -144,8 +185,11 @@ async def _bot_client():
         _bot_state["username"] = getattr(me, "username", None)
 
         async def _on_press(event):
+            # A stranger's press gets no answer at all, not even "no longer open".
+            if not _BOT.is_allowed(event.sender_id):
+                return
             answered = _BOT.handle_callback(event.sender_id, event.data)
-            await event.answer("Recorded." if answered else "This request is no longer open.")
+            await event.answer("ثبت شد." if answered else "این درخواست دیگر باز نیست.")
 
         client.add_event_handler(_on_press, events.CallbackQuery())
         _bot_state["client"] = client
@@ -166,9 +210,8 @@ def _saved_for(account: Optional[str]) -> approvals.SavedMessagesChannel:
 
 def channels_for(ctx: Any, account: Optional[str]) -> list:
     """Dialog, then bot, then Saved Messages; each skips itself when unavailable."""
-    token, owner = approvals.bot_settings()
-    _BOT.owner_id = owner
-    _BOT.client_provider = _bot_client if token and owner is not None else None
+    token, _ = approvals.bot_settings()
+    _BOT.client_provider = _bot_client if token else None
     return [
         approvals.DialogChannel(getattr(ctx, "session", None), getattr(ctx, "request_id", None)),
         _BOT,

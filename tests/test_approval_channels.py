@@ -17,6 +17,7 @@ from telegram_mcp.safeguard import channels as ac
 
 def _request(**overrides):
     fields = dict(tool="delete_message", account="main", chat="-100", effect="deletes 1 message")
+    fields["identity"] = "main · 111 · @owner"
     fields.update(overrides)
     return ac.new_request(reasons=["gated"], **fields)
 
@@ -48,7 +49,7 @@ def test_the_dialog_is_used_only_when_the_client_can_show_one():
     "action, decision, outcome",
     [
         ("accept", "once", "approved_once"),
-        ("accept", "session", "approved_session"),
+        ("accept", "always", "approved_always"),
         ("accept", "deny", "declined"),
         ("decline", None, "declined"),
         ("cancel", None, "dismissed"),
@@ -60,7 +61,7 @@ def test_the_dialog_answer_maps_to_an_outcome(action, decision, outcome):
     message, schema, related = session.asked[0]
     assert related == 7
     assert "delete_message" in message and "deletes 1 message" in message
-    assert schema["properties"]["decision"]["enum"] == ["once", "session", "deny"]
+    assert schema["properties"]["decision"]["enum"] == ["once", "always", "deny"]
 
 
 def test_a_dialog_nobody_answers_times_out():
@@ -72,13 +73,20 @@ def test_a_dialog_nobody_answers_times_out():
 
 
 class _Client:
-    def __init__(self):
+    def __init__(self, fail_for=()):
         self.sent = []
+        self.edited = []
         self.handlers = []
+        self.fail_for = set(fail_for)
 
     async def send_message(self, peer, text, **kwargs):
+        if peer in self.fail_for:
+            raise RuntimeError("user never started the bot")
         self.sent.append((peer, text, kwargs))
         return SimpleNamespace(id=len(self.sent) + 100)
+
+    async def edit_message(self, peer, message_id, text=None, **kwargs):
+        self.edited.append((peer, message_id, kwargs))
 
     def add_event_handler(self, handler, event=None):
         self.handlers.append(handler)
@@ -94,43 +102,107 @@ def _provider(client):
     return provide
 
 
-async def _answer_when_sent(client, answer):
+def _owners(*ids):
+    async def provide():
+        return frozenset(ids)
+
+    return provide
+
+
+async def _answer_when_sent(client, answer, count=1):
     for _ in range(200):
-        if client.sent:
+        if len(client.sent) >= count:
             return answer()
         await asyncio.sleep(0.005)
     raise AssertionError("nothing was sent")
 
 
-def test_only_the_owners_press_with_the_right_nonce_counts():
+def _bot(client, *owners):
+    return ac.BotChannel(owners_provider=_owners(*owners), client_provider=_provider(client))
+
+
+def test_only_an_allowed_users_press_with_the_right_nonce_counts():
     client = _Client()
-    bot = ac.BotChannel(owner_id=111, client_provider=_provider(client))
+    bot = _bot(client, 111)
     request = _request()
 
     async def run():
         task = asyncio.create_task(bot.ask(request, 5))
         await _answer_when_sent(client, lambda: None)
-        assert not bot.handle_callback(222, f"sg:{request.nonce}:once")  # not the owner
+        assert not bot.handle_callback(222, f"sg:{request.nonce}:once")  # a stranger
         assert not bot.handle_callback(111, "sg:wrongnonce:once")
-        assert bot.handle_callback(111, f"sg:{request.nonce}:session".encode())
+        assert bot.handle_callback(111, f"sg:{request.nonce}:always".encode())
         return await task
 
-    assert asyncio.run(run()) == "approved_session"
+    assert asyncio.run(run()) == "approved_always"
     peer, text, kwargs = client.sent[0]
-    assert peer == 111 and "delete_message" in text and kwargs.get("buttons")
+    assert peer == 111 and "delete_message" in text
+    labels = [b.text for row in kwargs["buttons"] for b in row]
+    assert len(labels) == 3
+    assert [b.type.data for row in kwargs["buttons"] for b in row] == [
+        f"sg:{request.nonce}:{c}".encode() for c in ("once", "deny", "always")
+    ]
+
+
+def test_a_stranger_is_never_allowed_even_after_a_request():
+    client = _Client()
+    bot = _bot(client, 111)
+    asyncio.run(bot.ask(_request(), 0.05))
+    assert not bot.is_allowed(222)
+    assert bot.is_allowed(111)
+
+
+def test_every_allowed_account_gets_the_request_quoting_the_account():
+    client = _Client(fail_for={333})
+    bot = _bot(client, 111, 222, 333)
+    request = _request()
+
+    async def run():
+        task = asyncio.create_task(bot.ask(request, 5))
+        await _answer_when_sent(
+            client, lambda: bot.handle_callback(222, f"sg:{request.nonce}:deny"), 2
+        )
+        return await task
+
+    assert asyncio.run(run()) == "declined"
+    assert sorted(peer for peer, _, _ in client.sent) == [111, 222]
+    text = client.sent[0][1]
+    assert "<blockquote>" in text and "main · 111 · @owner" in text
+    assert client.sent[0][2].get("parse_mode") == "html"
+    # The buttons are taken away once the request is decided, on every copy.
+    assert sorted(peer for peer, _, _ in client.edited) == [111, 222]
+
+
+def test_the_bot_fails_over_when_no_allowed_account_can_be_reached():
+    client = _Client(fail_for={111})
+    bot = _bot(client, 111)
+    with pytest.raises(RuntimeError):
+        asyncio.run(bot.ask(_request(), 1))
 
 
 def test_a_press_after_the_deadline_is_ignored():
     client = _Client()
-    bot = ac.BotChannel(owner_id=111, client_provider=_provider(client))
+    bot = _bot(client, 111)
     request = _request()
     assert asyncio.run(bot.ask(request, 0.05)) == "timed_out"
     assert not bot.handle_callback(111, f"sg:{request.nonce}:once")
 
 
 def test_the_bot_is_available_only_when_configured():
-    assert not ac.BotChannel(owner_id=None, client_provider=_provider(_Client())).available()
-    assert not ac.BotChannel(owner_id=111, client_provider=None).available()
+    assert not ac.BotChannel(owners_provider=_owners(111), client_provider=None).available()
+    assert ac.BotChannel(
+        owners_provider=_owners(111), client_provider=_provider(_Client())
+    ).available()
+
+
+def test_owner_ids_parse_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_APPROVAL_BOT_TOKEN", "1:abc")
+    monkeypatch.setenv("TELEGRAM_APPROVAL_OWNER_IDS", " 111, 222 ,x")
+    monkeypatch.delenv("TELEGRAM_APPROVAL_OWNER_ID", raising=False)
+    token, owners = ac.bot_settings()
+    assert token == "1:abc" and owners == frozenset({111, 222})
+    monkeypatch.delenv("TELEGRAM_APPROVAL_OWNER_IDS")
+    assert ac.bot_settings()[1] == frozenset()
 
 
 # --- Saved Messages ----------------------------------------------------------------
@@ -155,7 +227,7 @@ def test_a_saved_messages_reply_the_server_wrote_itself_is_not_an_approval():
     assert not client.handlers  # the listener is gone afterwards
 
 
-@pytest.mark.parametrize("word, outcome", [("session", "approved_session"), ("no", "declined")])
+@pytest.mark.parametrize("word, outcome", [("always", "approved_always"), ("no", "declined")])
 def test_saved_messages_words(word, outcome):
     client = _Client()
     saved = ac.SavedMessagesChannel(client_provider=_provider(client))

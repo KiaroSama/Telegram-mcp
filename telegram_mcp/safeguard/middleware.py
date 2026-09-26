@@ -11,11 +11,11 @@ as a stalled Telegram call. A free call pays nothing but the in-memory checks.
 """
 
 import logging
-from typing import Any, Callable, Dict, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.safeguard import channels as approvals
-from telegram_mcp.safeguard import policy, taint
+from telegram_mcp.safeguard import ghost, grants, policy, taint
 
 __all__ = ["Safeguard", "install", "refusal"]
 
@@ -115,10 +115,12 @@ class Safeguard:
         approval_chats: Optional[Callable[[], frozenset]] = None,
         account_of: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
         after: Optional[Callable[[Optional[str]], None]] = None,
+        identity=None,
         protected_paths=None,
         timeout: Optional[float] = None,
     ) -> None:
-        if None in (hints, channels, first_message, ghost_on, approval_chats, account_of, after):
+        defaults = (hints, channels, first_message, ghost_on, approval_chats, account_of, after)
+        if None in defaults or identity is None:
             from telegram_mcp.safeguard import wiring
 
             hints = hints or wiring.tool_hints
@@ -128,6 +130,7 @@ class Safeguard:
             approval_chats = approval_chats or wiring.approval_chats
             account_of = account_of or wiring.account_of
             after = after or wiring.after_call
+            identity = identity or wiring.identity
         self._hints = hints
         self._channels = channels
         self._first_message = first_message
@@ -135,9 +138,11 @@ class Safeguard:
         self._approval_chats = approval_chats
         self._account_of = account_of
         self._after = after
-        self._protected = tuple(protected_paths) if protected_paths is not None else _package_dir()
+        self._identity = identity
+        self._protected = (
+            tuple(protected_paths) if protected_paths is not None else _protected_paths()
+        )
         self._timeout = timeout if timeout is not None else approvals.timeout_seconds()
-        self._grants: Set[Tuple[Optional[str], str, str]] = set()
         self._window = policy.SendWindow()
 
     async def _facts(self, name, category, read_only, account, chat, arguments):
@@ -181,16 +186,23 @@ class Safeguard:
             return refusal(name, reason, timeout=self._timeout)
 
         if decision.outcome == "ask":
-            key = (account, name, str(chat))
-            if key in self._grants:
-                outcome, kind, failures = "approved_session", "grant", []
+            # An "always" grant never covers words someone else wrote: one approval
+            # for a chat must not wave through every link injected into it later.
+            granted = "tainted" not in decision.reasons and grants.is_granted(account, name, chat)
+            if granted:
+                outcome, kind, failures = "approved_always", "grant", []
             else:
+                try:
+                    who = await self._identity(account)
+                except Exception:
+                    who = account or ""
                 request = approvals.new_request(
                     name,
                     account,
                     None if chat is None else str(chat),
                     describe(name, arguments, chat, decision.tainted),
                     decision.reasons,
+                    identity=who,
                 )
                 outcome, kind, failures = await approvals.request_approval(
                     request, self._channels(ctx, account), self._timeout
@@ -208,8 +220,8 @@ class Safeguard:
             )
             if outcome not in approvals.APPROVED:
                 return refusal(name, outcome, timeout=self._timeout, failures=failures)
-            if outcome == "approved_session":
-                self._grants.add(key)
+            if outcome == "approved_always" and not granted:
+                grants.add(account, name, chat)
 
         try:
             return await call_next(ctx)
@@ -222,10 +234,15 @@ class Safeguard:
                 pass
 
 
-def _package_dir() -> Tuple[str, ...]:
+def _protected_paths() -> Tuple[str, ...]:
+    """The kernel's own folder and its state files: no tool may name any of them."""
     import os
 
-    return (os.path.dirname(os.path.abspath(__file__)),)
+    return (
+        os.path.dirname(os.path.abspath(__file__)),
+        str(ghost.settings_path()),
+        str(grants.grants_path()),
+    )
 
 
 def install(server) -> None:

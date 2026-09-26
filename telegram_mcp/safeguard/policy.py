@@ -151,6 +151,7 @@ FREE_WRITES = frozenset(
         "rename_quick_reply",
         "reorder_folders",
         "replace_custom_emoji",
+        "revoke_always_approval",
         "save_disappearing_media",
         "save_draft",
         "save_gif",
