@@ -114,10 +114,11 @@ class Safeguard:
         ghost_on: Optional[Callable[[Optional[str], Any], bool]] = None,
         approval_chats: Optional[Callable[[], frozenset]] = None,
         account_of: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
+        after: Optional[Callable[[Optional[str]], None]] = None,
         protected_paths=None,
         timeout: Optional[float] = None,
     ) -> None:
-        if None in (hints, channels, first_message, ghost_on, approval_chats, account_of):
+        if None in (hints, channels, first_message, ghost_on, approval_chats, account_of, after):
             from telegram_mcp.safeguard import wiring
 
             hints = hints or wiring.tool_hints
@@ -126,12 +127,14 @@ class Safeguard:
             ghost_on = ghost_on or wiring.ghost_on
             approval_chats = approval_chats or wiring.approval_chats
             account_of = account_of or wiring.account_of
+            after = after or wiring.after_call
         self._hints = hints
         self._channels = channels
         self._first_message = first_message
         self._ghost_on = ghost_on
         self._approval_chats = approval_chats
         self._account_of = account_of
+        self._after = after
         self._protected = tuple(protected_paths) if protected_paths is not None else _package_dir()
         self._timeout = timeout if timeout is not None else approvals.timeout_seconds()
         self._grants: Set[Tuple[Optional[str], str, str]] = set()
@@ -208,10 +211,15 @@ class Safeguard:
             if outcome == "approved_session":
                 self._grants.add(key)
 
-        result = await call_next(ctx)
-        if category == "send" and chat is not None:
-            self._window.record(account or "", name, chat)
-        return result
+        try:
+            return await call_next(ctx)
+        finally:
+            if category == "send" and chat is not None:
+                self._window.record(account or "", name, chat)
+            try:
+                self._after(account)  # ghost mode: report offline, in the background
+            except Exception:
+                pass
 
 
 def _package_dir() -> Tuple[str, ...]:
