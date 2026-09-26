@@ -118,6 +118,42 @@ def _storage_for(account: str) -> FileStorage:
     return FileStorage(path)
 
 
+#: account -> the OS lock this process holds on that account's key store.
+_store_locks: Dict[str, object] = {}
+
+
+def _store_lock_dir() -> Path:
+    return state_dir() / "secret-chats"
+
+
+def _store_identity(account: str) -> str:
+    return f"secret-chat-store:{account}"
+
+
+async def _claim_store(account: str) -> None:
+    """Hold this account's key store for the life of the process, or refuse.
+
+    The session lock stops two processes sharing one SESSION; it does not stop two
+    logins of one account, under one label, sharing this folder. Two managers over
+    one store overwrite each other's keys, so the second process is refused.
+    Released by `close_all`, and by the OS if the process dies.
+    """
+    if account in _store_locks:
+        return
+    from telegram_mcp.singleton import SessionLock, SessionLockError
+
+    lock = SessionLock(_store_identity(account), lock_dir=_store_lock_dir())
+    try:
+        await asyncio.to_thread(lock.acquire, grace_seconds=2.0, poll_interval=0.2)
+    except SessionLockError:
+        raise SecretChatUnavailable(
+            account,
+            "another telegram-mcp process holds this account's secret-chat keys; stop "
+            "it first - two processes over one key store overwrite each other's keys",
+        ) from None
+    _store_locks[account] = lock
+
+
 def _owner_path(account: str) -> Path:
     """Which Telegram account a label's key store was written for."""
     return state_dir() / "secret-chats" / f"{account}.owner.json"
@@ -191,6 +227,7 @@ async def secret_manager(account: str) -> SecretChatManager:
             # stores for one conversation.
             await _stop(existing)
 
+        await _claim_store(account)
         await _bind_store(account, client)
         manager = SecretChatManager(client, _storage_for(account))
         manager.on("ChatRequested", _accept_incoming(manager, account))
@@ -296,5 +333,11 @@ async def close_all() -> List[Tuple[str, BaseException]]:
             try:
                 await _stop(manager)
             except Exception as error:
+                # Keep the store's lock: its keys may still be flushing, and no
+                # other process may open them until this one is gone.
                 failures.append((account, error))
+                continue
+            lock = _store_locks.pop(account, None)
+            if lock is not None:
+                lock.release()
     return failures
