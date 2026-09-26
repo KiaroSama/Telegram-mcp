@@ -15,6 +15,15 @@ tool is idempotent, which is why they all carry idempotentHint=True.
 
 from telegram_mcp.runtime import *
 
+from datetime import (
+    datetime,
+    timedelta,
+    timezone,
+)  # noqa: E402  after the star import, so it is not shadowed
+from telegram_mcp.tools.chat_notifications import _update_notify
+
+_MUTE_FOREVER = 2**31 - 1
+
 
 @mcp.tool(
     annotations=ToolAnnotations(
@@ -63,38 +72,37 @@ async def subscribe_public_channel(channel: Union[int, str], account: str = None
 )
 @with_account(readonly=False)
 @validate_id("chat_id")
-async def mute_chat(chat_id: Union[int, str], account: str = None) -> str:
+async def mute_chat(
+    chat_id: Union[int, str],
+    days: int = 0,
+    hours: int = 0,
+    minutes: int = 0,
+    account: str = None,
+) -> str:
     """
-    Mute notifications for a chat.
+    Mute a chat's notifications for a while, or forever.
+
+    Args:
+        days, hours, minutes: How long, as in Telegram's "Mute for..." dialog. All
+            zero (the default) mutes forever.
+
+    The chat's other notification settings (sound, tone) stay as they are.
     """
+    parts = {"days": days, "hours": hours, "minutes": minutes}
+    if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in parts.values()):
+        return "days, hours and minutes must be whole numbers, zero or more."
+    span = timedelta(**parts)
     try:
         cl = get_client(account)
-        from telethon.tl.types import InputPeerNotifySettings
-
-        peer = await resolve_entity(chat_id, cl)
-        await cl(
-            functions.account.UpdateNotifySettingsRequest(
-                peer=peer, settings=InputPeerNotifySettings(mute_until=2**31 - 1)
-            )
-        )
-        return f"Chat {chat_id} muted."
-    except (ImportError, AttributeError):
-        try:
-            # Alternative approach directly using raw API
-            peer = await resolve_input_entity(chat_id, cl)
-            await cl(
-                functions.account.UpdateNotifySettingsRequest(
-                    peer=peer,
-                    settings={
-                        "mute_until": 2**31 - 1,  # Far future
-                        "show_previews": False,
-                        "silent": True,
-                    },
-                )
-            )
-            return f"Chat {chat_id} muted (using alternative method)."
-        except Exception as alt_e:
-            return log_and_format_error("mute_chat", alt_e, chat_id=chat_id)
+        entity = await resolve_entity(chat_id, cl)
+        # Forever is the far end of Telegram's 32-bit timestamp, as its own apps send it.
+        until = datetime.now(timezone.utc) + span if span else _MUTE_FOREVER
+        ok = await _update_notify(cl, entity, mute_until=until)
+        if ok is False:
+            return "Telegram did not mute the chat; nothing changed."
+        if not span:
+            return f"Chat {chat_id} muted forever."
+        return f"Chat {chat_id} muted until {until.strftime('%Y-%m-%d %H:%M UTC')}."
     except Exception as e:
         return log_and_format_error("mute_chat", e, chat_id=chat_id)
 
@@ -112,36 +120,14 @@ async def mute_chat(chat_id: Union[int, str], account: str = None) -> str:
 @validate_id("chat_id")
 async def unmute_chat(chat_id: Union[int, str], account: str = None) -> str:
     """
-    Unmute notifications for a chat.
+    Unmute notifications for a chat. Its sound and tone stay as they are.
     """
     try:
         cl = get_client(account)
-        from telethon.tl.types import InputPeerNotifySettings
-
-        peer = await resolve_entity(chat_id, cl)
-        await cl(
-            functions.account.UpdateNotifySettingsRequest(
-                peer=peer, settings=InputPeerNotifySettings(mute_until=0)
-            )
-        )
+        ok = await _update_notify(cl, await resolve_entity(chat_id, cl), mute_until=0)
+        if ok is False:
+            return "Telegram did not unmute the chat; nothing changed."
         return f"Chat {chat_id} unmuted."
-    except (ImportError, AttributeError):
-        try:
-            # Alternative approach directly using raw API
-            peer = await resolve_input_entity(chat_id, cl)
-            await cl(
-                functions.account.UpdateNotifySettingsRequest(
-                    peer=peer,
-                    settings={
-                        "mute_until": 0,  # Unmute (current time)
-                        "show_previews": True,
-                        "silent": False,
-                    },
-                )
-            )
-            return f"Chat {chat_id} unmuted (using alternative method)."
-        except Exception as alt_e:
-            return log_and_format_error("unmute_chat", alt_e, chat_id=chat_id)
     except Exception as e:
         return log_and_format_error("unmute_chat", e, chat_id=chat_id)
 
