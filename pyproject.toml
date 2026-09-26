@@ -75,6 +75,8 @@ secret = []
 
 [project.urls]
 "Homepage" = "https://github.com/KiaroSama/telegram-mcp"
+"Repository" = "https://github.com/KiaroSama/telegram-mcp.git"
+"Documentation" = "https://github.com/KiaroSama/telegram-mcp/blob/main/docs/INSTALL.md"
 "Bug Tracker" = "https://github.com/KiaroSama/telegram-mcp/issues"
 
 [tool.setuptools]
