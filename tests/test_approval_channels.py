@@ -1,0 +1,256 @@
+"""Where an approval comes from: somewhere the model cannot answer (ADR 0007).
+
+Three channels, tried in order: the client's own dialog, an approval bot pressing a
+button on the owner's phone, a code answered in Saved Messages from another device.
+Each must refuse by default: a decline, a closed dialog, silence and every failure end
+in "not approved". A failing channel hands over to the next; only when none is left is
+the answer ``channel_failed``, and with none available at all it is ``no_channel``.
+"""
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from telegram_mcp.safeguard import channels as ac
+
+
+def _request(**overrides):
+    fields = dict(tool="delete_message", account="main", chat="-100", effect="deletes 1 message")
+    fields.update(overrides)
+    return ac.new_request(reasons=["gated"], **fields)
+
+
+# --- the client's dialog -----------------------------------------------------------
+
+
+class _Session:
+    def __init__(self, action="accept", decision="once", elicitation=True, delay=0.0):
+        caps = SimpleNamespace(elicitation=object() if elicitation else None)
+        self.client_capabilities = caps
+        self.action, self.decision, self.delay = action, decision, delay
+        self.asked = []
+
+    async def elicit_form(self, message, requested_schema, related_request_id=None):
+        self.asked.append((message, requested_schema, related_request_id))
+        await asyncio.sleep(self.delay)
+        content = {"decision": self.decision} if self.action == "accept" else None
+        return SimpleNamespace(action=self.action, content=content)
+
+
+def test_the_dialog_is_used_only_when_the_client_can_show_one():
+    assert ac.DialogChannel(_Session(), 7).available()
+    assert not ac.DialogChannel(_Session(elicitation=False), 7).available()
+    assert not ac.DialogChannel(SimpleNamespace(client_capabilities=None), 7).available()
+
+
+@pytest.mark.parametrize(
+    "action, decision, outcome",
+    [
+        ("accept", "once", "approved_once"),
+        ("accept", "session", "approved_session"),
+        ("accept", "deny", "declined"),
+        ("decline", None, "declined"),
+        ("cancel", None, "dismissed"),
+    ],
+)
+def test_the_dialog_answer_maps_to_an_outcome(action, decision, outcome):
+    session = _Session(action, decision)
+    assert asyncio.run(ac.DialogChannel(session, 7).ask(_request(), 5)) == outcome
+    message, schema, related = session.asked[0]
+    assert related == 7
+    assert "delete_message" in message and "deletes 1 message" in message
+    assert schema["properties"]["decision"]["enum"] == ["once", "session", "deny"]
+
+
+def test_a_dialog_nobody_answers_times_out():
+    session = _Session(delay=5)
+    assert asyncio.run(ac.DialogChannel(session, 7).ask(_request(), 0.05)) == "timed_out"
+
+
+# --- the approval bot --------------------------------------------------------------
+
+
+class _Client:
+    def __init__(self):
+        self.sent = []
+        self.handlers = []
+
+    async def send_message(self, peer, text, **kwargs):
+        self.sent.append((peer, text, kwargs))
+        return SimpleNamespace(id=len(self.sent) + 100)
+
+    def add_event_handler(self, handler, event=None):
+        self.handlers.append(handler)
+
+    def remove_event_handler(self, handler, event=None):
+        self.handlers.remove(handler)
+
+
+def _provider(client):
+    async def provide():
+        return client
+
+    return provide
+
+
+async def _answer_when_sent(client, answer):
+    for _ in range(200):
+        if client.sent:
+            return answer()
+        await asyncio.sleep(0.005)
+    raise AssertionError("nothing was sent")
+
+
+def test_only_the_owners_press_with_the_right_nonce_counts():
+    client = _Client()
+    bot = ac.BotChannel(owner_id=111, client_provider=_provider(client))
+    request = _request()
+
+    async def run():
+        task = asyncio.create_task(bot.ask(request, 5))
+        await _answer_when_sent(client, lambda: None)
+        assert not bot.handle_callback(222, f"sg:{request.nonce}:once")  # not the owner
+        assert not bot.handle_callback(111, "sg:wrongnonce:once")
+        assert bot.handle_callback(111, f"sg:{request.nonce}:session".encode())
+        return await task
+
+    assert asyncio.run(run()) == "approved_session"
+    peer, text, kwargs = client.sent[0]
+    assert peer == 111 and "delete_message" in text and kwargs.get("buttons")
+
+
+def test_a_press_after_the_deadline_is_ignored():
+    client = _Client()
+    bot = ac.BotChannel(owner_id=111, client_provider=_provider(client))
+    request = _request()
+    assert asyncio.run(bot.ask(request, 0.05)) == "timed_out"
+    assert not bot.handle_callback(111, f"sg:{request.nonce}:once")
+
+
+def test_the_bot_is_available_only_when_configured():
+    assert not ac.BotChannel(owner_id=None, client_provider=_provider(_Client())).available()
+    assert not ac.BotChannel(owner_id=111, client_provider=None).available()
+
+
+# --- Saved Messages ----------------------------------------------------------------
+
+
+def test_a_saved_messages_reply_the_server_wrote_itself_is_not_an_approval():
+    client = _Client()
+    saved = ac.SavedMessagesChannel(client_provider=_provider(client))
+    request = _request()
+
+    async def run():
+        task = asyncio.create_task(saved.ask(request, 5))
+        await _answer_when_sent(client, lambda: None)
+        # The request message itself mentions "yes <code>".
+        assert not saved.handle_message(101, f"yes {request.code}")
+        assert not saved.handle_message(500, "yes ZZZZ")  # another code
+        assert saved.handle_message(501, f"  YES {request.code.lower()} ")
+        return await task
+
+    assert asyncio.run(run()) == "approved_once"
+    assert client.sent[0][0] == "me"
+    assert not client.handlers  # the listener is gone afterwards
+
+
+@pytest.mark.parametrize("word, outcome", [("session", "approved_session"), ("no", "declined")])
+def test_saved_messages_words(word, outcome):
+    client = _Client()
+    saved = ac.SavedMessagesChannel(client_provider=_provider(client))
+    request = _request()
+
+    async def run():
+        task = asyncio.create_task(saved.ask(request, 5))
+        await _answer_when_sent(
+            client, lambda: saved.handle_message(900, f"{word} {request.code}")
+        )
+        return await task
+
+    assert asyncio.run(run()) == outcome
+
+
+def test_two_pending_requests_never_approve_each_other():
+    client = _Client()
+    saved = ac.SavedMessagesChannel(client_provider=_provider(client))
+    first, second = _request(), _request(chat="-200")
+    assert first.code != second.code and first.nonce != second.nonce
+
+    async def run():
+        a = asyncio.create_task(saved.ask(first, 0.3))
+        b = asyncio.create_task(saved.ask(second, 5))
+        for _ in range(200):
+            if len(client.sent) == 2:
+                break
+            await asyncio.sleep(0.005)
+        saved.handle_message(900, f"yes {second.code}")
+        return await a, await b
+
+    assert asyncio.run(run()) == ("timed_out", "approved_once")
+
+
+# --- choosing a channel -------------------------------------------------------------
+
+
+class _Fixed:
+    def __init__(self, kind, outcome=None, available=True, error=None):
+        self.kind, self.outcome, self._available, self.error = kind, outcome, available, error
+        self.asked = 0
+
+    def available(self):
+        return self._available
+
+    async def ask(self, request, timeout):
+        self.asked += 1
+        if self.error:
+            raise self.error
+        return self.outcome
+
+
+def test_a_failing_channel_hands_over_to_the_next():
+    broken = _Fixed("dialog", error=RuntimeError("boom"))
+    bot = _Fixed("bot", "approved_once")
+    outcome, kind, failures = asyncio.run(ac.request_approval(_request(), [broken, bot], 5))
+    assert (outcome, kind) == ("approved_once", "bot")
+    assert failures == ["dialog: RuntimeError"]
+
+
+def test_every_channel_failing_is_channel_failed_never_approved():
+    channels = [_Fixed("dialog", error=RuntimeError()), _Fixed("bot", error=OSError())]
+    outcome, kind, failures = asyncio.run(ac.request_approval(_request(), channels, 5))
+    assert (outcome, kind) == ("channel_failed", None)
+    assert failures == ["dialog: RuntimeError", "bot: OSError"]
+
+
+def test_no_available_channel_is_no_channel():
+    channels = [_Fixed("dialog", available=False), _Fixed("bot", available=False)]
+    assert asyncio.run(ac.request_approval(_request(), channels, 5))[0] == "no_channel"
+    assert channels[0].asked == channels[1].asked == 0
+
+
+def test_a_decline_does_not_fall_through_to_another_channel():
+    first, second = _Fixed("dialog", "declined"), _Fixed("bot", "approved_once")
+    assert asyncio.run(ac.request_approval(_request(), [first, second], 5))[0] == "declined"
+    assert second.asked == 0
+
+
+def test_the_code_is_pending_only_while_the_request_is_open():
+    seen = []
+
+    class _Peek(_Fixed):
+        async def ask(self, request, timeout):
+            seen.append(request.code in ac.pending_codes())
+            return "declined"
+
+    request = _request()
+    asyncio.run(ac.request_approval(request, [_Peek("dialog")], 5))
+    assert seen == [True]
+    assert request.code not in ac.pending_codes()
+
+
+def test_the_deadline_defaults_to_five_minutes():
+    assert ac.timeout_seconds("") == 300
+    assert ac.timeout_seconds("30") == 30
+    assert ac.timeout_seconds("nonsense") == 300
+    assert ac.timeout_seconds("-5") == 300
