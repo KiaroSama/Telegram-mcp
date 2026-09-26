@@ -74,3 +74,15 @@ only when the owner explicitly asked for that exact change in the current conver
 The server also refuses any tool call whose arguments point into that folder, so no
 tool of this server can overwrite it. A notice cannot stop an agent with a shell; it
 makes an unasked-for edit a visible breach of an instruction rather than an accident.
+
+## Addendum 2026-09-26: the approval itself is sealed
+
+The approval bot trusts presses from the owner's own accounts, and a Saved Messages reply
+is written by the same account the agent acts as. An approval is therefore only as good as
+the agent's inability to reach it, so the owner asked for that to be complete: a tool call
+naming the bot's chat in any spelling (id, `@name`, `t.me/` or `tg://resolve` link) is
+refused; a tool call aimed at an approval message the server posted in Saved Messages is
+refused whatever it would do to it; and every tool result is scrubbed of approval requests
+and of every approval code this server issued (`telegram_mcp/safeguard/sealed.py`). The
+agent can neither see a code nor touch the message that carries it, so an answer can only
+come from a person on another device.
