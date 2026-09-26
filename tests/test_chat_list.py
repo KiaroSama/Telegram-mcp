@@ -95,6 +95,7 @@ class FakeClient:
         self.sent = []
         self.answers = {}
         self.peer_dialog_calls = 0
+        self.search_extra = []
 
     async def iter_dialogs(self, *args, **kwargs):
         raise AssertionError("walking every dialog outlives the tool budget on a real account")
@@ -124,7 +125,7 @@ class FakeClient:
                 for d in self.dialogs
                 if q in d.name.casefold()
                 or q in (getattr(d.entity, "username", "") or "").casefold()
-            ]
+            ] + list(self.search_extra)
             stranger = types.User(id=99, first_name="Numera Stranger", access_hash=9)
             return types.contacts.Found(
                 my_results=[utils.get_peer(e) for e in hits],
@@ -302,3 +303,29 @@ async def test_mark_unread(client):
     request = client.sent[0]
     assert isinstance(request, functions.messages.MarkDialogUnreadRequest)
     assert request.unread is True and utils.get_peer_id(request.peer.peer) == FRIEND.id
+
+
+@pytest.mark.asyncio
+async def test_a_found_chat_with_no_dialog_is_not_one_of_your_chats(client):
+    """Telegram's search also returns peers the owner has no chat with, such as a bot
+    whose chat was just deleted; the chat list does not show them, so neither may this."""
+    gone = client.dialogs.pop(0)  # the bot still matches the search, but has no dialog
+    client.search_extra = [gone.entity]
+    text = await mod.search_my_chats(query="numeragroup4")
+    assert "No chat" in text
+
+
+@pytest.mark.asyncio
+async def test_unpin_in_a_rule_folder_does_not_add_the_chat_explicitly(client):
+    """Robot shows every bot by its rule; unpinning there must leave no explicit entry."""
+    client.filters[2] = _folder(3, "Robot", pinned=[BOT4], bots=True)
+    await mod.unpin_chat(chat="@NumeraGroup4Bot", folder="Robot")
+    f = client.sent[0].filter
+    assert f.pinned_peers == [] and f.include_peers == []
+
+
+@pytest.mark.asyncio
+async def test_pinning_a_chat_not_in_the_list_says_so(client):
+    client.dialogs.pop(0)
+    text = await mod.pin_chat(chat="@NumeraGroup4Bot")
+    assert "not in your chat list" in text and client.sent == []
