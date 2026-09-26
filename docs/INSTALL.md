@@ -101,9 +101,11 @@ dialog. In clients that cannot show one, it comes to your phone through a bot of
 
 One bot serves every account of this server. Each request opens with a quote naming the
 account it acts for (label, user id, @username) and carries three inline buttons:
-**تأیید** (approve once), **رد** (deny) and **همیشه تأیید** (always approve this tool in
-this chat). The bot answers only allowed users; anyone else who finds it gets no reply at
-all, and their button presses do nothing.
+**✅ Approve** (once), **❌ Deny** and **♾ Always approve** (this tool in this chat).
+When the request closes the buttons disappear and one line says what happened
+(*Approved*, *Always approved*, *Denied*, or *Timed out - not run*). The bot answers only
+allowed users; anyone else who finds it gets no reply at all, and their button presses do
+nothing.
 
 Without the bot, approvals fall back to a short code in your Saved Messages (below).
 
