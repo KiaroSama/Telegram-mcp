@@ -36,8 +36,12 @@ from emoji_compose import best_frame, describe_lines  # noqa: E402
 import emoji_packs  # noqa: E402
 import emoji_vision  # noqa: E402
 
-# Your own running server; TELEGRAM_MCP_URL or --url points it elsewhere.
-DEFAULT_URL = os.environ.get("TELEGRAM_MCP_URL", "http://127.0.0.1:18765/mcp")
+# The address of YOUR running server - machine-specific, so it is configuration, never code.
+DEFAULT_URL = os.environ.get("TELEGRAM_MCP_URL")
+NO_URL = (
+    "No server address: set TELEGRAM_MCP_URL (for example in the environment) or pass --url "
+    "with the address your telegram-mcp HTTP server listens on."
+)
 # get_custom_emoji resolves at most this many per call; the server says so and
 # refusing to notice just silently drops the tail of a batch.
 BATCH = 10
@@ -232,6 +236,8 @@ class Pictures:
 
 
 def _studio(args):
+    if not args.url:
+        raise SystemExit(NO_URL)
     return Studio(url=args.url, account=args.account)
 
 

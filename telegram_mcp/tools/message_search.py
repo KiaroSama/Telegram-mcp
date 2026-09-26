@@ -8,6 +8,7 @@ from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.forum import reply_target_of
 from telegram_mcp.paging import LIMITS, bounded, bounded_page, page_metadata
 from telegram_mcp.runtime import *
+from telegram_mcp.permalinks import public_link
 from telegram_mcp.tools.messages import get_media_label, get_reply_quote
 
 # The tabs a Telegram client puts above its search results, as the server-side
@@ -359,7 +360,7 @@ async def search_posts(
             }
             if username:
                 # The one thing a found post is actually used for.
-                record["link"] = f"https://t.me/{username}/{msg.id}"
+                record["link"] = public_link(username, msg.id)
             label = get_media_label(msg)
             if label:
                 record["media"] = label

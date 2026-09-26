@@ -17,6 +17,7 @@ import re
 from typing import Any, Optional, Union
 
 from telegram_mcp.runtime import *
+from telegram_mcp.permalinks import public_link, username_prefixes
 from telegram_mcp.message_view import display_name
 
 from telethon import errors, functions
@@ -46,10 +47,11 @@ _UNTRUSTED = (
 
 
 def _normalize_username(raw: str) -> str:
-    """The bare username: no whitespace, no leading ``@``, no ``t.me/`` prefix."""
+    """The bare username: no whitespace, no leading ``@``, no link prefix (Telegram's own
+    domain or the configured one, with or without a scheme)."""
     name = (raw or "").strip()
-    for prefix in ("https://t.me/", "http://t.me/", "t.me/", "@"):
-        if name.lower().startswith(prefix):
+    for prefix in username_prefixes() + ("@",):
+        if name.lower().startswith(prefix.lower()):
             name = name[len(prefix) :]
             break
     return name.strip()
@@ -156,7 +158,7 @@ async def check_channel_username(
                 {
                     "username": name,
                     "available": available,
-                    "public_link": f"https://t.me/{name}" if available else None,
+                    "public_link": public_link(name) if available else None,
                     "reason": None if available else "Telegram reports this username as taken.",
                 }
             ],
@@ -266,7 +268,7 @@ async def set_channel_username(
             "channel": title,
             "username": name or None,
             "previous_username": previous,
-            "public_link": f"https://t.me/{name}" if name else None,
+            "public_link": public_link(name) if name else None,
             "now_private": not name,
         }
         if not name:
@@ -274,7 +276,7 @@ async def set_channel_username(
                 f"{title} is now PRIVATE: it has no public link, and can be joined only "
                 "through an invite link. "
                 + (
-                    f"https://t.me/{previous} no longer resolves, and {previous!r} is free "
+                    f"{public_link(previous)} no longer resolves, and {previous!r} is free "
                     "for anyone else to claim."
                     if previous
                     else "It had no public username to remove."
@@ -282,8 +284,8 @@ async def set_channel_username(
             )
         elif previous:
             record["effect"] = (
-                f"https://t.me/{previous} no longer resolves and {previous!r} is free for "
-                f"anyone else to claim; {title} is now at https://t.me/{name}."
+                f"{public_link(previous)} no longer resolves and {previous!r} is free for "
+                f"anyone else to claim; {title} is now at {public_link(name)}."
             )
         return format_tool_result(
             [record], {"chat_id": str(chat_id), "changed": True, "note": _UNTRUSTED}
@@ -372,7 +374,7 @@ async def get_similar_channels(
                 "participants": getattr(chat, "participants_count", None),
                 "verified": bool(getattr(chat, "verified", False)),
                 "public_link": (
-                    f"https://t.me/{chat.username}" if getattr(chat, "username", None) else None
+                    public_link(chat.username) if getattr(chat, "username", None) else None
                 ),
             }
             for chat in chats

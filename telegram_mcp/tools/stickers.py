@@ -17,6 +17,7 @@ video can only ever become a *video* sticker - "animated" means vector.
 from typing import Any
 
 from telegram_mcp.runtime import *
+from telegram_mcp.permalinks import public_link
 from telegram_mcp.message_view import display_name
 
 from telethon import errors, functions
@@ -63,7 +64,7 @@ def set_link(short_name: str, emojis: bool) -> str:
     lives here rather than in each caller that has to guess.
     """
     kind = "addemoji" if emojis else "addstickers"
-    return f"https://t.me/{kind}/{str(short_name).lstrip('@')}"
+    return public_link(kind, str(short_name).lstrip("@"))
 
 
 def _bad_set_reference(short_name, set_id) -> str:
@@ -78,8 +79,8 @@ def _bad_set_reference(short_name, set_id) -> str:
     if short_name:
         return (
             f"Telegram has no pack with the short name {str(short_name)!r}. That is the tail "
-            "of the link, not the pack's title: from https://t.me/addstickers/HotCherry or "
-            "https://t.me/addemoji/StaticEmoji the short name is 'HotCherry' or "
+            "of the link, not the pack's title: from t.me/addstickers/HotCherry or "
+            "t.me/addemoji/StaticEmoji the short name is 'HotCherry' or "
             "'StaticEmoji'. get_sticker_sets(kind=\"both\") lists the ones already installed."
         )
     return (

@@ -1,14 +1,44 @@
-"""Telegram message links: ``<domain>/<username>/<id>`` and ``<domain>/c/<id>/<id>``.
+"""Every public Telegram link this server hands out, built in one place.
 
-Built with ``urlunsplit`` from parts, never by pasting a host into a URL template:
-the domain is configuration (``t.me`` by default), and these are strings handed to
-the caller, never requests this server makes.
+Message links (``<domain>/<username>/<id>``, ``<domain>/c/<id>/<id>``) and plain ones
+(``<domain>/<username>``, ``<domain>/addstickers/<set>``) all use ``LINK_DOMAIN``, read
+once from ``TELEGRAM_LINK_DOMAIN``. They are built with ``urlunsplit`` from parts, never
+by pasting a host into a URL template: these are strings handed to the caller, never
+requests this server makes.
 """
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional
 from urllib.parse import urlunsplit
+
+_DEFAULT_DOMAIN = "t.me"
+_SCHEMES = ("https://", "http://", "")
+
+
+def normalize_domain(raw: Optional[str]) -> str:
+    """The bare host of a configured link domain: no scheme, no slashes, no spaces."""
+    host = (raw or "").strip()
+    for scheme in _SCHEMES[:2]:
+        if host.lower().startswith(scheme):
+            host = host[len(scheme) :]
+    return host.strip("/ ") or _DEFAULT_DOMAIN
+
+
+LINK_DOMAIN = normalize_domain(os.getenv("TELEGRAM_LINK_DOMAIN"))
+
+
+def public_link(*path: str) -> str:
+    """``https://<LINK_DOMAIN>/<path...>`` - a username, a sticker set, a post."""
+    return urlunsplit(("https", LINK_DOMAIN, "/" + "/".join(str(p) for p in path), "", ""))
+
+
+def username_prefixes() -> tuple:
+    """Every link prefix a username may arrive with: Telegram's own domain and the
+    configured one, each with and without a scheme."""
+    domains = dict.fromkeys((_DEFAULT_DOMAIN, LINK_DOMAIN))
+    return tuple(f"{scheme}{d}/" for d in domains for scheme in _SCHEMES)
 
 
 def channel_link_id(chat_id: int) -> int:

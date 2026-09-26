@@ -22,6 +22,7 @@ member arrives holding a hash. Who may do what once they are in lives in
 
 from telegram_mcp.paging import LIMITS, bounded_page, page_metadata
 from telegram_mcp.runtime import *
+from telegram_mcp.permalinks import public_link
 
 
 @mcp.tool(
@@ -204,7 +205,7 @@ async def create_channel(
                 )
             record["public"] = True
             record["username"] = wanted
-            record["link"] = f"https://t.me/{wanted}"
+            record["link"] = public_link(wanted)
 
         return format_tool_result(
             [record],
