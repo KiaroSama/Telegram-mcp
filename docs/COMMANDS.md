@@ -41,7 +41,6 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
 | `check_channel_username` | Ask Telegram whether a public username is free for this channel. | `R - I O` | runs |
-| `get_channel_statistics` | The statistics Telegram keeps for a channel, a supergroup, or one post. | `R - I O` | runs |
 | `get_similar_channels` | The channels Telegram recommends as similar to this one. | `R - I O` | runs |
 | `set_channel_username` | Change a channel's public username — or, with an empty one, make it private. | `- D I O` | runs |
 | `set_discussion_group` | Attach a discussion group to a channel, or detach the one it has. | `- D I O` | runs |
@@ -56,6 +55,12 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 | `set_prehistory_hidden` | Hide messages sent before a member joined. | `- - I O` | runs |
 | `set_signatures` | Sign channel posts with the name of the admin who sent them. | `- - I O` | runs |
 | `set_view_forum_as_messages` | Show a forum as one flat message list rather than as topics. | `- - I O` | runs |
+
+## channel_stats
+
+| Tool | What it does | Hints | Safeguard |
+|---|---|---|---|
+| `get_channel_statistics` | The statistics Telegram keeps for a channel, a supergroup, or one post. | `R - I O` | runs |
 
 ## chat_state
 
@@ -242,6 +247,14 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 | `get_media_frames` | Render several frames of a video, video note, GIF or animated sticker. | `R - I O` | runs |
 | `get_media_thumbnail` | Look at a message's media by downloading only Telegram's thumbnail. | `R - I O` | runs |
 
+## message_search
+
+| Tool | What it does | Hints | Safeguard |
+|---|---|---|---|
+| `search_global` | Search every chat this account can see at once, across all of them. | `R - I O` | runs |
+| `search_messages` | Search inside one chat: by text, by who sent it, or by what kind of media. | `R - I O` | runs |
+| `search_posts` | Search public channel posts across Telegram, the way the Posts tab does. | `R - I O` | runs |
+
 ## messages
 
 | Tool | What it does | Hints | Safeguard |
@@ -280,9 +293,6 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 | `get_messages` | Get paginated messages from a specific chat. | `R - I O` | runs |
 | `get_pinned_messages` | Get all pinned messages in a chat. | `R - I O` | runs |
 | `list_messages` | Retrieve messages with optional filters. | `R - I O` | runs |
-| `search_global` | Search every chat this account can see at once, across all of them. | `R - I O` | runs |
-| `search_messages` | Search inside one chat: by text, by who sent it, or by what kind of media. | `R - I O` | runs |
-| `search_posts` | Search public channel posts across Telegram, the way the Posts tab does. | `R - I O` | runs |
 
 ## messages_relay
 
@@ -296,7 +306,6 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
-| `create_poll` | Create a poll in a chat using Telegram's native poll feature. | `- D - O` | runs; asks for a first message, a bulk send or untrusted content |
 | `get_message_reactions` | Get the list of reactions on a message, one page at a time. | `R - I O` | runs |
 | `list_inline_buttons` | List a message's inline ("glass") buttons. | `R - I O` | runs |
 | `pin_message` | Pin a message in a chat. | `- D I O` | runs |
@@ -329,6 +338,12 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 | `get_photo_sheet` | One labelled grid of a peer's photos, instead of one image block each. | `R - I O` | runs |
 | `list_photos` | Index a peer's photos, so one of them can then be opened by id. | `R - I O` | runs |
 | `open_photo` | Open one of a peer's photos as an image. | `R - I O` | runs |
+
+## poll_creation
+
+| Tool | What it does | Hints | Safeguard |
+|---|---|---|---|
+| `create_poll` | Create a poll in a chat using Telegram's native poll feature. | `- D - O` | runs; asks for a first message, a bulk send or untrusted content |
 
 ## polls
 

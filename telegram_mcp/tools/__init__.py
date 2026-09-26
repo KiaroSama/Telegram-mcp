@@ -54,6 +54,9 @@ from telegram_mcp.tools.stickers import *
 from telegram_mcp.tools.saved_gifs import *
 from telegram_mcp.tools.authorizations import *
 from telegram_mcp.tools.read_receipts import *
+from telegram_mcp.tools.message_search import *
+from telegram_mcp.tools.poll_creation import *
+from telegram_mcp.tools.channel_stats import *
 from telegram_mcp.tools.ghost_tools import *
 
 # translation.py, not translate.py: `import *` binds the tool name `translate`
