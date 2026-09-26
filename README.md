@@ -10,12 +10,12 @@
 [![Python 3.11 | 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue?style=flat-square)](.github/workflows/tests.yml)
 [![Platform: Linux | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey?style=flat-square)](.github/workflows/tests.yml)
 ![MCP Badge](https://badge.mcpx.dev)
-[![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama-telegram-mcp-1sxyic)](https://m8ven.ai/mcp/kiarosama-telegram-mcp-1sxyic)
+[![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
+[![M8ven Agent Verified](https://m8ven.ai/api/agent-verify/badge?score=75)](https://m8ven.ai/verified/verify?id=6bf8a0d29e8c8bae)
 [![M8ven Verified](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp?variant=verified)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
 [![Last commit](https://img.shields.io/github/last-commit/KiaroSama/Telegram-mcp?style=flat-square)](https://github.com/KiaroSama/Telegram-mcp/commits/main)
 [![Built with Telethon 1.45+](https://img.shields.io/badge/built%20with-Telethon%201.45%2B-2CA5E0?style=flat-square)](https://codeberg.org/Lonami/Telethon)
 [![MCP SDK 2.2+](https://img.shields.io/badge/MCP%20SDK-2.2%2B-6E56CF?style=flat-square)](https://github.com/modelcontextprotocol/python-sdk)
-[![uv](https://img.shields.io/badge/deps-uv-DE5FE9?style=flat-square)](uv.lock)
 [![Top language](https://img.shields.io/github/languages/top/KiaroSama/Telegram-mcp?style=flat-square)](https://github.com/KiaroSama/Telegram-mcp)
 [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)
 
@@ -71,6 +71,7 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
   - [Safeguard and ghost mode](docs/INSTALL.md#the-safeguard)
   - [File Path Security](#file-path-security)
   - [Security Notes](#security-notes)
+    - [Network access](#network-access)
 - [Development](#development)
 - [Troubleshooting](#troubleshooting)
 - [Working on it](#working-on-it)
@@ -1065,6 +1066,22 @@ uv run flake8 .
   the model cannot answer. **Ghost mode**, on by default, sends no read markers or other
   seen signals. See [docs/INSTALL.md](docs/INSTALL.md#the-safeguard). AI agents may not
   edit `telegram_mcp/safeguard/` unless the owner explicitly asks for that change.
+
+### Network access
+
+The server talks to Telegram and to nothing else: MTProto connections to Telegram's own
+data centres (through the proxy you configure, if any), and - when the safeguard's
+approval bot is set up - the same Telegram network for the bot. It has no HTTP client and
+sends nothing to any other service. `test_proxies` connects only to proxy addresses you
+supply.
+
+Three host names appear in the source without being connections:
+
+| Host | Where | What it is |
+|---|---|---|
+| `t.me` | message and profile links | the link domain Telegram uses; `TELEGRAM_LINK_DOMAIN` changes it |
+| `my.telegram.org` | the setup error message | where you create the API ID and hash; never contacted |
+| `127.0.0.1:18765` | `scripts/emoji_studio.py` | the default address of YOUR running server for that local helper; `TELEGRAM_MCP_URL` or `--url` changes it |
 
 ### Prompt Injection Protection
 

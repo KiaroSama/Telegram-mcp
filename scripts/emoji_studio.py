@@ -36,7 +36,8 @@ from emoji_compose import best_frame, describe_lines  # noqa: E402
 import emoji_packs  # noqa: E402
 import emoji_vision  # noqa: E402
 
-DEFAULT_URL = "http://127.0.0.1:18765/mcp"
+# Your own running server; TELEGRAM_MCP_URL or --url points it elsewhere.
+DEFAULT_URL = os.environ.get("TELEGRAM_MCP_URL", "http://127.0.0.1:18765/mcp")
 # get_custom_emoji resolves at most this many per call; the server says so and
 # refusing to notice just silently drops the tail of a batch.
 BATCH = 10
