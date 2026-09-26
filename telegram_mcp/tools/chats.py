@@ -20,7 +20,15 @@ from telegram_mcp.paging import LIMITS, bounded, bounded_page, page_metadata
 from telegram_mcp.runtime import *
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Chats", openWorldHint=True, readOnlyHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Chats",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=True)
 async def get_chats(account: str = None, page: int = 1, page_size: int = 20) -> str:
     """
@@ -67,7 +75,15 @@ async def get_chats(account: str = None, page: int = 1, page_size: int = 20) -> 
         return log_and_format_error("get_chats", e)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="List Chats", openWorldHint=True, readOnlyHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Chats",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=True)
 async def list_chats(
     chat_type: str = None,
@@ -232,7 +248,15 @@ async def list_chats(
         )
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Chat", openWorldHint=True, readOnlyHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Chat",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=True)
 @validate_id("chat_id")
 async def get_chat(chat_id: Union[int, str], account: str = None) -> str:
@@ -343,7 +367,13 @@ async def get_chat(chat_id: Union[int, str], account: str = None) -> str:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Search Public Chats", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Search Public Chats",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 async def search_public_chats(
@@ -393,7 +423,13 @@ async def search_public_chats(
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Resolve Username", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Resolve Username",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 async def resolve_username(username: str, account: str = None) -> str:
@@ -419,7 +455,13 @@ async def resolve_username(username: str, account: str = None) -> str:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Full Chat", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Full Chat",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 async def get_full_chat(chat_id: Union[int, str], account: str = None) -> str:
@@ -534,7 +576,13 @@ async def get_full_chat(chat_id: Union[int, str], account: str = None) -> str:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Common Chats", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Common Chats",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("user_id")
@@ -587,7 +635,13 @@ async def get_common_chats(
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Message Read By", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Message Read By",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")
@@ -675,7 +729,13 @@ async def get_message_read_by(
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Message Link", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Message Link",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")

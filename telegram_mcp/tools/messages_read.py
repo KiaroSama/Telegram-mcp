@@ -91,7 +91,15 @@ def peer_names(result):
     return names
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get Messages", openWorldHint=True, readOnlyHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Messages",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=True)
 @validate_id("chat_id")
 async def get_messages(
@@ -135,7 +143,13 @@ async def get_messages(
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="List Messages", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="List Messages",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")
@@ -283,7 +297,13 @@ async def list_messages(
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Message Context", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Message Context",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")
@@ -393,7 +413,11 @@ async def get_message_context(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Mark As Read", openWorldHint=True, destructiveHint=True, idempotentHint=True
+        title="Mark As Read",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=True,
+        readOnlyHint=False,
     )
 )
 @with_account(readonly=False)
@@ -412,7 +436,13 @@ async def mark_as_read(chat_id: Union[int, str], account: str = None) -> str:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Search Messages", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Search Messages",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id", "from_user")
@@ -534,6 +564,8 @@ async def search_messages(
         title="Search Global Messages",
         openWorldHint=True,
         readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 @with_account(readonly=True)
@@ -616,7 +648,15 @@ async def search_global(
         )
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Search Posts", openWorldHint=True, readOnlyHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Search Posts",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=True)
 async def search_posts(
     query: str = "", hashtag: str = "", limit: int = 20, account: str = None
@@ -698,7 +738,15 @@ async def search_posts(
         return log_and_format_error("search_posts", e, query=query, hashtag=hashtag, limit=limit)
 
 
-@mcp.tool(annotations=ToolAnnotations(title="Get History", openWorldHint=True, readOnlyHint=True))
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get History",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
+)
 @with_account(readonly=True)
 @validate_id("chat_id")
 async def get_history(chat_id: Union[int, str], limit: int = 100, account: str = None) -> str:
@@ -731,7 +779,13 @@ async def get_history(chat_id: Union[int, str], limit: int = 100, account: str =
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Pinned Messages", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Pinned Messages",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("chat_id")

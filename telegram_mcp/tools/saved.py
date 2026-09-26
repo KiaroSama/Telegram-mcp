@@ -48,7 +48,13 @@ def _reaction_key(reaction) -> dict[str, Any]:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="List Saved Dialogs", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="List Saved Dialogs",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 async def list_saved_dialogs(limit: int = 50, account: str = None) -> str:
@@ -135,7 +141,13 @@ async def list_saved_dialogs(limit: int = 50, account: str = None) -> str:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Get Saved History", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="Get Saved History",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 @validate_id("peer_id")
@@ -203,7 +215,11 @@ async def get_saved_history(peer_id: Union[int, str], limit: int = 30, account: 
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="List Saved Reaction Tags", openWorldHint=True, readOnlyHint=True
+        title="List Saved Reaction Tags",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
     )
 )
 @with_account(readonly=True)
@@ -243,7 +259,13 @@ async def list_saved_tags(account: str = None) -> str:
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="Name Saved Tag", openWorldHint=True, readOnlyHint=False)
+    annotations=ToolAnnotations(
+        title="Name Saved Tag",
+        openWorldHint=True,
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=False)
 async def name_saved_tag(
@@ -305,7 +327,13 @@ async def name_saved_tag(
 
 
 @mcp.tool(
-    annotations=ToolAnnotations(title="List Quick Replies", openWorldHint=True, readOnlyHint=True)
+    annotations=ToolAnnotations(
+        title="List Quick Replies",
+        openWorldHint=True,
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+    )
 )
 @with_account(readonly=True)
 async def list_quick_replies(account: str = None) -> str:
@@ -345,6 +373,7 @@ async def list_quick_replies(account: str = None) -> str:
         openWorldHint=True,
         readOnlyHint=False,
         idempotentHint=False,
+        destructiveHint=False,
     )
 )
 @with_account(readonly=False)
