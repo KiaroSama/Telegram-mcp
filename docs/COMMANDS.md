@@ -129,7 +129,7 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
-| `get_file_roots_status` | Report whether the file tools are usable, and exactly what to configure if not. | `R - I -` | runs |
+| `get_file_roots_status` | Report which folders the file tools may use, and how another one is allowed. | `R - I -` | runs |
 
 ## effects
 
@@ -173,8 +173,8 @@ Every tool this server exposes: **231**, grouped by the module that defines it.
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
 | `get_ghost_mode` | Show ghost mode: the default, the account's setting, the chat's setting, which one is in effect, and the seen signals it suppresses. | `R - I -` | runs |
-| `revoke_always_approval` | Stop an "always approve" for one tool in one chat, so the safeguard asks again. | `- - I -` | runs |
-| `safeguard_status` | Show how the safeguard is set up: which approval channels exist, the approval time limit, every "always approve" grant (tool, chat, account), and the bulk-send and untrusted-content thresholds. | `R - I -` | runs |
+| `revoke_always_approval` | Stop an "always approve" (one tool in one chat) or an "always allow" (one folder), so the safeguard asks again. | `- - I -` | runs |
+| `safeguard_status` | Show how the safeguard is set up: which approval channels exist, the approval time limit, every "always approve" grant (tool, chat, account), every folder granted "always allow", and the bulk-send and untrusted-content thresholds. | `R - I -` | runs |
 | `set_ghost_mode` | Turn ghost mode on or off for every account, one account, or one chat of an account. | `- - I -` | turning on runs; turning off **asks the owner** |
 
 ## gifs

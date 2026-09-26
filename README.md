@@ -733,50 +733,35 @@ bypassing the proxy.
 
 ## File Path Security
 
-File-path tools are disabled until allowed roots are configured. This affects tools such as `send_file`, `download_media`, `upload_file`, `send_voice`, `send_sticker`, `set_profile_photo`, and `edit_chat_photo`.
+File tools (`send_file`, `download_media`, `upload_file`, `send_voice`, `send_sticker`,
+`set_profile_photo`, `edit_chat_photo`, and the rest) go through the safeguard's folder
+rule first ([docs/INSTALL.md](docs/INSTALL.md#the-safeguard)):
 
-Allowed roots can come from any of three places:
+- `files/outbox` (to send from) and `files/downloads` (to save into) in the
+  installation are always usable; they are created on first use and git-ignored.
+- Folders you configure on your machine count as always allowed:
+  `TELEGRAM_FILE_ROOTS`, a list separated by this OS's path separator (`;` on
+  Windows, `:` elsewhere), or the server's command-line arguments. Command line
+  first, so it stays the explicit override.
+- Any other folder - the MCP client's own roots included - is usable only after you
+  answer *allow*, *deny* or *always allow*, for reading and writing alike.
+- The rest of the installation (code, `.env`, `secrets.md`) and the server's state
+  directory are never reachable through a tool.
 
-- `TELEGRAM_FILE_ROOTS`, a list separated by this OS's path separator (`;` on
-  Windows, `:` elsewhere). Usually the easiest, because an MCP client
-  configuration has an `env` block and supplies its own argv.
-- Server CLI arguments, used as a fallback.
-- MCP client Roots, when supported by the client.
-
-The environment variable and the command line are the same allow-list and get the
-same validation - a root that does not exist stops the server either way. Command
-line first, so it stays the explicit override.
-
-**A root added to the file takes effect without a restart.** The file is re-read
-on the path every file tool passes through, so allowing a new folder is an edit to
-the configuration rather than a restart. Three things keep that safe: nothing is
-rebuilt when nothing was edited; a file that cannot be read at that moment - one
-mid-rewrite - leaves the current roots exactly as they are rather than refusing an
-operation that was already permitted; and a root named in the file that does not
-exist is skipped with a warning instead of taking the working ones down with it. A
-value the PROCESS supplied still wins over the file, the same way `load_dotenv`
-does not override one.
+**A root added to `TELEGRAM_FILE_ROOTS` in `.env` takes effect without a restart.**
+The file is re-read on the path every file tool passes through. Nothing is rebuilt
+when nothing was edited; a file that cannot be read at that moment leaves the current
+roots as they are; and a root that does not exist is skipped with a warning. A value
+the PROCESS supplied still wins over the file, the same way `load_dotenv` does not
+override one.
 
 Security behavior:
 
-- Client MCP Roots replace server CLI roots when available.
-- Some clients (notably Cursor) return workspace roots as bare absolute paths
-  instead of `file://` URIs. That breaks MCP SDK validation of `list_roots`;
-  the server recovers those absolute paths from the validation error so
-  file-path tools keep working.
-- Empty client Roots are treated as deny-all by default. Some clients implement
-  the Roots capability but advertise an empty list, which disables file tools
-  even when server CLI roots are configured. Set
-  `TELEGRAM_ALLOW_SERVER_ROOTS_FALLBACK=1` to fall back to the server CLI roots
-  in that case (opt-in; the default stays deny-all). The same opt-in also applies
-  when `list_roots` fails unexpectedly and no client paths could be recovered.
-- A client that accepts the roots request and never answers it counts as such a
-  failure. The server waits ten seconds, not indefinitely, so a silent client
-  disables file tools rather than wedging every call that needs a path.
-- Paths are resolved through real paths and must stay inside an allowed root.
+- Paths are resolved through real paths and must stay inside an allowed folder.
 - Traversal, wildcard-like, shell-like, and null-byte path patterns are rejected.
-- Relative paths resolve under the first allowed root.
-- Downloads default to `<first_root>/downloads/`.
+- Relative paths resolve under the installation's `files/` folder, in the safeguard
+  and in the tool alike, so the folder you are asked about is the one that is opened.
+- Downloads with no path go to `files/downloads/`.
 - Size and extension limits are enforced for sensitive media tools.
 
 Run with allowed roots, either way:

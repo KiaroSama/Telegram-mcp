@@ -138,6 +138,9 @@ MCP client, not only Claude.
 | The same send to more than 5 chats within a minute | **Asks you.** |
 | A write whose text came from someone else's message (a link, @username, phone, invite, or 24+ copied characters) | **Asks you**, and says which chat it came from. |
 | Marking read or typing while ghost mode is on | **Asks you.** |
+| A file in `files/outbox` or `files/downloads` (or a folder you configured or always-allowed) | Runs. |
+| A file in any other folder, reading or writing | **Asks you**: *allow*, *deny*, *always allow*. |
+| A file anywhere else in the installation (code, `.env`, `secrets.md`) or in the state directory | **Refused.** Never allowed through tools. |
 | Anything touching the approval bot, a pending approval code, or the safeguard's own files | **Refused.** Never allowed through tools. |
 
 **Where the question appears**, first that works:
@@ -151,6 +154,15 @@ MCP client, not only Claude.
 `safeguard_status` lists every such grant and `revoke_always_approval` removes one. It
 never covers a call that carries text someone else wrote: that call is asked about
 again, so one approval cannot wave through every link later injected into the chat.
+
+**Folders.** Put files to send in `files/outbox`; downloads land in `files/downloads`
+(both inside the installation, created on first use, never committed). A relative path
+starts in `files/`, so `outbox/photo.jpg` works. Any other folder, including the one
+your MCP client is working in, is asked about once per call; **always allow** covers
+that folder and everything under it, for every file tool, until
+`revoke_always_approval(folder=...)` removes it. Folders you list in
+`TELEGRAM_FILE_ROOTS` count as always allowed. A fresh install starts with only
+`files/`: your grants and your `.env` are local to your machine.
 
 If none is available, the call is refused. No answer within 5 minutes is a refusal
 (`TELEGRAM_APPROVAL_TIMEOUT_SECONDS` changes it). Nothing the model writes can answer an
