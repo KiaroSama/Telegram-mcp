@@ -23,7 +23,11 @@ why, and `telegram_mcp/rich_blocks.py` holds the rendering.
 
 from typing import Optional, Union
 
+from telegram_mcp.safeguard import note_records
+import json
+
 from telegram_mcp.runtime import *
+from telegram_mcp.runtime import _account_for_client
 
 from telethon import errors
 
@@ -119,6 +123,17 @@ async def read_rich_message(chat_id: Union[int, str], message_id: int, account: 
             )
 
         rendered = rich_blocks.render_blocks(rich)
+        # Cell text is someone else's words: remember it, so it cannot become an order.
+        note_records(
+            account or _account_for_client(cl),
+            chat_id,
+            [
+                {
+                    "text": json.dumps(rendered["blocks"], ensure_ascii=False, default=str),
+                    "is_outgoing": bool(getattr(message, "out", False)),
+                }
+            ],
+        )
         return format_tool_result(
             {
                 "chat_id": chat_id,

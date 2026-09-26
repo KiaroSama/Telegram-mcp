@@ -32,6 +32,7 @@ refusing to read the last copy in order to satisfy a rule about sending would be
 wrong trade.
 """
 
+from telegram_mcp.safeguard import note_records
 from telegram_mcp import secret_history
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
@@ -418,6 +419,7 @@ async def search_secret_messages(
         # `total_count` is every match, not the page - a caller deciding whether to
         # raise the limit needs to know what it is choosing between.
         page = matches[-bound.value :]
+        note_records(label, chat_id, page)
         return format_tool_result(
             {"messages": page, "total_count": len(matches), **bound.metadata}
         )
