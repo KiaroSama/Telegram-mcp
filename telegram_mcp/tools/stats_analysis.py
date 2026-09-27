@@ -9,6 +9,7 @@ back only on request.
 
 from typing import Any, Optional, Union
 
+from telegram_mcp.message_view import display_name
 from telegram_mcp.runtime import *
 from telegram_mcp.tools.channel_stats import _describe_stats, _fetch_stats, _graph_moment
 
