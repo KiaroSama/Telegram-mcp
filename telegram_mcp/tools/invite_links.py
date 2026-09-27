@@ -60,10 +60,17 @@ def _expiry(seconds: Optional[int]) -> Optional[datetime]:
     return datetime.now(timezone.utc) + timedelta(seconds=int(seconds))
 
 
-def _describe(invite) -> dict:
-    """One exported link, with the fields that decide whether it still works."""
+def _describe(invite, names: Optional[dict] = None) -> dict:
+    """One exported link, with the fields that decide whether it still works.
+
+    ``names`` maps user ids to display names, so the creator is named, not only
+    numbered ("who made this link" is the first question the Invite links screen answers).
+    """
+    creator = getattr(invite, "admin_id", None)
     described = {
         "link": getattr(invite, "link", None),
+        "created_by_id": creator,
+        "created_by": (names or {}).get(creator),
         "revoked": bool(getattr(invite, "revoked", False)),
         "permanent": bool(getattr(invite, "permanent", False)),
         "requires_approval": bool(getattr(invite, "request_needed", False)),
@@ -339,17 +346,19 @@ async def list_invite_links(
     chat_id: Union[int, str],
     revoked: bool = False,
     limit: int = 20,
+    admin: Union[int, str] = None,
     account: str = None,
 ) -> str:
     """
-    The invite links this account created for a chat, with their conditions.
+    The invite links one admin created for a chat, with their conditions and creator.
 
-    **Only the calling account's own links.** Telegram indexes exported links by
-    the admin who made them, so another admin's links are invisible here — an
-    empty list means "you made none", never "the chat has none".
+    Telegram indexes exported links by the admin who made them, so this lists ONE
+    admin's links: this account's by default, or another admin's with `admin`.
+    `list_invite_link_admins` says which admins have links at all.
 
     Args:
         chat_id: The group or channel.
+        admin: The admin whose links to list (id or username); omitted = this account.
         revoked: List the revoked links instead of the live ones. They are
             separate lists in Telegram, not one list with a flag.
         limit: How many to return, at most 100.
@@ -365,25 +374,35 @@ async def list_invite_links(
         cl = get_client(account)
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
+        admin_user = (
+            utils.get_input_user(await resolve_entity(admin, cl))
+            if admin is not None
+            else InputUserSelf()
+        )
 
         result = await cl(
             functions.messages.GetExportedChatInvitesRequest(
                 peer=entity,
-                admin_id=InputUserSelf(),
+                admin_id=admin_user,
                 limit=bound.value,
                 revoked=True if revoked else None,
             )
         )
-        links = [_describe(invite) for invite in (getattr(result, "invites", None) or [])]
+        names = {
+            u.id: display_name(utils.get_display_name(u))
+            for u in (getattr(result, "users", None) or [])
+        }
+        links = [_describe(invite, names) for invite in (getattr(result, "invites", None) or [])]
         return format_tool_result(
             links,
             dict(
                 bound.metadata,
                 returned=len(links),
                 listing="revoked" if revoked else "live",
+                admin="this account" if admin is None else str(admin),
                 note=(
-                    "Only links THIS account created. Telegram indexes them by their admin, "
-                    f"so another admin's links are not here. {_UNTRUSTED}"
+                    "One admin's links only; list_invite_link_admins names the others. "
+                    f"{_UNTRUSTED}"
                 ),
             ),
         )
