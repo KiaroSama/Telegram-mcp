@@ -240,7 +240,11 @@ async def test_unread_votes_are_listed_and_marked_read(wire):
 @pytest.mark.asyncio
 async def test_poll_statistics_are_requested_for_that_message(wire):
     graph = tl.StatsGraphError(error="not enough data")
-    c = wire(answer=tl.stats.PollStats(votes_graph=graph))
+    message = _poll_message()
+    c = wire(message=message, answer=tl.stats.PollStats(votes_graph=graph))
+    assert "can_view_stats" in await poll_manage.get_poll_statistics("chat", 40)
+    assert c.of(functions.stats.GetPollStatsRequest) == []
+    message.media.results.can_view_stats = True
     text = await poll_manage.get_poll_statistics("chat", 40)
     (request,) = c.of(functions.stats.GetPollStatsRequest)
     assert request.msg_id == 40 and "not enough data" in text
@@ -341,3 +345,50 @@ def test_poll_text_is_parsed_with_the_servers_parser():
 
 def test_the_description_and_explanation_limits_come_from_the_docs():
     assert json.dumps(poll_build.EXPLANATION_MAX) == "200"
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_refusal_names_its_error_code(wire):
+    from telethon.errors import RPCError
+
+    wire(answer=RPCError(None, "POLL_ANSWERS_INVALID", 400))
+    text = await poll_creation.create_poll("chat", "Q?", ["A", "B"])
+    assert "POLL_ANSWERS_INVALID" in text and "Nothing was sent" in text
+
+
+@pytest.mark.asyncio
+async def test_several_correct_answers_make_the_quiz_multiple_choice(wire):
+    c = wire()
+    await poll_creation.create_poll(
+        "chat", "Primes?", ["2", "4", "5"], quiz_mode=True, correct_option_indexes=[0, 2]
+    )
+    _, _, poll = _sent_poll(c)
+    assert poll.multiple_choice and poll.revoting_disabled is True
+
+
+@pytest.mark.asyncio
+async def test_every_option_goes_out_as_an_input_answer(wire):
+    # A quiz with self-chosen option bytes was refused live (BAD_REQUEST).
+    c = wire()
+    await poll_creation.create_poll(
+        "chat", "Q?", ["A", "B"], quiz_mode=True, correct_option_index=1
+    )
+    _, _, poll = _sent_poll(c)
+    assert all(isinstance(a, tl.InputPollAnswer) for a in poll.answers)
+
+
+@pytest.mark.asyncio
+async def test_closing_a_quiz_sends_index_answers_and_a_whole_explanation(wire):
+    # Live 2026-09-27: closing a quiz with an explanation failed inside the encoder
+    # (solution without solution_entities), and the answers went out as bytes.
+    message = _poll_message(answers=("2", "4", "5"), quiz=True, correct=[0])
+    message.media.results.results.append(
+        tl.PollAnswerVoters(option=bytes([2]), voters=0, correct=True)
+    )
+    message.media.results.solution = "2 and 5 are prime"
+    message.media.results.solution_entities = []
+    c = wire(message=message)
+    await polls.close_poll("chat", 40)
+    (request,) = c.of(functions.messages.EditMessageRequest)
+    assert request.media.correct_answers == [0, 2]
+    bytes(request)  # serialises: the encoder accepts the explanation as sent
