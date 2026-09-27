@@ -21,6 +21,7 @@ MODULES = (groups, moderation, invites, admin_rights, members)
 # between these three modules is fine; losing one is not.
 EXPECTED_TOOLS = {
     "ban_user",
+    "kick_user",
     "create_channel",
     "create_group",
     "delete_chat_photo",
