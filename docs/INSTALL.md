@@ -99,6 +99,11 @@ dialog. In clients that cannot show one, it comes to your phone through a bot of
    TELEGRAM_APPROVAL_OWNER_IDS=...   # optional, comma-separated user ids
    ```
 
+Each time it starts, the bot publishes its `/` menu: `/always` (always approvals, one
+remove button each), `/reset_always` (remove them all, after a confirm button),
+`/accounts`, `/folders`, `/pending` (requests waiting right now), `/status`, `/bypass`
+and `/help`. Anyone can see the menu; only the allowed accounts get an answer.
+
 One bot serves every account of this server. Each request opens with a quote naming the
 account it acts for (label, user id, @username) and carries three inline buttons:
 **✅ Approve** (once), **❌ Deny** and **♾ Always approve** (this tool in this chat).
@@ -153,9 +158,13 @@ MCP client, not only Claude.
    reply `yes K7Q2`, `always K7Q2` or `no K7Q2`.
 
 **Always approve** covers one tool in one chat of one account and survives restarts.
-`safeguard_status` lists every such grant and `revoke_always_approval` removes one. It
-never covers a call that carries text someone else wrote: that call is asked about
-again, so one approval cannot wave through every link later injected into the chat.
+`safeguard_status` lists every such grant and `revoke_always_approval` removes one; the
+approval bot's `/always` and `/reset_always` do the same from your phone. It also covers
+a call that carries text someone else wrote, so grant it only for a chat you trust.
+
+**Bypass.** The approval bot's `/bypass` skips every approval question for 1 hour, 1 day,
+or until you turn it off. Only the bot can switch it; no tool can. The locks that protect
+the safeguard itself (the bot's chat, its files, approval codes) stay on.
 
 **Folders.** Put files to send in `files/outbox`; downloads land in `files/downloads`
 (both inside the installation, created on first use, never committed). A relative path

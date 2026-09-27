@@ -10,9 +10,12 @@ tests run without Telegram.
 """
 
 import asyncio
+import logging
 import os
 from typing import Any, Dict, Optional, Set, Tuple
 
+from telegram_mcp.safe_log import log_event
+from telegram_mcp.safeguard import bot_menu
 from telegram_mcp.safeguard import channels as approvals
 from telegram_mcp.safeguard import sealed
 
@@ -199,13 +202,39 @@ async def _bot_client():
         _bot_state["username"] = getattr(me, "username", None)
 
         async def _on_press(event):
+            if (event.data or b"").startswith(b"sgm:"):
+                # A menu button (spec 016): owner-only, like every answer here.
+                reply = await bot_menu.answer_button(
+                    event.data, event.sender_id, await owner_ids()
+                )
+                if reply is None:
+                    return
+                await event.answer(reply.toast or approvals.ANSWERED)
+                if reply.text:
+                    await event.edit(reply.text, parse_mode="html", buttons=reply.buttons)
+                return
             # A stranger's press gets no answer at all, not even "no longer open".
             if not _BOT.is_allowed(event.sender_id):
                 return
             answered = _BOT.handle_callback(event.sender_id, event.data)
             await event.answer(approvals.ANSWERED if answered else approvals.NOT_OPEN)
 
+        async def _on_command(event):
+            reply = await bot_menu.answer_command(
+                event.raw_text or "", event.sender_id, await owner_ids()
+            )
+            if reply is not None:
+                await event.respond(reply.text, parse_mode="html", buttons=reply.buttons)
+
         client.add_event_handler(_on_press, events.CallbackQuery())
+        client.add_event_handler(
+            _on_command, events.NewMessage(incoming=True, func=lambda e: e.is_private)
+        )
+        try:
+            # Every login, so the `/` menu is always there (spec 016 FR-001).
+            await bot_menu.install(client)
+        except Exception as error:
+            log_event(logging.WARNING, "bot_menu_install_failed", error=type(error).__name__)
         _bot_state["client"] = client
         return client
 

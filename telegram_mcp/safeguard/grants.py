@@ -23,6 +23,7 @@ from telegram_mcp.safeguard import state_files
 __all__ = [
     "add",
     "add_folder",
+    "clear",
     "folder_granted",
     "list_folders",
     "revoke_folder",
@@ -121,6 +122,15 @@ def add(account: Optional[str], tool: str, chat: Any) -> None:
         if triple not in grants:
             grants.append(triple)
             _save(grants)
+
+
+def clear() -> int:
+    """Remove every always approval (folders stay); returns how many there were."""
+    with _lock:
+        count = len(_load())
+        _set_aside_if_unreadable()
+        _save([], list(_cache["folders"]))
+        return count
 
 
 def revoke(account: Optional[str], tool: str, chat: Any) -> bool:

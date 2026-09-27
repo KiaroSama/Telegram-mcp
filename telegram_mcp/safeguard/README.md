@@ -21,6 +21,8 @@ tools never needs to open it.
 | `grants.py` | "Always approve" grants (one tool, one chat, one account) and "always allow" folders, kept across restarts. |
 | `folders.py` | Which folders a file tool may use freely, which ask the owner, and which are never reachable. |
 | `sealed.py` | Approval messages and codes the agent may never touch or see: refusal before the call, redaction after it. |
+| `bot_menu.py` | The approval bot's `/` menu: list and remove always approvals and folders, accounts, open requests, status, bypass. Answers only the owner. |
+| `bypass.py` | Bypass mode: no approval asked, for a time or until turned off; switched only from the bot, never by a tool. |
 | `state_files.py` | Where ghost settings and grants live, and the owner-only atomic writer. |
 
 Why approval must come from a channel the model cannot answer:

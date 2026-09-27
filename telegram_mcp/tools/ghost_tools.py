@@ -11,7 +11,7 @@ from typing import Optional, Union
 from telegram_mcp import connection
 from telegram_mcp.runtime import *
 from telegram_mcp.safeguard import channels as approvals
-from telegram_mcp.safeguard import ghost, grants, policy, taint
+from telegram_mcp.safeguard import bypass, ghost, grants, policy, taint
 
 
 def _known_account(account: Optional[str]) -> Optional[str]:
@@ -149,6 +149,7 @@ async def safeguard_status(account: str = None) -> str:
         return json.dumps(
             {
                 "installed": guard is not None,
+                "bypass": bypass.describe(),
                 "channels": {
                     "dialog": "used when the client supports approval dialogs",
                     "approval_bot": {

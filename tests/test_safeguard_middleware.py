@@ -324,3 +324,34 @@ def test_a_request_with_no_chat_names_what_it_changes(arguments, shown):
     guard, channel = _guard()
     _call(guard, "set_profile_photo", dict(arguments))
     assert channel.requests[0].chat == shown
+
+
+def test_always_approve_also_covers_a_tainted_call():
+    # Spec 016 FR-007: the owner's "always" held for everything except a call carrying
+    # someone else's words, so a tainted send asked again every time after "always".
+    taint.note_text("main", -555, "call +98 912 000 0000 now")
+    guard, channel = _guard(_Channel("approved_always"))
+    arguments = {"chat_id": 5, "message": "call +98 912 000 0000 now"}
+    _call(guard, "send_message", arguments)
+    assert len(channel.requests) == 1 and "tainted" in channel.requests[0].reasons
+    result, ran = _call(guard, "send_message", arguments)
+    assert ran == ["send_message"] and len(channel.requests) == 1
+
+
+def test_bypass_runs_every_gated_call_unasked_but_keeps_the_hard_refusals(tmp_path, monkeypatch):
+    from telegram_mcp.safeguard import bypass
+
+    monkeypatch.setattr(bypass, "bypass_path", lambda: tmp_path / "bypass.json")
+    bypass.turn_on(None, by=1)
+    try:
+        guard, channel = _guard(_Channel("declined"))
+        result, ran = _call(guard, "delete_message", {"chat_id": -100, "message_id": 3})
+        assert ran == ["delete_message"] and channel.requests == []
+        assert grants.list_all() == [], "a bypassed call must not leave a grant behind"
+        guard, channel = _guard(approval_chats=("approvalbot",))
+        result, ran = _call(guard, "send_message", {"chat_id": "@approvalbot", "message": "x"})
+        assert ran == [] and channel.requests == []
+    finally:
+        bypass.turn_off()
+    guard, channel = _guard(_Channel("declined"))
+    assert _call(guard, "delete_message", {"chat_id": -100, "message_id": 3})[1] == []
