@@ -159,3 +159,8 @@ def _roots(path):
 
 def test_the_bearer_note_travels_with_every_link_answer():
     assert "bearer" in invite_links._BEARER.lower()
+
+
+def test_a_paid_link_shows_its_monthly_fee():
+    invite = _invite(subscription_pricing=tl.StarsSubscriptionPricing(period=2_592_000, amount=5))
+    assert invite_links._describe(invite)["monthly_fee_stars"] == 5

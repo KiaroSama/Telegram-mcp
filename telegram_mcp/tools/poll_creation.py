@@ -153,6 +153,7 @@ def _settings_problem(
     option_files,
     allow_revoting=None,
     allow_adding_options=False,
+    public_votes=None,
 ) -> Optional[str]:
     """Why these settings cannot make one poll, or ``None``. Decided from the arguments alone."""
     if correct_option_index is not None and correct_option_indexes is not None:
@@ -189,6 +190,11 @@ def _settings_problem(
     elif correct:
         return f"Error: {name} only applies to a quiz. Pass quiz_mode=True."
 
+    if allow_adding_options and public_votes is False:
+        return (
+            "Error: voters can add options only when votes are public; pass "
+            "public_votes=True or drop allow_adding_options."
+        )
     if (explanation or explanation_file) and not quiz_mode:
         return (
             "Error: an explanation is shown after a quiz is answered, so it needs quiz_mode=True."
@@ -233,7 +239,7 @@ async def create_poll(
     options: list,
     multiple_choice: bool = False,
     quiz_mode: bool = False,
-    public_votes: bool = True,
+    public_votes: Optional[bool] = None,
     close_date: str = None,
     correct_option_index: Optional[int] = None,
     correct_option_indexes: Optional[list] = None,
@@ -266,7 +272,8 @@ async def create_poll(
         quiz_mode: Whether this is a quiz. A quiz is graded, so it REQUIRES
             correct_option_index or correct_option_indexes; its answer can never be
             changed and it takes no added options.
-        public_votes: Whether votes are public ("show who voted")
+        public_votes: Whether votes are public ("show who voted"). Default: yes in a
+            group or private chat; a poll in a channel is always anonymous.
         close_date: Optional close date in ISO format (YYYY-MM-DD HH:MM:SS). It
             must fall in Telegram's window — at least 5 seconds and at most
             2,628,000 seconds (about 30 days) — measured on Telegram's clock when
@@ -335,6 +342,7 @@ async def create_poll(
             option_files,
             allow_revoting,
             allow_adding_options,
+            public_votes,
         )
         if problem:
             return problem
@@ -356,6 +364,20 @@ async def create_poll(
                 return problem
 
         entity = await resolve_entity(chat_id, cl)
+
+        # Measured 2026-09-28: Telegram refuses (BAD_REQUEST) visible voters in a broadcast
+        # channel, and an anonymous poll that takes added options (ANONYMOUS_OPEN_INVALID).
+        if getattr(entity, "broadcast", False):
+            if public_votes:
+                return "Error: a poll in a channel is always anonymous; drop public_votes."
+            if allow_adding_options:
+                return (
+                    "Error: a poll in a channel is anonymous, and voters can add options only "
+                    "when votes are public; drop allow_adding_options."
+                )
+            public = False
+        else:
+            public = True if public_votes is None else bool(public_votes)
 
         async def attach(path):
             if not path:
@@ -403,7 +425,7 @@ async def create_poll(
             # Several correct answers make a quiz multiple choice, as Telegram's own apps do.
             multiple_choice=multiple_choice or len(correct) > 1,
             quiz=quiz_mode,
-            public_voters=public_votes,
+            public_voters=public,
             close_date=close_date_obj,
             close_period=int(duration_seconds) if duration_seconds is not None else None,
             open_answers=allow_adding_options or None,
