@@ -278,6 +278,9 @@ TIMING_BOUNDS: dict[str, tuple[float, float]] = {
     # Seconds between lock attempts. Zero spins a core for the whole grace
     # period; a minute is longer than any grace period worth polling.
     "lock_poll_interval": (0.01, 60.0),
+    # Seconds a button press waits for the bot's answer. Zero sends and returns at
+    # once; past thirty seconds the answer is better read from the chat later.
+    "wait_seconds": (0.0, 30.0),
 }
 
 

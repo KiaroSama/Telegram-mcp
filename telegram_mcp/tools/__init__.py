@@ -65,6 +65,7 @@ from telegram_mcp.tools.chat_list import *
 from telegram_mcp.tools.chat_notifications import *
 from telegram_mcp.tools.chat_removal import *
 from telegram_mcp.tools.members import *
+from telegram_mcp.tools.reply_keyboard import *
 from telegram_mcp.tools.communities import *
 from telegram_mcp.tools.community_moderation import *
 
