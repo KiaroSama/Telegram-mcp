@@ -182,6 +182,18 @@ Phase 1b. Two things learned while building them are worth more than the count:
   reports them as data would be reporting a token as a statistic, so
   `get_channel_statistics` resolves what it can and labels what it did not.
 
+### Added 2026-09-27: polls in full, checklists, statistics analysis, devices, kick (267 → **283**)
+
+| Capability | Tools | Module |
+|---|---|---|
+| Every poll setting | `create_poll` takes description and attachments, a file per option, several correct quiz answers with an explanation and its file, adding options, revoting, shuffle, results hidden until close, a duration, a country list and members-only | `tools/poll_creation.py`, `tools/poll_build.py` |
+| A poll after it is posted | `add_poll_option`, `delete_poll_option`, `list_unread_poll_votes`, `mark_poll_votes_read`, `get_poll_statistics`; `get_poll_results` reports every setting and who added an option | `tools/poll_manage.py`, `tools/polls.py` |
+| One option or one task | `reply_to_part`, `get_part_link` (`inputReplyToMessage.poll_option` / `todo_item_id`; links with `option=` / `task=`) | `tools/poll_manage.py` |
+| Checklists | `send_checklist`, `add_checklist_tasks`, `set_checklist_tasks_done`, `remove_checklist_tasks`, `get_checklist` | `tools/checklists.py` |
+| Statistics as an analysis | `analyze_chat_statistics` | `tools/stats_analysis.py` |
+| Devices | `set_authorization_calls`, `set_secret_chats_only_device` | `tools/authorizations.py` |
+| Kick (ban lifted at once) | `kick_user` | `tools/moderation.py` |
+
 ### Still not reachable, lower value, build on demand
 
 Pinned-dialog ordering, fact-check, todo lists, history

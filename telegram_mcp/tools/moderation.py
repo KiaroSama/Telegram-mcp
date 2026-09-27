@@ -310,7 +310,73 @@ async def get_recent_actions(chat_id: Union[int, str], account: str = None) -> s
         return log_and_format_error("get_recent_actions", e, chat_id=chat_id)
 
 
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Kick User",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=False,
+        readOnlyHint=False,
+    )
+)
+@with_account(readonly=False)
+@validate_id("chat_id", "user_id")
+async def kick_user(
+    chat_id: Union[int, str], user_id: Union[int, str], account: str = None
+) -> str:
+    """
+    Remove a member from a group or channel so that they can come back.
+
+    A kick is a ban lifted at once: the member is out, and not left on the removed
+    list, so they may rejoin by link or be added again. Use ban_user to keep someone
+    out. In a basic (non-super) group there is no removed list, so the member is
+    simply removed.
+
+    If the ban works and lifting it does not, the member is still banned; the answer
+    says so rather than calling it a kick.
+
+    Args:
+        chat_id: ID or username of the group/channel.
+        user_id: User ID or username to remove.
+    """
+    try:
+        cl = get_client(account)
+        chat = await resolve_entity(chat_id, cl)
+        user = await resolve_entity(user_id, cl)
+        if isinstance(chat, types.Chat):
+            await cl(
+                functions.messages.DeleteChatUserRequest(
+                    chat_id=chat.id, user_id=utils.get_input_user(user)
+                )
+            )
+            return f"User {user_id} was removed from {sanitize_name(chat.title)}; they can rejoin."
+
+        await cl(
+            functions.channels.EditBannedRequest(
+                channel=chat,
+                participant=user,
+                banned_rights=ChatBannedRights(until_date=None, view_messages=True),
+            )
+        )
+        try:
+            await cl(
+                functions.channels.EditBannedRequest(
+                    channel=chat, participant=user, banned_rights=ChatBannedRights(until_date=None)
+                )
+            )
+        except Exception as e:
+            log_and_format_error("kick_user", e, chat_id=chat_id, user_id=user_id)
+            return (
+                f"User {user_id} was removed from {sanitize_name(chat.title)} but is STILL BANNED: "
+                f"lifting the ban failed ({type(e).__name__}). Run unban_user to let them rejoin."
+            )
+        return f"User {user_id} was kicked from {sanitize_name(chat.title)}; they can rejoin."
+    except Exception as e:
+        return log_and_format_error("kick_user", e, chat_id=chat_id, user_id=user_id)
+
+
 __all__ = [
+    "kick_user",
     "ban_user",
     "unban_user",
     "get_banned_users",

@@ -17,6 +17,7 @@ from typing import Any, Optional, Union
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 from telegram_mcp.message_view import display_name, display_text
+from telegram_mcp.safeguard import note_rendered
 
 from telethon import functions
 
@@ -63,6 +64,17 @@ def _fresh_results(updates, current):
     return current
 
 
+def _media_kind(media) -> Optional[str]:
+    """``photo`` / ``document`` / ... for an attached media, ``None`` when there is none."""
+    if media is None:
+        return None
+    return type(media).__name__.replace("MessageMedia", "").lower() or "media"
+
+
+def _when(value) -> Optional[str]:
+    return value.isoformat() if value else None
+
+
 def _describe(poll, results) -> dict[str, Any]:
     """One poll as a record: every option with its index, tally and share."""
     answers = list(getattr(poll, "answers", None) or [])
@@ -86,6 +98,15 @@ def _describe(poll, results) -> dict[str, Any]:
             record["share_percent"] = round(100 * count / total, 1)
         if getattr(voters, "correct", False):
             record["correct"] = True
+        # An option a voter added to an open poll says who and when.
+        added_by = getattr(answer, "added_by", None)
+        if added_by is not None:
+            record["added_by_id"] = getattr(added_by, "user_id", None) or getattr(
+                added_by, "channel_id", None
+            )
+            record["added_at"] = _when(getattr(answer, "date", None))
+        if getattr(answer, "media", None) is not None:
+            record["attachment"] = _media_kind(answer.media)
         options.append(record)
 
     described: dict[str, Any] = {
@@ -97,11 +118,23 @@ def _describe(poll, results) -> dict[str, Any]:
         "total_voters": total,
         "options": options,
         "your_votes": [o["index"] for o in options if o["chosen_by_this_account"]],
+        "others_can_add_options": bool(getattr(poll, "open_answers", False)),
+        "revoting_allowed": not getattr(poll, "revoting_disabled", False),
+        "shuffled": bool(getattr(poll, "shuffle_answers", False)),
+        "results_hidden_until_close": bool(getattr(poll, "hide_results_until_close", False)),
+        "members_only": bool(getattr(poll, "subscribers_only", False)),
+        "countries": list(getattr(poll, "countries_iso2", None) or []),
+        "duration_seconds": getattr(poll, "close_period", None),
+        "close_date": _when(getattr(poll, "close_date", None)),
+        "created_by_this_account": bool(getattr(poll, "creator", False)),
+        "can_view_stats": bool(getattr(results, "can_view_stats", False)),
+        "has_unread_votes": bool(getattr(results, "has_unread_votes", False)),
     }
 
     if described["quiz"]:
         correct = [o["index"] for o in options if o.get("correct")]
         described["correct_option_index"] = correct[0] if correct else None
+        described["correct_option_indexes"] = correct
         if not correct:
             described["correct_option_note"] = (
                 "Telegram withholds a quiz's correct answer until this account has answered "
@@ -110,7 +143,19 @@ def _describe(poll, results) -> dict[str, Any]:
     solution = getattr(results, "solution", None)
     if solution:
         described["quiz_explanation"] = display_text(solution)
+    if getattr(results, "solution_media", None) is not None:
+        described["quiz_explanation_attachment"] = _media_kind(results.solution_media)
     return described
+
+
+def _as_input(media):
+    """A received photo/document as the input form an edit must send back, or ``None``."""
+    if media is None:
+        return None
+    try:
+        return utils.get_input_media(media)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _read_poll(chat_id, message_id: int, account: Optional[str]):
@@ -192,6 +237,12 @@ async def get_poll_results(
         if poll is None:
             return f"Message {message_id} carries no poll."
         described = _describe(poll, results)
+        attached = getattr(getattr(msg, "media", None), "attached_media", None)
+        if attached is not None:
+            described["attachment"] = _media_kind(attached)
+        if getattr(msg, "message", None):
+            described["description"] = display_text(msg.message)
+            note_rendered(msg, account)
         return format_tool_result(
             [described],
             {
@@ -488,6 +539,10 @@ async def close_poll(
                     correct_answers=_correct_answers(poll, results),
                     solution=getattr(results, "solution", None),
                     solution_entities=getattr(results, "solution_entities", None) or None,
+                    solution_media=_as_input(getattr(results, "solution_media", None)),
+                    attached_media=_as_input(
+                        getattr(getattr(msg, "media", None), "attached_media", None)
+                    ),
                     poll=types.Poll(
                         id=poll.id,
                         question=poll.question,
@@ -507,6 +562,9 @@ async def close_poll(
                         public_voters=getattr(poll, "public_voters", None),
                         multiple_choice=getattr(poll, "multiple_choice", None),
                         quiz=getattr(poll, "quiz", None),
+                        open_answers=getattr(poll, "open_answers", None),
+                        subscribers_only=getattr(poll, "subscribers_only", None),
+                        countries_iso2=getattr(poll, "countries_iso2", None),
                     ),
                 ),
             )
