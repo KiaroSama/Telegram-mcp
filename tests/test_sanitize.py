@@ -183,3 +183,27 @@ class TestFormatToolResult:
     def test_unserializable_value_raises_type_error(self):
         with pytest.raises(TypeError, match="not JSON serializable"):
             format_tool_result([{"bad": object()}])
+
+
+def test_a_missing_last_name_is_not_printed_as_none():
+    # Live 2026-09-28: get_admins named a bot "GodVerify Payment Bot None".
+    from types import SimpleNamespace
+
+    from telegram_mcp.sanitize import full_name
+
+    assert full_name(SimpleNamespace(first_name="GodVerify Payment Bot", last_name=None)) == (
+        "GodVerify Payment Bot"
+    )
+    assert full_name(SimpleNamespace(first_name="Sara", last_name="K")) == "Sara K"
+    assert full_name(SimpleNamespace()) == ""
+
+
+def test_no_tool_prints_a_missing_name_part_as_none():
+    from pathlib import Path
+
+    offenders = [
+        p.name
+        for p in Path("telegram_mcp/tools").glob("*.py")
+        if "'first_name', '')} {getattr(" in p.read_text(encoding="utf-8")
+    ]
+    assert offenders == [], f"{offenders} build names that print None; use sanitize.full_name"

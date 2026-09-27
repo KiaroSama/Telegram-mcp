@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from telegram_mcp.sanitize import full_name as _full_name
 from telegram_mcp.sanitize import sanitize_name
 from telegram_mcp.permalinks import channel_link_id, message_permalink  # noqa: F401  (re-exported)
 
@@ -309,12 +310,6 @@ def describe_reply_quote(msg) -> Optional[dict[str, Any]]:
     if offset is not None:
         quote["offset"] = offset
     return quote
-
-
-def _full_name(obj) -> str:
-    """``first_name last_name`` from a raw Telethon user/chat object."""
-    parts = (getattr(obj, "first_name", None), getattr(obj, "last_name", None))
-    return " ".join(part for part in parts if part).strip()
 
 
 def _fidelity_forward(msg, forwarded: dict[str, Any]) -> dict[str, Any]:

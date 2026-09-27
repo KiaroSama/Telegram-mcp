@@ -103,6 +103,12 @@ def sanitize_name(text: Optional[str], max_length: int = 256) -> str:
     return result
 
 
+def full_name(obj) -> str:
+    """``first_name last_name`` of a Telethon user; a missing part is left out, never "None"."""
+    parts = (getattr(obj, "first_name", None), getattr(obj, "last_name", None))
+    return " ".join(part for part in parts if part).strip()
+
+
 def sanitize_dict(data: Any) -> Any:
     """Recursively sanitize all string values in a nested dict/list structure.
 
