@@ -2,6 +2,7 @@
 
 from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.runtime import *
+from telegram_mcp.sanitize import full_name
 from typing import Optional
 
 
@@ -30,7 +31,7 @@ async def list_contacts(account: Optional[str] = None) -> str:
             return "No contacts found."
         records = []
         for user in users:
-            name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+            name = full_name(user)
             record = {
                 "id": user.id,
                 "name": sanitize_name(name),
@@ -88,7 +89,7 @@ async def search_contacts(query: str, account: Optional[str] = None) -> str:
             return f"No contacts found matching '{query}'."
         records = alias_records
         for user in users:
-            name = f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+            name = full_name(user)
             record = {
                 "id": user.id,
                 "name": sanitize_name(name),
@@ -159,9 +160,7 @@ async def get_direct_chat_by_contact(contact_query: str, account: Optional[str] 
         for contact in contacts:
             if not contact:
                 continue
-            name = (
-                f"{getattr(contact, 'first_name', '')} {getattr(contact, 'last_name', '')}".strip()
-            )
+            name = full_name(contact)
             username = getattr(contact, "username", "")
             phone = getattr(contact, "phone", "")
             if (
@@ -186,9 +185,7 @@ async def get_direct_chat_by_contact(contact_query: str, account: Optional[str] 
             if isinstance(dialog.entity, User)
         }
         for contact in found_contacts:
-            contact_name = sanitize_name(
-                f"{getattr(contact, 'first_name', '')} {getattr(contact, 'last_name', '')}".strip()
-            )
+            contact_name = sanitize_name(full_name(contact))
             dialog = by_user_id.get(contact.id)
             if dialog is None:
                 continue
@@ -238,9 +235,7 @@ async def get_contact_chats(contact_id: Union[int, str], account: Optional[str] 
         if not isinstance(contact, User):
             return f"ID {contact_id} is not a user/contact."
 
-        contact_name = sanitize_name(
-            f"{getattr(contact, 'first_name', '')} {getattr(contact, 'last_name', '')}".strip()
-        )
+        contact_name = sanitize_name(full_name(contact))
 
         # Find the direct chat for exactly this peer. Listing every dialog to locate
         # one of them costs a round trip per hundred chats on the account, and the
@@ -320,9 +315,7 @@ async def get_last_interaction(contact_id: Union[int, str], account: Optional[st
         if not isinstance(contact, User):
             return f"ID {contact_id} is not a user/contact."
 
-        contact_name = sanitize_name(
-            f"{getattr(contact, 'first_name', '')} {getattr(contact, 'last_name', '')}".strip()
-        )
+        contact_name = sanitize_name(full_name(contact))
 
         # Get the last few messages
         messages = await cl.get_messages(contact, limit=5)

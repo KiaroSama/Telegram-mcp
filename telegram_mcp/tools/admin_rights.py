@@ -16,6 +16,7 @@ Bans, default permissions and the audit log stay in ``moderation``.
 """
 
 from telegram_mcp.runtime import *
+from telegram_mcp.sanitize import full_name
 
 __all__ = [
     "demote_admin",
@@ -382,9 +383,7 @@ async def get_admins(chat_id: Union[int, str], account: str = None) -> str:
         for p in participants:
             rec = {
                 "id": p.id,
-                "name": sanitize_name(
-                    f"{getattr(p, 'first_name', '')} {getattr(p, 'last_name', '')}".strip()
-                ),
+                "name": sanitize_name(full_name(p)),
             }
             uname = getattr(p, "username", None)
             if uname:
