@@ -85,7 +85,7 @@ async def get_participants(
             rec = {
                 "id": p.id,
                 "name": sanitize_name(
-                    f"{getattr(p, 'first_name', '')} {getattr(p, 'last_name', '')}".strip()
+                    f"{getattr(p, 'first_name', None) or ''} {getattr(p, 'last_name', None) or ''}".strip()
                 ),
             }
             uname = getattr(p, "username", None)

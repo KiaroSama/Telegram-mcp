@@ -129,3 +129,12 @@ async def test_self_tags_can_be_turned_off(client):
 async def test_default_permissions_still_allow_self_tags(client):
     await moderation.set_default_chat_permissions(chat_id="@testgroup_x")
     assert not client.sent[0].banned_rights.edit_rank
+
+
+@pytest.mark.asyncio
+async def test_a_missing_last_name_is_not_printed_as_none(client):
+    """Live 2026-09-27: members without a last name came back as "Numera Group Bot 1 None"."""
+    import json
+
+    rows = json.loads(await mod.get_participants(chat_id="@testgroup_x"))["results"]
+    assert [r["name"] for r in rows] == ["Numera Group Bot 1", "Sara"]
