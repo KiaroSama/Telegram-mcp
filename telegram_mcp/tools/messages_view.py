@@ -18,6 +18,7 @@ which re-exports these names so the path every existing caller imports them from
 keeps resolving.
 """
 
+from telegram_mcp.button_view import button_styles
 from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.runtime import *
 
@@ -307,6 +308,11 @@ def message_to_dict(msg) -> dict:
     buttons = _inline_button_texts(msg)
     if buttons:
         d["buttons"] = buttons
+        # Colour and link beside the labels, so a listing shows a panel's state
+        # without a second call per message (spec 014).
+        styles = button_styles(msg)
+        if styles:
+            d["button_styles"] = styles
 
     urls = _link_urls(msg)
     if urls:
