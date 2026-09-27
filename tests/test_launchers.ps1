@@ -568,4 +568,52 @@ finally {
     Remove-Item -LiteralPath $retentionDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# Takeover (spec 013): a launcher a person opens stops the copy already running, and
+# only this checkout's copy. Proved against the shipped functions on real processes:
+# two dummies that name `main.py` under two different roots, the way a real copy does.
+$takeoverRoot = Join-Path ([IO.Path]::GetTempPath()) ("tg-takeover-" + [guid]::NewGuid())
+$otherRoot = Join-Path ([IO.Path]::GetTempPath()) ("tg-other-" + [guid]::NewGuid())
+$dummies = @()
+try {
+    foreach ($name in 'Stop-OtherInstances', 'Test-OpenedByPerson') {
+        $function = [regex]::Match($launcher, "(?ms)^function $name \{.*?^\}")
+        if (-not $function.Success) { throw "Could not extract $name from the launcher." }
+        . ([ScriptBlock]::Create($function.Value))
+    }
+
+    $shell = (Get-Process -Id $PID).Path
+    foreach ($root in $takeoverRoot, $otherRoot) {
+        $dummies += Start-Process -FilePath $shell -WindowStyle Hidden -PassThru -ArgumentList (
+            "-NoProfile -NonInteractive -Command Start-Sleep -Seconds 120 # $root\main.py")
+    }
+    $mine, $theirs = $dummies
+
+    $result = Stop-OtherInstances -Root $takeoverRoot
+    if ($result.Stopped -notcontains $mine.Id) {
+        throw "The running copy was not reported stopped (stopped: $($result.Stopped -join ', '))."
+    }
+    if (-not $mine.WaitForExit(15000)) { throw 'The running copy is still alive after the takeover.' }
+    if ($theirs.HasExited) { throw "The takeover stopped another checkout's server." }
+    Write-Output 'ok  opening the launcher stops this checkout''s running copy and nothing else'
+
+    # Who counts as a person: a console with its own input and no -NonInteractive. The
+    # supervisor starts the launcher hidden with -NonInteractive and a stdio client
+    # redirects its input - neither may stop anything, or two starters loop forever.
+    if (-not (Test-OpenedByPerson -InputRedirected $false -HostArguments @('pwsh.exe', '-File', 'start-mcp.ps1'))) {
+        throw 'A launcher opened by hand did not count as opened by a person.'
+    }
+    if (Test-OpenedByPerson -InputRedirected $false -HostArguments @('pwsh.exe', '-NonInteractive', '-File', 'x')) {
+        throw 'A -NonInteractive start (the supervisor) counted as a person.'
+    }
+    if (Test-OpenedByPerson -InputRedirected $true -HostArguments @('pwsh.exe', '-File', 'x')) {
+        throw 'A start with redirected input (a stdio client) counted as a person.'
+    }
+    Write-Output 'ok  only a launcher a person opened takes over'
+}
+finally {
+    foreach ($dummy in $dummies) {
+        if (-not $dummy.HasExited) { & taskkill.exe /PID $dummy.Id /T /F 2>&1 | Out-Null }
+    }
+}
+
 Write-Output 'Launcher checks passed.'
