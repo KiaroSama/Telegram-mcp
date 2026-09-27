@@ -28,6 +28,7 @@ import os
 from html import escape as html_escape
 import re
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
@@ -42,6 +43,7 @@ __all__ = [
     "SavedMessagesChannel",
     "bot_settings",
     "new_request",
+    "open_requests",
     "pending_codes",
     "request_approval",
     "timeout_seconds",
@@ -67,6 +69,18 @@ _OUTCOME_LINES = {
 _CLOSED_LINE = "⏹ Closed - not run"
 
 _pending: Set[str] = set()
+# The requests waiting for the owner right now, by code, with when each was asked.
+_open: Dict[str, "ApprovalRequest"] = {}
+_opened_at: Dict[str, float] = {}
+
+
+def open_requests() -> List[Tuple["ApprovalRequest", float]]:
+    """``(request, seconds waiting)`` for every approval open right now, oldest first."""
+    now = time.monotonic()
+    return sorted(
+        ((request, now - _opened_at.get(code, now)) for code, request in dict(_open).items()),
+        key=lambda item: -item[1],
+    )
 
 
 def pending_codes() -> frozenset:
@@ -360,6 +374,8 @@ async def request_approval(
     failures: List[str] = []
     tried = False
     _pending.add(request.code)
+    _open[request.code] = request
+    _opened_at[request.code] = time.monotonic()
     # Before any channel shows it: from here on no tool result carries this code (FR-037).
     sealed.remember_code(request.code)
     try:
@@ -379,6 +395,8 @@ async def request_approval(
         return ("channel_failed" if tried else "no_channel"), None, failures
     finally:
         _pending.discard(request.code)
+        _open.pop(request.code, None)
+        _opened_at.pop(request.code, None)
 
 
 def bot_settings() -> Tuple[Optional[str], frozenset]:

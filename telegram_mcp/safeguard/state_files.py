@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-__all__ = ["ghost_path", "grants_path", "sealed_path", "write_private_json"]
+__all__ = ["bypass_path", "ghost_path", "grants_path", "sealed_path", "write_private_json"]
 
 
 def _state_dir() -> Path:
@@ -30,6 +30,11 @@ def ghost_path() -> Path:
 
 def grants_path() -> Path:
     return _state_dir() / "always-approvals.json"
+
+
+def bypass_path() -> Path:
+    """Bypass mode, set only from the approval bot (spec 016)."""
+    return _state_dir() / "bypass.json"
 
 
 def sealed_path() -> Path:

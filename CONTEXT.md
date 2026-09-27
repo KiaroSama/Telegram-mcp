@@ -117,6 +117,24 @@ therefore not evidence that a message is empty, and reading one is always two ac
 then fetch.
 _Avoid_: rich text, formatted message, table message
 
+**Checklist**:
+A message listing tasks. Its sender, and anyone else it allows, adds tasks and marks them
+done or undone; each completion records who did it and when.
+_Avoid_: to-do, task list, todo
+
+**Poll**:
+A message asking a question with options. Its settings decide who sees what: whether voters
+are named, whether several options may be chosen, whether others may add options (an **open
+poll**), whether a vote may be changed, whether options are shuffled, whether results stay
+hidden until it closes, and when it closes. A **quiz** is a poll with one or more correct
+options and an explanation.
+_Avoid_: survey, vote (for the poll itself)
+
+**Voter restriction**:
+Who may vote in a poll: only people in the listed countries, only members of the channel, or
+both. It limits voting, not seeing.
+_Avoid_: poll filter, geo-block
+
 ### Media
 
 **Media kind**:
@@ -211,6 +229,17 @@ a code answered in Saved Messages. No channel means no approval, and the call is
 refused.
 _Avoid_: prompt, confirmation dialog
 
+**Always approval**:
+The owner's "always" answer: the same tool in the same chat of the same account runs
+without asking again, across restarts, until the owner revokes it or resets them all.
+Folders allowed "always" are kept apart and removed separately.
+_Avoid_: whitelist, trusted tool
+
+**Approval bot commands**:
+The menu of `/` commands the approval bot publishes each time it starts, through which
+the owner reads and removes always approvals, sees the connected accounts, the open
+requests and the safeguard's state. Anyone can see the menu; only the owner is answered.
+
 **Seen signal**:
 Anything that tells another person the owner saw something or is present: a read
 marker, being online, a story view, a voice or round video marked listened, a typing
@@ -221,6 +250,12 @@ _Avoid_: read receipt, seen, presence
 The state in which this server gives off no seen signal without approval. It holds
 for all accounts, one account, or one chat, and is on unless the owner turns it off.
 _Avoid_: stealth mode, invisible mode, incognito
+
+**Device**:
+One signed-in Telegram session of the account (a phone, a desktop app, this server). Each
+device separately accepts or refuses incoming calls and new secret chats; "secret chats only
+on this device" leaves exactly one device accepting them.
+_Avoid_: authorization (in prose), session (that is this server's own login)
 
 ### Reaching Telegram
 
@@ -307,3 +342,8 @@ A short label (up to 16 characters, no emoji) shown next to a member's name in a
 An admin who may manage tags sets anyone's; a member sets only their own, and only when the
 group allows it. An admin's tag is their admin title - the same thing, not a second label.
 _Avoid_: rank, custom title, badge
+
+**Kick**:
+Removing a member who may come straight back: a ban lifted at once, so they are out of the
+group but not on its removed list. A **ban** keeps them out until it is lifted.
+_Avoid_: remove (ambiguous between the two)

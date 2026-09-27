@@ -16,7 +16,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.safeguard import channels as approvals
-from telegram_mcp.safeguard import folders, ghost, grants, policy, sealed, taint
+from telegram_mcp.safeguard import bypass, folders, ghost, grants, policy, sealed, taint
 
 __all__ = ["Safeguard", "install", "refusal"]
 
@@ -225,16 +225,22 @@ class Safeguard:
             return refusal(name, reason, timeout=self._timeout)
 
         if decision.outcome == "ask":
-            # An "always" grant never covers words someone else wrote: one approval
-            # for a chat must not wave through every link injected into it later.
-            # Nor does a tool grant cover a folder: that is the folder's own grant.
+            # The owner's "always" covers this tool in this chat of this account even
+            # when the call carries words someone else wrote (spec 016 FR-007: asking
+            # again after "always" was a promise the button did not keep). A tool
+            # grant never covers a folder: that is the folder's own grant.
             tool_reasons = [r for r in decision.reasons if r != _FOLDER_REASON]
+            # Bypass (set only from the approval bot) skips the question; the hard
+            # refusals above have already run and still apply.
+            bypassed = bypass.active()
             granted = (
-                _FOLDER_REASON not in decision.reasons
-                and "tainted" not in decision.reasons
+                not bypassed
+                and _FOLDER_REASON not in decision.reasons
                 and grants.is_granted(account, name, chat)
             )
-            if granted:
+            if bypassed:
+                outcome, kind, failures = "approved_once", "bypass", []
+            elif granted:
                 outcome, kind, failures = "approved_always", "grant", []
             else:
                 try:
@@ -293,6 +299,7 @@ def _protected_paths() -> Tuple[str, ...]:
         str(ghost.settings_path()),
         str(grants.grants_path()),
         str(sealed.sealed_path()),
+        str(bypass.bypass_path()),
     )
 
 
