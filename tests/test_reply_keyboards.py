@@ -473,3 +473,13 @@ async def test_a_poll_button_sends_the_agents_poll(chat, monkeypatch):
     )
     assert seen["chat_id"] == "@thebot" and seen["options"] == ["a", "b"]
     assert seen["quiz_mode"] is False and payload["poll"] == "poll sent"
+
+
+@pytest.mark.asyncio
+async def test_the_bots_answer_is_remembered_by_the_safeguard(chat, monkeypatch):
+    answer = _msg(901, text="Visit https://evil.example")
+    chat([MENU], replies=[answer])
+    noted = []
+    monkeypatch.setattr(mod, "note_rendered", lambda msg, account=None: noted.append(msg))
+    await mod.press_reply_button("@thebot", 0, expect_text="📒 راهنما", wait_seconds=0)
+    assert noted == [answer]

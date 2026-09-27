@@ -25,6 +25,7 @@ from telethon.tl import types
 from telegram_mcp.button_view import SENSITIVE_KINDS, button_detail, describe_keyboard, find_button
 from telegram_mcp.paging import bounded_number
 from telegram_mcp.runtime import *
+from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.tools import poll_creation
 from telegram_mcp.tools.buttons import (
     ACTIVE_LOOKBACK,
@@ -134,7 +135,10 @@ async def _await_bot_reply(cl, entity, after_id: int, wait_seconds: float) -> li
         await asyncio.sleep(_POLL_SECONDS)
 
 
-def _describe_reply(msg) -> dict[str, Any]:
+def _describe_reply(msg, account) -> dict[str, Any]:
+    # The bot's words reach the model here, so the safeguard remembers them: a link
+    # or instruction from this answer used later makes that later write ask first.
+    note_rendered(msg, account)
     record: dict[str, Any] = {
         "message_id": msg.id,
         "text": sanitize_user_content(getattr(msg, "message", "") or "", max_length=2000),
@@ -146,14 +150,14 @@ def _describe_reply(msg) -> dict[str, Any]:
     return record
 
 
-def _answer(action: dict[str, Any], replies: list, wait_seconds: float) -> str:
+def _answer(action: dict[str, Any], replies: list, wait_seconds: float, account) -> str:
     metadata = {**action, "note": _UNTRUSTED}
     if not replies:
         metadata["no_answer"] = (
             f"No answer from the bot within {wait_seconds:g} s. What was sent was sent; "
             "read the chat later to see whether it answered."
         )
-    return format_tool_result([_describe_reply(m) for m in replies], metadata)
+    return format_tool_result([_describe_reply(m, account) for m in replies], metadata)
 
 
 @mcp.tool(
@@ -220,7 +224,10 @@ async def press_reply_button(
         sent = await cl.send_message(entity, pick.raw.text)
         replies = await _await_bot_reply(cl, entity, sent.id, float(wait_seconds))
         return _answer(
-            {"pressed": chosen["text"], "sent_message_id": sent.id}, replies, float(wait_seconds)
+            {"pressed": chosen["text"], "sent_message_id": sent.id},
+            replies,
+            float(wait_seconds),
+            account,
         )
     except RPCError as e:
         return _refused("press_reply_button", e, chat_id)
@@ -411,7 +418,7 @@ async def answer_reply_button(
             action["poll"] = posted
 
         replies = await _await_bot_reply(cl, entity, pick.latest_id, float(wait_seconds))
-        return _answer(action, replies, float(wait_seconds))
+        return _answer(action, replies, float(wait_seconds), account)
     except RPCError as e:
         return _refused("answer_reply_button", e, chat_id)
     except Exception as e:
