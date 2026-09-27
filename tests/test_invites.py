@@ -148,28 +148,79 @@ def test_the_reading_tool_is_annotated_read_only_and_the_minting_tool_is_not():
     assert hints["export_chat_invite"] is False, "a minting tool survives read-only exposure"
 
 
+def _invites(*links):
+    """GetExportedChatInvites: the first link is the live primary, the rest are extra."""
+    from telethon.tl import types as tl
+
+    invites = [
+        tl.ChatInviteExported(link=link, admin_id=1, date=None, permanent=(i == 0))
+        for i, link in enumerate(links)
+    ]
+    return tl.messages.ExportedChatInvites(count=len(invites), invites=invites, users=[])
+
+
+def _replaced(old, new):
+    from telethon.tl import types as tl
+
+    return tl.messages.ExportedChatInviteReplaced(
+        invite=tl.ChatInviteExported(link=old, admin_id=1, date=None, revoked=True),
+        new_invite=tl.ChatInviteExported(link=new, admin_id=1, date=None, permanent=True),
+        users=[],
+    )
+
+
+@pytest.mark.asyncio
+async def test_exporting_revokes_the_primary_and_returns_its_replacement(_wire):
+    """Live 2026-09-28: exportChatInvite only ADDED a link and the old primary stayed
+    live. Telegram's apps revoke the primary itself and get the new one back."""
+    client = _wire(
+        _channel(),
+        {
+            "GetExportedChatInvitesRequest": _invites("https://t.me/+old", "https://t.me/+extra"),
+            "EditExportedChatInviteRequest": _replaced("https://t.me/+old", "https://t.me/+new"),
+        },
+    )
+
+    result = await mod.export_chat_invite(-1000000000777, account="a")
+
+    assert "https://t.me/+new" in result
+    edit = client.sent("EditExportedChatInviteRequest")
+    assert edit.link == "https://t.me/+old" and edit.revoked is True
+    assert "ExportChatInviteRequest" not in client.names, "an extra link was minted"
+
+
 @pytest.mark.asyncio
 async def test_exporting_sends_one_mutation_and_does_not_retry_an_ambiguous_failure(_wire):
     """The fallback re-ran the same mutation, so one ambiguous error could leave
     two live invite links behind."""
-    client = _wire(_channel(), {"ExportChatInviteRequest": RuntimeError("timeout")})
+    client = _wire(
+        _channel(),
+        {
+            "GetExportedChatInvitesRequest": _invites("https://t.me/+old"),
+            "EditExportedChatInviteRequest": RuntimeError("timeout"),
+        },
+    )
 
     result = await mod.export_chat_invite(-1000000000777, account="a")
 
-    assert client.names.count("ExportChatInviteRequest") == 1
+    assert client.names.count("EditExportedChatInviteRequest") == 1
     assert "error" in result.lower()
 
 
 @pytest.mark.asyncio
-async def test_exporting_returns_the_new_link(_wire):
+async def test_a_chat_without_a_primary_link_gets_one_minted(_wire):
     client = _wire(
-        _channel(), {"ExportChatInviteRequest": SimpleNamespace(link="https://t.me/+n")}
+        _channel(),
+        {
+            "GetExportedChatInvitesRequest": _invites(),
+            "ExportChatInviteRequest": SimpleNamespace(link="https://t.me/+n"),
+        },
     )
 
     result = await mod.export_chat_invite(-1000000000777, account="a")
 
     assert "https://t.me/+n" in result
-    assert client.names == ["ExportChatInviteRequest"]
+    assert "EditExportedChatInviteRequest" not in client.names
 
 
 @pytest.mark.asyncio
