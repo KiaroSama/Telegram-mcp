@@ -214,11 +214,20 @@ def watch_script(path, contains: Optional[str] = None) -> str:
     mark, emitting the wrong bytes. Widening the prefix moves the collision
     rather than removing it.
 
-    So identity comes from the file itself: `GetFileInformationByHandle` on the
-    handle already open, giving the volume serial and the NTFS file index. A
-    newly created file has a new index, whatever its name or contents, and the
-    call is made on the SAME handle the bytes are read from - so there is no
-    window between deciding identity and using it.
+    So identity comes from the file itself: its NTFS file id, from `fsutil file
+    queryfileid`. A newly created file has a new id, whatever its name or
+    contents. But fsutil takes a NAME, not the open handle, so an id asked for
+    after opening can belong to a file that replaced the one being read - and was
+    exactly that on the Windows CI leg: the new file's id paired with the old
+    file's bytes, the first 64 bytes equal, and the replacement never reported.
+    So the id is asked for BEFORE the open, the poll works on copies of the
+    offset, the signature and the output, and it is committed - lines emitted,
+    offset and signature kept - only when the id asked for AFTER the read is the
+    same one. Two equal ids around the open prove the handle is that file; unequal
+    ones drop the poll, and the next one reads whatever the name now holds.
+    Nothing is emitted from a poll that cannot say which file it read. The cost:
+    a line appended to the OLD file in its last half second, when the replacement
+    lands mid-poll, is not emitted from here (it stays in the rotated file).
 
     The creation stamp cannot answer this and is not used: NTFS tunneling hands a
     name recreated within about fifteen seconds the OLD stamp, and a rotation
@@ -237,7 +246,21 @@ def watch_script(path, contains: Optional[str] = None) -> str:
     writing, or from replacing the file underneath.
     """
     quoted = str(path).replace("'", "''")
-    emit = "$line" if contains is None else f"if($line -like '*{contains}*'){{$line}}"
+    # Lines are collected, not written: a poll's output is only emitted once the
+    # poll is known to have read the file it thinks it read.
+    keep = (
+        "$out.Add($line)"
+        if contains is None
+        else f"if($line -like '*{contains}*'){{$out.Add($line)}}"
+    )
+    # WHICH FILE the name holds, by its NTFS id. `fsutil` rather than a P/Invoke
+    # through Add-Type: that route compiles C# at startup, which measured 4.7-6.8
+    # seconds before the watcher read its first line - a monitor that takes five
+    # seconds to notice anything, and a race every caller and test around it then
+    # has to sleep through. This costs ~66ms per call, needs no elevation, and
+    # leaves startup immediate. It reads the NAME - see the docstring for why it is
+    # asked for on both sides of the open.
+    file_id = "try{$q=(fsutil file queryfileid $p 2>$null);if($q){$ID=[string]$q}}catch{};"
     return (
         # UTF-8 on the way OUT as well as in. The feed holds contact names, and
         # Windows PowerShell writes stdout in the console code page - so a name
@@ -247,38 +270,32 @@ def watch_script(path, contains: Optional[str] = None) -> str:
         "while($true){"
         "if(Test-Path -LiteralPath $p){"
         "try{"
-        "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,"
+        "$idb='';"
+        + file_id.replace("$ID", "$idb")
+        + "$f=[IO.File]::Open($p,[IO.FileMode]::Open,[IO.FileAccess]::Read,"
         "[IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete);"
+        # This poll's view: committed below only if the file held still.
+        "$no=$o;$nsig=$sig;$out=New-Object Collections.Generic.List[string];"
         "try{"
         # Shorter than what was already read: a different file, or the same one
         # truncated in place - which keeps its identity, so only this sees it.
-        "if($f.Length -lt $o){$o=[long]0;$sig=''};"
-        # WHICH FILE this is, from the handle being read. A replacement has a new
-        # NTFS index whatever its name, length or first bytes.
-        # WHICH FILE this is, by its NTFS id. `fsutil` rather than a P/Invoke
-        # through Add-Type: that route compiles C# at startup, which measured
-        # 4.7-6.8 seconds before the watcher read its first line - a monitor that
-        # takes five seconds to notice anything, and a race every caller and test
-        # around it then has to sleep through. This costs ~66ms per poll, needs
-        # no elevation, and leaves startup immediate.
-        "$cur='';"
-        "try{$q=(fsutil file queryfileid $p 2>$null);"
-        "if($q){$cur=[string]$q}}catch{};"
+        "if($f.Length -lt $no){$no=[long]0;$nsig=''};"
         # And the region already read, which an append cannot alter. The identity
         # and the prefix catch DIFFERENT things and both are needed: a new file
         # can carry the same first bytes (the audit's case), and the same file
         # can be rewritten in place at the same length (this project's own case,
         # where the id never changes and neither does the length). Dropping
         # either one loses a rotation.
-        "$n=[Math]::Min(64,$o);"
+        "$cur=$idb;"
+        "$n=[Math]::Min(64,$no);"
         "if($n -gt 0){"
         "$b=New-Object byte[] $n;"
         "[void]$f.Seek(0,[IO.SeekOrigin]::Begin);"
         "$read=$f.Read($b,0,$n);"
         "$cur=$cur+'|'+[Convert]::ToBase64String($b,0,$read)};"
-        "if($cur -ne $sig){$o=[long]0;$sig=''};"
-        "if($f.Length -gt $o){"
-        "[void]$f.Seek($o,[IO.SeekOrigin]::Begin);"
+        "if($cur -ne $nsig){$no=[long]0;$nsig=''};"
+        "if($f.Length -gt $no){"
+        "[void]$f.Seek($no,[IO.SeekOrigin]::Begin);"
         "$r=New-Object IO.StreamReader($f,[Text.Encoding]::UTF8);"
         "$buf=$r.ReadToEnd();"
         # Whole lines only; the remainder waits for the next poll.
@@ -287,20 +304,25 @@ def watch_script(path, contains: Optional[str] = None) -> str:
         "$whole=$buf.Substring(0,$cut+1);"
         "foreach($line in $whole.Split([char]10)){"
         "$line=$line.TrimEnd([char]13);"
-        "if($line -ne ''){" + emit + "}};"
+        "if($line -ne ''){" + keep + "}};"
         # The offset moves, and the signature is rebuilt over the region that is
         # now "already read" - which just grew, so the prefix half of it has to be
         # taken again or the next poll compares against a stale sample.
-        "$o=$o+[Text.Encoding]::UTF8.GetByteCount($whole);"
-        "$n2=[Math]::Min(64,$o);"
+        "$no=$no+[Text.Encoding]::UTF8.GetByteCount($whole);"
+        "$n2=[Math]::Min(64,$no);"
         "$b2=New-Object byte[] $n2;"
         "[void]$f.Seek(0,[IO.SeekOrigin]::Begin);"
         "$read2=$f.Read($b2,0,$n2);"
-        "$idnow='';"
-        "try{$q2=(fsutil file queryfileid $p 2>$null);"
-        "if($q2){$idnow=[string]$q2}}catch{};"
-        "$sig=$idnow+'|'+[Convert]::ToBase64String($b2,0,$read2)}}"
-        "}finally{$f.Dispose()}}catch{}}"
+        "$nsig=$idb+'|'+[Convert]::ToBase64String($b2,0,$read2)}}"
+        "}finally{$f.Dispose()};"
+        # An idle poll changes nothing and costs one fsutil. A poll that would
+        # change something asks again, and keeps its result only if the name
+        # still holds the file whose id was taken before the open.
+        "if($no -ne $o -or $nsig -ne $sig){"
+        "$ida='';"
+        + file_id.replace("$ID", "$ida")
+        + "if($ida -eq $idb){$o=$no;$sig=$nsig;foreach($l in $out){$l}}}"
+        "}catch{}}"
         f"Start-Sleep -Milliseconds {_WATCH_POLL_MS}" + "}"
     )
 

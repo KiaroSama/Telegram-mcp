@@ -16,6 +16,7 @@ a REAL file. Skipped where PowerShell is absent - which is every non-Windows
 host, and the reason the audit could not execute this one.
 """
 
+import base64
 import json
 import os
 import shutil
@@ -191,3 +192,58 @@ def test_the_script_does_not_decide_identity_by_creation_time():
 
     assert "CreationTime" not in script
     assert "queryfileid" in script.lower(), "identity is not read from the filesystem"
+
+
+# `fsutil` shadowed by a function (PowerShell runs a function before an external
+# program of the same name). The first time it runs after the test raises the
+# flag, it replaces the watched file and only then asks the real fsutil - so the
+# replacement lands at the one moment that used to lose it: after the watcher
+# opened the old file, before it asked which file that was.
+_SHADOWED_FSUTIL = (
+    "$global:__flag='{flag}';$global:__new='{new}';$global:__done=$false;"
+    "function fsutil{{"
+    "if(-not $global:__done -and (Test-Path -LiteralPath $global:__flag)){{"
+    "$global:__done=$true;"
+    "Remove-Item -LiteralPath $p -Force;"
+    "[IO.File]::WriteAllText($p,$global:__new,(New-Object Text.UTF8Encoding $false))}};"
+    "& (Get-Command fsutil -CommandType Application | Select-Object -First 1).Source @args}};"
+)
+
+
+def test_a_replacement_during_a_poll_is_noticed(watched, tmp_path):
+    """The race behind the Windows CI flake, made deterministic: the file is
+    replaced between the watcher opening it and asking for its id. The id then
+    belonged to the NEW file while the bytes came from the OLD one, their first
+    64 bytes matched by construction, and the replacement was never reported."""
+    path, started = watched
+    flag = tmp_path / "replace-now"
+    # Bytes, not text: text mode on Windows writes CRLF, the replacement below is
+    # written with LF, and a one-byte difference lets the LENGTH check catch what
+    # this test exists to show the identity check missing.
+    path.write_bytes((_record("AAAA") + "\n").encode("utf-8"))
+    replacement = _record("BBBB") + "\n"
+    assert len(replacement.encode("utf-8")) == path.stat().st_size
+
+    def quoted(value):
+        return str(value).replace("'", "''")
+
+    script = _SHADOWED_FSUTIL.format(flag=quoted(flag), new=quoted(replacement))
+    script += feed_lifecycle.watch_script(path)
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    process = subprocess.Popen(
+        ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    started.append(process)
+    watcher = _Watcher(process)
+    assert watcher.wait_for("AAAA"), "the watcher never started reading the original file"
+
+    flag.write_text("", encoding="utf-8")
+
+    assert watcher.wait_for("BBBB"), "a replacement made during a poll was missed"
+    assert len([line for line in watcher.seen() if "AAAA" in line]) == 1, "the old file replayed"
