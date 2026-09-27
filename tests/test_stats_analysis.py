@@ -124,3 +124,30 @@ async def test_the_tool_refuses_a_chat_without_statistics(monkeypatch):
     assert "statistics" in text.lower()
     with pytest.raises(json.JSONDecodeError):
         json.loads(text)
+
+
+@pytest.mark.asyncio
+async def test_the_tool_answers_for_a_supergroup_end_to_end(monkeypatch):
+    group = tl.Channel(
+        id=5, title="Group", photo=tl.ChatPhotoEmpty(), date=None, megagroup=True, access_hash=1
+    )
+
+    async def _resolve(value, cl=None, account=None):
+        return group
+
+    async def _connected(cl=None):
+        return None
+
+    async def _fetch(cl, request):
+        return SimpleNamespace(users=[]), None
+
+    async def _describe(stats, load, include_data):
+        return _described()
+
+    monkeypatch.setattr(mod, "get_client", lambda account=None: SimpleNamespace())
+    monkeypatch.setattr(mod, "resolve_entity", _resolve)
+    monkeypatch.setattr(mod, "ensure_connected", _connected)
+    monkeypatch.setattr(mod, "_fetch_stats", _fetch)
+    monkeypatch.setattr(mod, "_describe_stats", _describe)
+    payload = json.loads(await mod.analyze_chat_statistics("group", days=10))
+    assert payload["chat"] == "Group" and payload["results"][0]["members_graph"]["series"]
