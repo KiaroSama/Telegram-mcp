@@ -166,6 +166,78 @@ function Remove-StaleFiles {
     }
 }
 
+function Test-OpenedByPerson {
+    <#
+      Whether a person opened this launcher, as opposed to something starting it.
+
+      The takeover below belongs to a person only. The always-on supervisor starts
+      this script hidden with -NonInteractive, and a client that speaks stdio
+      redirects its input; if either stopped the copy already running, two starters
+      would stop each other's server in a loop.
+    #>
+    param(
+        [bool] $InputRedirected = [Console]::IsInputRedirected,
+        [string[]] $HostArguments = [Environment]::GetCommandLineArgs()
+    )
+    if ($InputRedirected) { return $false }
+    return -not ($HostArguments | Where-Object { $_ -match '^[-/]noni' })
+}
+
+function Stop-OtherInstances {
+    <#
+      Stop every running copy of THIS checkout's server so this one can start.
+
+      A copy is a tree - the launcher's pwsh, uv, the tee wrapper, main.py - and
+      killing any one member left the rest serving the old code on the port, so each
+      tree goes whole (taskkill /T). Matched by this checkout's own paths, in the
+      processes that run them, so another checkout's server and an editor that merely
+      has the file open are left alone. This process and its ancestors never are.
+
+      Returns the ids stopped and the ids still alive after the wait: a survivor is
+      reported, not assumed gone.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Root,
+        [int] $WaitSeconds = 15
+    )
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $parents = @{}
+    foreach ($process in $processes) { $parents[[int] $process.ProcessId] = [int] $process.ParentProcessId }
+    $protected = @{}
+    $walk = $PID
+    while ($walk -and -not $protected.ContainsKey($walk)) {
+        $protected[$walk] = $true
+        $walk = $parents[$walk]
+    }
+
+    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|main\.py)'
+    $runners = 'pwsh.exe', 'powershell.exe', 'python.exe', 'pythonw.exe', 'uv.exe'
+    $targets = @($processes | Where-Object {
+            $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
+            -not $protected.ContainsKey([int] $_.ProcessId) -and $_.CommandLine -match $pattern
+        })
+    $targetIds = @($targets | ForEach-Object { [int] $_.ProcessId })
+    # The top of each tree only; its children go with it.
+    foreach ($target in $targets) {
+        if ($targetIds -notcontains [int] $target.ParentProcessId) {
+            $null = & taskkill.exe /PID $target.ProcessId /T /F 2>$null
+        }
+    }
+
+    $alive = @()
+    $deadline = [DateTime]::UtcNow.AddSeconds($WaitSeconds)
+    do {
+        $alive = @($targetIds | Where-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
+        if ($alive.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    return [pscustomobject]@{
+        Stopped  = @($targetIds | Where-Object { $alive -notcontains $_ })
+        Survived = $alive
+    }
+}
+
 try {
     # Not `throw 'not requested'`: routing the opt-out through the same catch as a
     # real failure is what made both of them print the same word.
@@ -239,6 +311,29 @@ try {
     [Console]::Error.WriteLine($startMessage)
     if ($logPath) {
         [IO.File]::AppendAllText($logPath, "$startMessage$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+    }
+
+    # Opened by a person: whatever copy is already running goes first, so opening the
+    # launcher always ends with THIS copy serving - instead of waiting 20 seconds on
+    # the session lock and exiting, which read as a crash every time.
+    if (Test-OpenedByPerson) {
+        $takeover = Stop-OtherInstances -Root $PSScriptRoot
+        $notes = @()
+        if ($takeover.Stopped.Count) {
+            $notes += "Stopped the copy of this server that was already running (pid $($takeover.Stopped -join ', ')) " +
+            'so this one can start. Clients connected to it reconnect to this one.'
+        }
+        if ($takeover.Survived.Count) {
+            $notes += "WARNING: a running copy did not stop (pid $($takeover.Survived -join ', ')); " +
+            'starting anyway - the Telegram session lock decides which one connects.'
+        }
+        foreach ($note in $notes) {
+            $line = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] $note"
+            [Console]::Error.WriteLine($line)
+            if ($logPath) {
+                [IO.File]::AppendAllText($logPath, "$line$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
+            }
+        }
     }
 
     Push-Location -LiteralPath $PSScriptRoot
