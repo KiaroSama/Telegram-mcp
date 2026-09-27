@@ -54,6 +54,17 @@ foreach ($script in $scripts) {
 }
 
 $launcher = Get-Content -LiteralPath $scripts[0] -Raw
+
+# Every run of the REAL launcher below is an automated start, and says so with
+# -NonInteractive. Without it, a person running these tests in their own console
+# hands the launcher an interactive input, the launcher takes it for a person
+# opening it (spec 013), and stops the real server running from this checkout.
+$thisTest = Get-Content -LiteralPath $PSCommandPath -Raw
+$unmarked = [regex]::Matches($thisTest, '& pwsh (?![^\r\n]*-NonInteractive)[^\r\n]*-File \$scripts\[0\]')
+if ($unmarked.Count -ne 0) {
+    throw "A test runs the real launcher without -NonInteractive: $($unmarked[0].Value)"
+}
+
 # The entry point PLUS everything it dot-sources. Reading only the entry point
 # was right while it was one file; after the split, `Read-SessionString` and the
 # .env writers live in account-manager/ and these assertions would match nothing - passing
@@ -433,7 +444,7 @@ $newLogs = @()
 try {
     $env:PATH = "$PSScriptRoot\fixtures;$originalPath"
     $env:PATHEXT = ".PS1;$originalPathExt"
-    $output = & pwsh -NoProfile -ExecutionPolicy Bypass -File $scripts[0] 2>&1
+    $output = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scripts[0] 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Launcher exited with $LASTEXITCODE`: $($output -join [Environment]::NewLine)"
     }
@@ -490,7 +501,7 @@ try {
 
     # 1. The plain run, no flags and no environment: a log must appear, and the
     #    announced path must be the file that actually exists.
-    $defaultErr = & pwsh -NoProfile -ExecutionPolicy Bypass -File $scripts[0] 2>&1
+    $defaultErr = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scripts[0] 2>&1
     $quietLogs = Join-Path $quietStateHome 'telegram-mcp/logs'
     $written = @(Get-ChildItem -LiteralPath $quietLogs -File -ErrorAction SilentlyContinue)
     if ($written.Count -lt 1) {
@@ -513,7 +524,7 @@ try {
         if ($refusal[2]) { $env:TELEGRAM_MCP_LAUNCHER_LOG = $refusal[2] }
         else { Remove-Item -LiteralPath Env:TELEGRAM_MCP_LAUNCHER_LOG -ErrorAction SilentlyContinue }
         try {
-            $offErr = (& pwsh -NoProfile -ExecutionPolicy Bypass -File $scripts[0] @($refusal[1]) 2>&1 | Out-String)
+            $offErr = (& pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scripts[0] @($refusal[1]) 2>&1 | Out-String)
             $offLogs = Join-Path $offHome 'telegram-mcp/logs'
             $leaked = @(Get-ChildItem -LiteralPath $offLogs -File -Recurse -ErrorAction SilentlyContinue)
             if ($leaked.Count -ne 0) {
