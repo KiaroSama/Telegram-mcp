@@ -145,26 +145,53 @@ async def get_invite_link(chat_id: Union[int, str], account: str = None) -> str:
 @validate_id("chat_id")
 async def export_chat_invite(chat_id: Union[int, str], account: str = None) -> str:
     """
-    Mint a NEW primary invite link for a chat, replacing the previous one.
+    Replace a chat's primary invite link with a new one, and return the new link.
 
-    This is a mutation: messages.exportChatInvite generates a link, and the link
-    it replaces stops working. Anyone still holding the old one is locked out.
-    Use get_invite_link to read the existing link instead.
+    The current primary link is revoked - anyone still holding it is locked out - and
+    Telegram hands back its replacement, exactly as "Revoke" on the primary link does in
+    Telegram's apps. Other (named) links are not touched. A chat with no primary link
+    yet gets one minted. Use get_invite_link to read the existing link instead.
 
-    In multi-account mode the account must be named: a fan-out here would mint a
-    separate link on every account from one call.
+    In multi-account mode the account must be named: a fan-out here would replace the
+    link once per account from one call.
     """
     try:
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
+        # messages.exportChatInvite only ADDS a link now; the old primary stayed live
+        # (measured 2026-09-28). Revoking the primary is what yields a new one.
+        listed = await cl(
+            functions.messages.GetExportedChatInvitesRequest(
+                peer=entity, admin_id=types.InputUserSelf(), limit=100
+            )
+        )
+        primary = next(
+            (
+                i.link
+                for i in getattr(listed, "invites", None) or []
+                if getattr(i, "permanent", False) and not getattr(i, "revoked", False)
+            ),
+            None,
+        )
         # One attempt, deliberately. A retry after an ambiguous failure -- a
-        # timeout, a dropped connection -- can mint a second link for a request
-        # that already succeeded, and there is no way from here to tell which.
-        result = await cl(functions.messages.ExportChatInviteRequest(peer=entity))
-        link = getattr(result, "link", None)
-        if link:
-            return link
-        return "Telegram accepted the request but returned no link."
+        # timeout, a dropped connection -- can act twice on a request that already
+        # succeeded, and there is no way from here to tell which.
+        if primary is None:
+            result = await cl(functions.messages.ExportChatInviteRequest(peer=entity))
+            link = getattr(result, "link", None)
+            return link or "Telegram accepted the request but returned no link."
+        result = await cl(
+            functions.messages.EditExportedChatInviteRequest(
+                peer=entity, link=primary, revoked=True
+            )
+        )
+        new_link = getattr(getattr(result, "new_invite", None), "link", None)
+        if new_link:
+            return new_link
+        return (
+            "The old primary link was revoked, but Telegram sent no replacement with the "
+            "answer; get_invite_link reads the new one."
+        )
     except Exception as e:
         return log_and_format_error("export_chat_invite", e, chat_id=chat_id)
 

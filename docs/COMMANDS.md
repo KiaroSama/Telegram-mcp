@@ -305,7 +305,7 @@ Every tool this server exposes: **288**, grouped by the module that defines it.
 
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
-| `export_chat_invite` | Mint a NEW primary invite link for a chat, replacing the previous one. | `- D - O` | runs |
+| `export_chat_invite` | Replace a chat's primary invite link with a new one, and return the new link. | `- D - O` | runs |
 | `get_invite_link` | Read the invite link a group or channel already has. | `R - I O` | runs |
 | `import_chat_invite` | Join a chat by its invite link, or by the bare hash inside one. | `- D I O` | **asks the owner** |
 | `join_chat_by_link` | Join a chat by invite link. | `- D I O` | **asks the owner** |
