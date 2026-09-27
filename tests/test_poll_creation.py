@@ -98,10 +98,12 @@ async def test_a_quiz_correct_index_outside_the_options_is_refused(_wire_state):
 
 
 @pytest.mark.asyncio
-async def test_a_quiz_cannot_also_be_multiple_choice(_wire_state):
+async def test_a_quiz_can_be_multiple_choice_and_never_takes_a_changed_answer(_wire_state):
+    # Measured 2026-09-27: Telegram answered BAD_REQUEST to every quiz sent without
+    # revoting_disabled; a quiz with several correct answers is multiple choice.
     from telegram_mcp.tools import poll_creation
 
-    result = await poll_creation.create_poll(
+    await poll_creation.create_poll(
         "me",
         "2+2?",
         ["3", "4"],
@@ -111,8 +113,25 @@ async def test_a_quiz_cannot_also_be_multiple_choice(_wire_state):
         account="a",
     )
 
-    assert "multiple" in result.lower()
-    assert _wire_state.sent("SendMediaRequest") is None
+    poll = _wire_state.sent("SendMediaRequest").media.poll
+    assert poll.quiz and poll.multiple_choice and poll.revoting_disabled is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "extra, why",
+    [
+        ({"allow_revoting": True}, "allow_revoting"),
+        ({"allow_adding_options": True}, "allow_adding_options"),
+    ],
+)
+async def test_a_quiz_refuses_what_telegram_never_allows_it(_wire_state, extra, why):
+    from telegram_mcp.tools import poll_creation
+
+    result = await poll_creation.create_poll(
+        "me", "2+2?", ["3", "4"], quiz_mode=True, correct_option_index=0, account="a", **extra
+    )
+    assert why in result and _wire_state.sent("SendMediaRequest") is None
 
 
 @pytest.mark.asyncio

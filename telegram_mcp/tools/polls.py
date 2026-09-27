@@ -192,8 +192,11 @@ def _correct_answers(poll, results):
     if not getattr(poll, "quiz", False):
         return None
     voters = getattr(results, "results", None) or []
-    correct = [v.option for v in voters if getattr(v, "correct", False)]
-    return correct or None
+    correct = {v.option for v in voters if getattr(v, "correct", False)}
+    # inputMediaPoll.correct_answers is Vector<int>: the answers' positions, not their
+    # option bytes (bytes failed in the encoder, live 2026-09-27).
+    indexes = [i for i, a in enumerate(poll.answers or []) if a.option in correct]
+    return indexes or None
 
 
 @mcp.tool(
@@ -538,7 +541,13 @@ async def close_poll(
                     # all - and would have dropped the explanation if it had.
                     correct_answers=_correct_answers(poll, results),
                     solution=getattr(results, "solution", None),
-                    solution_entities=getattr(results, "solution_entities", None) or None,
+                    # The encoder takes the explanation and its entities together or not
+                    # at all; an explanation with no formatting has an empty list.
+                    solution_entities=(
+                        list(getattr(results, "solution_entities", None) or [])
+                        if getattr(results, "solution", None)
+                        else None
+                    ),
                     solution_media=_as_input(getattr(results, "solution_media", None)),
                     attached_media=_as_input(
                         getattr(getattr(msg, "media", None), "attached_media", None)

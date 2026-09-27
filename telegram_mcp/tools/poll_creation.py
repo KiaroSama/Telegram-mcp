@@ -7,6 +7,8 @@ read, vote in and close a poll are in ``polls``.
 from telegram_mcp.runtime import *
 from telegram_mcp.message_view import display_text
 from telegram_mcp.effect_catalog import account_key
+from telethon.errors import RPCError
+
 from telegram_mcp.tools import poll_build
 
 # Telegram's own limits for a poll. Checked here so an over-long question comes
@@ -149,6 +151,8 @@ def _settings_problem(
     close_date,
     countries,
     option_files,
+    allow_revoting=None,
+    allow_adding_options=False,
 ) -> Optional[str]:
     """Why these settings cannot make one poll, or ``None``. Decided from the arguments alone."""
     if correct_option_index is not None and correct_option_indexes is not None:
@@ -163,11 +167,12 @@ def _settings_problem(
     )
 
     if quiz_mode:
-        if multiple_choice:
-            return (
-                "Error: Telegram does not allow a quiz to be multiple choice. "
-                "Drop multiple_choice or drop quiz_mode."
-            )
+        # Measured 2026-09-27: Telegram refuses (BAD_REQUEST) a quiz whose answer can be
+        # changed, and a quiz takes no added options.
+        if allow_revoting:
+            return "Error: a quiz never lets a voter change the answer; drop allow_revoting."
+        if allow_adding_options:
+            return "Error: a quiz takes no added options; drop allow_adding_options."
         if not correct:
             return (
                 f"Error: quiz_mode needs {name}. Without it Telegram has "
@@ -238,7 +243,7 @@ async def create_poll(
     description_file: Optional[str] = None,
     option_files: Optional[list] = None,
     allow_adding_options: bool = False,
-    allow_revoting: bool = True,
+    allow_revoting: Optional[bool] = None,
     shuffle_options: bool = False,
     hide_results_until_close: bool = False,
     duration_seconds: Optional[int] = None,
@@ -259,8 +264,8 @@ async def create_poll(
             the time of writing); an over-long list is refused before sending.
         multiple_choice: Whether users can select multiple answers
         quiz_mode: Whether this is a quiz. A quiz is graded, so it REQUIRES
-            correct_option_index or correct_option_indexes, and Telegram does not
-            allow a quiz to be multiple-choice.
+            correct_option_index or correct_option_indexes; its answer can never be
+            changed and it takes no added options.
         public_votes: Whether votes are public ("show who voted")
         close_date: Optional close date in ISO format (YYYY-MM-DD HH:MM:SS). It
             must fall in Telegram's window — at least 5 seconds and at most
@@ -277,7 +282,8 @@ async def create_poll(
         description_file: A local photo or file attached to the poll.
         option_files: One local path (or null) per option, attached to that option.
         allow_adding_options: Voters may add their own options.
-        allow_revoting: Voters may change their vote (default True).
+        allow_revoting: Voters may change their vote (default: yes for a poll; a quiz
+            never allows it).
         shuffle_options: Each voter sees the options in a random order.
         hide_results_until_close: Nobody sees the results until the poll closes.
         duration_seconds: Close the poll this many seconds after it is posted
@@ -327,6 +333,8 @@ async def create_poll(
             close_date,
             countries,
             option_files,
+            allow_revoting,
+            allow_adding_options,
         )
         if problem:
             return problem
@@ -377,18 +385,14 @@ async def create_poll(
 
         import random
 
-        if option_files is not None:
-            # An option with a file is sent as InputPollAnswer; Telegram assigns
-            # the option bytes itself.
-            answers = [
-                types.InputPollAnswer(text=poll_build.parse(option, parse_mode), media=media)
-                for option, media in zip(options, option_media)
-            ]
-        else:
-            answers = [
-                types.PollAnswer(text=poll_build.parse(option, parse_mode), option=bytes([i]))
-                for i, option in enumerate(options)
-            ]
+        # Every option goes out as InputPollAnswer and Telegram picks the option bytes.
+        # Measured 2026-09-27: a quiz sent with self-chosen bytes (PollAnswer) is refused
+        # with BAD_REQUEST even when every other field is right.
+        media_of = option_media or [None] * len(options)
+        answers = [
+            types.InputPollAnswer(text=poll_build.parse(option, parse_mode), media=media)
+            for option, media in zip(options, media_of)
+        ]
         poll = types.Poll(
             id=random.randint(0, 2**63 - 1),
             question=poll_build.parse(question, parse_mode),
@@ -396,13 +400,14 @@ async def create_poll(
             # Telethon 1.44 made `hash` a required argument on Poll. It caches
             # server-side results, so a poll being created sends 0.
             hash=0,
-            multiple_choice=multiple_choice,
+            # Several correct answers make a quiz multiple choice, as Telegram's own apps do.
+            multiple_choice=multiple_choice or len(correct) > 1,
             quiz=quiz_mode,
             public_voters=public_votes,
             close_date=close_date_obj,
             close_period=int(duration_seconds) if duration_seconds is not None else None,
             open_answers=allow_adding_options or None,
-            revoting_disabled=(not allow_revoting) or None,
+            revoting_disabled=True if quiz_mode else (allow_revoting is False) or None,
             shuffle_answers=shuffle_options or None,
             hide_results_until_close=hide_results_until_close or None,
             subscribers_only=members_only or None,
@@ -451,6 +456,11 @@ async def create_poll(
             [{"message_id": message_id, "question": display_text(question)}],
             {"chat_id": str(chat_id), "created": True},
         )
+    except RPCError as e:
+        if type(e).__name__.startswith("FloodWait"):
+            return log_and_format_error("create_poll", e, chat_id=chat_id)
+        # Telegram's error code names the setting it refused and carries no user text.
+        return f"Telegram refused the poll: {e.message}. Nothing was sent."
     except Exception as e:
         # The question and its options are user-supplied text. They identify
         # nothing a reader of the log needs and they are exactly what a failure

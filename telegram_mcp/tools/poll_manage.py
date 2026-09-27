@@ -261,9 +261,16 @@ async def get_poll_statistics(
         include_series: Also return the raw graph columns.
     """
     try:
-        cl = get_client(account)
-        await ensure_connected(cl)
-        entity = await resolve_entity(chat_id, cl)
+        cl, entity, _msg, _poll, results, error = await _poll_or_error(
+            chat_id, message_id, account
+        )
+        if error:
+            return error
+        if not getattr(results, "can_view_stats", False):
+            return (
+                f"Telegram offers no statistics for the poll on message {message_id} to this "
+                "account (can_view_stats is false in get_poll_results)."
+            )
         stats, sender = await _fetch_stats(
             cl, functions.stats.GetPollStatsRequest(peer=entity, msg_id=int(message_id))
         )
