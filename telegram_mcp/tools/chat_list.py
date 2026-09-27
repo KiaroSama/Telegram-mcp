@@ -7,6 +7,7 @@ read, archived) applies. Telegram has no call that lists a rule-based folder's c
 so this is the only way to answer "what is in My Bots".
 """
 
+import re
 import copy
 
 from telegram_mcp.paging import LIMITS, bounded
@@ -97,6 +98,57 @@ async def _self_id(cl) -> int:
     return utils.get_peer_id(await cl.get_me(input_peer=True))
 
 
+# How many of the latest chats are matched locally. One GetDialogs page: a chat made a
+# minute ago is at the top of the list but not yet in Telegram's search index.
+_RECENT_CHATS = 100
+
+
+def _local_match(query: str, entity) -> bool:
+    """Every query word starts a word of the chat's name or its @username (Telegram's rule)."""
+    words = re.split(r"[\W_]+", utils.get_display_name(entity).casefold())
+    username = (getattr(entity, "username", None) or "").casefold()
+    return all(
+        any(w.startswith(token) for w in words) or username.startswith(token)
+        for token in query.casefold().split()
+    )
+
+
+async def _local_candidates(cl, wanted: str) -> dict:
+    """``{peer id: (entity, raw dialog or None)}`` that Telegram's search leaves out.
+
+    contacts.search excludes the owner's contacts ("searches among the user's contacts
+    can be handled locally by the client", core.telegram.org/method/contacts.search) and
+    misses a chat its index does not have yet (measured 2026-09-28: a channel created a
+    minute before). Both gaps are closed with one request each - the contact list, and
+    the latest page of the chat list - never a walk of every dialog.
+    """
+    found: dict = {}
+    contacts = await cl(functions.contacts.GetContactsRequest(hash=0))
+    for user in getattr(contacts, "users", None) or []:
+        if _local_match(wanted, user):
+            found[utils.get_peer_id(user)] = (user, None)
+    recent = await cl(
+        functions.messages.GetDialogsRequest(
+            offset_date=None,
+            offset_id=0,
+            offset_peer=types.InputPeerEmpty(),
+            limit=_RECENT_CHATS,
+            hash=0,
+        )
+    )
+    entities = {
+        utils.get_peer_id(e): e
+        for e in list(getattr(recent, "chats", []) or [])
+        + list(getattr(recent, "users", []) or [])
+    }
+    for raw in getattr(recent, "dialogs", None) or []:
+        key = utils.get_peer_id(raw.peer)
+        entity = entities.get(key)
+        if entity is not None and _local_match(wanted, entity):
+            found[key] = (entity, raw)
+    return found
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Search My Chats",
@@ -114,8 +166,10 @@ async def search_my_chats(
     Find the owner's own chats by part of a name or username, archived ones included.
 
     Use this first when the owner names a chat ("Numera Group Bot 4", "my bots"). It is
-    Telegram's own search of the owner's chats, so it answers in about a second on any
-    account; it matches the start of words in names, titles and usernames.
+    Telegram's own search of the owner's chats, plus the owner's contacts and latest 100
+    chats matched here (Telegram's search leaves contacts out and misses a chat created
+    minutes ago), so it answers in a second or two on any account; it matches the start
+    of words in names, titles and usernames.
 
     Args:
         query: Words from the chat's name, title or @username; case does not matter.
@@ -154,10 +208,19 @@ async def search_my_chats(
             if k in entities
         ]
         raws = {}
-        if mine:
-            peers = [types.InputDialogPeer(peer=utils.get_input_peer(entities[k])) for k in mine]
+        for key, (entity, raw) in (await _local_candidates(cl, wanted)).items():
+            entities.setdefault(key, entity)
+            if raw is not None:
+                raws[key] = raw
+            if key not in mine:
+                mine.append(key)
+        missing = [k for k in mine if k not in raws]
+        if missing:
+            peers = [
+                types.InputDialogPeer(peer=utils.get_input_peer(entities[k])) for k in missing
+            ]
             dialogs = await cl(functions.messages.GetPeerDialogsRequest(peers=peers))
-            raws = {utils.get_peer_id(d.peer): d for d in dialogs.dialogs}
+            raws.update({utils.get_peer_id(d.peer): d for d in dialogs.dialogs})
         self_id = await _self_id(cl)
         rows = []
         more = False
