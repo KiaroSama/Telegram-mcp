@@ -96,6 +96,9 @@ class FakeClient:
         self.answers = {}
         self.peer_dialog_calls = 0
         self.search_extra = []
+        # Chats Telegram's search index does not have yet (a channel created a minute ago).
+        self.not_indexed = set()
+        self.recent_calls = []
 
     async def iter_dialogs(self, *args, **kwargs):
         raise AssertionError("walking every dialog outlives the tool budget on a real account")
@@ -117,14 +120,33 @@ class FakeClient:
                 users=[],
                 state=None,
             )
+        if isinstance(request, functions.contacts.GetContactsRequest):
+            users = [d.entity for d in self.dialogs if getattr(d.entity, "contact", False)]
+            return types.contacts.Contacts(contacts=[], saved_count=0, users=users)
+        if isinstance(request, functions.messages.GetDialogsRequest):
+            self.recent_calls.append(request)
+            shown = [d for d in self.dialogs if not d.archived][: request.limit]
+            return types.messages.Dialogs(
+                dialogs=[d.dialog for d in shown],
+                messages=[],
+                chats=[d.entity for d in shown if not isinstance(d.entity, types.User)],
+                users=[d.entity for d in shown if isinstance(d.entity, types.User)],
+            )
         if isinstance(request, functions.contacts.SearchRequest):
             # Telegram's own search: the owner's chats in my_results, strangers in results.
+            # Like the real server it leaves the owner's CONTACTS out ("searches among the
+            # user's contacts can be handled locally by the client") and misses chats its
+            # index does not have yet.
             q = request.q.casefold()
             hits = [
                 d.entity
                 for d in self.dialogs
-                if q in d.name.casefold()
-                or q in (getattr(d.entity, "username", "") or "").casefold()
+                if not getattr(d.entity, "contact", False)
+                and d.id not in self.not_indexed
+                and (
+                    q in d.name.casefold()
+                    or q in (getattr(d.entity, "username", "") or "").casefold()
+                )
             ] + list(self.search_extra)
             stranger = types.User(id=99, first_name="Numera Stranger", access_hash=9)
             return types.contacts.Found(
@@ -180,7 +202,9 @@ async def test_search_matches_name_or_username_ignoring_case(client):
     assert rows[0]["archived"] is False
     assert rows[0]["pinned"] is False and rows[0]["unread"] == 0
     assert rows[0]["muted_until"] is None and rows[0]["silent"] is False
-    assert client.peer_dialog_calls == 1, "the found chats' dialogs are read in one request"
+    assert (
+        client.peer_dialog_calls <= 1
+    ), "the found chats' dialogs are read in one request at most"
 
 
 @pytest.mark.asyncio
@@ -337,3 +361,41 @@ async def test_a_deleted_chat_still_answering_with_an_empty_dialog_is_not_listed
     GetPeerDialogs still answered with a dialog for it - one with no last message."""
     client.dialogs[0].dialog.top_message = 0
     assert "No chat" in await mod.search_my_chats(query="numeragroup4")
+
+
+@pytest.mark.asyncio
+async def test_a_chat_the_search_index_does_not_have_yet_is_found_in_the_recent_list(client):
+    """Live 2026-09-28: a private channel created minutes before was not in Telegram's
+    search results at all; the chat list shows it, so the recent chats are searched too."""
+    new = types.Channel(
+        id=888,
+        title="Zebraprobe search check",
+        photo=types.ChatPhotoEmpty(),
+        date=None,
+        broadcast=True,
+        access_hash=8,
+    )
+    client.dialogs.insert(0, _Dialog(new))
+    client.not_indexed.add(utils.get_peer_id(new))
+    rows = _rows(await mod.search_my_chats(query="zebraprobe"))
+    assert [r["name"] for r in rows] == ["Zebraprobe search check"]
+    (recent,) = client.recent_calls
+    assert recent.limit == 100
+
+
+@pytest.mark.asyncio
+async def test_a_contact_is_found_although_the_server_search_leaves_contacts_out(client):
+    rows = _rows(await mod.search_my_chats(query="sara"))
+    assert [r["name"] for r in rows] == ["Sara"] and rows[0]["archived"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_chat_found_by_several_sources_is_listed_once(client):
+    rows = _rows(await mod.search_my_chats(query="numera"))
+    assert sorted(r["name"] for r in rows) == ["Numera Group Bot 4", "Numera Talk"]
+
+
+@pytest.mark.asyncio
+async def test_local_matching_is_by_word_start_like_telegram(client):
+    rows = _rows(await mod.search_my_chats(query="talk numera"))
+    assert [r["name"] for r in rows] == ["Numera Talk"]
