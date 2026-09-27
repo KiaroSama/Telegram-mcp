@@ -230,6 +230,7 @@ assumed missing and is not. Nothing below needs building.
 |---|---|
 | Create a channel, private or public | `create_channel` (an optional `username` makes it public; the name is checked BEFORE the chat exists) |
 | Create a group | `create_group`, then `enable_forum_topics` for topic mode |
+| Member tags (the short label next to a member's name) | `set_member_tag` (empty removes); tags read back in `get_participants`; `set_default_chat_permissions(edit_rank=...)` for self-tags |
 | Find, pin and flag your own chats | `search_my_chats` (name/username, archived included, optionally inside a folder), `pin_chat` / `unpin_chat` (All chats or a folder), `mark_chat_unread`; folders themselves: `list_folders`, `get_folder`, `add_chat_to_folder` |
 | A chat's notifications | `mute_chat` (days/hours/minutes or forever), `unmute_chat`, `set_chat_sound_disabled`, `set_chat_tone`, `list_saved_sounds`, `remove_saved_sound` |
 | Clear or delete a chat | `clear_chat_history` (the chat stays), `delete_chat` (leaves a group or channel); `both_sides` is required |

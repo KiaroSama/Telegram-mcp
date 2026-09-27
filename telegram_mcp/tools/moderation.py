@@ -205,6 +205,7 @@ async def set_default_chat_permissions(
     change_info: bool = False,
     invite_users: bool = True,
     pin_messages: bool = False,
+    edit_rank: bool = True,
     until_date: int = 0,
     account: str = None,
 ) -> str:
@@ -227,6 +228,7 @@ async def set_default_chat_permissions(
         change_info: allow members to change group info (title, photo, description)
         invite_users: allow members to invite others
         pin_messages: allow members to pin messages
+        edit_rank: allow members to set their own member tag (default True, as before)
         until_date: restriction expiry as Unix timestamp, 0 = permanent (default)
     """
     try:
@@ -246,6 +248,7 @@ async def set_default_chat_permissions(
             change_info=not change_info,
             invite_users=not invite_users,
             pin_messages=not pin_messages,
+            edit_rank=not edit_rank,
         )
         await cl(
             functions.messages.EditChatDefaultBannedRightsRequest(

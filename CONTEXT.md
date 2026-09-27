@@ -275,3 +275,11 @@ _Avoid_: clear history, delete group
 Whether a deletion also removes the other person's copy. Never assumed: the owner says
 so each time.
 _Avoid_: revoke, for everyone
+
+### Groups
+
+**Member tag**:
+A short label (up to 16 characters, no emoji) shown next to a member's name in a group.
+An admin who may manage tags sets anyone's; a member sets only their own, and only when the
+group allows it. An admin's tag is their admin title - the same thing, not a second label.
+_Avoid_: rank, custom title, badge
