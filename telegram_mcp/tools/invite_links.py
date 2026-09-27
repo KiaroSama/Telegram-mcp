@@ -78,6 +78,9 @@ def _describe(invite, names: Optional[dict] = None) -> dict:
         "usage_limit": getattr(invite, "usage_limit", None),
         "pending_join_requests": getattr(invite, "requested", None),
     }
+    pricing = getattr(invite, "subscription_pricing", None)
+    if pricing is not None:
+        described["monthly_fee_stars"] = getattr(pricing, "amount", None)
     title = getattr(invite, "title", None)
     if title:
         described["title"] = display_name(title)

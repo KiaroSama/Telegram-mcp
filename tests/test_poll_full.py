@@ -392,3 +392,58 @@ async def test_closing_a_quiz_sends_index_answers_and_a_whole_explanation(wire):
     (request,) = c.of(functions.messages.EditMessageRequest)
     assert request.media.correct_answers == [0, 2]
     bytes(request)  # serialises: the encoder accepts the explanation as sent
+
+
+BROADCAST = tl.Channel(
+    id=779, title="Chan", photo=tl.ChatPhotoEmpty(), date=None, broadcast=True, access_hash=9
+)
+
+
+@pytest.fixture
+def channel(wire, monkeypatch):
+    async def _resolve(value, cl=None, account=None):
+        return BROADCAST
+
+    monkeypatch.setattr(poll_creation, "resolve_entity", _resolve)
+    return wire
+
+
+@pytest.mark.asyncio
+async def test_a_channel_poll_is_anonymous_by_default(channel):
+    # Live 2026-09-28: a poll with visible voters in a broadcast channel is BAD_REQUEST.
+    c = channel()
+    await poll_creation.create_poll("chan", "Q?", ["A", "B"])
+    _, _, poll = _sent_poll(c)
+    assert not poll.public_voters
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs, why",
+    [
+        ({"public_votes": True}, "anonymous"),
+        ({"allow_adding_options": True}, "allow_adding_options"),
+    ],
+)
+async def test_what_a_channel_poll_cannot_be_is_refused_before_sending(channel, kwargs, why):
+    c = channel()
+    text = await poll_creation.create_poll("chan", "Q?", ["A", "B"], **kwargs)
+    assert c.of(functions.messages.SendMediaRequest) == [] and why in text
+
+
+@pytest.mark.asyncio
+async def test_an_anonymous_poll_cannot_take_added_options(wire):
+    # Live 2026-09-28: ANONYMOUS_OPEN_INVALID.
+    c = wire()
+    text = await poll_creation.create_poll(
+        "chat", "Q?", ["A", "B"], public_votes=False, allow_adding_options=True
+    )
+    assert c.of(functions.messages.SendMediaRequest) == [] and "public_votes" in text
+
+
+@pytest.mark.asyncio
+async def test_a_group_poll_still_shows_voters_by_default(wire):
+    c = wire()
+    await poll_creation.create_poll("chat", "Q?", ["A", "B"])
+    _, _, poll = _sent_poll(c)
+    assert poll.public_voters
