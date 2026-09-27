@@ -188,6 +188,7 @@ FREE_WRITES = frozenset(
         "set_ghost_mode",
         "set_join_request",
         "set_join_to_send",
+        "set_member_tag",
         "set_participants_hidden",
         "set_prehistory_hidden",
         "set_secret_chat_timer",
