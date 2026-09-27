@@ -13,6 +13,7 @@ from telethon.errors import RPCError
 
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
+from telegram_mcp.forum import topic_reply_to_request
 from telegram_mcp.message_view import display_text
 from telegram_mcp.tools import poll_build
 from telegram_mcp.tools.channel_stats import _describe_graph, _fetch_stats
@@ -295,6 +296,14 @@ async def get_poll_statistics(
         )
 
 
+def _part_reply_to(message_id: int, option, task):
+    """The shared reply target (``forum``), narrowed to one option or one task."""
+    target = topic_reply_to_request(reply_to_message_id=message_id)
+    target.poll_option = option
+    target.todo_item_id = task
+    return target
+
+
 async def _part(cl, entity, chat_id, message_id, option_index, task_id, account):
     """``(poll option bytes, task id, error)`` for exactly one named part of a message."""
     if (option_index is None) == (task_id is None):
@@ -367,9 +376,7 @@ async def reply_to_part(
                 peer=entity,
                 message=body.text,
                 entities=body.entities or None,
-                reply_to=types.InputReplyToMessage(
-                    reply_to_msg_id=int(message_id), poll_option=option, todo_item_id=task
-                ),
+                reply_to=_part_reply_to(int(message_id), option, task),
                 random_id=random.randint(0, 2**63 - 1),
             )
         )
