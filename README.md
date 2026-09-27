@@ -80,7 +80,7 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
 
 ## What It Can Do
 
-The server registers **283 MCP tools**. That count is measured, not estimated — see
+The server registers **288 MCP tools**. That count is measured, not estimated — see
 [docs/api-coverage.md](docs/api-coverage.md), which also records what Telegram has that this
 server deliberately does not. The tools group into these areas:
 
@@ -107,6 +107,10 @@ server deliberately does not. The tools group into these areas:
   who already joined stay — revoking is not a removal), and `list_invite_links` reads them back
   with `usage` against `usage_limit` so an exhausted link is visible rather than merely dead.
   `list_join_requests` and `approve_join_request` work the approval queue.
+  `list_invite_link_admins` shows the links other admins made, `list_invite_links(admin=...)`
+  lists them with their creator, `list_link_joins` names who joined through a link,
+  `create_paid_invite_link` charges a monthly fee in Stars (private channels, always asked),
+  `get_invite_link_qr` saves a QR code, and `delete_revoked_invite_links` clears revoked ones.
 
   Two behaviours are worth knowing before you call any of it. `create_invite_link` does **not**
   touch the chat's primary link, unlike `export_chat_invite`, which replaces the primary and

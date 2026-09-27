@@ -262,9 +262,9 @@ async def test_the_listing_says_it_only_covers_this_accounts_links(wire):
         _Client({"GetExportedChatInvitesRequest": SimpleNamespace(invites=[_invite()], users=[])})
     )
 
-    answer = await mod.list_invite_links(chat_id=-100123, account="a")
+    answer = json.loads(await mod.list_invite_links(chat_id=-100123, account="a"))
 
-    assert "Only links THIS account created" in answer
+    assert answer["admin"] == "this account" and "One admin's links only" in answer["note"]
 
 
 @pytest.mark.asyncio

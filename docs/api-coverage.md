@@ -194,6 +194,17 @@ Phase 1b. Two things learned while building them are worth more than the count:
 | Devices | `set_authorization_calls`, `set_secret_chats_only_device` | `tools/authorizations.py` |
 | Kick (ban lifted at once) | `kick_user` | `tools/moderation.py` |
 
+### Added 2026-09-27: the rest of the Invite links screen (283 → **288**)
+
+| Capability | Tools | Module |
+|---|---|---|
+| Who created a link; any admin's links | `list_invite_links(admin=...)` reports `created_by` | `tools/invite_links.py` |
+| Links created by other admins | `list_invite_link_admins` (live and revoked counts) | `tools/invite_link_admin.py` |
+| Who joined through a link | `list_link_joins` (who, when, approved by, via folder; expired subscriptions) | `tools/invite_link_admin.py` |
+| Paid links (monthly Stars) | `create_paid_invite_link`, always asked | `tools/invite_link_admin.py` |
+| QR code of a link | `get_invite_link_qr` (PNG under files/downloads) | `tools/invite_link_admin.py` |
+| Clear revoked links | `delete_revoked_invite_links`, always asked | `tools/invite_link_admin.py` |
+
 ### Still not reachable, lower value, build on demand
 
 Pinned-dialog ordering, fact-check, todo lists, history

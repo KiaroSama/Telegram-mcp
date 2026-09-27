@@ -73,6 +73,7 @@ LIMITS: dict[str, int] = {
     # reasoning can actually use.
     "get_poll_voters": 200,
     "list_unread_poll_votes": 100,
+    "list_link_joins": 100,
     "get_message_reactions": 200,
     "get_user_photos": 100,
     "list_photos": 100,  # ids and dates only; the images are fetched separately

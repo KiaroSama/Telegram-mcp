@@ -69,6 +69,7 @@ from telegram_mcp.tools.reply_keyboard import *
 from telegram_mcp.tools.checklists import *
 from telegram_mcp.tools.poll_manage import *
 from telegram_mcp.tools.stats_analysis import *
+from telegram_mcp.tools.invite_link_admin import *
 from telegram_mcp.tools.communities import *
 from telegram_mcp.tools.community_moderation import *
 
