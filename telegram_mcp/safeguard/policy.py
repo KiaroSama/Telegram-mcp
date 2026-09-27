@@ -39,6 +39,7 @@ __all__ = [
 # privacy, joining by invite link.
 GATED = frozenset(
     {
+        "answer_reply_button",
         "ban_community_member",
         "ban_user",
         "block_user",
@@ -94,6 +95,7 @@ SEND = frozenset(
         "create_poll",
         "forward_message",
         "forward_messages",
+        "press_reply_button",
         "reply_to_message",
         "schedule_message",
         "send_album",

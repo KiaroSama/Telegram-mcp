@@ -255,3 +255,51 @@ def describe_keyboard(msg) -> Optional[dict[str, Any]]:
 def find_button(buttons: list[dict[str, Any]], index: int) -> Optional[dict[str, Any]]:
     """The described button at ``index``, or ``None``."""
     return next((b for b in buttons if b["index"] == index), None)
+
+
+# A reply-keyboard button whose tap hands the bot something about the owner, or
+# opens something, instead of sending its label. Only answer_reply_button, which
+# the safeguard always puts in front of the owner, may press one.
+SENSITIVE_KINDS = frozenset(
+    {"request_phone", "request_geo", "request_peer", "request_poll", "webview"}
+)
+
+_DEFINES_REPLY_KEYBOARD = {
+    "ReplyKeyboardMarkup": "shown",
+    "ReplyKeyboardHide": "hidden",
+    "ReplyKeyboardForceReply": "force_reply",
+}
+
+
+def active_keyboard_message(messages) -> tuple[Optional[str], Any]:
+    """``(state, message)`` for the reply keyboard a chat shows now, or ``(None, None)``.
+
+    A reply keyboard belongs to the chat, not to the newest message: it stays on
+    screen until a later message replaces or removes it. Telegram Desktop's rule
+    (history.cpp): walking newest to oldest, the first message from someone else
+    that sets, hides or force-replies a keyboard decides, and a ``selective`` one
+    only counts when it addresses the owner. ``messages`` is newest first.
+
+    ponytail: groups skip Desktop's per-bot refinement (a hide from one bot does
+    not clear another bot's keyboard there); model it if a group ever disagrees.
+    """
+    for msg in messages:
+        if getattr(msg, "out", False):
+            continue
+        markup = getattr(msg, "reply_markup", None)
+        state = _DEFINES_REPLY_KEYBOARD.get(type(markup).__name__)
+        if state is None:
+            continue
+        if getattr(markup, "selective", False) and not getattr(msg, "mentioned", False):
+            continue
+        return state, msg
+    return None, None
+
+
+def press_route(kind: str) -> Optional[str]:
+    """Which tool presses a reply-keyboard button of this kind, if any."""
+    if kind == "plain":
+        return "press_reply_button"
+    if kind in SENSITIVE_KINDS:
+        return "answer_reply_button"
+    return None

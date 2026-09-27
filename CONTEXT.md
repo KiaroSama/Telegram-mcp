@@ -69,6 +69,30 @@ account. Bound to the button's position, kind, raw label and raw payload, so a b
 that keeps the label and changes the payload invalidates it.
 _Avoid_: button id, handle, key
 
+**Glass button**:
+A button attached under one message. Pressing it answers a callback; nothing is
+sent into the chat.
+_Avoid_: inline keyboard button (in prose), menu button
+
+**Reply keyboard**:
+A set of buttons a bot puts in place of the operator's typing keyboard. Tapping one
+sends a message into the chat as the operator: its own label as text, or, for a
+**sensitive button**, the operator's phone number, a location, a chosen chat, a
+poll, or the opening of a Mini App.
+_Avoid_: submenu, bottom menu, custom keyboard
+
+**Active reply keyboard**:
+The one reply keyboard a chat shows now. It belongs to the chat, not to the newest
+message: the latest message a bot sent that set or removed a reply keyboard decides
+it, however many messages came after.
+_Avoid_: current menu, last keyboard
+
+**Sensitive button**:
+A reply-keyboard button whose tap hands the bot something about the operator, or
+opens something, rather than sending its label. Pressed only with the owner's
+approval.
+_Avoid_: request button, special button
+
 **Command preview**:
 The set of bot commands a Telegram client offers in a chat when the operator types
 `/`. A property of the chat and the bots in it, not of any one message.

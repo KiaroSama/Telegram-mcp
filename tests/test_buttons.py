@@ -258,7 +258,7 @@ async def test_inspect_buttons_names_a_reply_keyboard_for_what_it_is(_wire):
 
     assert payload["keyboard_type"] == "reply"
     assert "REPLY keyboard" in payload["keyboard_note"]
-    assert "send_message" in payload["keyboard_note"]
+    assert "press_reply_button" in payload["keyboard_note"]
 
 
 @pytest.mark.asyncio
@@ -270,7 +270,7 @@ async def test_clicking_a_reply_keyboard_button_is_refused_without_a_request(_wi
         1, 7, 0, expect_text="Confirm", press_token=_UNUSABLE_TOKEN, account="default"
     )
 
-    assert "REPLY keyboard" in result and "send_message" in result
+    assert "REPLY keyboard" in result and "press_reply_button" in result
     assert client.calls == [], "a callback was sent for a reply-keyboard button"
 
 

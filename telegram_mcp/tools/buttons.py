@@ -16,9 +16,11 @@ from telegram_mcp.runtime import *
 from telegram_mcp.button_view import (
     MAX_MACHINE_VALUE,
     PREMIUM_EMOJI_NOTE,
+    active_keyboard_message,
     button_detail,
     describe_keyboard,
     find_button,
+    press_route,
 )
 from telegram_mcp.message_view import display_name
 
@@ -149,22 +151,70 @@ def _bind_tokens(buttons: list[dict[str, Any]], msg, entity, account) -> None:
             described["press_token"] = _sign(facts)
 
 
+# How far back the active reply keyboard is looked for: one request's worth.
+ACTIVE_LOOKBACK = 100
+
+
 async def _message_with_keyboard(chat_id, message_id: Optional[int], account: Optional[str]):
-    """``(client, entity, message)`` for one message. Raises on a missing chat.
+    """``(client, entity, message, recent)`` for one message. Raises on a missing chat.
 
     ``message_id=None`` means the chat's most recent message, which is what a
     caller wants when it is looking at a keyboard that just arrived. Only
     `inspect_buttons` passes None: pressing a button on "whatever is latest" is a
     different and much worse idea, so `click_button` names its message and this
-    branch never runs for it.
+    branch never runs for it. That branch reads the last ``ACTIVE_LOOKBACK``
+    messages in the same request, newest first, because the reply keyboard on
+    screen can come from any of them; ``recent`` is empty otherwise.
     """
     cl = get_client(account)
     await ensure_connected(cl)
     entity = await resolve_entity(chat_id, cl)
     if message_id is None:
-        latest = await cl.get_messages(entity, limit=1)
-        return cl, entity, (latest[0] if latest else None)
-    return cl, entity, await cl.get_messages(entity, ids=message_id)
+        recent = list(await cl.get_messages(entity, limit=ACTIVE_LOOKBACK) or [])
+        return cl, entity, (recent[0] if recent else None), recent
+    return cl, entity, await cl.get_messages(entity, ids=message_id), []
+
+
+def describe_active_keyboard(recent: list) -> dict[str, Any]:
+    """The reply keyboard the chat shows now, described for a caller.
+
+    Each button says which tool presses it (``press_with``): a plain one goes to
+    press_reply_button, a sensitive one to answer_reply_button, and a button
+    disguised as another (a text collision) to neither.
+    """
+    state, msg = active_keyboard_message(recent)
+    if state is None:
+        return {
+            "state": "none",
+            "note": (
+                f"None of the last {len(recent)} messages (the look-back is "
+                f"{ACTIVE_LOOKBACK}) set a reply keyboard, so none is on screen as far "
+                "as this can tell."
+            ),
+        }
+    described: dict[str, Any] = {"state": state, "message_id": msg.id}
+    if state == "shown":
+        buttons = describe_keyboard(msg)["buttons"]
+        _mark_text_collisions(buttons, msg)
+        for button in buttons:
+            button.pop("press_note", None)
+            button["press_with"] = (
+                None if button.get("text_collision") else press_route(button["kind"])
+            )
+        described["buttons"] = buttons
+        markup = msg.reply_markup
+        if getattr(markup, "single_use", False):
+            described["single_use"] = True
+        placeholder = getattr(markup, "placeholder", None)
+        if placeholder:
+            described["placeholder"] = display_name(placeholder)
+    elif state == "hidden":
+        described["note"] = "The bot removed its reply keyboard in this message."
+    else:
+        described["note"] = (
+            "The bot asked for a reply to this message; there are no buttons to press."
+        )
+    return described
 
 
 async def _resolve_icons(cl, buttons: list) -> None:
@@ -280,24 +330,28 @@ async def inspect_buttons(
     found in field values.
     """
     try:
-        cl, entity, msg = await _message_with_keyboard(chat_id, message_id, account)
+        cl, entity, msg, recent = await _message_with_keyboard(chat_id, message_id, account)
         wanted = f"Message {message_id}" if message_id is not None else "The latest message"
         if not msg:
             return f"{wanted} was not found in chat {chat_id}."
 
+        active = describe_active_keyboard(recent) if message_id is None else None
         keyboard = describe_keyboard(msg)
-        if keyboard is None:
-            return f"{wanted} (id {msg.id}) carries no keyboard of either kind."
+        if keyboard is None and (active is None or active["state"] != "shown"):
+            answer = f"{wanted} (id {msg.id}) carries no keyboard of either kind."
+            if active is not None:
+                answer += f" No reply keyboard is active: {active['note']}"
+            return answer
 
-        buttons = keyboard["buttons"]
+        buttons = keyboard["buttons"] if keyboard else []
         _mark_text_collisions(buttons, msg)
-        if keyboard["is_glass"]:
+        if keyboard and keyboard["is_glass"]:
             _bind_tokens(buttons, msg, entity, account)
         if resolve_icons:
-            await _resolve_icons(cl, buttons)
+            await _resolve_icons(cl, buttons + ((active or {}).get("buttons") or []))
         metadata = {
             "message_id": msg.id,
-            "keyboard_type": keyboard["keyboard_type"],
+            "keyboard_type": keyboard["keyboard_type"] if keyboard else None,
             "button_count": len(buttons),
             "pressable_indexes": [b["index"] for b in buttons if b["pressable"]],
             "press_token": (
@@ -309,16 +363,18 @@ async def inspect_buttons(
             "premium_emoji": PREMIUM_EMOJI_NOTE,
             "note": _UNTRUSTED,
         }
-        if not keyboard["is_glass"]:
+        if keyboard and not keyboard["is_glass"]:
             # Both kinds arrive in reply_markup.rows, so reporting one as the
             # other is a single missed type check away - and it would tell the
             # caller a button is pressable when nothing can press it.
             metadata["keyboard_note"] = (
                 "This is a REPLY keyboard, not the glass keyboard: it replaces the user's "
                 "on-screen keyboard and each button sends its own text as a new message. "
-                "No callback can reach it, so none of these are pressable here. Use "
-                "send_message with the button's text to do what tapping it would do."
+                "No callback can reach it, so none of these are pressable here. If it is "
+                "the active reply keyboard, press_reply_button presses its plain buttons."
             )
+        if active is not None:
+            metadata["active_reply_keyboard"] = active
         return format_tool_result(buttons, metadata)
     except Exception as e:
         return log_and_format_error("inspect_buttons", e, chat_id=chat_id, message_id=message_id)
@@ -407,7 +463,7 @@ async def click_button(
                 "Run inspect_buttons on this message and pass what it returns."
             )
 
-        cl, entity, msg = await _message_with_keyboard(chat_id, message_id, account)
+        cl, entity, msg, _ = await _message_with_keyboard(chat_id, message_id, account)
         if not msg:
             return f"Message {message_id} was not found in chat {chat_id}."
 
@@ -418,7 +474,7 @@ async def click_button(
             return (
                 f"Message {message_id} carries a REPLY keyboard, not glass buttons. Its "
                 "buttons send their own text as a message; there is no callback to answer. "
-                "Use send_message with the button's text instead."
+                "Use press_reply_button instead."
             )
 
         buttons = keyboard["buttons"]
