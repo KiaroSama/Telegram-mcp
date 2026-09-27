@@ -9,6 +9,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from telethon.tl import types as tl
 from telethon.tl.types import RequestPeerTypeChat
 
 from telegram_mcp.button_view import describe_button, describe_keyboard, describe_style
@@ -530,3 +531,74 @@ async def test_click_button_names_only_the_one_that_is_missing(_wire):
     assert "press_token" in refusal
     assert "expect_text -" not in refusal, "a supplied argument was reported as missing"
     assert "1 required argument is missing" in refusal
+
+
+# --- colour and link in message listings (spec 014) -------------------------
+#
+# A listing showed only labels, so the green/red state of a settings panel and the
+# link under a "View" button needed a second call per message.
+
+
+def _styled(type_name, text, background=None, **fields):
+    style = None
+    if background:
+        style = tl.KeyboardButtonStyle(**{f"bg_{background}": True})
+    return _button(type_name, text=text, style=style, **fields)
+
+
+def _panel():
+    return _message(
+        [
+            [
+                _styled("InlineButtonTypeCallback", "Photo", "success", data=b"p"),
+                _styled("InlineButtonTypeCallback", "File", data=b"f"),
+            ],
+            [
+                _styled("InlineButtonTypeUrl", "View", url="https://t.me/addstickers/x"),
+                _styled("InlineButtonTypeWebView", "App", url="https://app.example"),
+            ],
+            [_styled("InlineButtonTypeCallback", "Close", "danger", data=b"c")],
+            [_styled("InlineButtonTypeCallback", "Owners", "primary", data=b"o")],
+        ]
+    )
+
+
+def test_a_listing_reports_colours_and_links_only_where_there_are_some():
+    from telegram_mcp.button_view import button_styles
+
+    assert button_styles(_panel()) == [
+        {"text": "Photo", "background": "success"},
+        {"text": "View", "url": "https://t.me/addstickers/x"},
+        {"text": "Close", "background": "danger"},
+        {"text": "Owners", "background": "primary"},
+    ]
+
+
+def test_a_mini_app_address_is_not_reported_as_a_link():
+    from telegram_mcp.button_view import button_styles
+
+    assert all(entry["text"] != "App" for entry in button_styles(_panel()))
+
+
+def test_a_message_without_a_keyboard_has_no_styles():
+    from telegram_mcp.button_view import button_styles
+
+    assert button_styles(SimpleNamespace(id=1, reply_markup=None)) == []
+
+
+def test_message_to_dict_adds_styles_and_keeps_the_labels():
+    import datetime
+
+    from telegram_mcp.tools.messages_view import message_to_dict
+
+    msg = _panel()
+    msg.date = datetime.datetime(2026, 9, 27, tzinfo=datetime.timezone.utc)
+    msg.message, msg.sender, msg.fwd_from, msg.forward = "panel", None, None, None
+    msg.buttons = [
+        [SimpleNamespace(text=b.text) for b in row.buttons] for row in msg.reply_markup.rows
+    ]
+
+    row = message_to_dict(msg)
+
+    assert row["buttons"] == ["Photo", "File", "View", "App", "Close", "Owners"]
+    assert {"text": "View", "url": "https://t.me/addstickers/x"} in row["button_styles"]

@@ -303,3 +303,34 @@ def press_route(kind: str) -> Optional[str]:
     if kind in SENSITIVE_KINDS:
         return "answer_reply_button"
     return None
+
+
+def button_styles(msg) -> list[dict[str, Any]]:
+    """The buttons of a message that carry a colour or a link, for a message listing.
+
+    A listing names buttons by label only, which drops what a person sees at a
+    glance: a settings panel's green "on" options and red "close", and a "View"
+    button that is a link. Reported in inspect_buttons' own terms (``background``,
+    cleaned ``url``) so one vocabulary covers both. Only link kinds count as links:
+    a Mini App button also carries an address, and calling it a link would invite
+    opening it as one. Plain buttons are left out; the label list is unchanged.
+    """
+    styled: list[dict[str, Any]] = []
+    rows = getattr(getattr(msg, "reply_markup", None), "rows", None) or []
+    for row in rows:
+        for button in getattr(row, "buttons", None) or []:
+            text = display_name(getattr(button, "text", None) or "")
+            if not text:
+                continue
+            entry: dict[str, Any] = {"text": text}
+            background = (describe_style(button) or {}).get("background")
+            if background:
+                entry["background"] = background
+            detail = button_detail(button)
+            kind = _BUTTON_KINDS.get(type(detail).__name__, ("unknown", False))[0]
+            url = getattr(detail, "url", None)
+            if url and kind in ("url", "url_auth"):
+                entry["url"] = display_name(url, max_length=MAX_MACHINE_VALUE)
+            if len(entry) > 1:
+                styled.append(entry)
+    return styled
