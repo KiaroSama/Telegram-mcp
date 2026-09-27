@@ -35,6 +35,8 @@ __all__ = [
     "list_authorizations",
     "terminate_authorization",
     "set_authorization_secret_chats",
+    "set_authorization_calls",
+    "set_secret_chats_only_device",
 ]
 
 
@@ -255,3 +257,107 @@ async def set_authorization_secret_chats(
         return f"Accepting secret chats is now {state} for {_describe(target)}."
     except Exception as e:
         return log_and_format_error("set_authorization_secret_chats", e)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Set Authorization Calls",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=True,
+        readOnlyHint=False,
+    )
+)
+@with_account(readonly=False)
+async def set_authorization_calls(hash: int, accept_calls: bool, account: str = None) -> str:
+    """
+    Turn "accept calls" on or off for ONE named device.
+
+    The per-device switch in Telegram's Devices screen, reported by
+    `list_authorizations` as `accept_calls`. With it off, that device does not ring
+    for incoming calls; the account's other devices are unaffected. Reversible.
+    Telegram stores it negated ("calls disabled"); True here means the device
+    ACCEPTS calls. The secret-chat switch is left exactly as it is.
+
+    Args:
+        hash: The `hash` of the device, from `list_authorizations`.
+        accept_calls: True to let that device accept calls, False to refuse them.
+    """
+    try:
+        cl = get_client(account)
+        await ensure_connected(cl)
+        target = await _find(cl, hash)
+        if target is None:
+            return _no_such_hash("nothing was changed")
+        applied = await cl(
+            functions.account.ChangeAuthorizationSettingsRequest(
+                hash=hash, call_requests_disabled=not accept_calls
+            )
+        )
+        state = "ON" if accept_calls else "OFF"
+        if applied is not True:
+            return (
+                f"Telegram did not confirm the change for {_describe(target)}: it answered "
+                f"{applied!r} instead of true, so accepting calls may or may not be {state} "
+                "there now. Read list_authorizations to see the state Telegram holds."
+            )
+        return f"Accepting calls is now {state} for {_describe(target)}."
+    except Exception as e:
+        return log_and_format_error("set_authorization_calls", e)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Set Secret Chats Only Device",
+        openWorldHint=True,
+        destructiveHint=True,
+        idempotentHint=True,
+        readOnlyHint=False,
+    )
+)
+@with_account(readonly=False)
+async def set_secret_chats_only_device(hash: int, account: str = None) -> str:
+    """
+    Make ONE device the only one that accepts new secret chats.
+
+    Turns "accept secret chats" on for the named device and off for every other
+    device of this account, so a new secret chat reaches exactly that device.
+    Devices already in the wanted state are not touched; each change is listed.
+    Existing secret chats are unaffected. Calls are left as they are.
+
+    Args:
+        hash: The `hash` of the device that keeps secret chats, from `list_authorizations`.
+    """
+    try:
+        cl = get_client(account)
+        await ensure_connected(cl)
+        answer = await cl(functions.account.GetAuthorizationsRequest())
+        devices = list(getattr(answer, "authorizations", None) or [])
+        if not any(getattr(d, "hash", None) == hash for d in devices):
+            return _no_such_hash("nothing was changed")
+
+        changed, unconfirmed = [], []
+        for device in devices:
+            keep = device.hash == hash
+            accepts = not getattr(device, "encrypted_requests_disabled", False)
+            if accepts == keep:
+                continue
+            applied = await cl(
+                functions.account.ChangeAuthorizationSettingsRequest(
+                    hash=device.hash, encrypted_requests_disabled=not keep
+                )
+            )
+            line = f"{_describe(device)}: secret chats {'ON' if keep else 'OFF'}"
+            (changed if applied is True else unconfirmed).append(line)
+
+        chosen = next(d for d in devices if d.hash == hash)
+        if not changed and not unconfirmed:
+            return f"Already so: only {_describe(chosen)} accepts secret chats. Nothing changed."
+        answer_lines = [f"Only {_describe(chosen)} accepts new secret chats now."]
+        answer_lines += [f"- {line}" for line in changed]
+        if unconfirmed:
+            answer_lines.append("Telegram did not confirm these; check list_authorizations:")
+            answer_lines += [f"- {line}" for line in unconfirmed]
+        return "\n".join(answer_lines)
+    except Exception as e:
+        return log_and_format_error("set_secret_chats_only_device", e)

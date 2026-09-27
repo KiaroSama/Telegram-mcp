@@ -7,6 +7,7 @@ read, vote in and close a poll are in ``polls``.
 from telegram_mcp.runtime import *
 from telegram_mcp.message_view import display_text
 from telegram_mcp.effect_catalog import account_key
+from telegram_mcp.tools import poll_build
 
 # Telegram's own limits for a poll. Checked here so an over-long question comes
 # back as an argument error rather than an RPC refusal after the round trip.
@@ -136,6 +137,80 @@ async def _poll_answers_max(cl, account) -> int:
     return value
 
 
+def _settings_problem(
+    options,
+    quiz_mode,
+    multiple_choice,
+    correct_option_index,
+    correct_option_indexes,
+    explanation,
+    explanation_file,
+    duration_seconds,
+    close_date,
+    countries,
+    option_files,
+) -> Optional[str]:
+    """Why these settings cannot make one poll, or ``None``. Decided from the arguments alone."""
+    if correct_option_index is not None and correct_option_indexes is not None:
+        return "Error: pass correct_option_index or correct_option_indexes, not both."
+    name = (
+        "correct_option_indexes" if correct_option_indexes is not None else "correct_option_index"
+    )
+    correct = (
+        [correct_option_index]
+        if correct_option_index is not None
+        else list(correct_option_indexes or [])
+    )
+
+    if quiz_mode:
+        if multiple_choice:
+            return (
+                "Error: Telegram does not allow a quiz to be multiple choice. "
+                "Drop multiple_choice or drop quiz_mode."
+            )
+        if not correct:
+            return (
+                f"Error: quiz_mode needs {name}. Without it Telegram has "
+                "no correct answer to grade against and marks every voter wrong."
+            )
+        for index in correct:
+            if not isinstance(index, int) or isinstance(index, bool):
+                return f"Error: {name} must be integers."
+            if not 0 <= index < len(options):
+                return (
+                    f"Error: {name} {index} is not one of the "
+                    f"options. Valid indexes are 0-{len(options) - 1}."
+                )
+    elif correct:
+        return f"Error: {name} only applies to a quiz. Pass quiz_mode=True."
+
+    if (explanation or explanation_file) and not quiz_mode:
+        return (
+            "Error: an explanation is shown after a quiz is answered, so it needs quiz_mode=True."
+        )
+    if explanation and len(explanation) > poll_build.EXPLANATION_MAX:
+        return f"Error: the explanation is limited to {poll_build.EXPLANATION_MAX} characters."
+
+    if duration_seconds is not None:
+        if close_date:
+            return "Error: pass duration_seconds or close_date, not both; Telegram takes one."
+        if not _POLL_CLOSE_MIN_SECONDS <= int(duration_seconds) <= _POLL_CLOSE_MAX_SECONDS:
+            return (
+                f"Error: duration_seconds must be {_POLL_CLOSE_MIN_SECONDS} to "
+                f"{_POLL_CLOSE_MAX_SECONDS} (about 30 days). Nothing was sent."
+            )
+    if countries:
+        problem = poll_build.countries_problem(countries)
+        if problem:
+            return problem
+    if option_files is not None and len(option_files) != len(options):
+        return (
+            f"Error: option_files needs one entry per option ({len(options)}), "
+            "with null for an option without a file."
+        )
+    return None
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Create Poll",
@@ -156,10 +231,25 @@ async def create_poll(
     public_votes: bool = True,
     close_date: str = None,
     correct_option_index: Optional[int] = None,
+    correct_option_indexes: Optional[list] = None,
+    explanation: Optional[str] = None,
+    explanation_file: Optional[str] = None,
+    description: Optional[str] = None,
+    description_file: Optional[str] = None,
+    option_files: Optional[list] = None,
+    allow_adding_options: bool = False,
+    allow_revoting: bool = True,
+    shuffle_options: bool = False,
+    hide_results_until_close: bool = False,
+    duration_seconds: Optional[int] = None,
+    countries: Optional[list] = None,
+    members_only: bool = False,
+    parse_mode: Optional[str] = None,
     account: str = None,
+    ctx: Optional[Context] = None,
 ) -> str:
     """
-    Create a poll in a chat using Telegram's native poll feature.
+    Create a poll or a quiz, with every setting of Telegram's poll dialog.
 
     Args:
         chat_id: The ID of the chat to send the poll to
@@ -169,17 +259,35 @@ async def create_poll(
             the time of writing); an over-long list is refused before sending.
         multiple_choice: Whether users can select multiple answers
         quiz_mode: Whether this is a quiz. A quiz is graded, so it REQUIRES
-            correct_option_index, and Telegram does not allow a quiz to be
-            multiple-choice.
-        public_votes: Whether votes are public
+            correct_option_index or correct_option_indexes, and Telegram does not
+            allow a quiz to be multiple-choice.
+        public_votes: Whether votes are public ("show who voted")
         close_date: Optional close date in ISO format (YYYY-MM-DD HH:MM:SS). It
             must fall in Telegram's window — at least 5 seconds and at most
             2,628,000 seconds (about 30 days) — measured on Telegram's clock when
             the request arrives, not on this one when you call. It is therefore
             checked twice, and a deadline still in the future but too close to
             survive the send is refused here rather than by Telegram afterwards.
-        correct_option_index: Zero-based index into `options` of the one correct
-            answer. Required for quiz_mode, rejected without it.
+        correct_option_index: Zero-based index of the one correct answer of a quiz.
+        correct_option_indexes: Several correct answers of a quiz, by index. Pass
+            this or correct_option_index, not both.
+        explanation: Quiz only: text shown after answering (0-200 characters).
+        explanation_file: Quiz only: a local photo or file shown with the explanation.
+        description: Text sent with the poll, above it.
+        description_file: A local photo or file attached to the poll.
+        option_files: One local path (or null) per option, attached to that option.
+        allow_adding_options: Voters may add their own options.
+        allow_revoting: Voters may change their vote (default True).
+        shuffle_options: Each voter sees the options in a random order.
+        hide_results_until_close: Nobody sees the results until the poll closes.
+        duration_seconds: Close the poll this many seconds after it is posted
+            (5 to about 30 days). Use this or close_date, not both.
+        countries: Only voters whose phone number is from these countries may vote
+            (two-letter codes, e.g. ["IR", "DE"]).
+        members_only: Only members who joined at least 24 hours before the poll
+            was posted may vote.
+        parse_mode: 'md' or 'html' for the question, options, description and
+            explanation; unset sends them as written.
     """
     try:
         cl = get_client(account)
@@ -207,26 +315,26 @@ async def create_poll(
                     f"{_POLL_OPTION_LIMIT}-character limit."
                 )
 
-        if quiz_mode:
-            if multiple_choice:
-                return (
-                    "Error: a quiz has exactly one correct answer, so it cannot also be "
-                    "multiple choice. Drop multiple_choice or drop quiz_mode."
-                )
-            if correct_option_index is None:
-                return (
-                    "Error: quiz_mode needs correct_option_index. Without it Telegram has "
-                    "no correct answer to grade against and marks every voter wrong."
-                )
-            if not isinstance(correct_option_index, int) or isinstance(correct_option_index, bool):
-                return "Error: correct_option_index must be an integer."
-            if not 0 <= correct_option_index < len(options):
-                return (
-                    f"Error: correct_option_index {correct_option_index} is not one of the "
-                    f"options. Valid indexes are 0-{len(options) - 1}."
-                )
-        elif correct_option_index is not None:
-            return "Error: correct_option_index only applies to a quiz. Pass quiz_mode=True."
+        problem = _settings_problem(
+            options,
+            quiz_mode,
+            multiple_choice,
+            correct_option_index,
+            correct_option_indexes,
+            explanation,
+            explanation_file,
+            duration_seconds,
+            close_date,
+            countries,
+            option_files,
+        )
+        if problem:
+            return problem
+        correct = (
+            [correct_option_index]
+            if correct_option_index is not None
+            else list(correct_option_indexes or [])
+        )
 
         # Parse close date if provided
         close_date_obj = None
@@ -241,26 +349,50 @@ async def create_poll(
 
         entity = await resolve_entity(chat_id, cl)
 
-        # Again, now that resolving the chat has been paid for. The first check
-        # answered a question about a clock that has since moved; this one answers
-        # it about the request that is actually about to go out, and refuses
-        # before the send rather than letting Telegram refuse after it.
+        async def attach(path):
+            if not path:
+                return None, None
+            return await poll_build.upload_attachment(cl, entity, ctx, path, "create_poll")
+
+        attached, error = await attach(description_file)
+        if error:
+            return error
+        solution_media, error = await attach(explanation_file)
+        if error:
+            return error
+        option_media = []
+        for path in option_files or []:
+            media, error = await attach(path)
+            if error:
+                return error
+            option_media.append(media)
+
+        # Again, now that resolving the chat and uploading have been paid for. The
+        # first check answered a question about a clock that has since moved; this
+        # one answers it about the request that is actually about to go out.
         if close_date_obj is not None:
             problem = _close_date_problem(close_date_obj)
             if problem:
                 return problem
 
-        # Create the poll using InputMediaPoll with SendMediaRequest
-        from telethon.tl.types import InputMediaPoll, Poll, PollAnswer, TextWithEntities
         import random
 
-        poll = Poll(
-            id=random.randint(0, 2**63 - 1),
-            question=TextWithEntities(text=question, entities=[]),
-            answers=[
-                PollAnswer(text=TextWithEntities(text=option, entities=[]), option=bytes([i]))
+        if option_files is not None:
+            # An option with a file is sent as InputPollAnswer; Telegram assigns
+            # the option bytes itself.
+            answers = [
+                types.InputPollAnswer(text=poll_build.parse(option, parse_mode), media=media)
+                for option, media in zip(options, option_media)
+            ]
+        else:
+            answers = [
+                types.PollAnswer(text=poll_build.parse(option, parse_mode), option=bytes([i]))
                 for i, option in enumerate(options)
-            ],
+            ]
+        poll = types.Poll(
+            id=random.randint(0, 2**63 - 1),
+            question=poll_build.parse(question, parse_mode),
+            answers=answers,
             # Telethon 1.44 made `hash` a required argument on Poll. It caches
             # server-side results, so a poll being created sends 0.
             hash=0,
@@ -268,6 +400,13 @@ async def create_poll(
             quiz=quiz_mode,
             public_voters=public_votes,
             close_date=close_date_obj,
+            close_period=int(duration_seconds) if duration_seconds is not None else None,
+            open_answers=allow_adding_options or None,
+            revoting_disabled=(not allow_revoting) or None,
+            shuffle_answers=shuffle_options or None,
+            hide_results_until_close=hide_results_until_close or None,
+            subscribers_only=members_only or None,
+            countries_iso2=[str(c).upper() for c in countries] if countries else None,
         )
 
         # ponytail: Telethon 1.44 declares and serialises `correct_answers` as
@@ -276,15 +415,22 @@ async def create_poll(
         # the int the installed library asks for. If a live quiz ever grades the
         # wrong answer, the upgrade path is a project-local InputMediaPoll wire
         # class next to the ones in tools/topics.py.
-        media = InputMediaPoll(poll=poll)
+        media = types.InputMediaPoll(poll=poll, attached_media=attached)
         if quiz_mode:
-            media.correct_answers = [int(correct_option_index)]
+            media.correct_answers = [int(index) for index in correct]
+            if explanation:
+                solution = poll_build.parse(explanation, parse_mode)
+                media.solution = solution.text
+                media.solution_entities = solution.entities
+            media.solution_media = solution_media
 
+        caption = poll_build.parse(description or "", parse_mode)
         result = await cl(
             functions.messages.SendMediaRequest(
                 peer=entity,
                 media=media,
-                message="",
+                message=caption.text,
+                entities=caption.entities or None,
                 random_id=random.randint(0, 2**63 - 1),
             )
         )
