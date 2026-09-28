@@ -99,5 +99,6 @@ def test_the_budget_is_installed_once_and_runs_first():
 
     budgets = [m for m in runtime.mcp.middleware if isinstance(m, tool_budget.ToolCallBudget)]
     assert len(budgets) == 1
-    assert isinstance(runtime.mcp.middleware[0], Safeguard)
-    assert isinstance(runtime.mcp.middleware[1], tool_budget.ToolCallBudget)
+    kinds = [type(m) for m in runtime.mcp.middleware]
+    # The command log (spec 018) records and passes on; it may sit in front of both.
+    assert kinds.index(tool_budget.ToolCallBudget) == kinds.index(Safeguard) + 1

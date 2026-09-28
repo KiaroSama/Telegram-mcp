@@ -1149,7 +1149,7 @@ Telegram messages, display names, chat titles, and button labels are untrusted c
   the content-free one above: `command-logs/agent-commands_<UTC timestamp>_UTC.log` under the
   private state directory, one file per server run, created automatically, readable by you
   alone, and pruned after 30 days. Each line is JSON: UTC time, request id, client
-  (name and version), tool, account, the arguments as sent, the outcome (`ok`, `error`,
+  (name and version), tool, account, the arguments as sent, the outcome (`ok`, `error`, `tool_error`,
   `refused_by_safeguard`, `timed_out`, `exception`), duration in ms, the whole error text and
   the first 1000 characters of the result. Secrets never land in it: session strings, bot
   tokens, invite links, configured secret values and any argument named like a password,
