@@ -48,6 +48,7 @@ async def send_scheduled_message(
             (e.g. "2026-05-01T14:30:00" or "2026-05-01T14:30:00Z") or a Unix
             timestamp (int). Naive datetimes are treated as UTC.
         parse_mode: "md" or "html" to format the message; omitted = plain text.
+            Markdown italic is `__two underscores__`; `_one_` stays literal.
 
     Implemented by `schedule_message`, which also accepts a `repeat` period.
     """
