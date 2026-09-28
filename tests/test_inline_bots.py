@@ -163,3 +163,16 @@ async def test_only_a_bot_can_be_queried(wire, monkeypatch):
     monkeypatch.setattr(mod, "resolve_entity", _person)
     assert "not a bot" in await mod.inline_query("ada", "x", account="refx")
     assert c.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_bot_that_caches_nothing_still_gives_a_sendable_result(wire):
+    """Measured live 2026-09-28: @GodVerifyPaymentBot answers with cache_time 0 (personal
+    results). cache_time is how long OTHER queries may reuse the answer, not how long the
+    chosen result stays sendable - a handle that expired on creation was never usable."""
+    answer = tl.messages.BotResults(query_id=77, results=[TEXT_RESULT], cache_time=0, users=[BOT])
+    wire({"GetInlineBotResultsRequest": answer})
+    payload = json.loads(await mod.inline_query("GodVerifyPaymentBot", "5 note", account="refx"))
+    handle = payload["results"][0]["result_id"]
+    assert payload["expires_at"] >= int(time.time()) + 240
+    assert mod._parse(handle, "refx")[1] is None

@@ -27,6 +27,7 @@ from telegram_mcp.runtime import *
 __all__ = ["inline_query", "send_inline_result"]
 
 _PREFIX = "inline"
+_MIN_SENDABLE_SECONDS = 300
 _SELF = ("me", "self")
 _MESSAGE_KINDS = {
     "BotInlineMessageText": "text",
@@ -201,7 +202,12 @@ async def inline_query(
                 offset=offset or "",
             )
         )
-        expires_at = int(time.time()) + int(getattr(answer, "cache_time", 0) or 0)
+        # cache_time is how long OTHER queries may reuse this answer, not how long a chosen
+        # result stays sendable: a bot answering personal results says 0 (measured live on
+        # @GodVerifyPaymentBot), and a handle that expired on creation was never usable.
+        # A floor keeps the handle usable; past it, Telegram's own answer is the judge.
+        cache = int(getattr(answer, "cache_time", 0) or 0)
+        expires_at = int(time.time()) + max(cache, _MIN_SENDABLE_SECONDS)
         rows = [
             _describe(i, r, _handle(account, expires_at, answer.query_id, r.id))
             for i, r in enumerate(answer.results or [])

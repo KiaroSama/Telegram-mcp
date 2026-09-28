@@ -168,8 +168,10 @@ def test_the_error_formatter_still_routes_through_the_primitive(logged, monkeypa
 
     written = logged.read_text(encoding="utf-8")
     assert CANARY not in written
-    assert CANARY not in returned
     assert "-1001234567890" in written
+    # Spec 021 (owner decision 2026-09-28): the REPLY names the reason so the agent knows
+    # what went wrong - it sent those arguments itself. The LOG stays content-free, above.
+    assert "Reason: ValueError" in returned
 
 
 # --- where the log lives, and who may read it -------------------------------
