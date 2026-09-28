@@ -1145,6 +1145,16 @@ Telegram messages, display names, chat titles, and button labels are untrusted c
   warning quoting a chat title, a third-party traceback - stays on the terminal and the
   file records how many lines were withheld. A crash persists the exception type and the
   script line that raised it, never the message.
+- **What did an agent actually do?** Every tool call is recorded in its own log, separate from
+  the content-free one above: `command-logs/agent-commands_<UTC timestamp>_UTC.log` under the
+  private state directory, one file per server run, created automatically, readable by you
+  alone, and pruned after 30 days. Each line is JSON: UTC time, request id, client
+  (name and version), tool, account, the arguments as sent, the outcome (`ok`, `error`,
+  `refused_by_safeguard`, `timed_out`, `exception`), duration in ms, the whole error text and
+  the first 1000 characters of the result. Secrets never land in it: session strings, bot
+  tokens, invite links, configured secret values and any argument named like a password,
+  token, secret, session, api_hash or phone_code are written as `[REDACTED]`. Message text
+  IS in it by design, so treat the file like your chat history.
 
 ## Working on it
 

@@ -199,6 +199,7 @@ source = [
     "telegram_mcp.session_files",
     "telegram_mcp.session_pool",
     "telegram_mcp.tool_budget",
+    "telegram_mcp.command_log",
     "telegram_mcp.safeguard",
     "telegram_mcp.settings",
     "telegram_mcp.syscalls",

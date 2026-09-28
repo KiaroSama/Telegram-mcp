@@ -137,7 +137,14 @@ def _username_of(me: Any) -> Optional[str]:
 async def identity(account: Optional[str]) -> str:
     """ "label · user id · @username" - the quote that tells the owner which account."""
     if not account:
-        return ""
+        # Spec 018: no account argument acts as the only account, when there is one.
+        from telegram_mcp import connection
+
+        connection.refresh_accounts()
+        labels = list(connection.clients)
+        if len(labels) != 1:
+            return ""
+        account = labels[0]
     if account not in _identities:
         me = await _me(account)
         parts = [account, str(me.id)]

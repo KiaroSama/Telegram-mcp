@@ -157,6 +157,10 @@ MCP client, not only Claude.
 3. **Saved Messages**: the account posts `Approval K7Q2: ...`. From another device,
    reply `yes K7Q2`, `always K7Q2` or `no K7Q2`.
 
+Every request names the **Account** acting, the **Action**, the **Tool** and **Chat**, what it
+**Sends** (up to 300 characters of the text and the file names, when it sends any) and **Why
+asked** in plain words (for example "first message to someone this account never messaged").
+
 **Always approve** covers one tool in one chat of one account and survives restarts.
 `safeguard_status` lists every such grant and `revoke_always_approval` removes one; the
 approval bot's `/always` and `/reset_always` do the same from your phone. It also covers

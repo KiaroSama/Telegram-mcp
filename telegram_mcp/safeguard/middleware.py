@@ -122,6 +122,33 @@ def describe(name: str, arguments: Dict[str, Any], chat: Any, tainted, outside=(
     return effect
 
 
+_PREVIEW_MAX = 300
+_PREVIEW_TEXT_KEYS = ("message", "text", "new_text", "question", "title", "caption", "about")
+_PREVIEW_LIST_KEYS = ("options", "tasks")
+_PREVIEW_FILE_KEYS = ("file_path", "file_paths", "file", "photo")
+
+
+def preview(arguments: Dict[str, Any]) -> str:
+    """Spec 018: the start of what the call sends - text, list items, file names."""
+    import ntpath
+
+    parts = []
+    for key in _PREVIEW_TEXT_KEYS:
+        if isinstance(arguments.get(key), str) and arguments[key].strip():
+            parts.append(arguments[key].strip())
+    for key in _PREVIEW_LIST_KEYS:
+        items = arguments.get(key)
+        if isinstance(items, (list, tuple)) and items:
+            parts.append(f"{key}: " + " | ".join(str(i) for i in items))
+    for key in _PREVIEW_FILE_KEYS:
+        value = arguments.get(key)
+        for path in value if isinstance(value, (list, tuple)) else [value]:
+            if isinstance(path, str) and path.strip():
+                parts.append("file " + ntpath.basename(path.strip()))
+    shown = "; ".join(parts)
+    return shown if len(shown) <= _PREVIEW_MAX else shown[: _PREVIEW_MAX - 1] + "…"
+
+
 class Safeguard:
     """Run, ask or refuse. Every dependency on live Telegram is injected."""
 
@@ -254,6 +281,7 @@ class Safeguard:
                     describe(name, arguments, chat, decision.tainted, facts.outside_folders),
                     decision.reasons,
                     identity=who,
+                    preview=preview(arguments),
                 )
                 outcome, kind, failures = await approvals.request_approval(
                     request, self._channels(ctx, account), self._timeout
