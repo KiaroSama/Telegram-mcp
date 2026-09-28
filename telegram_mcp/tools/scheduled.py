@@ -169,6 +169,7 @@ async def schedule_message(
     repeat: str = None,
     entities: List[dict] = None,
     topic_id: Optional[int] = None,
+    parse_mode: Optional[str] = None,
     account: str = None,
 ) -> str:
     """
@@ -202,9 +203,14 @@ async def schedule_message(
             To copy an existing message unchanged, prefer `copy_message`: it
             never takes the text apart, so nothing can be rebased wrongly.
 
+        parse_mode: "md" (markdown) or "html" to format `message`; omitted = plain
+            text. Give this or `entities`, not both.
+
     Note: this queues a real message that Telegram will deliver on its own.
     """
     try:
+        if parse_mode and entities:
+            return "Give parse_mode or entities, not both. Nothing was scheduled."
         period = _repeat_seconds(repeat)
         if isinstance(period, str):
             return period
@@ -216,6 +222,12 @@ async def schedule_message(
         built_entities = await build_send_entities(entities, message, account)
         if isinstance(built_entities, str):
             return built_entities
+        if parse_mode:
+            # The raw request takes entities only (upstream chigwell #247): parse here,
+            # as Telethon's friendly send_message would have.
+            parser = utils.sanitize_parse_mode(parse_mode)
+            if parser:
+                message, built_entities = parser.parse(message)
 
         cl = get_client(account)
         await ensure_connected(cl)

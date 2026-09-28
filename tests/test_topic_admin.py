@@ -168,3 +168,40 @@ async def test_a_telegram_refusal_is_named(wire):
 
     wire({"DeleteTopicHistoryRequest": RPCError(None, "TOPIC_ID_INVALID", 400)})
     assert "TOPIC_ID_INVALID" in await mod.delete_forum_topic("f", 99)
+
+
+@pytest.mark.asyncio
+async def test_one_topic_is_marked_read_up_to_its_newest_message(wire, monkeypatch):
+    """Upstream chigwell PR #82 (forum part, rewritten): send_read_acknowledge left a
+    topic unread. The topic's own read cursor moves to its top message, and its
+    mentions are cleared."""
+    from telegram_mcp.tools import read_receipts
+
+    topic = tl.ForumTopic(
+        id=12,
+        date=WHEN,
+        peer=tl.PeerChannel(700),
+        title="T",
+        icon_color=0,
+        top_message=345,
+        read_inbox_max_id=300,
+        read_outbox_max_id=0,
+        unread_count=4,
+        unread_mentions_count=1,
+        unread_reactions_count=0,
+        unread_poll_votes_count=0,
+        from_id=tl.PeerUser(1),
+        notify_settings=tl.PeerNotifySettings(),
+    )
+    forum_topics = tl.messages.ForumTopics(
+        count=1, topics=[topic], messages=[], chats=[], users=[], pts=1
+    )
+    c = wire({"GetForumTopicsByIDRequest": forum_topics})
+    for name in ("get_client", "resolve_entity"):
+        monkeypatch.setattr(read_receipts, name, getattr(mod, name))
+
+    await read_receipts.mark_as_read("f", topic_id=12)
+    (read,) = c.of(functions.messages.ReadDiscussionRequest)
+    assert read.msg_id == 12 and read.read_max_id == 345
+    (mentions,) = c.of(functions.messages.ReadMentionsRequest)
+    assert mentions.top_msg_id == 12

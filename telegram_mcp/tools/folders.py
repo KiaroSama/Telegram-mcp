@@ -279,19 +279,15 @@ async def create_folder(
         # picked from a snapshot, so two concurrent creates pick the same one.
         async with _folder_lock(account, None):
             cl = get_client(account)
-            # Get existing folders to check count and find next ID
+            # Existing folders, to find the next free id. The folder limit (10, or 20
+            # with Premium) is Telegram's to enforce: its DIALOG_FILTERS_TOO_MUCH is
+            # answered by errors.TELEGRAM_REFUSAL_CODES (upstream chigwell #242).
             result = await cl(functions.messages.GetDialogFiltersRequest())
 
             existing_ids = set()
-            folder_count = 0
             for f in result.filters:
                 if isinstance(f, (DialogFilter, DialogFilterChatlist)):
                     existing_ids.add(f.id)
-                    folder_count += 1
-
-            # Telegram limit: max 10 custom folders
-            if folder_count >= 10:
-                return "Cannot create folder: Telegram limit is 10 folders. Delete one first."
 
             # Find next available ID (IDs 0 and 1 are reserved for system)
             new_id = 2

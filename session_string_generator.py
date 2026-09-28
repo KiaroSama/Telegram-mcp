@@ -232,7 +232,12 @@ def _render_qr(qr) -> None:
     qr_obj.make(fit=True)
     f = io.StringIO()
     qr_obj.print_ascii(out=f, invert=True)
-    print(f.getvalue())
+    try:
+        print(f.getvalue())
+    except UnicodeEncodeError:
+        # A redirected Windows console (cp1252) has no block characters (upstream
+        # chigwell #195); the link below logs in just the same.
+        print(note("This console cannot draw the QR code; open the link below instead."))
 
     print(note("Scan the QR code above with your Telegram app:"))
     print(hint("  Open Telegram > Settings > Devices > Link Desktop Device"))

@@ -96,4 +96,45 @@ async def test_the_bounds_are_utc_aware_so_comparing_against_a_message_date_work
 
     # Only the 10th falls inside [2026-05-05T00:00Z, 2026-05-15T23:59:59.999999Z]
     assert ids == [10]
+    # Upstream #245: the search starts AT to_date (Telethon sends offset_date as
+    # messages.search max_date), instead of at the newest match and skipping forward
+    # through every newer one - which on a busy chat read the whole history.
+    end_of_day = dt.datetime(2026, 5, 16, tzinfo=dt.timezone.utc)
+    assert client.iter_kwargs == [{"search": "hi", "offset_date": end_of_day}]
+
+
+@pytest.mark.asyncio
+async def test_a_search_without_to_date_starts_at_the_newest(_wire):
+    client = _wire(_Client([_msg(20)]))
+    await mod.list_messages(1, search_query="hi", from_date="2026-05-05", account="a")
     assert client.iter_kwargs == [{"search": "hi"}]
+
+
+# --- get_message_context shows hidden links (upstream chigwell #225) ---------
+
+
+@pytest.mark.asyncio
+async def test_context_shows_the_links_hidden_behind_text(monkeypatch):
+    from telethon.tl.types import MessageEntityTextUrl
+
+    target = SimpleNamespace(
+        id=5,
+        date=dt.datetime(2026, 5, 5, tzinfo=dt.timezone.utc),
+        message="click here",
+        entities=[MessageEntityTextUrl(offset=0, length=5, url="https://example.org/x")],
+        sender=SimpleNamespace(first_name="Ada", last_name=None, title=None),
+        reply_to=None,
+    )
+
+    class _Ctx:
+        async def get_messages(self, chat, ids=None, **kwargs):
+            return target if ids == 5 else []
+
+    monkeypatch.setattr(mod, "get_client", lambda account=None: _Ctx())
+
+    async def _resolve(chat_id, _client):
+        return SimpleNamespace(id=chat_id)
+
+    monkeypatch.setattr(mod, "resolve_entity", _resolve)
+    (record,) = json.loads(await mod.get_message_context(1, 5, account="a"))["results"]
+    assert record["link_urls"] == ["https://example.org/x"]

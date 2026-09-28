@@ -278,3 +278,45 @@ async def test_moving_a_rich_scheduled_message_is_refused_rather_than_blanking_i
     assert (
         client.sent("EditMessageRequest") is None
     ), "the edit was sent anyway and would have blanked the message"
+
+
+# --- parse_mode (upstream chigwell #247) ------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "text", "kind"),
+    [("md", "**hi**", "MessageEntityBold"), ("html", "<b>hi</b>", "MessageEntityBold")],
+)
+async def test_markdown_and_html_become_entities_not_literal_text(_wire, mode, text, kind):
+    """The raw SendMessageRequest takes entities only, so an unparsed `**hi**` reached
+    Telegram as four asterisks around "hi"."""
+    client = _wire(_Client())
+    await schedule_message(1, text, SOON, parse_mode=mode, account="a")
+    request = client.sent("SendMessageRequest")
+    assert request.message == "hi"
+    assert [type(e).__name__ for e in request.entities] == [kind]
+
+
+@pytest.mark.asyncio
+async def test_parse_mode_and_entities_together_are_refused(_wire):
+    client = _wire(_Client())
+    result = await schedule_message(
+        1, "hi", SOON, parse_mode="md", entities=[{"type": "bold", "offset": 0, "length": 2}]
+    )
+    assert "not both" in result and client.requests == []
+
+
+@pytest.mark.asyncio
+async def test_send_scheduled_message_passes_parse_mode_through(_wire, monkeypatch):
+    from telegram_mcp.tools import messages_queue
+
+    seen = {}
+
+    async def _schedule(**kwargs):
+        seen.update(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(messages_queue, "schedule_message", _schedule)
+    await messages_queue.send_scheduled_message(1, "**x**", SOON, parse_mode="md", account="a")
+    assert seen["parse_mode"] == "md"

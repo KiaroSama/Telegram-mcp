@@ -36,6 +36,7 @@ async def send_scheduled_message(
     chat_id: Union[int, str],
     message: str,
     schedule_date: Union[str, int],
+    parse_mode: Optional[str] = None,
     account: str = None,
 ) -> str:
     """
@@ -46,6 +47,7 @@ async def send_scheduled_message(
         schedule_date: When to send the message. Either an ISO-8601 string
             (e.g. "2026-05-01T14:30:00" or "2026-05-01T14:30:00Z") or a Unix
             timestamp (int). Naive datetimes are treated as UTC.
+        parse_mode: "md" or "html" to format the message; omitted = plain text.
 
     Implemented by `schedule_message`, which also accepts a `repeat` period.
     """
@@ -54,7 +56,11 @@ async def send_scheduled_message(
     # returns the new scheduled ID plus Telegram's repeat period — neither of which
     # this tool could produce. Keeping the name keeps saved prompts working.
     return await schedule_message(
-        chat_id=chat_id, message=message, when=schedule_date, account=account
+        chat_id=chat_id,
+        message=message,
+        when=schedule_date,
+        parse_mode=parse_mode,
+        account=account,
     )
 
 

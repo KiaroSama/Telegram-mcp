@@ -511,7 +511,7 @@ Every tool this server exposes: **294**, grouped by the module that defines it.
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
 | `get_message_read_by` | List user IDs who have read a specific message. | `R - I O` | runs |
-| `mark_as_read` | Mark all messages as read in a chat. | `- D I O` | asks while ghost mode is on |
+| `mark_as_read` | Mark all messages as read in a chat, or in one forum topic. | `- D I O` | asks while ghost mode is on |
 
 ## reply_keyboard
 

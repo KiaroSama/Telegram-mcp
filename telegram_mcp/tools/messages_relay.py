@@ -46,6 +46,31 @@ async def _album_batch(cl, entity, message_id, expand: bool):
     return message_id, False
 
 
+def _new_ids(result, random_ids=None) -> list:
+    """Ids of the copies a forward made (upstream chigwell #230, adapted).
+
+    Telethon's helper answers with a Message or a list of them (None for one it could
+    not map); the raw request answers with Updates whose UpdateMessageID pairs each
+    new id with the random_id it went out under, returned here in send order.
+    """
+    if random_ids is not None:
+        by_random = {
+            u.random_id: u.id
+            for u in getattr(result, "updates", None) or []
+            if isinstance(u, types.UpdateMessageID)
+        }
+        return [by_random[r] for r in random_ids if r in by_random]
+    items = result if isinstance(result, list) else [result]
+    return [m.id for m in items if getattr(m, "id", None) is not None]
+
+
+def _with_ids(text: str, ids: list) -> str:
+    if not ids:
+        return text
+    label = "New message id" if len(ids) == 1 else "New message ids"
+    return f"{text} {label}: {', '.join(str(i) for i in ids)}."
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Forward Message",
@@ -114,40 +139,45 @@ async def forward_message(
         if topic_id is not None or send_as is not None:
             posting_as = await resolve_input_entity(send_as, cl) if send_as else None
             batch = ids_to_forward if isinstance(ids_to_forward, list) else [ids_to_forward]
-            await cl(
+            random_ids = [random.randrange(-(2**63), 2**63) for _ in batch]
+            answer = await cl(
                 functions.messages.ForwardMessagesRequest(
                     from_peer=await resolve_input_entity(from_chat_id, cl),
                     id=batch,
                     to_peer=await resolve_input_entity(to_chat_id, cl),
                     # Telegram deduplicates on random_id, so a per-message one
                     # is required: reusing a value silently drops the copy.
-                    random_id=[random.randrange(-(2**63), 2**63) for _ in batch],
+                    random_id=random_ids,
                     drop_author=drop_author or None,
                     silent=silent or None,
                     **({"top_msg_id": topic_id} if topic_id is not None else {}),
                     **({"send_as": posting_as} if posting_as is not None else {}),
                 )
             )
+            new_ids = _new_ids(answer, random_ids=random_ids)
         else:
             # Only what was actually asked for. Passing `drop_author=None`
             # unconditionally changes this call's signature for every existing
             # caller and test - the exact break `send_as` caused last time.
-            await cl.forward_messages(
+            answer = await cl.forward_messages(
                 to_entity,
                 ids_to_forward,
                 from_entity,
                 **({"drop_author": True} if drop_author else {}),
                 **({"silent": True} if silent else {}),
             )
+            new_ids = _new_ids(answer)
         count = len(ids_to_forward) if isinstance(ids_to_forward, list) else 1
         if count == 1:
-            return f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id}."
-        if expanded_from_album:
-            return (
+            text = f"Message {message_id} forwarded from {from_chat_id} to {to_chat_id}."
+        elif expanded_from_album:
+            text = (
                 f"Album of {count} messages forwarded from {from_chat_id} "
                 f"to {to_chat_id} (auto-expanded from message {message_id})."
             )
-        return f"{count} messages forwarded from {from_chat_id} to {to_chat_id}."
+        else:
+            text = f"{count} messages forwarded from {from_chat_id} to {to_chat_id}."
+        return _with_ids(text, new_ids)
     except Exception as e:
         return log_and_format_error(
             "forward_message",
@@ -347,8 +377,11 @@ async def forward_messages(
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
         to_entity = await resolve_entity(to_chat_id, cl)
-        await cl.forward_messages(to_entity, list(message_ids), from_entity)
-        return f"{len(message_ids)} messages forwarded from " f"{from_chat_id} to {to_chat_id}."
+        answer = await cl.forward_messages(to_entity, list(message_ids), from_entity)
+        return _with_ids(
+            f"{len(message_ids)} messages forwarded from {from_chat_id} to {to_chat_id}.",
+            _new_ids(answer),
+        )
     except Exception as e:
         return log_and_format_error(
             "forward_messages",

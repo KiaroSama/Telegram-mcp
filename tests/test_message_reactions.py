@@ -109,3 +109,46 @@ async def test_an_empty_page_is_not_reported_as_no_reactions_at_all(_wire):
 
     assert payload["returned"] == 0
     assert payload["next_offset"] is None
+
+
+class _Refusing(_Client):
+    """Telegram's answer for a message nobody reacted to (measured live 2026-09-28:
+    MsgIdInvalidError on message 776 of the test group, which exists)."""
+
+    def __init__(self, message):
+        super().__init__(None)
+        self.message = message
+
+    async def __call__(self, request):
+        from telethon.errors import MsgIdInvalidError
+
+        self.requests.append(request)
+        raise MsgIdInvalidError(request)
+
+    async def get_messages(self, peer, ids=None):
+        return self.message
+
+
+@pytest.mark.asyncio
+async def test_a_message_nobody_reacted_to_answers_with_no_reactions(monkeypatch):
+    client = _Refusing(SimpleNamespace(id=11, reactions=None))
+    monkeypatch.setattr(mod, "get_client", lambda account=None: client)
+
+    async def _resolve(chat_id, _client):
+        return SimpleNamespace(id=chat_id)
+
+    monkeypatch.setattr(mod, "resolve_input_entity", _resolve)
+    payload = json.loads(await mod.get_message_reactions(1, 11, account="a"))
+    assert payload["reactions"] == [] and payload["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_missing_message_is_named_not_a_generic_error(monkeypatch):
+    client = _Refusing(None)
+    monkeypatch.setattr(mod, "get_client", lambda account=None: client)
+
+    async def _resolve(chat_id, _client):
+        return SimpleNamespace(id=chat_id)
+
+    monkeypatch.setattr(mod, "resolve_input_entity", _resolve)
+    assert "not found" in await mod.get_message_reactions(1, 11, account="a")

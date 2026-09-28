@@ -22,13 +22,36 @@ from telegram_mcp.runtime import *
 )
 @with_account(readonly=False)
 @validate_id("chat_id")
-async def mark_as_read(chat_id: Union[int, str], account: str = None) -> str:
+async def mark_as_read(
+    chat_id: Union[int, str], topic_id: Optional[int] = None, account: str = None
+) -> str:
     """
-    Mark all messages as read in a chat.
+    Mark all messages as read in a chat, or in one forum topic.
+
+    Args:
+        chat_id: The chat.
+        topic_id: A forum topic (from list_topics): marks that topic read and clears
+            its mentions. Marking the chat alone leaves topics unread.
     """
     try:
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
+        if topic_id is not None:
+            # A topic keeps its own read cursor (upstream chigwell PR #82, rewritten:
+            # its read_max_id=0 marked nothing). Read up to the topic's top message.
+            found = await cl(
+                functions.messages.GetForumTopicsByIDRequest(peer=entity, topics=[int(topic_id)])
+            )
+            topic = next((t for t in found.topics if getattr(t, "top_message", None)), None)
+            if topic is None:
+                return f"Topic {topic_id} was not found in chat {chat_id}."
+            await cl(
+                functions.messages.ReadDiscussionRequest(
+                    peer=entity, msg_id=int(topic_id), read_max_id=topic.top_message
+                )
+            )
+            await cl(functions.messages.ReadMentionsRequest(peer=entity, top_msg_id=int(topic_id)))
+            return f"Marked topic {topic_id} as read in chat {chat_id}."
         await cl.send_read_acknowledge(entity)
         return f"Marked all messages as read in chat {chat_id}."
     except Exception as e:
