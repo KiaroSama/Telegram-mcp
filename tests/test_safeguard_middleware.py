@@ -253,10 +253,13 @@ def test_install_puts_the_safeguard_outside_the_time_budget_once():
 
 
 def test_the_live_server_runs_every_call_through_the_safeguard_first():
+    from telegram_mcp.command_log import CommandLog
     from telegram_mcp.tools import mcp
 
-    assert isinstance(mcp.middleware[0], safeguard.Safeguard)
-    assert any(isinstance(m, ToolCallBudget) for m in mcp.middleware[1:])
+    # Only the command log (spec 018) sits in front: it records and passes every call on.
+    assert isinstance(mcp.middleware[0], CommandLog)
+    assert isinstance(mcp.middleware[1], safeguard.Safeguard)
+    assert any(isinstance(m, ToolCallBudget) for m in mcp.middleware[2:])
 
 
 def test_every_kernel_file_carries_the_do_not_edit_notice():

@@ -122,6 +122,15 @@ def test_a_result_that_arrives_as_a_dict_is_read_too(recorder, tmp_path):
     assert second["outcome"] == "refused_by_safeguard"
 
 
+def test_a_tool_that_answers_with_an_error_text_is_not_ok(recorder, tmp_path):
+    # Most tools report a failure as text, not with isError (live: send_message without
+    # an account in multi-account mode).
+    text = "Error: 'account' is required. Available accounts: a, b"
+    _run(recorder, _ctx(), _result(text))
+    (record,) = _records(tmp_path)
+    assert record["outcome"] == "tool_error" and record["error"] == text
+
+
 def test_other_methods_are_not_recorded(recorder, tmp_path):
     _run(recorder, _ctx(method="tools/list"), _result("x"))
     assert list(tmp_path.iterdir()) == []

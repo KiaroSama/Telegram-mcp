@@ -154,6 +154,9 @@ class CommandLog:
                     (o for prefix, o in _OUTCOME_PREFIXES if text.startswith(prefix)), "error"
                 )
                 record["error"] = text
+            elif text.startswith("Error"):  # most tools report a failure as text
+                record["outcome"] = "tool_error"
+                record["error"] = text
             else:
                 record["outcome"] = "ok"
                 record["result"] = text[:RESULT_HEAD]
