@@ -60,11 +60,19 @@ def _redact(value: Any, name: str = "") -> Any:
 
 
 def _result_text(result: Any) -> tuple:
-    """``(is_error, text)`` of a CallToolResult, bare or wrapped in a ServerResult."""
-    target = result if hasattr(result, "content") else getattr(result, "root", None)
-    blocks = getattr(target, "content", None) or []
-    text = "\n".join(getattr(b, "text", "") or f"<{getattr(b, 'type', 'block')}>" for b in blocks)
-    return bool(getattr(target, "is_error", False)), text
+    """``(is_error, text)`` of a tool result: a CallToolResult, bare or wrapped in a
+    ServerResult, or the dict mcp 2.2 hands the outermost middleware."""
+    target = result
+    if not isinstance(result, dict) and not hasattr(result, "content"):
+        target = getattr(result, "root", None)
+    blocks = _field(target, "content") or []
+    is_error = _field(target, "isError") or _field(target, "is_error")
+    text = "\n".join(_field(b, "text") or f"<{_field(b, 'type') or 'block'}>" for b in blocks)
+    return bool(is_error), text
+
+
+def _field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
 
 
 def _client(ctx) -> Optional[str]:

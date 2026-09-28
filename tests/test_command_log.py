@@ -110,6 +110,18 @@ def test_an_exception_is_recorded_and_raised_again(recorder, tmp_path):
     assert record["outcome"] == "exception" and record["error"] == "RuntimeError: boom"
 
 
+def test_a_result_that_arrives_as_a_dict_is_read_too(recorder, tmp_path):
+    # mcp 2.2's HandlerResult is `BaseModel | dict`; the live server hands the outermost
+    # middleware a dict, which the first version recorded as an empty result.
+    ok = {"content": [{"type": "text", "text": "fine"}], "isError": False}
+    refused = {"content": [{"type": "text", "text": "SAFEGUARD: x was not run."}], "isError": True}
+    _run(recorder, _ctx(), ok)
+    _run(recorder, _ctx(), refused)
+    first, second = _records(tmp_path)
+    assert first["outcome"] == "ok" and first["result"] == "fine"
+    assert second["outcome"] == "refused_by_safeguard"
+
+
 def test_other_methods_are_not_recorded(recorder, tmp_path):
     _run(recorder, _ctx(method="tools/list"), _result("x"))
     assert list(tmp_path.iterdir()) == []
