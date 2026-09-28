@@ -67,6 +67,15 @@ def test_install_guard_accepts_file_install_from_project_root(tmp_path):
     assert install_guard._looks_like_explicit_source_install(identity) is True
 
 
+def test_a_file_url_with_a_drive_and_a_space_is_an_absolute_path():
+    # Upstream chigwell #228: `file:///G:/Program%20Files/x` became `G:Program Files/x`
+    # on Windows - relative to the CURRENT folder of drive G - so a checkout under
+    # "Program Files" was accepted only through the source_root fallback. (A tmp_path
+    # on C: hid it: that drive's current folder is usually its root.)
+    path = install_guard._file_url_path("file:///G:/Program%20Files/Portable/x")
+    assert path.is_absolute() and path.name == "x" and "Program Files" in path.parts
+
+
 def test_install_guard_rejects_known_pypi_collision_metadata():
     identity = _identity(
         version="0.6.3",

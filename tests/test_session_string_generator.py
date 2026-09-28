@@ -199,3 +199,18 @@ def test_parse_args_rejects_conflicting_login_modes(monkeypatch):
 
     with pytest.raises(SystemExit):
         session_string_generator._parse_args()
+
+
+def test_a_console_that_cannot_draw_the_qr_code_still_gets_the_link(monkeypatch):
+    """Upstream chigwell #195: on a redirected Windows stdout (cp1252) the block
+    characters raised UnicodeEncodeError and the login died before the link printed."""
+    import io
+    import sys
+
+    raw = io.BytesIO()
+    out = io.TextIOWrapper(raw, encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", out)
+    session_string_generator._render_qr(_FakeQR([]))
+    out.flush()
+    shown = raw.getvalue().decode("cp1252")
+    assert "tg://login?token=fake" in shown and "cannot draw" in shown

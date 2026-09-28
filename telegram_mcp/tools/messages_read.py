@@ -18,6 +18,7 @@ from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.forum import reply_target_of
 from telegram_mcp.paging import LIMITS, bounded, bounded_page, page_metadata
 from telegram_mcp.runtime import *
+from telegram_mcp.tools.messages_view import _link_urls
 from telegram_mcp.tools.messages import (
     format_message_line,
     get_media_label,
@@ -146,9 +147,13 @@ async def list_messages(
         # Prepare filter parameters
         params = {}
         if search_query:
-            # IMPORTANT: Do not combine offset_date with search.
-            # Use server-side search alone, then enforce date bounds client-side.
+            # With `search`, Telethon sends offset_date as messages.search `max_date`
+            # (first request only), so the scan starts AT to_date rather than at the
+            # newest match and skipping forward (upstream chigwell #245). +1µs keeps
+            # to_date inclusive; the local checks below stay as the exact bounds.
             params["search"] = search_query
+            if to_date_obj:
+                params["offset_date"] = to_date_obj + timedelta(microseconds=1)
             messages = []
             async for msg in cl.iter_messages(entity, **params):  # newest -> oldest
                 if to_date_obj and msg.date > to_date_obj:
@@ -302,6 +307,10 @@ async def get_message_context(
             grouped_id = getattr(msg, "grouped_id", None)
             if grouped_id is not None:
                 record["grouped_id"] = grouped_id
+            # Links hidden behind visible text (upstream chigwell #225).
+            urls = _link_urls(msg)
+            if urls:
+                record["link_urls"] = urls
 
             # Check if this message is a reply and get the replied message
             reply_quote = get_reply_quote(msg)
@@ -327,6 +336,9 @@ async def get_message_context(
                         _r_username = get_sender_username(replied_msg)
                         if _r_username:
                             replied_record["username"] = _r_username
+                        replied_urls = _link_urls(replied_msg)
+                        if replied_urls:
+                            replied_record["link_urls"] = replied_urls
                         record["replied_message"] = replied_record
                 except Exception:
                     record["replied_message"] = None

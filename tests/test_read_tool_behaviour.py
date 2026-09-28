@@ -463,10 +463,12 @@ async def test_send_contact_addresses_the_resolved_peer(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_create_folder_refuses_past_telegram_s_ceiling_without_sending(monkeypatch):
-    """Telegram caps folders. Discovering that by RPC error would leave the
-    caller with an opaque failure; the refusal has to be local and must not send
-    an update that cannot succeed."""
+async def test_create_folder_leaves_the_ceiling_to_telegram_and_names_it(monkeypatch):
+    """Telegram caps folders at 10, or 20 with Premium (upstream chigwell #242). A local
+    cap of 10 refused a Premium account's 11th folder that Telegram would have made, so
+    the update goes out and Telegram's own refusal is answered as a sentence."""
+    from telethon.errors import RPCError
+
     existing = [
         types.DialogFilter(
             id=n,
@@ -477,18 +479,24 @@ async def test_create_folder_refuses_past_telegram_s_ceiling_without_sending(mon
         )
         for n in range(1, 11)
     ]
+
+    class _Refusing(Recorder):
+        async def __call__(self, request):
+            if isinstance(request, functions.messages.UpdateDialogFilterRequest):
+                self.sent.append(request)
+                raise RPCError(request, "DIALOG_FILTERS_TOO_MUCH", 400)
+            return await super().__call__(request)
+
     client = _wire(
         monkeypatch,
         folders_mod,
-        Recorder(types.messages.DialogFilters(filters=existing, tags_enabled=False)),
+        _Refusing(types.messages.DialogFilters(filters=existing, tags_enabled=False)),
     )
 
     result = await folders_mod.create_folder("One too many")
 
-    assert "limit is 10" in result
-    assert not [
-        r for r in client.sent if isinstance(r, functions.messages.UpdateDialogFilterRequest)
-    ], "an update went out for a folder Telegram would have refused"
+    assert _last(client, functions.messages.UpdateDialogFilterRequest).id == 11
+    assert "folder limit" in result and "Premium" in result
 
 
 # --- reads that page --------------------------------------------------------

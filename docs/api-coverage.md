@@ -215,6 +215,22 @@ Phase 1b. Two things learned while building them are worth more than the count:
 | Basic group to supergroup | `upgrade_to_supergroup` (`messages.migrateChat`, returns the new id, optional `enable_topics`), always asked | `tools/topic_admin.py` |
 | Username <-> id | `lookup_peer`: @name, name, t.me link or id -> marked and bare id, type, name, every username, link | `tools/peer_lookup.py` |
 
+### Ported from upstream chigwell/telegram-mcp, 2026-09-28 (reviewed up to `fa96092`)
+
+| Change | Upstream | Where |
+|---|---|---|
+| `list_messages` search with `to_date` starts AT `to_date` instead of reading every newer match | #245 | `tools/messages_read.py` |
+| `create_folder` leaves the folder limit to Telegram (20 with Premium) and names `DIALOG_FILTERS_TOO_MUCH` | #242 | `tools/folders.py`, `errors.py` |
+| A `file://` install URL with a drive letter resolves as that drive path | #228 | `install_guard.py` |
+| `mark_as_read(topic_id=...)` reads one forum topic up to its newest message and clears its mentions | PR #82 (rewritten) | `tools/read_receipts.py` |
+| `forward_message` / `forward_messages` report the new message ids | #230 | `tools/messages_relay.py` |
+| `parse_mode` (md/html) on `schedule_message` and `send_scheduled_message` | #247 | `tools/scheduled.py`, `tools/messages_queue.py` |
+| `formatted_date` entities (tappable dates) through the generic `entities` path | #218 (done differently) | `entities.py` |
+| `get_message_context` reports `link_urls` | #225 | `tools/messages_read.py` |
+| `get_message_reactions` on a message nobody reacted to returns an empty list (Telegram answers MSG_ID_INVALID, measured live) | #248 | `tools/messages_state.py` |
+| The session generator prints the login link when the console cannot draw the QR code | #195 | `session_string_generator.py` |
+| Not taken: `export_unread_messages` (#237, writes any path while marked read-only), login codes through tool calls (open PR #58), `ALLOWED_CHAT_IDS` (#233, partial coverage) | - | - |
+
 ### Still not reachable, lower value, build on demand
 
 Pinned-dialog ordering, fact-check, todo lists, history

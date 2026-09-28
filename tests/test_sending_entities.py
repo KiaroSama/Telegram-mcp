@@ -330,3 +330,25 @@ def test_a_non_numeric_id_is_refused_by_name():
 
     assert isinstance(refused, str)
     assert "custom_emoji_id" in refused and "not-a-number" in refused
+
+
+# --- tappable dates (upstream chigwell #218, done through the generic path) ---
+
+
+@pytest.mark.parametrize("when", ["2026-10-01T18:30:00Z", "2026-10-01T18:30:00+00:00", 1790879400])
+def test_a_formatted_date_entity_is_built_from_an_iso_date_or_a_timestamp(when):
+    from datetime import datetime, timezone
+
+    from telethon.tl.types import MessageEntityFormattedDate
+
+    item = {"type": "formatted_date", "offset": 0, "length": 5, "date": when, "short_time": True}
+    (built,) = rebuild_entities([item], TEXT)
+    assert isinstance(built, MessageEntityFormattedDate)
+    assert built.date == datetime(2026, 10, 1, 18, 30, tzinfo=timezone.utc)
+    assert built.short_time is True and not built.relative
+
+
+def test_a_formatted_date_without_a_readable_date_is_refused():
+    item = {"type": "formatted_date", "offset": 0, "length": 5, "date": "next tuesday"}
+    result = rebuild_entities([item], TEXT)
+    assert isinstance(result, str) and "date" in result

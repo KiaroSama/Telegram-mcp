@@ -9,6 +9,7 @@ because this code was private to the scheduled tools. So the server could queue 
 message with custom emoji for later and had no way to send the same message now.
 """
 
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from telethon.tl import types
@@ -23,7 +24,29 @@ ENTITY_FIELDS = {
     "user_id": "user_id",
     "language": "language",
     "collapsed": "collapsed",
+    # formatted_date: a tappable date shown in the reader's own time zone (upstream
+    # chigwell #218). date is ISO-8601 or a Unix timestamp; the rest pick the format.
+    "date": "date",
+    "relative": "relative",
+    "short_time": "short_time",
+    "long_time": "long_time",
+    "short_date": "short_date",
+    "long_date": "long_date",
+    "day_of_week": "day_of_week",
 }
+
+
+def _as_date(value):
+    """A formatted_date's moment as an aware datetime, or None when unreadable."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    try:
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
 
 
 def entity_classes() -> dict:
@@ -145,6 +168,13 @@ def rebuild_entities(items: Optional[List[dict]], text: str, input_users: Option
                     value = int(value)
                 except ValueError:
                     malformed = f"{kind} has a non-numeric {source}: {value!r}"
+                    break
+            if target == "date":
+                value = _as_date(value)
+                if value is None:
+                    malformed = (
+                        f"{kind} has a date that is not ISO-8601 or a timestamp: {item[source]!r}"
+                    )
                     break
             fields[target] = value
         if malformed:

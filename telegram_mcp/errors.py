@@ -62,9 +62,21 @@ TELEGRAM_REFUSALS: dict[str, str] = {
 }
 
 
+# Refusals Telethon has no class for: they arrive as a plain RPCError with the code in
+# `.message`.
+TELEGRAM_REFUSAL_CODES: dict[str, str] = {
+    "DIALOG_FILTERS_TOO_MUCH": (
+        "Telegram's folder limit is reached for this account: 10 folders, or 20 with "
+        "Premium. Delete a folder first."
+    ),
+}
+
+
 def _telegram_refusal(error: Exception) -> Optional[str]:
     """Telegram's own refusal, as a sentence, or None when it is not one of them."""
-    return TELEGRAM_REFUSALS.get(type(error).__name__)
+    return TELEGRAM_REFUSALS.get(type(error).__name__) or TELEGRAM_REFUSAL_CODES.get(
+        str(getattr(error, "message", "") or "")
+    )
 
 
 def log_and_format_error(

@@ -11,7 +11,8 @@ import json
 from dataclasses import dataclass
 from importlib import metadata
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 DISTRIBUTION_NAME = "telegram-mcp"
 
@@ -144,6 +145,13 @@ def _direct_url_json(direct_url: str) -> dict:
     return direct_url_data if isinstance(direct_url_data, dict) else {}
 
 
+def _file_url_path(raw_url: str) -> Path:
+    """The folder a ``file://`` URL names. ``url2pathname``, not ``unquote``: on Windows
+    ``/G:/Program%20Files`` must become ``G:/Program Files`` (a real drive path), and ``unquote`` left
+    ``G:Program Files`` - relative to drive G's current folder (upstream chigwell #228)."""
+    return Path(url2pathname(urlparse(raw_url).path))
+
+
 def _direct_url_is_explicit_source_install(direct_url: str) -> bool:
     direct_url_data = _direct_url_json(direct_url)
     if not direct_url_data:
@@ -156,7 +164,7 @@ def _direct_url_is_explicit_source_install(direct_url: str) -> bool:
     parsed_url = urlparse(raw_url)
 
     if parsed_url.scheme == "file":
-        source_path = Path(unquote(parsed_url.path)).resolve()
+        source_path = _file_url_path(raw_url).resolve()
         return _project_root_declares_distribution_name(source_path)
 
     vcs_info = direct_url_data.get("vcs_info")

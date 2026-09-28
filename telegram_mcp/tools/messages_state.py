@@ -17,6 +17,8 @@ text, is the payload: it ships an empty message body carrying an
 close it — is state manipulation of that attachment.
 """
 
+from types import SimpleNamespace
+
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 
@@ -445,14 +447,25 @@ async def get_message_reactions(
 
         peer = await resolve_input_entity(chat_id, cl)
 
-        result = await cl(
-            functions.messages.GetMessageReactionsListRequest(
-                peer=peer,
-                id=message_id,
-                limit=bound.value,
-                offset=offset or None,
+        try:
+            result = await cl(
+                functions.messages.GetMessageReactionsListRequest(
+                    peer=peer,
+                    id=message_id,
+                    limit=bound.value,
+                    offset=offset or None,
+                )
             )
-        )
+        except telethon.errors.MsgIdInvalidError:
+            # Telegram answers MSG_ID_INVALID for a message that exists but has no
+            # reactions (measured live 2026-09-28; upstream chigwell #248). Only then
+            # is the message itself read, so the ordinary path pays nothing extra.
+            message = await cl.get_messages(peer, ids=message_id)
+            if message is None:
+                return f"Message {message_id} not found in chat {chat_id}."
+            if getattr(message, "reactions", None) is not None:
+                raise
+            result = SimpleNamespace(reactions=[], count=0, next_offset=None)
 
         reactions_data = []
         for reaction in result.reactions or []:
