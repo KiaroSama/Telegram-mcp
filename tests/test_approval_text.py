@@ -94,7 +94,7 @@ def test_no_account_argument_names_the_only_account(monkeypatch):
         return SimpleNamespace(id=111, username="owner", usernames=None)
 
     monkeypatch.setattr(wiring, "_me", _me)
-    assert asyncio.run(wiring.identity(None)) == "refx · 111 · @owner"
+    assert asyncio.run(wiring.identity(None)) == "refx | 111 | @owner"
 
 
 def test_no_account_with_several_accounts_stays_unnamed(monkeypatch):
@@ -135,7 +135,7 @@ def test_a_chat_with_a_username_is_named_like_an_account(monkeypatch):
     )
     _patch_resolve(monkeypatch, channel)
     label = asyncio.run(wiring.chat_label("refx", -1003768657233))
-    assert label == "MCP topic test · -1003768657233 · @mcp_topic_test"
+    assert label == "MCP topic test | -1003768657233 | @mcp_topic_test"
 
 
 def test_a_chat_without_a_username_still_gets_its_title(monkeypatch):
@@ -143,7 +143,7 @@ def test_a_chat_without_a_username_still_gets_its_title(monkeypatch):
 
     user = tl.User(id=93372553, first_name="BotFather", bot=True, access_hash=2)
     _patch_resolve(monkeypatch, user)
-    assert asyncio.run(wiring.chat_label("refx", 93372553)) == "BotFather · 93372553"
+    assert asyncio.run(wiring.chat_label("refx", 93372553)) == "BotFather | 93372553"
 
 
 def test_a_chat_that_cannot_be_resolved_is_shown_as_given(monkeypatch):
@@ -197,3 +197,31 @@ def test_the_approval_request_carries_the_chat_label():
 
     asyncio.run(guard(ctx, call_next))
     assert seen[0].chat == "Group · -100777 · @group"
+
+
+# --- a renamed chat is not shown under its old title forever (plan 007) -----------
+
+
+def test_a_renamed_chat_gets_its_new_title_after_the_cache_expires(monkeypatch):
+    from telethon.tl import types as tl
+
+    from telegram_mcp import connection, runtime
+
+    titles = iter(["Old title", "New title"])
+
+    async def _resolve(chat, client=None, account=None):
+        return tl.User(id=93372553, first_name=next(titles), bot=True, access_hash=2)
+
+    monkeypatch.setattr(runtime, "resolve_entity", _resolve)
+    monkeypatch.setattr(connection, "get_client", lambda account=None: object())
+    monkeypatch.setattr(wiring, "_chat_labels", {})
+    now = [1000.0]
+    monkeypatch.setattr(wiring, "_now", lambda: now[0])
+
+    first = asyncio.run(wiring.chat_label("refx", 93372553))
+    second = asyncio.run(wiring.chat_label("refx", 93372553))
+    now[0] += wiring._LABEL_SECONDS + 1
+    third = asyncio.run(wiring.chat_label("refx", 93372553))
+
+    assert first == second == "Old title | 93372553"
+    assert third == "New title | 93372553"
