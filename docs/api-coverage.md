@@ -234,9 +234,11 @@ Phase 1b. Two things learned while building them are worth more than the count:
 
 ### Still not reachable, lower value, build on demand
 
-Pinned-dialog ordering, fact-check, todo lists, history
-import/export, message-level bot inline queries, and message **view counts**
-(`messages.GetMessagesViews`, distinct from the read receipts that already work).
+History **import** (`messages.InitHistoryImport` and its four siblings): measured, not built -
+it needs a real chat export file from another app to check the format against, and none
+exists yet. Checklists (2026-09-27), inline bot queries (2026-09-28), and pinned-dialog
+ordering, fact-checks, message view counts and chat export (2026-09-29) used to be listed
+here and are built.
 
 Mini App launch used to be listed here. It is now `open_mini_app`, which covers all
 three of Telegram's launch methods — `messages.RequestWebView` for the app an inline
@@ -324,10 +326,12 @@ longer treated as untouchable. That was the prerequisite for all four items here
 none of them is started. Each one currently exists as a workaround somewhere else in
 the tree, which is the cost of having deferred them.
 
-1. `get_media_label`: check `gif` before `video`, and delete the correction layered
-   over it in `message_view.py`.
-2. `sanitize_name`: stop destroying ZWNJ, ZWJ and emoji tag sequences. Much of
-   `text_fidelity` exists only to work around this and can then shrink.
+1. ~~`get_media_label`: check `gif` before `video`, and delete the correction layered
+   over it in `message_view.py`.~~ **done** (2026-09-29).
+2. ~~`sanitize_name`: stop destroying ZWNJ, ZWJ and emoji tag sequences.~~ **done**
+   (2026-09-29): joiners between non-ASCII letters or emoji and the tag characters after a
+   flag base are kept; a joiner between Latin letters is still stripped. `text_fidelity`
+   can now be reconciled with it in a follow-up.
 3. ~~The five POSIX-only test failures~~ **done.** They asserted `os.chmod` mode bits,
    which Windows does not implement — `chmod` there toggles only the read-only flag, so
    a file made "unreadable" stays readable and `st_mode` never reports `0o600`. They now
@@ -442,7 +446,8 @@ second copy.
 
 ### Phase 1 — full channel and group settings
 
-**36 of 59 `channels.*` requests are unreached** (was 42; the six reversible
+**Built 2026-09-29 (spec 022): every request in the table below.** Before that 36 of 59
+`channels.*` requests were unreached (was 42; the six reversible
 join-gate and visibility toggles are built) (17 raw-called, remeasured after the
 username work). What exists today is title, photo,
 admin rights, bans, slow mode, forum toggle, invite, join/leave and the admin log.
@@ -450,14 +455,17 @@ The settings an operator actually reaches for are all missing:
 
 | Group | Requests |
 |---|---|
-| Usernames | ~~`UpdateUsername`, `CheckUsername`~~ **built**; still open: `ToggleUsername`, `ReorderUsernames`, `DeactivateAllUsernames` |
+| Usernames | ~~`UpdateUsername`, `CheckUsername`~~ **built**; ~~`ToggleUsername`, `ReorderUsernames`, `DeactivateAllUsernames`~~ **built** |
 | Join gates | ~~`ToggleJoinToSend`, `ToggleJoinRequest`~~ **built** |
 | Visibility | ~~`TogglePreHistoryHidden`, `ToggleParticipantsHidden`, `ToggleSignatures`, `ToggleViewForumAsMessages`~~ **built** |
-| Discussion linking | `SetDiscussionGroup`, `GetGroupsForDiscussion` |
-| Moderation | `ToggleAntiSpam`, `ReportAntiSpamFalsePositive`, `SetBoostsToUnblockRestrictions` |
-| Appearance | `UpdateColor`, `UpdateEmojiStatus`, `SetStickers`, `SetEmojiStickers` |
+| Discussion linking | ~~`SetDiscussionGroup`, `GetGroupsForDiscussion`~~ **built** |
+| Moderation | ~~`ToggleAntiSpam`, `ReportAntiSpamFalsePositive`, `SetBoostsToUnblockRestrictions`~~ **built** |
+| Appearance | ~~`UpdateColor`, `UpdateEmojiStatus`, `SetStickers`, `SetEmojiStickers`~~ **built** |
 | Forum topics | ~~`EditForumTopic`~~ **built**, using Telethon's own request. It ships all three under `functions.messages` - looking in `functions.channels` is what made them seem absent, and the `channels.*` forms found there are RETIRED (they take an InputChannel; the live ones take an InputPeer). Telegram still serves the retired ids, so the hand-rolled encoders this module carried looked correct. Pinning built 2026-09-28 (`pin_forum_topic`, `reorder_pinned_topics`). |
-| Structural | `ConvertToGigagroup`, `EditLocation`, `DeleteChannel`, `UpdatePaidMessagesPrice`, `ToggleAutotranslation` |
+| Structural | ~~`ConvertToGigagroup`, `EditLocation`, `DeleteChannel`, `ToggleAutotranslation`~~ **built** |
+
+`UpdatePaidMessagesPrice` sets a Stars price on messages and falls under *Deliberately not
+building* (payments and Stars); it is not part of this phase.
 
 Self-contained, no new dependency, and every one is a single request. `DeleteChannel`
 and `ConvertToGigagroup` are irreversible and must be annotated `destructiveHint`
@@ -499,15 +507,17 @@ path. The work is not new TL, it is making the existing gate usable:
    folder rule: the always-usable `files/outbox` and `files/downloads`, the folders
    configured on the machine, the folders granted "always allow", and how any other
    folder is reached (the owner's allow / deny / always allow).
-2. Bulk chat export: iterate a chat's history and write messages plus media to a
-   directory under the roots. No TL beyond what is already used.
+2. ~~Bulk chat export~~ **done** (2026-09-29): `export_chat_history` writes
+   `<chat id>/messages.jsonl` (and media on request) under an allowed root.
 3. History **import** is genuinely absent — `messages.InitHistoryImport`,
    `StartHistoryImport`, `CheckHistoryImportPeer` — for pulling an exported archive
    from another app into Telegram.
 
 ### Phase 3 — Telegram Business
 
-**11 unreached requests, all in `account`**, and a clean self-contained group:
+**Built 2026-09-29 (spec 022)**, except `GetBotBusinessConnection` (bot-side): the away and
+greeting messages take a quick-reply `shortcut_id`, because that is all the wire form
+carries. Originally 11 unreached requests, all in `account`, a clean self-contained group:
 
 `UpdateBusinessWorkHours`, `UpdateBusinessAwayMessage`, `UpdateBusinessGreetingMessage`,
 `UpdateBusinessIntro`, `UpdateBusinessLocation`, plus business chat links

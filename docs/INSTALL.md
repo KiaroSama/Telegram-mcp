@@ -140,7 +140,7 @@ MCP client, not only Claude.
 |---|---|
 | Reading anything | Runs. |
 | Sending, editing your own message, reacting | Runs. |
-| Deleting, leaving, banning, ending a session, profile or privacy changes, joining by invite link | **Asks you.** |
+| Deleting, leaving, banning, promoting or changing admins, ending a session, profile or privacy changes, joining by invite link | **Asks you.** |
 | A first message to someone you never talked to | **Asks you.** |
 | The same send to more than 5 chats within a minute | **Asks you.** |
 | A write whose text came from someone else's message (a link, @username, phone, invite, or 24+ copied characters) | **Asks you**, and says which chat it came from. |
@@ -159,7 +159,7 @@ MCP client, not only Claude.
 
 A call that is bound to fail never reaches you: a missing account (`ACCOUNT REQUIRED:`) or arguments the tool would refuse - a wrong type, a missing field, deleting the General topic (`PREFLIGHT:`) - are answered with the reason before any request is sent. Every refusal, time-out and error the agent gets back names its reason.
 
-Every request names the **Account** acting, the **Action**, the **Tool** and **Chat** (both as `name · id · @username` when Telegram knows them), what it
+Every request names the **Account** acting, the **Action**, the **Tool** and **Chat** (both as `name | id | @username` when Telegram knows them), what it
 **Sends** (up to 300 characters of the text and the file names, when it sends any) and **Why
 asked** in plain words (for example "first message to someone this account never messaged").
 
