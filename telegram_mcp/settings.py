@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 
 # Which environment variables name an account. Here rather than in
 # `account_config` because provenance has to be captured on the line below this
@@ -49,7 +49,14 @@ PROCESS_FILE_ROOTS: Optional[str] = os.environ.get("TELEGRAM_FILE_ROOTS") or Non
 # `file_roots` before `runtime` has run a line, so relying on `runtime` to have called
 # `load_dotenv()` first meant the server could not start from a `.env` at all. It is
 # idempotent, and `runtime` still calls it for its own remaining reads.
-load_dotenv()
+#
+# The ONE file this process reads, recorded on the load itself. The reload used to
+# search again from the process cwd (`find_dotenv(usecwd=True)`), which is a different
+# file whenever a client starts the server from its own directory (plan 002).
+# `find_dotenv()` searches upward from THIS file (not the cwd) when the server runs
+# from a script, which is how every launcher starts it; tests patch it to find nothing.
+ENV_FILE: Optional[str] = find_dotenv() or None
+load_dotenv(ENV_FILE)
 
 
 class ValidationError(Exception):

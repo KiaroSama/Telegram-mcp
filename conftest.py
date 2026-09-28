@@ -43,6 +43,11 @@ for _key in [key for key in os.environ if key.startswith("TELEGRAM_")]:
 # values set below would survive regardless — but a key nothing sets here would
 # still be inherited from the file, and that is the leak being closed.
 dotenv.load_dotenv = lambda *args, **kwargs: False
+# And the search itself: `settings` records WHICH file it loaded (`ENV_FILE`) at import,
+# and the account reload reads that path, so a real path recorded here would bring the
+# operator's accounts into every test. tests/conftest.py patches it too, but later.
+dotenv.find_dotenv = lambda *args, **kwargs: ""
+dotenv.main.find_dotenv = dotenv.find_dotenv
 
 # The three the import path genuinely requires, matching tests/conftest.py.
 os.environ.setdefault("TELEGRAM_API_ID", "12345")

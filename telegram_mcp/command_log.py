@@ -39,6 +39,9 @@ _OUTCOME_PREFIXES = (
     ("ACCOUNT REQUIRED:", "refused_account"),
     ("This tool call was stopped after", "timed_out"),
 )
+# How the tools spell a failure in plain text: the literal "Error: ..." replies,
+# `errors.log_and_format_error`, and the topic tools' RPC refusal.
+_FAILURE_TEXT_PREFIXES = ("Error", "An error occurred", "Telegram refused")
 
 
 def log_directory() -> Path:
@@ -156,7 +159,7 @@ class CommandLog:
                     (o for prefix, o in _OUTCOME_PREFIXES if text.startswith(prefix)), "error"
                 )
                 record["error"] = text
-            elif text.startswith("Error"):  # most tools report a failure as text
+            elif text.startswith(_FAILURE_TEXT_PREFIXES):  # most tools fail as text
                 record["outcome"] = "tool_error"
                 record["error"] = text
             else:

@@ -130,6 +130,21 @@ async def test_a_contact_given_by_username_still_matches_its_direct_chat(_wire):
     assert private == [{"chat_id": 4242, "type": "Private", "unread": 3}]
 
 
+@pytest.mark.asyncio
+async def test_a_failed_common_chats_lookup_is_an_error_not_an_empty_answer(_wire):
+    """A flood-wait or privacy error must not read as 'no common chats' (plan 006)."""
+    client = _wire(_Client())
+
+    async def _boom(entity):
+        raise RuntimeError("FLOOD_WAIT_30")
+
+    client.get_common_chats = _boom
+    result = await get_contact_chats("@someone", account="a")
+
+    assert "No chats found" not in result
+    assert result.startswith("An error occurred")
+
+
 # --- adding a contact --------------------------------------------------------
 
 

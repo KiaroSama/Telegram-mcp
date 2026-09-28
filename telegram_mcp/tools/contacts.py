@@ -271,8 +271,8 @@ async def get_contact_chats(contact_id: Union[int, str], account: Optional[str] 
                         "type": get_entity_type(chat),
                     }
                 )
-        except Exception:
-            pass
+        except Exception as e:  # a failed lookup is not an empty answer
+            return log_and_format_error("get_contact_chats", e, contact_id=contact_id)
 
         if not records:
             return f"No chats found with {contact_name} (ID: {contact_id})."

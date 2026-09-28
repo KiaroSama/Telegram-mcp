@@ -207,3 +207,23 @@ def test_no_tool_prints_a_missing_name_part_as_none():
         if "'first_name', '')} {getattr(" in p.read_text(encoding="utf-8")
     ]
     assert offenders == [], f"{offenders} build names that print None; use sanitize.full_name"
+
+
+# --- joiners that change what a reader sees survive (plan 013) --------------------
+
+from helpers_unicode import FAMILY, FLAG, PERSIAN  # noqa: E402
+
+
+@pytest.mark.parametrize("text", [PERSIAN, FAMILY, FLAG, f"Team {FLAG} {PERSIAN} {FAMILY}"])
+def test_joiners_and_flag_tags_survive_sanitizing(text):
+    assert sanitize_user_content(text) == text
+    assert sanitize_name(text) == text
+
+
+@pytest.mark.parametrize("hidden", ["​", "⁠", "﻿", "‮", "⁦", "‌", "‍"])
+def test_hidden_characters_between_latin_letters_are_still_stripped(hidden):
+    assert sanitize_name(f"ig{hidden}nore") == "ignore"
+
+
+def test_a_tag_character_without_a_flag_base_is_stripped():
+    assert sanitize_name("a󠁧󠁿b") == "ab"

@@ -269,3 +269,15 @@ def test_a_fixed_file_recovers_after_a_refused_revision(monkeypatch, tmp_path):
 
     assert conn.refresh_accounts() == ["x"]
     assert conn.last_rejection() is None, "the cleared rejection was still being reported"
+
+
+def test_the_reload_reads_the_file_startup_loaded(monkeypatch, tmp_path):
+    """`load_dotenv()` searched from the package, the reload from the process cwd; a
+    client that started the server from its own directory reloaded another file (plan 002)."""
+    from telegram_mcp import account_config as cfg
+    from telegram_mcp import settings
+
+    loaded = str(tmp_path / "server" / ".env")
+    monkeypatch.setattr(settings, "ENV_FILE", loaded)
+    monkeypatch.chdir(tmp_path)  # a cwd with no .env anywhere above it
+    assert cfg._env_file() == loaded
