@@ -28,6 +28,7 @@ __all__ = [
     "first_message",
     "ghost_on",
     "identity",
+    "chat_label",
     "note_records",
     "note_rendered",
     "tool_hints",
@@ -38,6 +39,7 @@ _known_chats: Set[Tuple[Optional[str], str]] = set()
 _saved: Dict[Optional[str], approvals.SavedMessagesChannel] = {}
 _bot_state: Dict[str, Any] = {"client": None, "username": None, "lock": None}
 _identities: Dict[str, str] = {}
+_chat_labels: Dict[Tuple[Optional[str], str], str] = {}
 
 
 def tool_hints(name: str) -> Optional[Tuple[bool, bool]]:
@@ -153,6 +155,38 @@ async def identity(account: Optional[str]) -> str:
             parts.append("@" + username)
         _identities[account] = " · ".join(parts)
     return _identities[account]
+
+
+async def chat_label(account: Optional[str], chat: Any) -> str:
+    """ "title · marked id · @username" - the Chat line, named like the Account line.
+
+    Owner request 2026-09-28: an approval showed only `-1003768657233`. Resolved once per
+    (account, chat) and remembered; anything that cannot be resolved in time is shown as
+    given, because the approval must never wait on a lookup.
+    """
+    if chat is None:
+        return ""
+    key = (account, str(chat))
+    if key in _chat_labels:
+        return _chat_labels[key]
+    try:
+        from telegram_mcp import runtime
+        from telegram_mcp.connection import get_client
+        from telegram_mcp.sanitize import full_name, sanitize_name
+
+        entity = await asyncio.wait_for(
+            runtime.resolve_entity(chat, client=get_client(account), account=account),
+            _FIRST_MESSAGE_SECONDS,
+        )
+        name = sanitize_name(getattr(entity, "title", None) or full_name(entity) or "")
+        parts = [p for p in (name, str(runtime.get_marked_id(entity))) if p]
+        username = _username_of(entity)
+        if username:
+            parts.append("@" + username)
+    except Exception:
+        return str(chat)
+    _chat_labels[key] = " · ".join(parts)
+    return _chat_labels[key]
 
 
 async def owner_ids() -> frozenset:

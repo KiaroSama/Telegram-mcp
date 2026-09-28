@@ -102,3 +102,97 @@ def test_no_account_with_several_accounts_stays_unnamed(monkeypatch):
     monkeypatch.setattr(connection, "clients", {"a": object(), "b": object()})
     monkeypatch.setattr(connection, "refresh_accounts", lambda: None)
     assert asyncio.run(wiring.identity(None)) == ""
+
+
+# --- the Chat line names the chat like the Account line names the account ---------
+
+
+def _patch_resolve(monkeypatch, entity):
+    from telegram_mcp import connection, runtime
+
+    async def _resolve(chat, client=None, account=None):
+        if isinstance(entity, Exception):
+            raise entity
+        return entity
+
+    monkeypatch.setattr(runtime, "resolve_entity", _resolve)
+    monkeypatch.setattr(connection, "get_client", lambda account=None: object())
+    monkeypatch.setattr(wiring, "_chat_labels", {})
+
+
+def test_a_chat_with_a_username_is_named_like_an_account(monkeypatch):
+    from telethon.tl import types as tl
+
+    channel = tl.Channel(
+        id=3768657233,
+        title="MCP topic test",
+        photo=tl.ChatPhotoEmpty(),
+        date=None,
+        megagroup=True,
+        access_hash=1,
+        username="mcp_topic_test",
+    )
+    _patch_resolve(monkeypatch, channel)
+    label = asyncio.run(wiring.chat_label("refx", -1003768657233))
+    assert label == "MCP topic test · -1003768657233 · @mcp_topic_test"
+
+
+def test_a_chat_without_a_username_still_gets_its_title(monkeypatch):
+    from telethon.tl import types as tl
+
+    user = tl.User(id=93372553, first_name="BotFather", bot=True, access_hash=2)
+    _patch_resolve(monkeypatch, user)
+    assert asyncio.run(wiring.chat_label("refx", 93372553)) == "BotFather · 93372553"
+
+
+def test_a_chat_that_cannot_be_resolved_is_shown_as_given(monkeypatch):
+    _patch_resolve(monkeypatch, ValueError("unknown"))
+    assert asyncio.run(wiring.chat_label("refx", "-100555")) == "-100555"
+
+
+def test_the_approval_request_carries_the_chat_label():
+    from telegram_mcp import safeguard
+
+    seen = []
+
+    class _Channel:
+        kind = "dialog"
+
+        def available(self):
+            return True
+
+        async def ask(self, request, timeout):
+            seen.append(request)
+            return "approved_once"
+
+    async def _label(account, chat):
+        return f"Group · {chat} · @group"
+
+    async def _nothing(*args):
+        return None
+
+    guard = safeguard.Safeguard(
+        hints=lambda name: (False, True),
+        channels=lambda ctx, account: [_Channel()],
+        first_message=lambda account, chat: _nothing(),
+        ghost_on=lambda account, chat: False,
+        approval_chats=lambda: frozenset(),
+        account_of=lambda arguments: "main",
+        after=lambda account: None,
+        identity=lambda account: _nothing(),
+        chat_label=_label,
+        sealed_target=lambda account, arguments: _nothing(),
+        warm=_nothing,
+        timeout=5,
+    )
+    ctx = SimpleNamespace(
+        method="tools/call",
+        request_id=1,
+        params={"name": "delete_message", "arguments": {"chat_id": -100777, "message_id": 3}},
+    )
+
+    async def call_next(_ctx):
+        return "RESULT"
+
+    asyncio.run(guard(ctx, call_next))
+    assert seen[0].chat == "Group · -100777 · @group"
