@@ -84,4 +84,9 @@ from telegram_mcp.safeguard import install as _install_safeguard  # noqa: E402
 
 _install_safeguard(_mcp)
 
+# Outside even the safeguard: every call an agent makes is recorded, refusals included.
+from telegram_mcp.command_log import install as _install_command_log  # noqa: E402
+
+_install_command_log(_mcp)
+
 __all__ = [name for name in globals() if not name.startswith("_")]

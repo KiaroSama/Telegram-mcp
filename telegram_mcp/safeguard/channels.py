@@ -67,6 +67,16 @@ _OUTCOME_LINES = {
     "timed_out": "⏱ Timed out - not run",
 }
 _CLOSED_LINE = "⏹ Closed - not run"
+# Spec 018: the owner reads a reason, not a code (policy.decide's reason names).
+_REASON_TEXT = {
+    "gated": "this action always needs your approval",
+    "first_message": "first message to someone this account never messaged",
+    "bulk_send": "many sends in a short time",
+    "tainted": "it carries content that came from another chat",
+    "ghost_off": "it turns ghost mode off",
+    "seen_signal_under_ghost": "ghost mode is on and this shows you as active or read",
+    "outside_project_folder": "it uses a folder outside the project",
+}
 
 _pending: Set[str] = set()
 # The requests waiting for the owner right now, by code, with when each was asked.
@@ -107,25 +117,36 @@ class ApprovalRequest:
     code: str = ""
     nonce: str = ""
     identity: str = ""  # "name · user id · @username" of the account acting
+    preview: str = ""  # spec 018: the start of what will be sent, if anything
+
+    def _who(self) -> str:
+        return self.identity or self.account or "not named in the call"
+
+    def _why(self) -> str:
+        return "; ".join(_REASON_TEXT.get(r, r) for r in self.reasons or ["gated"])
 
     def text(self) -> str:
-        why = "; ".join(self.reasons) or "gated"
+        sends = f"Sends: {self.preview}\n" if self.preview else ""
         return (
-            f"Account: {self.identity or self.account or '-'}\n"
-            f"{self.effect}\n"
+            f"Account: {self._who()}\n"
+            f"Action: {self.effect}\n"
             f"Tool: {self.tool}   Chat: {self.chat or '-'}\n"
-            f"Why asked: {why}"
+            f"{sends}"
+            f"Why asked: {self._why()}"
         )
 
     def html(self) -> str:
         """The same, for the bot: the account quoted first, so one bot can serve many."""
-        why = html_escape("; ".join(self.reasons) or "gated")
+        sends = (
+            f"Sends:<blockquote>{html_escape(self.preview)}</blockquote>\n" if self.preview else ""
+        )
         return (
-            f"<blockquote>{html_escape(self.identity or self.account or '-')}</blockquote>\n"
-            f"<b>{html_escape(self.effect)}</b>\n"
+            f"<blockquote>Account: {html_escape(self._who())}</blockquote>\n"
+            f"<b>Action: {html_escape(self.effect)}</b>\n"
             f"Tool: <code>{html_escape(self.tool)}</code>   "
             f"Chat: <code>{html_escape(self.chat or '-')}</code>\n"
-            f"Why asked: {why}"
+            f"{sends}"
+            f"Why asked: {html_escape(self._why())}"
         )
 
 
@@ -136,6 +157,7 @@ def new_request(
     effect: str,
     reasons: List[str],
     identity: str = "",
+    preview: str = "",
 ) -> ApprovalRequest:
     code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
     while code in _pending:  # two open requests never share a code
@@ -149,6 +171,7 @@ def new_request(
         code=code,
         nonce=secrets.token_hex(8),
         identity=identity,
+        preview=preview,
     )
 
 
