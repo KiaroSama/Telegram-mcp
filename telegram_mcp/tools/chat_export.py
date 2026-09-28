@@ -20,7 +20,7 @@ tools return, never instructions.
 from telegram_mcp import file_roots
 from telegram_mcp.media_transfer import MAX_BATCH_BYTES
 from telegram_mcp.message_view import deep_message_dict
-from telegram_mcp.paging import bounded
+from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 from telegram_mcp.sanitize import _json_default
 from telegram_mcp.tools.media import _DOWNLOAD_MAX_BYTES, download_media
@@ -28,8 +28,8 @@ from telegram_mcp.tools.messages import LINK_DOMAIN, message_to_dict
 
 __all__ = ["export_chat_history"]
 
-EXPORT_CEILING = 20000
 _TOOL = "export_chat_history"
+EXPORT_CEILING = LIMITS[_TOOL]  # the one table every counting tool declares in
 _SAVED = "Media downloaded to "
 
 

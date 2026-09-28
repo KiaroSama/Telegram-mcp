@@ -47,7 +47,7 @@ async def _no_warm():
 
 
 async def _identity(account):
-    return f"{account} · 7 · @{account}_user"
+    return f"{account} | 7 | @{account}_user"
 
 
 def _guard(channel=None, *, first_message=False, ghost=True, approval_chats=()):
@@ -177,7 +177,7 @@ def test_approve_once_does_not_carry_over():
 def test_the_request_names_the_account_it_acts_for():
     guard, channel = _guard()
     _call(guard, "delete_message", {"chat_id": -100, "message_id": 3, "account": "work"})
-    assert channel.requests[0].identity == "work · 7 · @work_user"
+    assert channel.requests[0].identity == "work | 7 | @work_user"
 
 
 def test_a_state_file_path_is_refused():

@@ -17,7 +17,7 @@ from telegram_mcp.safeguard import channels as ac
 
 def _request(**overrides):
     fields = dict(tool="delete_message", account="main", chat="-100", effect="deletes 1 message")
-    fields["identity"] = "main · 111 · @owner"
+    fields["identity"] = "main | 111 | @owner"
     fields.update(overrides)
     return ac.new_request(reasons=["gated"], **fields)
 
@@ -170,7 +170,7 @@ def test_every_allowed_account_gets_the_request_quoting_the_account():
     assert asyncio.run(run()) == "declined"
     assert sorted(peer for peer, _, _ in client.sent) == [111, 222]
     text = client.sent[0][1]
-    assert "<blockquote>" in text and "main · 111 · @owner" in text
+    assert "<blockquote>" in text and "main | 111 | @owner" in text
     assert client.sent[0][2].get("parse_mode") == "html"
     # The buttons are taken away once the request is decided, on every copy.
     assert sorted(peer for peer, _, _ in client.edited) == [111, 222]
@@ -365,7 +365,7 @@ def test_a_closed_request_shows_its_outcome_on_every_copy(press, outcome, line):
     [
         (
             SimpleNamespace(id=5899781975, username="refx_nexus_3", usernames=None),
-            "refx_nexus_3 · 5899781975 · @refx_nexus_3",
+            "refx_nexus_3 | 5899781975 | @refx_nexus_3",
         ),
         (
             SimpleNamespace(
@@ -376,9 +376,9 @@ def test_a_closed_request_shows_its_outcome_on_every_copy(press, outcome, line):
                     SimpleNamespace(username="refx_nexus_3", active=True),
                 ],
             ),
-            "refx_nexus_3 · 5899781975 · @refx_nexus_3",
+            "refx_nexus_3 | 5899781975 | @refx_nexus_3",
         ),
-        (SimpleNamespace(id=7, username=None, usernames=None), "refx_nexus_3 · 7"),
+        (SimpleNamespace(id=7, username=None, usernames=None), "refx_nexus_3 | 7"),
     ],
 )
 def test_the_quote_names_the_accounts_username_with_an_at(monkeypatch, me, expected):

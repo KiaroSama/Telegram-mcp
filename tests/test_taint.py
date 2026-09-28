@@ -205,6 +205,7 @@ def test_every_function_that_renders_message_text_records_it():
                     checked += 1
                 if renders.search(body) and not records.search(body):
                     missing.append(f"{path.name}:{node.name}")
-    allowed = {"messages_queue.py:get_drafts"}  # drafts are the owner's own words
+    # drafts and the owner's own business chat links are the owner's own words
+    allowed = {"messages_queue.py:get_drafts", "business_links.py:_describe"}
     assert set(missing) <= allowed, sorted(set(missing) - allowed)
     assert checked >= 10, f"only {checked} renderers found; the pattern has gone stale"

@@ -10,7 +10,10 @@ that the owner looked.
 Every tool takes the slug or the whole link, whichever the caller has.
 """
 
+from types import SimpleNamespace
+
 from telegram_mcp.runtime import *
+from telegram_mcp.safeguard import note_rendered
 from telegram_mcp.tools.business import premium_refusal
 
 __all__ = [
@@ -216,6 +219,8 @@ async def resolve_business_chat_link(slug: str, account: str = None) -> str:
     if refusal:
         return refusal
     peer_id = utils.get_peer_id(result.peer)
+    # Someone else's words: a later call that copies them must be recognised as such.
+    note_rendered(SimpleNamespace(message=result.message, chat_id=peer_id, out=False), account)
     owner = next(
         (e for e in [*result.users, *result.chats] if utils.get_peer_id(e) == peer_id), None
     )
