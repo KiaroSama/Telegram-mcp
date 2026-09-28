@@ -12,6 +12,7 @@ tests run without Telegram.
 import asyncio
 import logging
 import os
+import time
 from typing import Any, Dict, Optional, Set, Tuple
 
 from telegram_mcp.safe_log import log_event
@@ -39,7 +40,12 @@ _known_chats: Set[Tuple[Optional[str], str]] = set()
 _saved: Dict[Optional[str], approvals.SavedMessagesChannel] = {}
 _bot_state: Dict[str, Any] = {"client": None, "username": None, "lock": None}
 _identities: Dict[str, str] = {}
-_chat_labels: Dict[Tuple[Optional[str], str], str] = {}
+# How the parts of the Account and Chat lines are joined (owner, 2026-09-29: "|", not "·").
+LABEL_SEPARATOR = " | "
+# A renamed chat shows its new title within ten minutes (plan 007): the label is
+# re-resolved after this long, and a failed lookup is never cached.
+_LABEL_SECONDS = 600.0
+_chat_labels: Dict[Tuple[Optional[str], str], Tuple[float, str]] = {}
 
 
 def tool_hints(name: str) -> Optional[Tuple[bool, bool]]:
@@ -137,7 +143,7 @@ def _username_of(me: Any) -> Optional[str]:
 
 
 async def identity(account: Optional[str]) -> str:
-    """ "label · user id · @username" - the quote that tells the owner which account."""
+    """ "label | user id | @username" - the quote that tells the owner which account."""
     if not account:
         # Spec 018: no account argument acts as the only account, when there is one.
         from telegram_mcp import connection
@@ -153,12 +159,12 @@ async def identity(account: Optional[str]) -> str:
         username = _username_of(me)
         if username:
             parts.append("@" + username)
-        _identities[account] = " · ".join(parts)
+        _identities[account] = LABEL_SEPARATOR.join(parts)
     return _identities[account]
 
 
 async def chat_label(account: Optional[str], chat: Any) -> str:
-    """ "title · marked id · @username" - the Chat line, named like the Account line.
+    """ "title | marked id | @username" - the Chat line, named like the Account line.
 
     Owner request 2026-09-28: an approval showed only `-1003768657233`. Resolved once per
     (account, chat) and remembered; anything that cannot be resolved in time is shown as
@@ -167,8 +173,9 @@ async def chat_label(account: Optional[str], chat: Any) -> str:
     if chat is None:
         return ""
     key = (account, str(chat))
-    if key in _chat_labels:
-        return _chat_labels[key]
+    cached = _chat_labels.get(key)
+    if cached and _now() - cached[0] < _LABEL_SECONDS:
+        return cached[1]
     try:
         from telegram_mcp import runtime
         from telegram_mcp.connection import get_client
@@ -185,8 +192,13 @@ async def chat_label(account: Optional[str], chat: Any) -> str:
             parts.append("@" + username)
     except Exception:
         return str(chat)
-    _chat_labels[key] = " · ".join(parts)
-    return _chat_labels[key]
+    label = LABEL_SEPARATOR.join(parts)
+    _chat_labels[key] = (_now(), label)
+    return label
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 async def owner_ids() -> frozenset:

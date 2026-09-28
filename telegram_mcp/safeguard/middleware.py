@@ -279,7 +279,7 @@ class Safeguard:
                     who = account or ""
                 shown = _shown_target(arguments, chat)
                 if chat is not None:
-                    try:  # "title · id · @username", like the Account line
+                    try:  # "title | id | @username", like the Account line
                         shown = await self._chat_label(account, chat) or shown
                     except Exception:
                         pass

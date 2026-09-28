@@ -116,7 +116,7 @@ class ApprovalRequest:
     reasons: List[str] = field(default_factory=list)
     code: str = ""
     nonce: str = ""
-    identity: str = ""  # "name · user id · @username" of the account acting
+    identity: str = ""  # "name | user id | @username" of the account acting
     preview: str = ""  # spec 018: the start of what will be sent, if anything
 
     def _who(self) -> str:
