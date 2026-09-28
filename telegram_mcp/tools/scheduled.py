@@ -204,7 +204,9 @@ async def schedule_message(
             never takes the text apart, so nothing can be rebased wrongly.
 
         parse_mode: "md" (markdown) or "html" to format `message`; omitted = plain
-            text. Give this or `entities`, not both.
+            text. Give this or `entities`, not both. Telethon's markdown: `**bold**`,
+            `__italic__` (two underscores; `_one_` stays literal), backticks for code,
+            `[text](url)`.
 
     Note: this queues a real message that Telegram will deliver on its own.
     """
