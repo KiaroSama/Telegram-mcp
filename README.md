@@ -44,9 +44,9 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
   own MTProto 2.0 package or a TL request Telethon carries but never reads,
   Telegram's own client library, which ships with the project.
   See [docs/api-coverage.md](docs/api-coverage.md).
-- **Many accounts, one server.** Every tool takes `account=`, read-only tools can fan out across
-  all of them, and `.env` is re-read while the server runs, so adding or re-logging an account
-  needs no restart.
+- **Many accounts, one server.** Every tool that acts through an account requires `account=`,
+  so no call ever lands on an account nobody named, and `.env` is re-read while the server
+  runs, so adding or re-logging an account needs no restart.
 - **The filesystem is closed by default.** No path tool works until allowed roots are configured,
   and every read and write goes through a handle rather than a name that could be swapped
   mid-operation.
@@ -548,10 +548,8 @@ input, never echoes it, and never writes it to its log — the log records label
 counts only. Removing an account takes it out of `.env`; it does **not** revoke the
 Telegram session, which is done from the app under Settings → Devices.
 
-Adding the second account switches the server into multi-account mode, where write tools
-require `account=<label>` and read-only tools fan out across every account when it is
-omitted, returning one JSON object keyed by account label. The menu says so at the
-moment it happens.
+Every tool that acts through an account requires `account=<label>`, with one account or
+many, so adding a second account changes nothing about how tools are called.
 
 Choosing *Generate a session string* hands over to `session_string_generator.py` without
 forcing a login method, so it offers both QR and phone code. A rejected two-factor
@@ -634,11 +632,14 @@ TELEGRAM_SESSION_STRING_PERSONAL=session_string_for_personal
 
 Labels are lowercased and become the `account` parameter value in tools.
 
-- In single-account mode, `account` is optional.
-- In multi-account mode, write tools require `account`.
-- Read-only tools fan out to all accounts when `account` is omitted, and answer with
-  `{"accounts": {"<label>": <that account's result>, ...}}`. An account that failed
-  appears as `{"error": "..."}` rather than discarding the accounts that succeeded.
+- Every tool that acts through an account lists `account` as required, reads included,
+  with one account configured or many. A call without it, or with a label that is not
+  configured, is refused before anything runs - before the safeguard, so no approval is
+  ever asked for it - and the refusal names the configured labels.
+- Tools that act on the server itself (proxies, screen capture, the incoming feed, file
+  roots, invite-link QR codes, `list_accounts`) take no `account`. In `safeguard_status`,
+  `get_ghost_mode`, `get_connection_route` and `revoke_always_approval` it only filters a view
+  of the server's own state (omitted: every account), so there it stays optional.
 
 Example prompts:
 

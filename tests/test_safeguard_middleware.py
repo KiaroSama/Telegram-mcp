@@ -256,10 +256,14 @@ def test_the_live_server_runs_every_call_through_the_safeguard_first():
     from telegram_mcp.command_log import CommandLog
     from telegram_mcp.tools import mcp
 
-    # Only the command log (spec 018) sits in front: it records and passes every call on.
-    assert isinstance(mcp.middleware[0], CommandLog)
-    assert isinstance(mcp.middleware[1], safeguard.Safeguard)
-    assert any(isinstance(m, ToolCallBudget) for m in mcp.middleware[2:])
+    from telegram_mcp.account_gate import AccountGate
+
+    # In front only the command log (spec 018, records and passes on) and the account
+    # gate (spec 019, refuses a call that names no account - it never lets one through
+    # that the safeguard would not see).
+    kinds = [type(m) for m in mcp.middleware]
+    assert kinds[:3] == [CommandLog, AccountGate, safeguard.Safeguard]
+    assert ToolCallBudget in kinds[3:]
 
 
 def test_every_kernel_file_carries_the_do_not_edit_notice():

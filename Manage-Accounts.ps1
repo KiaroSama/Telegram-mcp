@@ -106,8 +106,7 @@ function Show-Accounts {
     }
     if ($accounts.Count -gt 1) {
         Write-Host ''
-        Write-Host 'Multi-account mode is active: write tools now require account=, and' -ForegroundColor Yellow
-        Write-Host 'read-only tools fan out across every account when it is omitted.' -ForegroundColor Yellow
+        Write-Host 'Every tool call names its account with account=<label>, as it did with one.' -ForegroundColor Yellow
     }
 }
 

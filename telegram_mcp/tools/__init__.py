@@ -84,6 +84,12 @@ from telegram_mcp.safeguard import install as _install_safeguard  # noqa: E402
 
 _install_safeguard(_mcp)
 
+# In front of the safeguard: a call that names no account is refused before anyone is
+# asked to approve it (spec 019).
+from telegram_mcp.account_gate import install as _install_account_gate  # noqa: E402
+
+_install_account_gate(_mcp)
+
 # Outside even the safeguard: every call an agent makes is recorded, refusals included.
 from telegram_mcp.command_log import install as _install_command_log  # noqa: E402
 

@@ -513,13 +513,8 @@ have checked the title yourself.
   thumbnail (`preview_source: "thumbnail"`), and the error names `get_telegram_frames` as the
   way to see the animation as Telegram Desktop plays it.
 * A **minimized window cannot be screen-captured**. Use `method="window"`.
-* In **multi-account mode**, `inspect_message`, `get_media_thumbnail`, `get_media_frames`,
-  `get_custom_emoji` and `get_message_effect` require an explicit `account`. The server's
-  read-only fan-out returns one JSON object keyed by account label, which can carry each
-  account's text result but not its image blocks, so every tool that returns image blocks
-  refuses the fan-out with a message naming the configured accounts instead. `inspect_messages` and
-  `get_media_details` return text only and fan out normally. The capture tools never touch
-  Telegram, so `account` does not apply to them at all.
+* Every tool that reaches Telegram requires `account` (a call without it is refused before it
+  runs). The capture tools never touch Telegram, so `account` does not apply to them at all.
 * **`native_resolution=True` opts out of the size cap** on the three capture tools when you
   genuinely need pixel-accurate rendering. It is expensive — a 4K window is roughly 20k+ tokens,
   and `get_telegram_frames` multiplies that by the frame count. Prefer `get_telegram_region` to
