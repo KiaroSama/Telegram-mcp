@@ -16,9 +16,11 @@ the answer earlier, they never replace it.
 
 from __future__ import annotations
 
+import dataclasses
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
 
-__all__ = ["Preflight", "RULES", "install"]
+__all__ = ["Preflight", "RULES", "drop_null_defaults", "install"]
 
 
 def _general_topic(args: Dict[str, Any]) -> Optional[str]:
@@ -47,11 +49,41 @@ def _parse_mode_or_entities(args: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _pinned_chats(args: Dict[str, Any]) -> Optional[str]:
+    return None if args.get("order") else "Give at least one chat in order."
+
+
+def _link_slug(args: Dict[str, Any]) -> Optional[str]:
+    return None if str(args.get("slug") or "").strip() else "Give the link's slug."
+
+
+def _work_hours(args: Dict[str, Any]) -> Optional[str]:
+    if args.get("intervals") is None:
+        return None  # clearing the hours
+    from telegram_mcp.tools.business import normalize_work_hours
+
+    try:
+        return normalize_work_hours(args.get("intervals"))[1]
+    except (TypeError, ValueError):
+        return None  # a malformed shape is the schema check's to name
+
+
+def _cancel_ids(args: Dict[str, Any]) -> Optional[str]:
+    ids = args.get("message_id")
+    if isinstance(ids, list) and not ids:
+        return "message_id must not be an empty list."
+    return None
+
+
 RULES: Dict[str, Callable[[Dict[str, Any]], Optional[str]]] = {
     "delete_forum_topic": _general_topic,
     "reorder_pinned_topics": _pinned_order,
     "create_paid_invite_link": _paid_link_fee,
     "schedule_message": _parse_mode_or_entities,
+    "cancel_scheduled_message": _cancel_ids,
+    "reorder_pinned_chats": _pinned_chats,
+    "delete_business_chat_link": _link_slug,
+    "set_business_hours": _work_hours,
 }
 
 
@@ -85,6 +117,42 @@ def _schema_problem(name: str, arguments: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def drop_null_defaults(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """The arguments without an explicit ``null`` for a parameter whose default is None.
+
+    Most tools spell an optional parameter ``X = None`` without ``Optional``, so the
+    published schema allows no null and a client that sends ``bot: null`` for "not
+    given" was refused - by this check and by the SDK after it (reported 2026-09-29:
+    ``set_profile_photo`` could not set an account's own photo). ``null`` there means
+    the default, so it is dropped and the default applies. A required parameter keeps
+    its null and is refused by name.
+    """
+    from telegram_mcp.runtime import mcp
+
+    tool = mcp._tool_manager.get_tool(name)
+    if tool is None:
+        return arguments
+    fields = tool.fn_metadata.arg_model.model_fields
+    return {
+        key: value
+        for key, value in arguments.items()
+        if not (
+            value is None
+            and key in fields
+            and not fields[key].is_required()
+            and fields[key].default is None
+        )
+    }
+
+
+def _with_arguments(ctx, arguments: Dict[str, Any]):
+    """``ctx`` carrying ``arguments``: the SDK reads params off the ctx it is handed."""
+    params = dict(ctx.params, arguments=arguments)
+    if dataclasses.is_dataclass(ctx):
+        return dataclasses.replace(ctx, params=params)
+    return SimpleNamespace(**{**vars(ctx), "params": params})
+
+
 class Preflight:
     """Middleware: answer a doomed tool call with its reason, before the safeguard."""
 
@@ -96,6 +164,9 @@ class Preflight:
         arguments = params.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(arguments, dict):
             return await call_next(ctx)
+        cleaned = drop_null_defaults(name, arguments)
+        if cleaned != arguments:
+            arguments, ctx = cleaned, _with_arguments(ctx, cleaned)
         reason = _schema_problem(name, arguments)
         rule = RULES.get(name)
         if reason is None and rule is not None:

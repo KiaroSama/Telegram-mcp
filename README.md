@@ -80,7 +80,7 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
 
 ## What It Can Do
 
-The server registers **296 MCP tools**. That count is measured, not estimated — see
+The server registers **328 MCP tools**. That count is measured, not estimated — see
 [docs/api-coverage.md](docs/api-coverage.md), which also records what Telegram has that this
 server deliberately does not. The tools group into these areas:
 
@@ -93,6 +93,9 @@ server deliberately does not. The tools group into these areas:
 - **Polls, checklists and statistics:** `create_poll` covers every setting of Telegram's poll dialog (description and attachments, a file per option, several correct quiz answers with an explanation, adding options, revoting, shuffle, hidden results, a duration, a country list, members only); options can be added and deleted later, unread votes listed, and a reply or a link can point at one option or one checklist task. `send_checklist` and its companions add tasks, mark them done and report who completed what and when. `analyze_chat_statistics` turns a group's or channel's statistics into totals, changes, peaks, shares and the busiest hour and weekday.
 - **Devices and kick:** switch incoming calls per device, keep secret chats on only one chosen device, and `kick_user` removes a member who can come back.
 - **Member tags:** `set_member_tag` puts a short tag (up to 16 characters, no emoji) next to a group member's name, yours included, or removes it with an empty tag; `get_participants` shows each member's tag, and `set_default_chat_permissions(edit_rank=...)` decides whether members may tag themselves.
+- **Channel settings, fully:** every username of a channel (toggle, reorder, deactivate all), anti-spam and boost limits, colour, emoji status, sticker and emoji packs, location, auto-translation, the groups that can be linked for discussion, converting to a broadcast group and deleting a channel (those two always ask the owner).
+- **Views, pinned order, fact-checks, export:** `get_message_views` reads a post's view counter without adding a view, `reorder_pinned_chats` orders the pinned chats of All chats or the Archive, fact-checks can be read, set and deleted, and `export_chat_history` writes a chat's history (and optionally its media) to `files/downloads/exports`.
+- **Telegram Business:** read and set opening hours, away and greeting messages (built from a quick reply), intro and location, and manage business chat links. Business needs Premium; without it the tools say so.
 - **Communities:** create a Telegram community around a chat, rename it, set or remove its photo, link channels, groups and bots as visible or hidden (the choice is permanent, so it is always stated), decide who can add chats, answer link requests one by one or all at once, ban and unban members (optionally from every chat they joined through the community), and delete it. Removals, rejections, bans and deletion ask the owner first.
 - **Mini Apps:** `open_mini_app` launches a bot's Mini App and returns the URL that renders it. Telegram never sends the page - it signs a launch URL, so that URL is what there is to hand back, and it is a **credential**: its `tgWebAppData` carries `initData` identifying the account to the app, and whoever holds the string can act as the account inside it until it expires. It is returned whole with that warning beside it, because truncating a credential makes it useless without making it safe. All three of Telegram's launch routes are covered and chosen by what you supply: the `url` an inline button carries (`inspect_buttons` publishes it), a `short_name` for a `t.me/<bot>/<app>` link, or neither for the bot's own profile app.
 - **Keeping a copy of disappearing media:** Telegram marks media in a timer-armed secret chat `can_be_saved=false`. `save_secret_media` keeps it anyway — a plain call with no extra arguments saves the file. `honour_sender_restriction=True` refuses instead.
@@ -914,7 +917,8 @@ own. That is what `tests/test_tool_registry.py` guards.
 ```text
 main.py                       # historical entrypoint and compatibility exports
 telegram_mcp/settings.py      # environment configuration; the bottom of the import graph
-telegram_mcp/runtime.py       # shared MCP setup, entity resolution, formatting
+telegram_mcp/runtime.py       # the shared MCP server object, entity resolution, formatting
+telegram_mcp/tool_surface.py  # what the client sees of the tools: audience stamp, exposure mode, call budget
 telegram_mcp/dialog_warm.py   # warming the entity cache once, with shared waiters
 telegram_mcp/errors.py        # error classes, refusal wording, id validation
 telegram_mcp/connection.py    # building a client per account, and which one a call routes to
@@ -937,6 +941,13 @@ telegram_mcp/alias_store.py   # that name on disk: addressing, locking, protecti
 telegram_mcp/runner.py        # application startup
                               #   `stop_reader()` takes that thread out of the native
                               #   library before the process ends
+telegram_mcp/command_log.py   # every agent tool call as one JSON line; outermost middleware
+telegram_mcp/account_gate.py  # a call that names no configured account is refused first
+telegram_mcp/preflight.py     # a call bound to fail is refused before the owner is asked
+telegram_mcp/safeguard/       # the safety kernel: run, ask the owner, or refuse - DO NOT EDIT
+                              #   without the owner's explicit say-so (see its README)
+telegram_mcp/tool_budget.py   # a ceiling on the whole tool call
+telegram_mcp/install_guard.py # refuses a copy installed from PyPI (see the warning at the top)
 telegram_mcp/tools/           # tool modules grouped by domain
 telegram_mcp/tools/feed_lifecycle.py  # one feed consumer at a time, and who owns one that will not stop
 telegram_mcp/message_view.py  # deep structured message view
@@ -948,6 +959,11 @@ account-manager/                          # the account manager's own pieces, do
                               #   every function that resolves $PSScriptRoot
 tests/                        # pytest suite, plus PowerShell suites for the launchers
 ```
+
+Every `tools/call` passes through the middleware in this order, outermost first:
+`CommandLog` -> `AccountGate` -> `Preflight` -> `Safeguard` -> `ToolCallBudget` -> the tool.
+The order is installed in `telegram_mcp/tools/__init__.py`, and
+`tests/test_safeguard_middleware.py` pins it.
 
 Run tests:
 

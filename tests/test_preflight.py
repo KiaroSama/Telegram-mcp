@@ -43,6 +43,7 @@ def _tools():
         ("delete_forum_topic", {"chat_id": 5, "topic_id": 1, "account": "a"}, "General"),
         ("reorder_pinned_topics", {"chat_id": 5, "topic_ids": [], "account": "a"}, "at least one"),
         ("create_paid_invite_link", {"chat_id": 5, "monthly_fee_stars": 0, "account": "a"}, "1"),
+        ("cancel_scheduled_message", {"chat_id": 5, "message_id": [], "account": "a"}, "empty"),
         (
             "schedule_message",
             {
@@ -84,6 +85,12 @@ def test_a_valid_call_goes_through():
     )
 
 
+@pytest.mark.parametrize("message_id", [3, [3, 4]])
+def test_a_cancel_with_ids_goes_through(message_id):
+    arguments = {"chat_id": 5, "message_id": message_id, "account": "a"}
+    assert _call("cancel_scheduled_message", arguments)[1] == ["cancel_scheduled_message"]
+
+
 def test_an_unknown_tool_is_left_to_the_server():
     assert _call("no_such_tool", {}) == ("ran", ["no_such_tool"])
 
@@ -105,3 +112,69 @@ def test_the_command_log_names_the_preflight_refusal():
     prefixes = dict(command_log._OUTCOME_PREFIXES)
     assert prefixes["PREFLIGHT:"] == "refused_before_approval"
     assert prefixes["ACCOUNT REQUIRED:"] == "refused_account"
+
+
+# --- an explicit null is "not given" (bug report 2026-09-29) --------------------
+
+
+def _call_seeing(name, arguments):
+    seen = []
+    ctx = SimpleNamespace(method="tools/call", params={"name": name, "arguments": arguments})
+
+    async def call_next(ctx_):
+        seen.append(ctx_.params["arguments"])
+        return "ran"
+
+    return asyncio.run(preflight.Preflight()(ctx, call_next)), seen
+
+
+def test_a_null_for_an_optional_argument_means_not_given():
+    """`bot: Union[int, str] = None` published no null in its schema, so a client that
+    sent `bot: null` to set the account's own photo was refused (Numera Group Bot)."""
+    arguments = {"file_path": "outbox/logo.png", "bot": None, "account": "a"}
+    result, seen = _call_seeing("set_profile_photo", arguments)
+    assert result == "ran"
+    assert seen == [{"file_path": "outbox/logo.png", "account": "a"}]
+
+
+def test_a_null_for_a_required_argument_is_still_refused():
+    result, seen = _call_seeing(
+        "delete_forum_topic", {"chat_id": 5, "topic_id": None, "account": "a"}
+    )
+    assert seen == [] and "topic_id" in _text(result)
+
+
+def test_every_optional_argument_of_every_tool_accepts_null():
+    """Registry-wide: 116 parameters (plus every `account`) were typed `X = None`
+    without Optional; one null anywhere must not refuse the call."""
+    import telegram_mcp.tools  # noqa: F401
+    from telegram_mcp.runtime import mcp
+
+    refused = []
+    for tool in mcp._tool_manager.list_tools():
+        fields = tool.fn_metadata.arg_model.model_fields
+        for name, field in fields.items():
+            if field.is_required() or field.default is not None or name == "account":
+                continue
+            cleaned = preflight.drop_null_defaults(tool.name, {name: None})
+            if name in cleaned:
+                refused.append(f"{tool.name}.{name}")
+    assert not refused, refused
+
+
+@pytest.mark.parametrize(
+    "name, arguments, words",
+    [
+        ("reorder_pinned_chats", {"order": [], "account": "a"}, "at least one chat"),
+        ("delete_business_chat_link", {"slug": " ", "account": "a"}, "slug"),
+        (
+            "set_business_hours",
+            {"timezone_id": "Europe/Berlin", "intervals": [[600, 540]], "account": "a"},
+            "",
+        ),
+    ],
+)
+def test_spec_022_argument_rules_refuse_before_approval(name, arguments, words):
+    result, reached = _call(name, arguments)
+    text = _text(result)
+    assert reached == [] and text.startswith("PREFLIGHT:") and words in text

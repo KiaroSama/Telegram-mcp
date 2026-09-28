@@ -76,6 +76,19 @@ from telegram_mcp.tools.invite_link_admin import *
 from telegram_mcp.tools.communities import *
 from telegram_mcp.tools.community_moderation import *
 
+# Spec 022 (plans 015-018): the rest of the channel settings, view counts, pinned-chat
+# order, fact-checks, chat export and Telegram Business.
+from telegram_mcp.tools.channel_identity import *
+from telegram_mcp.tools.channel_moderation import *
+from telegram_mcp.tools.channel_appearance import *
+from telegram_mcp.tools.channel_structure import *
+from telegram_mcp.tools.message_views import *
+from telegram_mcp.tools.pinned_order import *
+from telegram_mcp.tools.fact_checks import *
+from telegram_mcp.tools.chat_export import *
+from telegram_mcp.tools.business import *
+from telegram_mcp.tools.business_links import *
+
 # translation.py, not translate.py: `import *` binds the tool name `translate`
 # into this package, which would otherwise shadow the submodule of the same name.
 from telegram_mcp.tools.translation import *

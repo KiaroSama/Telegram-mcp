@@ -49,6 +49,15 @@ GATED = frozenset(
         "close_secret_chat",
         "delete_chat",
         "delete_chat_history",
+        "delete_channel",  # spec 022 (owner, 2026-09-29)
+        "convert_to_gigagroup",  # spec 022 (owner, 2026-09-29)
+        "delete_fact_check",  # spec 022 (owner, 2026-09-29)
+        "delete_business_chat_link",  # spec 022 (owner, 2026-09-29)
+        "set_business_hours",  # spec 022 (owner, 2026-09-29)
+        "set_business_away_message",  # spec 022 (owner, 2026-09-29)
+        "set_business_greeting",  # spec 022 (owner, 2026-09-29)
+        "set_business_intro",  # spec 022 (owner, 2026-09-29)
+        "set_business_location",  # spec 022 (owner, 2026-09-29)
         "delete_forum_topic",  # spec 020: the topic and every message in it
         "upgrade_to_supergroup",  # spec 020: irreversible, new chat id,
         "delete_chat_photo",
@@ -72,6 +81,7 @@ GATED = frozenset(
         "import_chat_invite",
         "join_chat_by_link",
         "kick_user",
+        "promote_admin",  # one power with edit_admin_rights and demote_admin (owner, 2026-09-29)
         "leave_chat",
         "reject_community_link_request",
         "remove_chat_from_community",
@@ -93,7 +103,10 @@ GATED = frozenset(
 )
 
 # Tells someone the owner saw or is typing; asks only while ghost mode is on.
-SEEN_SIGNAL = frozenset({"mark_as_read", "mark_secret_read", "send_secret_typing"})
+# resolve_business_chat_link counts a view on someone else's link (spec 022).
+SEEN_SIGNAL = frozenset(
+    {"mark_as_read", "mark_secret_read", "send_secret_typing", "resolve_business_chat_link"}
+)
 
 # Put a message in front of someone: free, unless it is a first message or a bulk send.
 SEND = frozenset(
@@ -181,7 +194,6 @@ FREE_WRITES = frozenset(
         "pin_message",
         "post_story",
         "press_inline_button",
-        "promote_admin",
         "react_to_story",
         "remove_chat_from_folder",
         "remove_checklist_tasks",
@@ -231,6 +243,23 @@ FREE_WRITES = frozenset(
         "unsave_gif",
         "upload_file",
         "vote_in_poll",
+        "toggle_channel_username",  # spec 022
+        "reorder_channel_usernames",  # spec 022
+        "deactivate_channel_usernames",  # spec 022
+        "set_anti_spam",  # spec 022
+        "report_anti_spam_false_positive",  # spec 022
+        "set_boosts_to_unblock",  # spec 022
+        "set_channel_color",  # spec 022
+        "set_channel_emoji_status",  # spec 022
+        "set_channel_stickers",  # spec 022
+        "set_channel_emoji_pack",  # spec 022
+        "set_channel_location",  # spec 022
+        "set_autotranslation",  # spec 022
+        "reorder_pinned_chats",  # spec 022
+        "set_fact_check",  # spec 022
+        "export_chat_history",  # spec 022
+        "create_business_chat_link",  # spec 022
+        "edit_business_chat_link",  # spec 022
     }
 )
 
