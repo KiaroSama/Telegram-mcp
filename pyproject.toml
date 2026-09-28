@@ -199,6 +199,7 @@ source = [
     "telegram_mcp.session_files",
     "telegram_mcp.session_pool",
     "telegram_mcp.tool_budget",
+    "telegram_mcp.tool_surface",
     "telegram_mcp.command_log",
     "telegram_mcp.account_gate",
     "telegram_mcp.preflight",
