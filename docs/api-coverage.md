@@ -205,6 +205,16 @@ Phase 1b. Two things learned while building them are worth more than the count:
 | QR code of a link | `get_invite_link_qr` (PNG under files/downloads) | `tools/invite_link_admin.py` |
 | Clear revoked links | `delete_revoked_invite_links`, always asked | `tools/invite_link_admin.py` |
 
+### Added 2026-09-28: topic management, supergroup upgrade, username <-> id (288 → **294**)
+
+| Capability | Tools | Module |
+|---|---|---|
+| Delete a topic and its messages | `delete_forum_topic` (`messages.deleteTopicHistory`, repeated until done; General refused), always asked | `tools/topic_admin.py` |
+| Pin, unpin and order pinned topics | `pin_forum_topic`, `reorder_pinned_topics` | `tools/topic_admin.py` |
+| Turn topics off | `disable_forum_topics` (`channels.toggleForum` enabled=false, owner only) | `tools/topic_admin.py` |
+| Basic group to supergroup | `upgrade_to_supergroup` (`messages.migrateChat`, returns the new id, optional `enable_topics`), always asked | `tools/topic_admin.py` |
+| Username <-> id | `lookup_peer`: @name, name, t.me link or id -> marked and bare id, type, name, every username, link | `tools/peer_lookup.py` |
+
 ### Still not reachable, lower value, build on demand
 
 Pinned-dialog ordering, fact-check, todo lists, history
@@ -429,7 +439,7 @@ The settings an operator actually reaches for are all missing:
 | Discussion linking | `SetDiscussionGroup`, `GetGroupsForDiscussion` |
 | Moderation | `ToggleAntiSpam`, `ReportAntiSpamFalsePositive`, `SetBoostsToUnblockRestrictions` |
 | Appearance | `UpdateColor`, `UpdateEmojiStatus`, `SetStickers`, `SetEmojiStickers` |
-| Forum topics | ~~`EditForumTopic`~~ **built**, using Telethon's own request. It ships all three under `functions.messages` - looking in `functions.channels` is what made them seem absent, and the `channels.*` forms found there are RETIRED (they take an InputChannel; the live ones take an InputPeer). Telegram still serves the retired ids, so the hand-rolled encoders this module carried looked correct. Still open: `UpdatePinnedForumTopic`. |
+| Forum topics | ~~`EditForumTopic`~~ **built**, using Telethon's own request. It ships all three under `functions.messages` - looking in `functions.channels` is what made them seem absent, and the `channels.*` forms found there are RETIRED (they take an InputChannel; the live ones take an InputPeer). Telegram still serves the retired ids, so the hand-rolled encoders this module carried looked correct. Pinning built 2026-09-28 (`pin_forum_topic`, `reorder_pinned_topics`). |
 | Structural | `ConvertToGigagroup`, `EditLocation`, `DeleteChannel`, `UpdatePaidMessagesPrice`, `ToggleAutotranslation` |
 
 Self-contained, no new dependency, and every one is a single request. `DeleteChannel`

@@ -49,6 +49,8 @@ GATED = frozenset(
         "close_secret_chat",
         "delete_chat",
         "delete_chat_history",
+        "delete_forum_topic",  # spec 020: the topic and every message in it
+        "upgrade_to_supergroup",  # spec 020: irreversible, new chat id,
         "delete_chat_photo",
         "delete_community",
         "delete_community_photo",
@@ -155,6 +157,9 @@ FREE_WRITES = frozenset(
         "edit_chat_photo",
         "edit_chat_title",
         "edit_forum_topic",
+        "pin_forum_topic",
+        "reorder_pinned_topics",
+        "disable_forum_topics",
         "edit_invite_link",
         "edit_message",
         "edit_quick_reply",
