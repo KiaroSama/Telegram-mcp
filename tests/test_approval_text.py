@@ -32,6 +32,7 @@ def test_every_line_is_labelled():
         "Account",
         "Action",
         "Tool",
+        "Chat",  # its own line, in full (owner, 2026-09-28)
         "Sends",
         "Why asked",
     ]
