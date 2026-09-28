@@ -17,6 +17,13 @@ One configured Telegram identity this server can serve from, built over exactly 
 session.
 _Avoid_: user, client, profile
 
+**Named account**:
+The account a call acts through, stated by the call itself by its label. A call that
+could act through an account and names none is refused before anything happens: there is
+no default account and no acting through every account at once, even when only one is
+configured.
+_Avoid_: default account, current account
+
 **Label**:
 The operator's name for an account, chosen in configuration. Reusable over time, so
 it identifies a name and never a thing.
