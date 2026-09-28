@@ -14,12 +14,22 @@ module, per ``tests/conftest.py``.
 
 from telegram_mcp.runtime import *
 
-# The privacy keys this server exposes, and the argument name each is reached
-# by. Telegram has more; these are the three that were already supported.
+# The privacy keys this server exposes, and the argument name each is reached by:
+# every key Telegram's Privacy screen has except the two about Stars and paid messages,
+# which fall under this server's no-money rule (StarGiftsAutoSave, NoPaidMessages).
 _PRIVACY_KEYS = {
     "status": "InputPrivacyKeyStatusTimestamp",
     "phone": "InputPrivacyKeyPhoneNumber",
     "profile_photo": "InputPrivacyKeyProfilePhoto",
+    "chat_invite": "InputPrivacyKeyChatInvite",  # who can add me to groups and channels
+    "phone_call": "InputPrivacyKeyPhoneCall",
+    "phone_p2p": "InputPrivacyKeyPhoneP2P",  # peer-to-peer in calls
+    "forwards": "InputPrivacyKeyForwards",  # link to my account on forwarded messages
+    "voice_messages": "InputPrivacyKeyVoiceMessages",
+    "about": "InputPrivacyKeyAbout",  # the bio
+    "birthday": "InputPrivacyKeyBirthday",
+    "added_by_phone": "InputPrivacyKeyAddedByPhone",  # who can find me by my number
+    "saved_music": "InputPrivacyKeySavedMusic",
 }
 
 # account.setPrivacy REPLACES every rule for a key; there is no patch form. So a
@@ -139,8 +149,10 @@ async def get_privacy_settings(key: str = "status", account: str = None) -> str:
     set_privacy_settings has to send them back in.
 
     Args:
-        key: Which setting to read: 'status' (last seen), 'phone' or
-            'profile_photo'. Defaults to 'status'.
+        key: Which setting to read: 'status' (last seen), 'phone', 'profile_photo',
+            'chat_invite' (who can add you to groups), 'phone_call', 'phone_p2p',
+            'forwards', 'voice_messages', 'about', 'birthday', 'added_by_phone' or
+            'saved_music'. Defaults to 'status'.
     """
     try:
         cl = get_client(account)
@@ -202,8 +214,10 @@ async def set_privacy_settings(
     adjust rather than replace.
 
     Args:
-        key: Which setting to change: 'status' (last seen), 'phone' or
-            'profile_photo'.
+        key: Which setting to change: 'status' (last seen), 'phone', 'profile_photo',
+            'chat_invite' (who can add you to groups), 'phone_call', 'phone_p2p',
+            'forwards', 'voice_messages', 'about', 'birthday', 'added_by_phone' or
+            'saved_music'.
         allow_users: Users allowed regardless of base_policy. Exceptions are sent
             ahead of the base rule, which is the order Telegram applies them in.
         disallow_users: Users denied regardless of base_policy.

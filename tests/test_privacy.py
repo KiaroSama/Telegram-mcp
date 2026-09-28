@@ -180,3 +180,38 @@ async def test_reading_privacy_settings_answers_with_structure_not_a_repr(_wire)
     assert '"contacts_allowed"' in payload
     assert "6" in payload
     assert client.sent("GetPrivacyRequest") is not None
+
+
+# --- every non-money privacy key Telegram offers (request 2026-09-29) -----------
+
+KEYS = {
+    "chat_invite": "InputPrivacyKeyChatInvite",  # who can add me to groups
+    "phone_call": "InputPrivacyKeyPhoneCall",
+    "phone_p2p": "InputPrivacyKeyPhoneP2P",
+    "forwards": "InputPrivacyKeyForwards",
+    "voice_messages": "InputPrivacyKeyVoiceMessages",
+    "about": "InputPrivacyKeyAbout",
+    "birthday": "InputPrivacyKeyBirthday",
+    "added_by_phone": "InputPrivacyKeyAddedByPhone",
+    "saved_music": "InputPrivacyKeySavedMusic",
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key, wire", KEYS.items())
+async def test_every_key_reads_and_writes_its_own_wire_type(_wire, key, wire):
+    client = _wire()
+    await mod.get_privacy_settings(key, account="a")
+    assert type(client.sent("GetPrivacyRequest").key).__name__ == wire
+
+    await mod.set_privacy_settings(key, base_policy="nobody", allow_users=[5], account="a")
+    assert type(client.sent("SetPrivacyRequest").key).__name__ == wire
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["star_gifts_auto_save", "no_paid_messages"])
+async def test_money_keys_stay_out(_wire, key):
+    """Stars and paid messages fall under the project's no-money rule."""
+    client = _wire()
+    result = await mod.get_privacy_settings(key, account="a")
+    assert client.sent("GetPrivacyRequest") is None and "chat_invite" in result

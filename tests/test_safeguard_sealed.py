@@ -18,7 +18,7 @@ from telegram_mcp.safeguard import channels, grants, policy, sealed, taint
 
 BOT_ID = "8123456789"
 REQUEST = (
-    "Approval K7Q2: Account: main · 42 · @me_user\nleaves Chat\nTool: leave_chat   Chat: 5\n"
+    "Approval K7Q2: Account: main | 42 | @me_user\nleaves Chat\nTool: leave_chat   Chat: 5\n"
     "Why asked: gated\n\nReply `yes K7Q2`, `always K7Q2` or `no K7Q2` from another device."
 )
 
@@ -122,7 +122,7 @@ def test_the_request_text_and_every_issued_code_are_hidden():
     escaped = json.dumps({"text": REQUEST, "id": 5})
     assert "K7Q2" not in sealed.redact(escaped)
     assert sealed.HIDDEN_REQUEST in sealed.redact(escaped)
-    truncated = "Approval K7Q2: Account: main · 42 · @me_us..."
+    truncated = "Approval K7Q2: Account: main | 42 | @me_us..."
     assert "K7Q2" not in sealed.redact(truncated)
     assert sealed.redact("yes k7q2") == "yes [hidden]"
     assert sealed.redact("room K7Q3 is free") == "room K7Q3 is free"
