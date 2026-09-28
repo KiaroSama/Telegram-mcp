@@ -130,7 +130,8 @@ class ApprovalRequest:
         return (
             f"Account: {self._who()}\n"
             f"Action: {self.effect}\n"
-            f"Tool: {self.tool}   Chat: {self.chat or '-'}\n"
+            f"Tool: {self.tool}\n"
+            f"Chat: {self.chat or '-'}\n"
             f"{sends}"
             f"Why asked: {self._why()}"
         )
@@ -143,8 +144,8 @@ class ApprovalRequest:
         return (
             f"<blockquote>Account: {html_escape(self._who())}</blockquote>\n"
             f"<b>Action: {html_escape(self.effect)}</b>\n"
-            f"Tool: <code>{html_escape(self.tool)}</code>   "
-            f"Chat: <code>{html_escape(self.chat or '-')}</code>\n"
+            f"Tool: <code>{html_escape(self.tool)}</code>\n"
+            f"Chat: {html_escape(self.chat or '-')}\n"
             f"{sends}"
             f"Why asked: {html_escape(self._why())}"
         )
