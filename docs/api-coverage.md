@@ -229,6 +229,7 @@ Phase 1b. Two things learned while building them are worth more than the count:
 | `get_message_context` reports `link_urls` | #225 | `tools/messages_read.py` |
 | `get_message_reactions` on a message nobody reacted to returns an empty list (Telegram answers MSG_ID_INVALID, measured live) | #248 | `tools/messages_state.py` |
 | The session generator prints the login link when the console cannot draw the QR code | #195 | `session_string_generator.py` |
+| Inline bots with every preview (spec 021) | `inline_query` (title, description, url, thumb/content, photo/document, the message with entities and buttons, switch_pm/switch_webview), `send_inline_result` by handle | `tools/inline_bots.py` |
 | Not taken: `export_unread_messages` (#237, writes any path while marked read-only), login codes through tool calls (open PR #58), `ALLOWED_CHAT_IDS` (#233, partial coverage) | - | - |
 
 ### Still not reachable, lower value, build on demand

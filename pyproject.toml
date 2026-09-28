@@ -201,6 +201,7 @@ source = [
     "telegram_mcp.tool_budget",
     "telegram_mcp.command_log",
     "telegram_mcp.account_gate",
+    "telegram_mcp.preflight",
     "telegram_mcp.safeguard",
     "telegram_mcp.settings",
     "telegram_mcp.syscalls",

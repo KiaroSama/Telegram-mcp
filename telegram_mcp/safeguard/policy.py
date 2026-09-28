@@ -113,6 +113,7 @@ SEND = frozenset(
         "send_disappearing_media",
         "send_file",
         "send_gif",
+        "send_inline_result",  # spec 021
         "send_message",
         "send_quick_reply",
         "send_scheduled_message",

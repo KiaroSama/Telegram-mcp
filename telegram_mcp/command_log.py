@@ -35,6 +35,8 @@ _REDACTED = "[REDACTED]"
 _SECRET_NAMES = ("password", "token", "secret", "session", "api_hash", "phone_code")
 _OUTCOME_PREFIXES = (
     ("SAFEGUARD:", "refused_by_safeguard"),
+    ("PREFLIGHT:", "refused_before_approval"),
+    ("ACCOUNT REQUIRED:", "refused_account"),
     ("This tool call was stopped after", "timed_out"),
 )
 

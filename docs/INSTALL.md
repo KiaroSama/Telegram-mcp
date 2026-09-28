@@ -157,6 +157,8 @@ MCP client, not only Claude.
 3. **Saved Messages**: the account posts `Approval K7Q2: ...`. From another device,
    reply `yes K7Q2`, `always K7Q2` or `no K7Q2`.
 
+A call that is bound to fail never reaches you: a missing account (`ACCOUNT REQUIRED:`) or arguments the tool would refuse - a wrong type, a missing field, deleting the General topic (`PREFLIGHT:`) - are answered with the reason before any request is sent. Every refusal, time-out and error the agent gets back names its reason.
+
 Every request names the **Account** acting, the **Action**, the **Tool** and **Chat**, what it
 **Sends** (up to 300 characters of the text and the file names, when it sends any) and **Why
 asked** in plain words (for example "first message to someone this account never messaged").
