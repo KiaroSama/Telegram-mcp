@@ -7,6 +7,7 @@ from telegram_mcp.tools.chats import *
 from telegram_mcp.tools.topics import *
 from telegram_mcp.tools.topic_admin import *
 from telegram_mcp.tools.peer_lookup import *
+from telegram_mcp.tools.inline_bots import *
 from telegram_mcp.tools.chat_state import *
 from telegram_mcp.tools.messages import *
 from telegram_mcp.tools.messages_delete import *
@@ -91,6 +92,12 @@ _install_safeguard(_mcp)
 from telegram_mcp.account_gate import install as _install_account_gate  # noqa: E402
 
 _install_account_gate(_mcp)
+
+# Then arguments a tool is bound to refuse (spec 021): answered with the reason, again
+# before the owner is asked.
+from telegram_mcp.preflight import install as _install_preflight  # noqa: E402
+
+_install_preflight(_mcp)
 
 # Outside even the safeguard: every call an agent makes is recorded, refusals included.
 from telegram_mcp.command_log import install as _install_command_log  # noqa: E402

@@ -575,3 +575,20 @@ def test_an_explicit_annotation_is_left_alone():
     (result,) = runtime._annotate_for_user([block])
 
     assert result.annotations.audience == ["assistant"]
+
+
+def test_a_generic_error_tells_the_agent_why():
+    """Spec 021: "An error occurred (code: ...)" alone left the agent guessing; the reply
+    now names the error type and Telegram's message, secrets redacted."""
+    from telethon import errors
+
+    message = runtime.log_and_format_error(
+        "get_message_reactions", errors.MsgIdInvalidError(request=None)
+    )
+    assert "Reason: MsgIdInvalidError:" in message and "message id" in message.lower()
+
+    token = "123456789:" + "A" * 35
+    leaked = runtime.log_and_format_error("some_tool", RuntimeError(f"bad token {token}"))
+    assert token not in leaked and "Reason: RuntimeError: bad token [REDACTED]" in leaked
+    long = runtime.log_and_format_error("some_tool", RuntimeError("x" * 5000))
+    assert len(long) < 600

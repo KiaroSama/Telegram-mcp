@@ -106,4 +106,5 @@ def test_the_gate_sits_just_in_front_of_the_safeguard_once():
     kinds = [type(m) for m in mcp.middleware]
     assert kinds.count(account_gate.AccountGate) == 1
     assert kinds.index(CommandLog) < kinds.index(account_gate.AccountGate)
-    assert kinds.index(account_gate.AccountGate) + 1 == kinds.index(Safeguard)
+    # spec 021: the preflight check sits between the gate and the safeguard.
+    assert kinds.index(account_gate.AccountGate) < kinds.index(Safeguard)

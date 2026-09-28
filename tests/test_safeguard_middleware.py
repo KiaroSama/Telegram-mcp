@@ -262,8 +262,10 @@ def test_the_live_server_runs_every_call_through_the_safeguard_first():
     # gate (spec 019, refuses a call that names no account - it never lets one through
     # that the safeguard would not see).
     kinds = [type(m) for m in mcp.middleware]
-    assert kinds[:3] == [CommandLog, AccountGate, safeguard.Safeguard]
-    assert ToolCallBudget in kinds[3:]
+    from telegram_mcp.preflight import Preflight
+
+    assert kinds[:4] == [CommandLog, AccountGate, Preflight, safeguard.Safeguard]
+    assert ToolCallBudget in kinds[4:]
 
 
 def test_every_kernel_file_carries_the_do_not_edit_notice():

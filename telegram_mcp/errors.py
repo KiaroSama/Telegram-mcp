@@ -184,7 +184,25 @@ def log_and_format_error(
     if refusal:
         return f"{refusal} (code: {error_code})"
 
-    return f"An error occurred (code: {error_code}). Check mcp_errors.log for details."
+    return (
+        f"An error occurred (code: {error_code}). Reason: {_reason(error)} "
+        "Check mcp_errors.log for details."
+    )
+
+
+# How much of an error's own message reaches the agent (spec 021). The server LOG stays
+# content-free; the agent sent the arguments, so it may read what went wrong with them.
+_REASON_MAX = 300
+
+
+def _reason(error: Exception) -> str:
+    """`ErrorType: message`, secrets redacted and bounded, so the agent knows WHY."""
+    from telegram_mcp.log_setup import redact
+
+    detail = redact(str(error) or "").strip().replace("\n", " ")
+    if len(detail) > _REASON_MAX:
+        detail = detail[: _REASON_MAX - 1] + "…"
+    return f"{type(error).__name__}: {detail}" if detail else type(error).__name__
 
 
 def _is_schema_drift(error: Exception) -> bool:
