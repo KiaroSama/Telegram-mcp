@@ -370,7 +370,9 @@ def test_a_negative_entity_length_is_passed_through_not_sliced(offset, length):
 
 
 def test_deep_message_dict_exposes_fidelity_text_when_it_differs():
-    raw = "\u0645\u06cc\u200c\u06a9\u0646\u062f"
+    # A joiner between Latin letters: sanitizing strips it (it can hide a keyword),
+    # the fidelity text keeps it because entity offsets count it.
+    raw = "sub\u200dtle"
     message = SimpleNamespace(message=raw, entities=[])
     data = deep_message_dict(message, {"id": 1, "text": sanitize_user_content(raw)})
 
@@ -487,8 +489,7 @@ def test_a_sticker_label_keeps_the_alt_glyph_intact():
     msg = SimpleNamespace(sticker=sticker)
 
     assert describe_media_label(msg) == f"sticker {FAMILY}"
-    # Guard the premise: this is exactly what the generic helper gets wrong.
-    assert sanitize_name(FAMILY) != FAMILY, "sanitize_name no longer breaks this"
+    assert sanitize_name(FAMILY) == FAMILY, "the generic helper keeps it too since plan 013"
 
 
 def test_a_sticker_alt_containing_a_colon_is_still_cleaned():
@@ -535,6 +536,9 @@ def test_an_animation_is_labelled_gif_not_video():
 
     assert describe_media_label(msg) == "gif"
     assert describe_media(msg)["kind"] == "gif", "the two answers must not diverge again"
+    from telegram_mcp.tools.messages_view import get_media_label
+
+    assert get_media_label(msg) == "gif", "fixed at the source, not corrected on top (plan 005)"
 
 
 def test_a_plain_video_is_still_a_video():

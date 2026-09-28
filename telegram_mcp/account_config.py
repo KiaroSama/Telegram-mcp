@@ -22,13 +22,13 @@ from telegram_mcp.settings import ACCOUNT_PREFIXES
 
 
 def _env_file() -> Optional[str]:
-    """The `.env` this process reads, or None when it runs on real env vars."""
-    try:
-        from dotenv import find_dotenv
+    """The `.env` this process reads, or None when it runs on real env vars.
 
-        return find_dotenv(usecwd=True) or None
-    except Exception:
-        return None
+    The file `settings` loaded at startup - never a second search from the cwd.
+    """
+    from telegram_mcp.settings import ENV_FILE
+
+    return ENV_FILE
 
 
 def _env_fingerprint(path: Optional[str]) -> tuple:

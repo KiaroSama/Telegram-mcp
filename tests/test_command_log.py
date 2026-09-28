@@ -131,6 +131,21 @@ def test_a_tool_that_answers_with_an_error_text_is_not_ok(recorder, tmp_path):
     assert record["outcome"] == "tool_error" and record["error"] == text
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "An error occurred (code: MsgIdInvalidError). Reason: MsgIdInvalidError: bad id. "
+        "Check mcp_errors.log for details.",
+        "Telegram refused: TOPIC_NOT_MODIFIED. Nothing was changed.",
+    ],
+)
+def test_every_failure_shape_is_filed_as_a_failure(recorder, tmp_path, text):
+    """The central error helper and the topic refusals do not start with "Error" (plan 001)."""
+    _run(recorder, _ctx(), _result(text))
+    (record,) = _records(tmp_path)
+    assert record["outcome"] == "tool_error" and record["error"] == text and "result" not in record
+
+
 def test_other_methods_are_not_recorded(recorder, tmp_path):
     _run(recorder, _ctx(method="tools/list"), _result("x"))
     assert list(tmp_path.iterdir()) == []

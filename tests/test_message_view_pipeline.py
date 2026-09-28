@@ -170,7 +170,7 @@ def test_reply_quote_claims_no_change_when_nothing_changed():
 
 
 def test_text_fidelity_does_not_claim_byte_exactness():
-    raw = PERSIAN + "\u200b"
+    raw = PERSIAN + " sub\u200dtle\u200b"
     msg = _plain_message(message=raw)
 
     data = _deep(msg)
@@ -182,13 +182,20 @@ def test_text_fidelity_does_not_claim_byte_exactness():
 
 def test_text_fidelity_reports_an_untouched_message_as_unmodified():
     msg = _plain_message(
-        message=PERSIAN,
+        message="sub\u200dtle",
         sender=SimpleNamespace(first_name="x", last_name=None, username=None, title=None),
     )
 
     data = _deep(msg)
 
     assert data["text_fidelity_modified"] is False
+
+
+def test_persian_text_needs_no_fidelity_copy_any_more():
+    """The sanitized text keeps the ZWNJ now (plan 013), so there is nothing to add."""
+    data = _deep(_plain_message(message=PERSIAN))
+
+    assert "text_fidelity" not in data
 
 
 # --- Message-level effects ---------------------------------------------------

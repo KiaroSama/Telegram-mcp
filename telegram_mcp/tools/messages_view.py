@@ -85,12 +85,14 @@ def get_media_label(msg) -> str:
             return "voice"
         if getattr(msg, "video_note", None) is not None:
             return "video_note"
+        # gif before video: Telethon sets both for an animation (an mp4 carrying
+        # DocumentAttributeAnimated), and the specific answer is the true one.
+        if getattr(msg, "gif", None) is not None:
+            return "gif"
         if getattr(msg, "video", None) is not None:
             return "video"
         if getattr(msg, "audio", None) is not None:
             return "audio"
-        if getattr(msg, "gif", None) is not None:
-            return "gif"
         if getattr(msg, "document", None) is not None:
             name = None
             f = getattr(msg, "file", None)

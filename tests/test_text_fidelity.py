@@ -284,10 +284,10 @@ def test_fidelity_text_drops_unsafe_invisibles(label, text, expected):
         ),
     ],
 )
-def test_display_name_keeps_compound_sequences_sanitize_name_destroys(label, text):
+def test_display_name_and_sanitize_name_both_keep_compound_sequences(label, text):
     assert display_name(text) == text, label
-    # Guard the premise: this is exactly what the generic helper gets wrong.
-    assert sanitize_name(text) != text, f"{label}: sanitize_name no longer breaks this"
+    # sanitize_name used to break exactly these (plan 013); the two now agree.
+    assert sanitize_name(text) == text, label
 
 
 @pytest.mark.parametrize(

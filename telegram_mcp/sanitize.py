@@ -25,8 +25,6 @@ from typing import Any, Dict, List, Optional
 _INVISIBLE_CHARS = re.compile(
     "["
     "\u200b"  # zero width space
-    "\u200c"  # zero width non-joiner
-    "\u200d"  # zero width joiner
     "\u200e"  # left-to-right mark
     "\u200f"  # right-to-left mark
     "\u2028"  # line separator
@@ -39,6 +37,32 @@ _INVISIBLE_CHARS = re.compile(
     "]"
 )
 
+# Joiners and flag tags are Cf, but they change what a reader SEES: the ZWNJ inside a
+# Persian word, the ZWJ holding a family emoji together, the tag characters behind a
+# regional flag. They are kept exactly where they do that, and stripped everywhere
+# else - a joiner between two Latin letters is the classic way to hide a keyword.
+_JOINERS = ("\u200c", "\u200d")
+_FLAG_BASE = "\U0001f3f4"
+
+
+def _is_tag(ch: str) -> bool:
+    return "\U000e0020" <= ch <= "\U000e007f"
+
+
+def _keeps_visible_format(text: str, i: int) -> bool:
+    ch = text[i]
+    if ch in _JOINERS:
+        before = text[i - 1] if i else ""
+        after = text[i + 1] if i + 1 < len(text) else ""
+        return bool(before and after) and ord(before) > 0x7F and ord(after) > 0x7F
+    if _is_tag(ch):
+        j = i - 1
+        while j >= 0 and _is_tag(text[j]):
+            j -= 1
+        return j >= 0 and text[j] == _FLAG_BASE
+    return False
+
+
 # Three or more consecutive newlines → collapse to two
 _EXCESSIVE_NEWLINES = re.compile(r"\n{3,}")
 
@@ -47,7 +71,8 @@ def sanitize_user_content(text: Optional[str], max_length: int = 4096) -> str:
     """Sanitize user-controlled text content before returning in tool results.
 
     - Returns "[empty]" for None / empty input
-    - Strips Unicode control characters (Cc, Cf) except newline and tab
+    - Strips Unicode control characters (Cc, Cf) except newline and tab, and except
+      the joiners and flag tags that change what a reader sees (`_keeps_visible_format`)
     - Strips zero-width / invisible characters
     - Collapses excessive consecutive newlines (>2) to 2
     - Truncates to max_length with a marker
@@ -60,10 +85,10 @@ def sanitize_user_content(text: Optional[str], max_length: int = 4096) -> str:
 
     # Strip control characters except \n (0x0a) and \t (0x09)
     cleaned = []
-    for ch in text:
+    for i, ch in enumerate(text):
         cat = unicodedata.category(ch)
         if cat in ("Cc", "Cf"):
-            if ch in ("\n", "\t"):
+            if ch in ("\n", "\t") or _keeps_visible_format(text, i):
                 cleaned.append(ch)
             # else: drop the character
         else:
