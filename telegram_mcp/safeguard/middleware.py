@@ -163,13 +163,14 @@ class Safeguard:
         account_of: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None,
         after: Optional[Callable[[Optional[str]], None]] = None,
         identity=None,
+        chat_label=None,
         sealed_target=None,
         warm=None,
         protected_paths=None,
         timeout: Optional[float] = None,
     ) -> None:
         defaults = (hints, channels, first_message, ghost_on, approval_chats, account_of, after)
-        if None in defaults or identity is None or sealed_target is None or warm is None:
+        if None in defaults or None in (identity, chat_label, sealed_target, warm):
             from telegram_mcp.safeguard import wiring
 
             hints = hints or wiring.tool_hints
@@ -180,6 +181,7 @@ class Safeguard:
             account_of = account_of or wiring.account_of
             after = after or wiring.after_call
             identity = identity or wiring.identity
+            chat_label = chat_label or wiring.chat_label
             sealed_target = sealed_target or wiring.sealed_target
             warm = warm or wiring.warm_up
         self._warm = warm
@@ -192,6 +194,7 @@ class Safeguard:
         self._account_of = account_of
         self._after = after
         self._identity = identity
+        self._chat_label = chat_label
         self._sealed_target = sealed_target
         self._protected = (
             tuple(protected_paths) if protected_paths is not None else _protected_paths()
@@ -274,10 +277,16 @@ class Safeguard:
                     who = await self._identity(account)
                 except Exception:
                     who = account or ""
+                shown = _shown_target(arguments, chat)
+                if chat is not None:
+                    try:  # "title · id · @username", like the Account line
+                        shown = await self._chat_label(account, chat) or shown
+                    except Exception:
+                        pass
                 request = approvals.new_request(
                     name,
                     account,
-                    _shown_target(arguments, chat),
+                    shown,
                     describe(name, arguments, chat, decision.tainted, facts.outside_folders),
                     decision.reasons,
                     identity=who,
