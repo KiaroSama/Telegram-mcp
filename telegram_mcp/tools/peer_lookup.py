@@ -13,6 +13,8 @@ never for a stranger's id.
 import re
 from typing import Union
 
+from telethon import errors
+
 from telegram_mcp.runtime import *
 from telegram_mcp.sanitize import full_name
 
@@ -20,6 +22,15 @@ __all__ = ["lookup_peer"]
 
 _LINK = re.compile(r"^(?:https?://)?(?:t|telegram)\.me/", re.IGNORECASE)
 _ID = re.compile(r"^-?\d+$")
+# What an unknown id or name raises. Measured live 2026-09-28: a bare id the account
+# has never met is tried as a basic group and answered CHAT_ID_INVALID.
+_NOT_FOUND = (
+    ValueError,
+    errors.ChatIdInvalidError,
+    errors.PeerIdInvalidError,
+    errors.ChannelInvalidError,
+    errors.UserIdInvalidError,
+)
 
 
 def _kind(entity) -> str:
@@ -89,7 +100,7 @@ async def lookup_peer(query: Union[int, str], account: str = None) -> str:
         await ensure_connected(cl)
         try:
             entity = await resolve_entity(target, cl)
-        except ValueError:
+        except _NOT_FOUND:
             if isinstance(target, int):
                 return (
                     f"This account has never seen id {target}: Telegram answers an id "

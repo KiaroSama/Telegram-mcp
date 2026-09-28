@@ -76,8 +76,17 @@ async def test_an_id_gives_back_every_username(seen, query):
 
 
 @pytest.mark.asyncio
-async def test_an_id_the_account_never_saw_is_explained(seen):
-    seen(ValueError("Could not find the input entity for PeerUser(user_id=5)"))
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("Could not find the input entity for PeerUser(user_id=5)"),
+        # Measured live: an unknown bare id is tried as a basic group.
+        __import__("telethon").errors.ChatIdInvalidError(None),
+        __import__("telethon").errors.PeerIdInvalidError(None),
+    ],
+)
+async def test_an_id_the_account_never_saw_is_explained(seen, error):
+    seen(error)
     text = await mod.lookup_peer("5")
     assert "never seen" in text and "Traceback" not in text
 
