@@ -86,6 +86,8 @@ def _key_picture(label: str, chat) -> dict:
     """
     key_hash = getattr(chat, "key_hash", None)
     if not key_hash:
+        if getattr(chat.state, "value", None) == "closed":
+            return "no key picture: the chat is closed and its key was discarded"
         return "no key picture: the key exchange has not finished, or this is a legacy chat"
     from PIL import Image
 

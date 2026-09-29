@@ -231,3 +231,12 @@ async def test_an_unconfirmed_send_says_not_to_send_again(backend, monkeypatch):
     answer = await sm.send_secret_message(CHAT_ID, "hi", account="acct")
 
     assert "do not send it again" in answer and "555" in answer
+
+
+@pytest.mark.asyncio
+async def test_a_closed_chat_says_its_key_was_discarded(backend):
+    backend.status(SECRET_ID).state.value = "closed"
+
+    answer = _results(await sc.secret_chat_status(chat_id=CHAT_ID, account="acct"))
+
+    assert "key was discarded" in answer["key_picture"]
