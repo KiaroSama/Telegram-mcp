@@ -36,6 +36,7 @@ from telegram_mcp.admission import session_locks as _session_locks
 # Closing a client this startup attempt built but will not serve from. The
 # lease release below is tied to it, so the lock never goes before the socket.
 from telegram_mcp.retirement import retire as _retire
+from telegram_mcp import loop_noise as _loop_noise
 
 # Every transport this server can actually run. Anything else is a typo.
 _TRANSPORTS = ("stdio", "http", "sse")
@@ -491,6 +492,7 @@ def startup_note(text: str) -> None:
 
 
 async def _main() -> None:
+    _loop_noise.install(asyncio.get_running_loop())
     try:
         # The door `release_all()` closes at the bottom of this function. Stated
         # at the start of serving rather than assumed, because the boundary is
