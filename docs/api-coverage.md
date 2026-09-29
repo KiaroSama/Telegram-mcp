@@ -569,15 +569,15 @@ what makes it a real resolution rather than a shortcut:
   here by commit. This codebase reviews the transport around it and nothing else.
 
 
-Seventeen tools, all for the chats themselves. The chat: `secret_chat_status`,
-`create_secret_chat`, `list_secret_chats`, `set_secret_chat_timer`, `close_secret_chat`
-(`tools/secret_chats.py`). What travels through it: `send_secret_message`,
-`send_secret_media`, `read_secret_messages`, `save_secret_media`
-(`tools/secret_messaging.py`). What is done to it: `delete_secret_message`,
+Nineteen tools, all for the chats themselves. The chat: `secret_chat_status`,
+`create_secret_chat`, `list_secret_chats`, `set_secret_chat_timer`, `close_secret_chat`,
+`forget_secret_chat` (`tools/secret_chats.py`). What travels through it:
+`send_secret_message`, `send_secret_media`, `read_secret_messages`, `save_secret_media`,
+`forward_secret_media` (`tools/secret_messaging.py`). What is done to it: `delete_secret_message`,
 `clear_secret_history`, `mark_secret_read`, `send_secret_typing`,
 `search_secret_messages`, `copy_into_secret_chat` (`tools/secret_actions.py`). And the
 two timed sends: `send_timed_secret_message`, `send_timed_secret_media`
-(`tools/secret_timed.py`). Transport for all seventeen is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
+(`tools/secret_timed.py`). Transport for all nineteen is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
 
 **The boundary is the protocol's, not this server's.** MTProto's encrypted layer has a
 closed vocabulary — thirteen `decryptedMessageAction*` constructors and ten
@@ -612,9 +612,10 @@ always defeated.
 ordinary one. Two more
 facts from the same measurement shape it: downloading does **not** start the
 self-destruct countdown (`self_destruct_in` stayed 0; viewing starts it), and the
-file's one-time key travels INSIDE its message, so the bytes are fetchable only while
-the server that received it is still running - which `save_secret_media` reports
-plainly rather than answering with an empty path.
+file's one-time key travels INSIDE its message. Since package 0.2.0 the server keeps
+that key as a MediaReference (owner-only, beside the chat keys, dropped with the chat),
+so a received file stays saveable and forwardable after a restart; a file with no kept
+key is reported plainly rather than answered with an empty path.
 
 ### Not in the plan
 
