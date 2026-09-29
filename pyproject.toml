@@ -143,6 +143,7 @@ source = [
     "main",
     "session_string_generator",
     "telegram_mcp.account_config",
+    "telegram_mcp.account_rename",
     "telegram_mcp.account_lifecycle",
     "telegram_mcp.account_snapshot",
     "telegram_mcp.admission",

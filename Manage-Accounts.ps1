@@ -43,7 +43,7 @@ $script:MaxBackupCollisions = 100
 # `$script:` state above and `$envPath` are visible to them without being passed
 # around. `$PSScriptRoot` is per-FILE, which is why every function that resolves
 # the project root - the ones that call the venv - stayed in this file.
-foreach ($piece in 'FileSafety', 'EnvFile', 'Console') {
+foreach ($piece in 'FileSafety', 'EnvFile', 'Console', 'Server') {
     $module = Join-Path $PSScriptRoot (Join-Path 'account-manager' "$piece.ps1")
     if (-not (Test-Path -LiteralPath $module)) {
         Write-Host "Missing $module - this launcher needs the lib folder beside it." -ForegroundColor Red
@@ -339,7 +339,9 @@ function Remove-SecretChatKeys {
     param([Parameter(Mandatory)] [string] $Label)
 
     $root = Join-Path (Get-StateDirectory) 'secret-chats'
-    foreach ($item in @($Label, "$Label-history.json")) {
+    # The media file holds received files' keys; the owner file would refuse the
+    # next account given this label ("keys belong to a different account").
+    foreach ($item in @($Label, "$Label-history.json", "$Label-media.json", "$Label.owner.json")) {
         $path = Join-Path $root $item
         if (-not (Test-Path -LiteralPath $path)) { continue }
         try {
@@ -385,23 +387,49 @@ function Remove-Account {
     Write-Host 'A running server picks this up on its own - no restart needed.' -ForegroundColor Cyan
 }
 
+function Move-AccountState {
+    <#
+      Move everything the server stored under a label - secret-chat keys, history
+      and files, ghost mode, proxy route, approvals, contact aliases - to another
+      label (telegram_mcp.account_rename). All or nothing; throws on a refusal or a
+      failure, having changed nothing. Returns what moved.
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $From,
+        [Parameter(Mandatory)] [string] $To
+    )
+    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw "No .venv\Scripts\python.exe, so the account's stored state cannot be moved; nothing was renamed."
+    }
+    Push-Location -LiteralPath $PSScriptRoot
+    try {
+        $output = @(& $python -m telegram_mcp.account_rename (Get-StateDirectory) $From $To 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    }
+    finally { Pop-Location }
+    if ($code -ne 0) { throw "Moving the stored state failed: $(($output -join ' ').Trim())" }
+    return $output
+}
+
 function Rename-Account {
     $accounts = Get-Accounts
     if ($accounts.Count -eq 0) { Write-Host 'There is nothing to rename.' -ForegroundColor Yellow; return }
 
-    Show-Accounts
+    # By number, like Remove-Account, from the same dictionary the listing numbered.
+    Show-Accounts -Accounts $accounts
     Write-Host ''
-    $from = Read-Label 'Label to rename - blank to cancel'
+    $from = Read-AccountNumber -Accounts $accounts -Prompt 'Number to rename - blank to cancel'
     if (-not $from) { Write-Host 'Cancelled.'; return }
-    if (-not $accounts.Contains($from)) { Write-Host "No account is labelled '$from'." -ForegroundColor Yellow; return }
     if ($from -eq 'default') {
         Write-Host "'default' comes from the unsuffixed TELEGRAM_SESSION_STRING and cannot be" -ForegroundColor Yellow
         Write-Host 'renamed here. Remove it and add it back under a label instead.' -ForegroundColor Yellow
         return
     }
 
-    $to = Read-Label 'New label'
+    $to = Read-Label "New label for '$from'"
     if (-not $to) { Write-Host 'Cancelled.'; return }
+    if ($to -eq $from) { Write-Host 'That is already its label.' -ForegroundColor Yellow; return }
     if ($accounts.Contains($to)) { Write-Host "'$to' is already taken." -ForegroundColor Yellow; return }
 
     $oldKey = $accounts[$from]
@@ -416,16 +444,57 @@ function Rename-Account {
     else { 'TELEGRAM_SESSION_STRING_' }
     $newKey = "$prefix$($to.ToUpperInvariant())"
 
-    $backup = Backup-EnvFile
-    # One write. The value is never read into a variable here - it moves inside
-    # the transform, so nothing in this scope ever holds a session string.
-    Rename-EnvKey -From $oldKey -To $newKey
+    Write-Host ''
+    Write-Host "Renames the label '$from' to '$to' in .env and secrets.md, and moves what the server"
+    Write-Host 'stored under it: secret-chat keys and history, ghost mode, proxy route, approvals, aliases.'
+    Write-Host 'The Telegram account itself is not changed.'
+    if (@(Get-ServerTrees -Root $PSScriptRoot).Count -gt 0) {
+        Write-Host 'The MCP server is running: it is stopped for the rename and started again.' -ForegroundColor Yellow
+    }
+    if (-not (Read-Confirmation "Rename '$from' to '$to'?")) { Write-Host 'Cancelled.'; return }
 
-    Write-Log "Renamed account '$from' to '$to'"
+    # Stopped first: the server holds the secret-chat key store open under the old
+    # label. ponytail: the always-on supervisor waits at least 5 s before restarting a
+    # stopped server, and the moves below take well under that; Start-TelegramServer
+    # takes over whatever copy started meanwhile anyway.
+    $stopped = Stop-TelegramServer -Root $PSScriptRoot
+    $backup = $null
+    $registry = $false
+    try {
+        $moved = @(Move-AccountState -From $from -To $to)
+        $backup = Backup-EnvFile
+        try {
+            # One write. The value is never read into a variable here - it moves inside
+            # the transform, so nothing in this scope ever holds a session string.
+            Rename-EnvKey -From $oldKey -To $newKey
+        }
+        catch {
+            $null = Move-AccountState -From $to -To $from
+            throw
+        }
+        try {
+            $registry = Rename-SecretsEntry -Path (Join-Path $PSScriptRoot 'secrets.md') `
+                -OldKey $oldKey -NewKey $newKey -OldLabel $from -NewLabel $to
+        }
+        catch {
+            # The account already works under the new label; only the registry lags.
+            Write-Note "secrets.md was not updated ($($_.Exception.Message)); rename its '## $oldKey' heading by hand."
+        }
+    }
+    finally {
+        if ($stopped) {
+            $serverId = Start-TelegramServer -Root $PSScriptRoot
+            Write-Host "MCP server started again in the background (pid $serverId)." -ForegroundColor Cyan
+        }
+    }
+
+    Write-Log "Renamed account '$from' to '$to' ($($moved.Count) stored item(s) moved)"
     Write-Host ''
     Write-Host "Renamed '$from' to '$to'." -ForegroundColor Green
+    foreach ($item in $moved) { Write-Host "  moved: $item" }
+    if ($registry) { Write-Host "  secrets.md: '## $oldKey' is now '## $newKey'" }
     if ($backup) { Write-Host "Previous .env kept as $(Split-Path -Leaf $backup)" }
-    Write-Host 'A running server picks this up on its own - no restart needed.' -ForegroundColor Cyan
+    Write-Host "Tools now take account=$to." -ForegroundColor Cyan
 }
 
 # --- menu --------------------------------------------------------------------

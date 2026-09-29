@@ -551,6 +551,13 @@ input, never echoes it, and never writes it to its log — the log records label
 counts only. Removing an account takes it out of `.env`; it does **not** revoke the
 Telegram session, which is done from the app under Settings → Devices.
 
+Renaming changes only the label (the name tools take as `account=`), never the Telegram
+account. Pick the account by its number; the menu then renames its `.env` key and its
+`secrets.md` entry and moves everything the server stored under the old label - the
+secret-chat keys, history and file keys, ghost mode, proxy route, approvals and contact
+aliases - all or nothing. A running server is stopped for the move and started again in
+the background.
+
 Every tool that acts through an account requires `account=<label>`, with one account or
 many, so adding a second account changes nothing about how tools are called.
 
