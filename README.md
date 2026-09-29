@@ -1086,7 +1086,7 @@ uv run flake8 .
   If `TELEGRAM_PROXY_*` is configured, Telegram traffic is routed through the
   configured SOCKS/HTTP/MTProxy proxy instead.
 - User-generated Telegram content is sanitized before being returned to MCP clients.
-- **Safeguard.** Risky tool calls (deleting, leaving, banning, sessions, profile and
+- **Safeguard.** Risky tool calls (deleting, leaving, banning, promoting admins, sessions, profile and
   privacy, invite joins, bulk sends, a first message to a stranger, and any write that
   carries text from someone else's message) wait for the owner's approval in a channel
   the model cannot answer. **Ghost mode**, on by default, sends no read markers or other
