@@ -47,10 +47,9 @@ COPY pyproject.toml uv.lock ./
 # uv itself is pinned. An unpinned resolver is a dependency of every version
 # resolved below it, and the one input to this image that was still "whatever
 # PyPI served that day" - the very thing the lockfile exists to stop.
-# `git` is here for one requirement: the secret-chat package is pinned by git URL,
-# because PyPI serves a DIFFERENT project under the same name (painor's archived
-# `telethon-secret-chat`, at a higher version), so a bare requirement would install
-# the wrong one and no version constraint would reveal it. `python:*-slim` ships no
+# `git` is here for one requirement: the secret-chat package
+# (`kiaro-telethon-secret-chat`) is pinned by git URL to the owner's repository and
+# is not on PyPI. `python:*-slim` ships no
 # git, and uv answers "Git executable not found" rather than falling back. It is
 # removed again in the same layer so the image does not carry a build tool it never
 # runs.

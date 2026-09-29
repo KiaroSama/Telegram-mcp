@@ -34,7 +34,7 @@ from telegram_mcp.media_kinds import (  # noqa: F401  (re-exported)
     infer_kind,
 )
 
-__all__ = ["KINDS", "infer_kind", "validate_kind"]
+__all__ = ["KINDS", "infer_kind", "media_metadata", "validate_kind"]
 
 
 def validate_kind(path: str, kind: str, caption: str = "") -> str:
@@ -73,3 +73,50 @@ def validate_kind(path: str, kind: str, caption: str = "") -> str:
         )
 
     return kind
+
+
+def media_metadata(
+    *,
+    duration=None,
+    width=None,
+    height=None,
+    thumbnail: bytes = None,
+    title=None,
+    performer=None,
+    sticker_alt=None,
+    waveform=None,
+) -> dict:
+    """The package's ``send_file`` metadata keywords, only those actually given.
+
+    What the peer's client shows before download. Which kind each applies to, and the
+    thumbnail's limits, are the package's checks (a ValueError before any upload);
+    this only converts: the thumbnail's pixel size is read from the image, and the
+    waveform's 0-31 samples are packed into Telegram's 5-bit format.
+    """
+    metadata = {
+        "duration": duration,
+        "width": width,
+        "height": height,
+        "title": title,
+        "performer": performer,
+        "sticker_alt": sticker_alt,
+    }
+    if thumbnail is not None:
+        from io import BytesIO
+
+        from PIL import Image
+
+        with Image.open(BytesIO(thumbnail)) as image:
+            metadata["thumbnail_size"] = image.size
+        metadata["thumbnail"] = thumbnail
+    if waveform is not None:
+        samples = list(waveform)
+        if not samples or len(samples) > 100 or any(not 0 <= int(v) <= 31 for v in samples):
+            raise ValueError(
+                "waveform is 1-100 samples, each 0-31 (Telegram's 5-bit voice-note "
+                "waveform). Nothing was sent."
+            )
+        from telethon.utils import encode_waveform
+
+        metadata["waveform"] = encode_waveform(bytes(int(v) for v in samples))
+    return {key: value for key, value in metadata.items() if value is not None}

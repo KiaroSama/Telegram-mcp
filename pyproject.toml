@@ -44,16 +44,15 @@ dependencies = [
     "qrcode>=8.2",
     "telethon>=1.45.0",
     # MTProto 2.0 end-to-end encryption, which Telethon never implemented. Pinned
-    # BY GIT to this owner's repository and never declared by bare name: PyPI
-    # already serves a different `telethon-secret-chat` — painor's archived 0.2.4 —
-    # at a HIGHER version than this one, so a bare requirement resolves to the wrong
-    # project and no version constraint reveals the substitution.
+    # BY GIT to this owner's repository. Its distribution is
+    # `kiaro-telethon-secret-chat` since 0.1.0: the bare name `telethon-secret-chat`
+    # on PyPI is painor's unrelated, archived project.
     #
-    # Taking a newer version is one edit here plus
-    # `uv lock --upgrade-package telethon-secret-chat`; nothing in this project's
-    # source should need to change, because `telegram_mcp/secret_backend.py` is the
-    # only module that imports it and a contract test pins what it relies on.
-    "telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@b67d2072210d95d2af449f60b5beffebfab6d7cc",
+    # Taking a newer version: read the package's CHANGELOG.md, move the commit here,
+    # then `uv lock --upgrade-package kiaro-telethon-secret-chat`.
+    # `telegram_mcp/secret_backend.py` is the only module that imports it and a
+    # contract test pins what it relies on.
+    "kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@45b76dfee072f905b263d659417247b1a289cbae",
 ]
 
 [project.optional-dependencies]
@@ -192,6 +191,7 @@ source = [
     "telegram_mcp.secret_common",
     "telegram_mcp.secret_compose",
     "telegram_mcp.secret_history",
+    "telegram_mcp.secret_media_refs",
     "telegram_mcp.secret_limits",
     "telegram_mcp.secret_media_content",
     "telegram_mcp.safe_log",

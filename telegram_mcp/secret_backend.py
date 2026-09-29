@@ -25,7 +25,13 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from telethon_secret_chat import FileStorage, SecretChatManager
+from telethon_secret_chat import (
+    PALETTE,
+    FileStorage,
+    MediaReference,
+    SecretChatManager,
+    key_visualization,
+)
 from telethon_secret_chat.errors import (
     ChatClosed,
     ChatNotReady,
@@ -34,11 +40,12 @@ from telethon_secret_chat.errors import (
     ParameterRejected,
     ResendUnsatisfiable,
     SecretChatError,
+    SendPending,
     StorageRequired,
 )
 from telethon_secret_chat.schema import secret_tl
 
-from telegram_mcp import secret_history
+from telegram_mcp import secret_history, secret_media_refs
 from telegram_mcp.alias_store import restrict_to_owner
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import state_dir
@@ -53,12 +60,16 @@ __all__ = [
     "ChatNotReady",
     "LayerUnsupported",
     "MessageRejected",
+    "PALETTE",
     "ParameterRejected",
     "ResendUnsatisfiable",
     "SecretChatError",
     "SecretChatUnavailable",
+    "SendPending",
     "StorageRequired",
     "close_all",
+    "key_visualization",
+    "media_source",
     "secret_manager",
     "secret_tl",
 ]
@@ -232,6 +243,8 @@ async def secret_manager(account: str) -> SecretChatManager:
         manager = SecretChatManager(client, _storage_for(account))
         manager.on("ChatRequested", _accept_incoming(manager, account))
         manager.on("MessageReceived", _remember(account))
+        manager.on("ChatClosed", _closed(account))
+        manager.on("SendFailed", _withdrawn(account))
         await manager.start()
         _by_account[account] = manager
         _verified_against[account] = client
@@ -296,8 +309,75 @@ def _remember(account: str):
                 account=account,
                 error=error,
             )
+        try:
+            # The file's key, kept so the file outlives this process (owner's
+            # decision, 2026-09-29; see secret_media_refs).
+            reference = MediaReference.from_message(event)
+            if reference is not None:
+                secret_media_refs.remember(
+                    account,
+                    event.chat_id,
+                    event.random_id,
+                    reference.to_dict(),
+                    getattr(event, "ttl", 0) or 0,
+                )
+        except Exception as error:
+            log_event(
+                logging.WARNING,
+                "could not keep a received secret file's reference",
+                account=account,
+                error=error,
+            )
 
     return _handler
+
+
+def _closed(account: str):
+    """Drop a closed chat's file references: its keys go when the chat does."""
+
+    async def _handler(event):
+        try:
+            secret_media_refs.drop_chat(account, event.chat_id)
+        except Exception as error:
+            log_event(
+                logging.WARNING,
+                "could not drop a closed secret chat's file references",
+                account=account,
+                error=error,
+            )
+
+    return _handler
+
+
+def _withdrawn(account: str):
+    """Log a message Telegram rejected for good; the package already withdrew it."""
+
+    async def _handler(event):
+        log_event(
+            logging.WARNING,
+            "a sent secret message was rejected by Telegram and withdrawn",
+            account=account,
+            chat_id=getattr(event, "chat_id", None),
+            message_id=getattr(event, "random_id", None),
+            cause=getattr(event, "cause", None),
+        )
+
+    return _handler
+
+
+def media_source(manager, account: str, chat_id: int, message_id: int):
+    """``(source, ttl)`` for a received message: the live one, else its stored file.
+
+    The live message wins while this process still holds it; after a restart the
+    stored ``MediaReference`` stands in. ``(None, 0)`` when neither exists.
+    """
+    for message in reversed(manager.read_history(chat_id, 10_000)):
+        if message.random_id == int(message_id):
+            return message, int(getattr(message, "ttl", 0) or 0)
+    stored = secret_media_refs.load(account, chat_id, message_id)
+    if stored is None:
+        return None, 0
+    return MediaReference.from_dict(stored["reference"]), int(stored.get("ttl") or 0)
 
 
 async def _stop(manager: SecretChatManager) -> None:

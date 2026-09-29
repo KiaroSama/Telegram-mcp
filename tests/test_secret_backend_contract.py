@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 
 PACKAGE = "telethon_secret_chat"
-DISTRIBUTION = "telethon-secret-chat"
+DISTRIBUTION = "kiaro-telethon-secret-chat"
 OWNER_REPO = "KiaroSama/Telethon-Secret-Chat"
 
 #: Every manager operation this project calls, with the arguments it passes by name.
@@ -37,6 +37,8 @@ CALLED_OPERATIONS = {
     "send_message": (),
     "send_file": (),
     "save_file": (),
+    "forward_file": (),
+    "forget": (),
     "read_history": (),
     "set_ttl": (),
     "mark_read": (),
@@ -47,13 +49,11 @@ CALLED_OPERATIONS = {
 
 
 def test_the_installed_distribution_is_the_owners_not_the_one_on_pypi():
-    """PyPI serves a DIFFERENT package under this exact name.
+    """The package came from the owner's repository, not from an index.
 
-    painor's archived `telethon-secret-chat` is published at 0.2.4 — a HIGHER version
-    than the owner's 0.0.1 — so a bare requirement resolves to the wrong project and
-    no version constraint reveals the substitution. The requirement is pinned by git
-    for that reason, and this asserts the pin actually held: a machine that already
-    had the archived package must fail here rather than shadow the real one.
+    Its distribution is `kiaro-telethon-secret-chat` since 0.1.0 because PyPI's
+    `telethon-secret-chat` is painor's unrelated, archived project. The requirement is
+    pinned by git, and this asserts the pin actually held.
     """
     dist = distribution(DISTRIBUTION)
     recorded = dist.read_text("direct_url.json")
@@ -176,5 +176,13 @@ def test_the_packages_public_surface_still_carries_what_the_seam_imports():
     """The seam imports exactly these names. A narrowed export fails here."""
     import telethon_secret_chat as package
 
-    for name in ("SecretChatManager", "FileStorage", "StorageBackend"):
+    for name in (
+        "SecretChatManager",
+        "FileStorage",
+        "StorageBackend",
+        "MediaReference",
+        "key_visualization",
+        "PALETTE",
+        "SendPending",
+    ):
         assert name in package.__all__, f"{name} left the package's public surface"

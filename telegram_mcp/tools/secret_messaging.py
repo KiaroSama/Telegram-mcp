@@ -17,11 +17,12 @@ library should; the durable, both-directions record lives in
 writes to it, and every delete removes from it.
 
 **The file's key travels inside the message.** A received media message carries its own
-one-time key, so `save_secret_media` needs the live message object, not a record of it -
-and it says so plainly when the process that received one has since restarted.
+one-time key. The live message holds it while this process runs; for after a restart the
+key is kept as a MediaReference (:mod:`telegram_mcp.secret_media_refs`, owner's decision
+2026-09-29), so a received file stays saveable and forwardable until its chat closes.
 """
 
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 from telegram_mcp.safeguard import note_records
 from telegram_mcp import secret_history
@@ -34,13 +35,14 @@ from telegram_mcp.file_roots import (
 from telegram_mcp.handles import NAME_ATTEMPTS
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
-from telegram_mcp.secret_backend import secret_manager
+from telegram_mcp.secret_backend import media_source, secret_manager
 from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
 from telegram_mcp.secret_compose import dropped_note, formatted_text, reply_to
 from telegram_mcp.secret_limits import require_ready_chat
-from telegram_mcp.secret_media_content import KINDS, infer_kind, validate_kind
+from telegram_mcp.secret_media_content import KINDS, infer_kind, media_metadata, validate_kind
 
 __all__ = [
+    "forward_secret_media",
     "read_secret_messages",
     "save_secret_media",
     "send_secret_media",
@@ -50,20 +52,6 @@ __all__ = [
 
 def _account_label(account: Optional[str]) -> str:
     return account_label(account)
-
-
-def _live_message(manager, chat_id: int, message_id: int):
-    """The received message object still holding its file's key, or ``None``.
-
-    Deliberately searched in the package's IN-MEMORY history rather than this
-    server's durable one. The durable record is text and metadata by design - the
-    file key is key material, and writing it to disk would turn a convenience file
-    into a second place an encrypted conversation can be read from.
-    """
-    for message in reversed(manager.read_history(chat_id, 10_000)):
-        if message.random_id == int(message_id):
-            return message
-    return None
 
 
 @mcp.tool(
@@ -181,6 +169,14 @@ async def send_secret_media(
     reply_to_message_id: int = None,
     account: str = None,
     ctx: Context = None,
+    duration: Optional[int] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    thumbnail_path: Optional[str] = None,
+    title: Optional[str] = None,
+    performer: Optional[str] = None,
+    sticker_alt: Optional[str] = None,
+    waveform: Optional[List[int]] = None,
 ) -> str:
     """
     Send a file of any kind a secret chat carries — all eight of them.
@@ -216,6 +212,13 @@ async def send_secret_media(
             than dropped in transit.
         reply_to_message_id: A message id from `read_secret_messages` to reply
             to, checked against this device's copy first.
+        duration, width, height, thumbnail_path, title, performer, sticker_alt,
+        waveform: What the other side's app shows BEFORE downloading - length in
+            seconds (audio, video, voice/video note), pixel size (photo, video),
+            a preview image (JPEG, WEBP for a sticker; under 200 KB, sides up to
+            320), track title/performer (audio), a sticker's emoji, and a voice
+            note's waveform (up to 100 samples, each 0-31). Each is refused before
+            the upload when the kind cannot carry it.
     """
     # Before the backend and before the filesystem: neither should be spent on an
     # argument that was never going to be accepted, and a path error would mask
@@ -264,8 +267,27 @@ async def send_secret_media(
         chosen = validate_kind(str(path), kind or infer_kind(str(path)), caption)
         reply = reply_to(label, secret_id, reply_to_message_id)
 
+        thumbnail = None
+        if thumbnail_path is not None:
+            thumb, thumb_error = await _resolve_readable_file_path(
+                raw_path=thumbnail_path, ctx=ctx, tool_name="send_secret_media"
+            )
+            if thumb_error:
+                return thumb_error
+            thumbnail = Path(thumb).read_bytes()
+        metadata = media_metadata(
+            duration=duration,
+            width=width,
+            height=height,
+            thumbnail=thumbnail,
+            title=title,
+            performer=performer,
+            sticker_alt=sticker_alt,
+            waveform=waveform,
+        )
+
         sent_id = await manager.send_file(
-            secret_id, path, caption=caption, kind=chosen, reply_to=reply
+            secret_id, path, caption=caption, kind=chosen, reply_to=reply, **metadata
         )
         local_copy = secret_history.record_sent(
             label,
@@ -347,6 +369,16 @@ async def read_secret_messages(chat_id: int, limit: int = 30, account: str = Non
         )
 
 
+def _no_file_key(chat_id, message_id) -> str:
+    return (
+        f"Message {message_id} in chat {chat_id} has no stored reference and is not held "
+        "in memory, so its file cannot be decrypted. A secret chat's file key travels "
+        "INSIDE the message; this server keeps it for files received since it started "
+        "storing references, not for older ones or ones received on another device. "
+        "read_secret_messages still shows the message."
+    )
+
+
 _REFUSAL_NOTE = (
     "The sender restricted saving and honour_sender_restriction=True was passed, so "
     "nothing was fetched or kept."
@@ -421,11 +453,10 @@ async def save_secret_media(
     under a self-destruct timer instead.
 
     **The file's key travels inside the message.** The encrypted layer puts a
-    one-time key in the message body and the address outside it, so the bytes can
-    only be fetched while this process still holds the message it arrived in. A
-    message from before a restart is reported as unfetchable rather than answered
-    with an empty path — and that is a real limit of end-to-end encryption, not a
-    transfer failure to retry.
+    one-time key in the message body and the address outside it. This server keeps
+    that key for every file it receives (until the chat is closed or forgotten), so
+    a file stays saveable after a restart. A file received before that store
+    existed, or on another device, has no key here and is reported as unfetchable.
 
     Args:
         chat_id: From `list_secret_chats`.
@@ -439,19 +470,13 @@ async def save_secret_media(
         manager = await secret_manager(label)
         secret_id = to_secret_id(chat_id)
 
-        message = _live_message(manager, secret_id, message_id)
+        message, ttl = media_source(manager, label, secret_id, message_id)
         if message is None:
-            return (
-                f"Message {message_id} is not held in memory for chat {chat_id}, so its file "
-                "cannot be decrypted. A secret chat's file key travels INSIDE the message, "
-                "and this server keeps message text across a restart but never key material "
-                "- so media can be saved while the server that received it is still running, "
-                "and not afterwards. read_secret_messages still shows the message."
-            )
-        if message.media is None:
+            return _no_file_key(chat_id, message_id)
+        if getattr(message, "media", True) is None:
             return "That message carries no downloadable media."
 
-        restricted = bool(getattr(message, "ttl", 0))
+        restricted = bool(ttl)
         if restricted and honour_sender_restriction:
             return format_tool_result(
                 {
@@ -484,4 +509,94 @@ async def save_secret_media(
     except Exception as e:
         return describe_refusal(e) or log_and_format_error(
             "save_secret_media", e, chat_id=chat_id, message_id=message_id
+        )
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Forward Secret Media",
+        openWorldHint=True,
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+    )
+)
+@with_account(readonly=False)
+async def forward_secret_media(
+    from_chat_id: int,
+    message_id: int,
+    to_chat_id: int,
+    caption: str = "",
+    reply_to_message_id: int = None,
+    account: str = None,
+) -> str:
+    """
+    Re-send a file received in a secret chat into a secret chat, with no upload.
+
+    The file already sits on Telegram's servers, encrypted; this sends a new message
+    pointing at it, into the same chat or another secret chat of this login. It
+    works after a restart too, while the source chat is open.
+
+    **The copy uses the file's ORIGINAL key**, so everyone who held that key - the
+    person who first sent it, for one - can read the forwarded copy as well. To give
+    it a fresh key, save it with `save_secret_media` and send it with
+    `send_secret_media` instead.
+
+    Args:
+        from_chat_id: The chat the file arrived in (`list_secret_chats`).
+        message_id: From `read_secret_messages`.
+        to_chat_id: The secret chat to send it into; may be the same one.
+        caption: A new caption; the original's is not carried over.
+        reply_to_message_id: A message in the TARGET chat to reply to.
+    """
+    try:
+        label = _account_label(account)
+        manager = await secret_manager(label)
+        source_id = to_secret_id(from_chat_id)
+        target_id = to_secret_id(to_chat_id)
+
+        refusal = require_ready_chat(manager, target_id)
+        if refusal:
+            return refusal
+
+        source, _ttl = media_source(manager, label, source_id, message_id)
+        if source is None:
+            return _no_file_key(from_chat_id, message_id)
+        if getattr(source, "media", True) is None:
+            return f"Message {message_id} carries no file to forward. Nothing was sent."
+
+        reply = reply_to(label, target_id, reply_to_message_id)
+        sent_id = await manager.forward_file(target_id, source, caption=caption, reply_to=reply)
+        local_copy = secret_history.record_sent(
+            label,
+            target_id,
+            secret_history.entry(
+                message_id=sent_id,
+                is_outgoing=True,
+                text=caption,
+                kind=secret_history.media_kind(getattr(source, "media", None)),
+            ),
+        )
+        record = {
+            "forwarded": True,
+            "from_chat_id": int(from_chat_id),
+            "to_chat_id": int(to_chat_id),
+            "message_id": sent_id,
+            "note": "Sent with the file's original key; no upload was made.",
+        }
+        if local_copy:
+            record["local_copy"] = local_copy
+        if reply is not None:
+            record["reply_to_message_id"] = reply
+        return format_tool_result(record)
+    except ValueError as e:
+        return str(e)
+    except KeyError:
+        return (
+            f"No secret chat {from_chat_id} or {to_chat_id} for this login. "
+            "`list_secret_chats` shows them."
+        )
+    except Exception as e:
+        return describe_refusal(e) or log_and_format_error(
+            "forward_secret_media", e, from_chat_id=from_chat_id, message_id=message_id
         )

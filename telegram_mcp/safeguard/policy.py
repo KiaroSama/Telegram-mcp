@@ -132,6 +132,7 @@ SEND = frozenset(
         "send_scheduled_message",
         "send_secret_media",
         "send_secret_message",
+        "forward_secret_media",  # spec 024
         "send_sticker",
         "send_timed_secret_media",
         "send_timed_secret_message",
@@ -208,6 +209,7 @@ FREE_WRITES = frozenset(
         "save_draft",
         "save_gif",
         "save_secret_media",
+        "forget_secret_chat",  # spec 024: local record of a closed chat
         "send_reaction",
         "set_bot_commands",
         "set_channel_username",

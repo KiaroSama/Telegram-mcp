@@ -29,7 +29,8 @@ the difference is invisible until a message fails to disappear.
 
 from typing import Optional, Union
 
-from telegram_mcp.secret_backend import secret_manager
+from telegram_mcp import file_roots, secret_media_refs
+from telegram_mcp.secret_backend import PALETTE, key_visualization, secret_manager
 from telegram_mcp.secret_common import (
     SecretChatUnavailable,
     account_label,
@@ -46,6 +47,7 @@ from telegram_mcp.runtime import *
 __all__ = [
     "close_secret_chat",
     "create_secret_chat",
+    "forget_secret_chat",
     "list_secret_chats",
     "secret_chat_status",
     "set_secret_chat_timer",
@@ -64,6 +66,39 @@ async def _record_for(client, chat) -> dict:
     return record
 
 
+#: Pixels per key-picture cell: 12 cells make a 240 px square, the size a phone shows.
+_CELL = 20
+
+
+def key_picture_dir() -> Path:
+    """Where key pictures go: the first allowed root's downloads, else the state dir."""
+    if file_roots.SERVER_ALLOWED_ROOTS:
+        return file_roots.SERVER_ALLOWED_ROOTS[0] / file_roots.DEFAULT_DOWNLOAD_SUBDIR
+    return state_dir() / "secret-chats" / "key-pictures"
+
+
+def _key_picture(label: str, chat) -> dict:
+    """The key picture a person compares on both phones: 64-hex plus a PNG of the grid.
+
+    The grid and its four colours are the package's (TDLib's rule, checked against the
+    Android client); drawing it is this server's job. It shows a hash of the key, not
+    the key, so the file is not key material.
+    """
+    key_hash = getattr(chat, "key_hash", None)
+    if not key_hash:
+        return "no key picture: the key exchange has not finished, or this is a legacy chat"
+    from PIL import Image
+
+    picture = key_visualization(key_hash)
+    colours = [tuple(int(c[i : i + 2], 16) for i in (1, 3, 5)) for c in PALETTE]
+    image = Image.new("RGB", (12, 12))
+    image.putdata([colours[value] for row in picture.rows for value in row])
+    target = key_picture_dir() / f"secret-key-{label}-{chat.id}.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    image.resize((12 * _CELL, 12 * _CELL), Image.NEAREST).save(target)
+    return {"hex": picture.hex, "png": str(target)}
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Secret Chat Status",
@@ -74,9 +109,13 @@ async def _record_for(client, chat) -> dict:
     )
 )
 @with_account(readonly=True)
-async def secret_chat_status(account: str = None) -> str:
+async def secret_chat_status(account: str = None, chat_id: Optional[int] = None) -> str:
     """
     Report whether secret chats work for this account, and what each one can do.
+
+    With `chat_id`, also the chat's `key_picture`: the 64-character hex and a PNG of
+    the 12x12 pattern Telegram shows under "Encryption Key". If both phones show the
+    same picture, nobody is in the middle.
 
     **`capabilities` is the reason to read this before planning work in a secret
     chat.** A secret chat is not an ordinary chat with a flag on it: MTProto's
@@ -120,6 +159,14 @@ async def secret_chat_status(account: str = None) -> str:
 
     record["secret_chats"] = "ready"
     record["capabilities"] = CAPABILITIES
+    if chat_id is not None:
+        try:
+            manager = await secret_manager(label)
+            record["key_picture"] = _key_picture(label, manager.status(to_secret_id(chat_id)))
+        except KeyError:
+            record["key_picture"] = f"no secret chat {chat_id} for this login"
+        except Exception as e:
+            return log_and_format_error("secret_chat_status", e, account=label)
     return format_tool_result(record)
 
 
@@ -328,3 +375,48 @@ async def close_secret_chat(secret_chat_id: int, account: str = None) -> str:
         if refusal:
             return refusal
         return log_and_format_error("close_secret_chat", e, secret_chat_id=secret_chat_id)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Forget Secret Chat",
+        openWorldHint=False,
+        destructiveHint=True,
+        readOnlyHint=False,
+        idempotentHint=True,
+    )
+)
+@with_account(readonly=False)
+async def forget_secret_chat(secret_chat_id: int, account: str = None) -> str:
+    """
+    Remove a CLOSED secret chat from `list_secret_chats`.
+
+    Local only: nothing is sent, and the chat is already over on both sides. Its
+    stored file keys go with it, so its files can no longer be saved or forwarded.
+    The message text this server kept stays readable with `read_secret_messages`.
+
+    Args:
+        secret_chat_id: From `list_secret_chats`; the `chat_id` is accepted too.
+    """
+    try:
+        label = _account_label(account)
+        manager = await secret_manager(label)
+        secret_id = to_secret_id(secret_chat_id)
+        try:
+            await manager.forget(secret_id)
+        except ValueError:
+            return (
+                f"Secret chat {secret_chat_id} is still open. Only a closed chat can be "
+                "forgotten: close it first with `close_secret_chat`."
+            )
+        secret_media_refs.drop_chat(label, secret_id)
+        return format_tool_result({"forgotten": True, "secret_chat_id": secret_id})
+    except KeyError:
+        return f"No secret chat {secret_chat_id} for this login. `list_secret_chats` shows them."
+    except ValueError as e:
+        return str(e)
+    except Exception as e:
+        refusal = describe_refusal(e)
+        if refusal:
+            return refusal
+        return log_and_format_error("forget_secret_chat", e, secret_chat_id=secret_chat_id)
