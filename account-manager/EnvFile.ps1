@@ -144,3 +144,35 @@ function Remove-EnvKey {
     Write-FileAtomic -Path $envPath `
         -Text (($kept -join [Environment]::NewLine) + [Environment]::NewLine)
 }
+
+# --- secrets.md --------------------------------------------------------------
+
+function Rename-SecretsEntry {
+    <#
+      Carry an account's entry in the local secrets registry over to its new label:
+      the `## <KEY>` heading and the "account '<label>'" it names. Only that one
+      section is touched; its value moves with it untouched.
+
+      Without this the Secrets-Check hook registers the new key as a fresh entry
+      and the old heading stays behind naming an account that no longer exists.
+      Returns $false when the registry has no entry for the key (nothing to do).
+    #>
+    param(
+        [Parameter(Mandatory)] [string] $Path,
+        [Parameter(Mandatory)] [string] $OldKey,
+        [Parameter(Mandatory)] [string] $NewKey,
+        [Parameter(Mandatory)] [string] $OldLabel,
+        [Parameter(Mandatory)] [string] $NewLabel
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $text = [IO.File]::ReadAllText($Path, [Text.UTF8Encoding]::new($false))
+    $heading = [regex]::Match($text, "(?m)^##[ \t]+$([regex]::Escape($OldKey))[ \t]*(?=\r?$)")
+    if (-not $heading.Success) { return $false }
+    $next = [regex]::Match($text.Substring($heading.Index + $heading.Length), '(?m)^## ')
+    $end = if ($next.Success) { $heading.Index + $heading.Length + $next.Index } else { $text.Length }
+    $section = $text.Substring($heading.Index, $end - $heading.Index)
+    $section = "## $NewKey" + $section.Substring($heading.Length)
+    $section = $section.Replace("account '$OldLabel'", "account '$NewLabel'")
+    Write-FileAtomic -Path $Path -Text ($text.Substring(0, $heading.Index) + $section + $text.Substring($end))
+    return $true
+}

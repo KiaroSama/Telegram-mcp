@@ -196,17 +196,28 @@ $($functions.Value -join "`n`n")
         'TELEGRAM_SESSION_NAME_ONDISK=C:\sessions\ondisk.session'
     ), [Text.UTF8Encoding]::new($false))
 
-    $realRead = ${function:Read-Label}
-    $realBackup = ${function:Backup-EnvFile}
-    $script:answers = @('ondisk', 'moved')
-    $script:answerIndex = 0
-    function Read-Label { param($Prompt) $a = $script:answers[$script:answerIndex]; $script:answerIndex++; $a }
-    function Backup-EnvFile { $null }
-    try { Rename-Account }
-    finally {
-        ${function:Read-Label} = $realRead
-        ${function:Backup-EnvFile} = $realBackup
+    # Everything around the .env write is stubbed: picking by number, the server
+    # stop/start and the state move (covered by tests/test_account_rename.*).
+    $stubs = @{
+        'Read-AccountNumber'   = { param($Accounts, $Prompt) 'ondisk' }
+        'Read-Label'           = { param($Prompt) 'moved' }
+        'Read-Confirmation'    = { param($Prompt) $true }
+        'Backup-EnvFile'       = { $null }
+        'Get-ServerTrees'      = { param($Root) @() }
+        'Stop-TelegramServer'  = { param($Root) $false }
+        'Move-AccountState'    = { param($From, $To) @() }
+        'Rename-SecretsEntry'  = { param($Path, $OldKey, $NewKey, $OldLabel, $NewLabel) $false }
+        # This harness leaves $PSScriptRoot empty inside the extracted functions, so
+        # the secrets.md path cannot resolve here; tests/test_account_rename.ps1 covers it.
+        'Write-Note'           = { param($Message) }
     }
+    $real = @{}
+    foreach ($name in $stubs.Keys) {
+        $real[$name] = (Get-Item "function:$name").ScriptBlock
+        Set-Item "function:$name" $stubs[$name]
+    }
+    try { Rename-Account }
+    finally { foreach ($name in $real.Keys) { Set-Item "function:$name" $real[$name] } }
 
     $renamed = Get-Content -LiteralPath $envPath
     if ($renamed -notcontains 'TELEGRAM_SESSION_NAME_MOVED=C:\sessions\ondisk.session') {
