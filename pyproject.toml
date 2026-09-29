@@ -162,6 +162,7 @@ source = [
     "telegram_mcp.errors",
     "telegram_mcp.forum",
     "telegram_mcp.log_setup",
+    "telegram_mcp.loop_noise",
     "telegram_mcp.handles",
     "telegram_mcp.install_guard",
     "telegram_mcp.gif_handles",
