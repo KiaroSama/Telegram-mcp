@@ -41,6 +41,7 @@ from telegram_mcp.secret_backend import (
     ResendUnsatisfiable,
     SecretChatError,
     SecretChatUnavailable,
+    SendPending,
     StorageRequired,
 )
 
@@ -157,6 +158,13 @@ def describe_refusal(error: Exception) -> Optional[str]:
         return f"{REFUSED}{error}"
     if isinstance(error, SecretChatUnavailable):
         return str(error)
+    if isinstance(error, SendPending):
+        # Not a refusal: the message is stored and the package retries it on the next
+        # send and at every start. Sending it again would deliver it twice.
+        return (
+            f"Stored but not yet confirmed by Telegram (message_id {error.random_id}): it "
+            "is retried automatically - do not send it again."
+        )
     if isinstance(error, SecretChatError):
         return f"{REFUSED}{error}"
     return None

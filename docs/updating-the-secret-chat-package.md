@@ -6,26 +6,27 @@ this project takes a newer version of it.
 
 ## The short version
 
-1. Edit one line in `pyproject.toml` — the `@<ref>` at the end of the
-   `telethon-secret-chat` requirement — to the tag or commit you want.
-2. `uv lock --upgrade-package telethon-secret-chat`
-3. Commit both files, push, read CI.
+1. Read the package's `CHANGELOG.md`: every public API change is listed there, and a
+   pre-1.0 minor version may break.
+2. Edit one line in `pyproject.toml` — the `@<ref>` at the end of the
+   `kiaro-telethon-secret-chat` requirement — to the tag or commit you want.
+3. `uv lock --upgrade-package kiaro-telethon-secret-chat`
+4. Commit both files, push, read CI.
 
-Nothing in `telegram_mcp/` should need to change. If something does, CI says so and
-names it, and the change is in one file.
+A change the package makes to its API lands in `telegram_mcp/secret_backend.py` and the
+tools that call it; CI names what broke.
 
 ## Why it is pinned by git and not by name
 
-**PyPI already serves a different package called `telethon-secret-chat`.** It is
-painor's archived project, published at **0.2.4** — a *higher* version than this one's
-0.0.1. A bare `telethon-secret-chat>=...` requirement therefore resolves to the wrong
-project, installs cleanly, and nothing about the version number reveals the
-substitution.
+**The package is not on PyPI.** Its distribution is `kiaro-telethon-secret-chat`
+since 0.1.0; before that it was called `telethon-secret-chat`, which on PyPI is
+painor's unrelated, archived project at a *higher* version - a bare requirement
+resolved to the wrong project and installed cleanly.
 
 So the requirement names the repository:
 
 ```toml
-"telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@<ref>"
+"kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@<ref>"
 ```
 
 `<ref>` is a tag once the package has releases, and a commit SHA before then. Either

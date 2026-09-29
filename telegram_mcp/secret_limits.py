@@ -270,6 +270,14 @@ CAPABILITIES = [
         "message has no attribution field, so there is nothing to forward WITH.",
     },
     {
+        "operation": "re-send a received file into a secret chat",
+        "verdict": "differs",
+        "tool": "forward_secret_media",
+        "note": "no upload, and no 'forwarded from': a new message pointing at the same "
+        "encrypted file, under the file's ORIGINAL key, so its first sender can read the "
+        "copy too. Into secret chats only.",
+    },
+    {
         "operation": "send a poll, dice, a game or an invoice",
         "verdict": "impossible",
         "note": "none of these appears among the ten media types the encrypted protocol "

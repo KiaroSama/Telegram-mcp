@@ -27,6 +27,7 @@ class FakeChat:
         self.is_outbound = outbound
         self.ttl = ttl
         self.layer = layer
+        self.key_hash = None
 
 
 class FakeManager:
@@ -44,6 +45,8 @@ class FakeManager:
         self.closed = []
         self.created = []
         self.saved = []
+        self.forwarded = []
+        self.forgotten = []
         self.history = {}
         self.next_id = 700_000
 
@@ -74,16 +77,36 @@ class FakeManager:
         return self.next_id
 
     async def send_file(
-        self, chat_id, path, *, caption="", mime_type=None, kind=None, reply_to=None
+        self, chat_id, path, *, caption="", mime_type=None, kind=None, reply_to=None, **metadata
     ):
         self._require(chat_id)
         self.next_id += 1
         self.files.append(
             SimpleNamespace(
-                chat_id=chat_id, path=path, caption=caption, kind=kind, reply_to=reply_to
+                chat_id=chat_id,
+                path=path,
+                caption=caption,
+                kind=kind,
+                reply_to=reply_to,
+                metadata=metadata,
             )
         )
         return self.next_id
+
+    async def forward_file(self, chat_id, source, *, caption="", reply_to=None):
+        self._require(chat_id)
+        self.next_id += 1
+        self.forwarded.append(
+            SimpleNamespace(chat_id=chat_id, source=source, caption=caption, reply_to=reply_to)
+        )
+        return self.next_id
+
+    async def forget(self, chat_id):
+        chat = self._require(chat_id)
+        if chat.state.value != "closed":
+            raise ValueError("only a closed chat can be forgotten")
+        self._chats.pop(int(chat_id))
+        self.forgotten.append(int(chat_id))
 
     async def save_file(self, message, path):
         self.saved.append((message, path))

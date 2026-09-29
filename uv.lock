@@ -533,6 +533,14 @@ wheels = [
 ]
 
 [[package]]
+name = "kiaro-telethon-secret-chat"
+version = "0.2.0"
+source = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=45b76dfee072f905b263d659417247b1a289cbae#45b76dfee072f905b263d659417247b1a289cbae" }
+dependencies = [
+    { name = "telethon" },
+]
+
+[[package]]
 name = "markdown-it-py"
 version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1533,6 +1541,7 @@ name = "telegram-mcp"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "kiaro-telethon-secret-chat" },
     { name = "mcp", extra = ["cli"] },
     { name = "pillow" },
     { name = "python-dotenv" },
@@ -1540,7 +1549,6 @@ dependencies = [
     { name = "qrcode" },
     { name = "regex" },
     { name = "telethon" },
-    { name = "telethon-secret-chat" },
 ]
 
 [package.optional-dependencies]
@@ -1566,6 +1574,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "kiaro-telethon-secret-chat", git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=45b76dfee072f905b263d659417247b1a289cbae" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.2.0,<3" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
@@ -1575,7 +1584,6 @@ requires-dist = [
     { name = "regex", specifier = ">=2026.9.10" },
     { name = "rlottie-python", marker = "extra == 'lottie'", specifier = ">=1.3.8" },
     { name = "telethon", specifier = ">=1.45.0" },
-    { name = "telethon-secret-chat", git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=b67d2072210d95d2af449f60b5beffebfab6d7cc" },
 ]
 provides-extras = ["proxy", "lottie", "secret"]
 
@@ -1603,14 +1611,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d5/07/b23b6cc73cd994763fbd641d196904f56cc966035eda841275b5689c6e5f/telethon-1.45.0.tar.gz", hash = "sha256:4cb7ae269b8ab9dad9fc490b859f0bc2f885121e990f5b20407b1faa0db2a1d9", size = 728057, upload-time = "2026-09-10T14:28:04.739Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/92/ac/241c09e6905215f225d8088438ceb1f32cc4b4865f3f49068cb402debfd7/telethon-1.45.0-py3-none-any.whl", hash = "sha256:339e24c83aedc9f12cbe389264627edc49779e4289c535aa90aafc4ce62f7972", size = 804098, upload-time = "2026-09-10T14:28:03.115Z" },
-]
-
-[[package]]
-name = "telethon-secret-chat"
-version = "0.0.1"
-source = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=b67d2072210d95d2af449f60b5beffebfab6d7cc#b67d2072210d95d2af449f60b5beffebfab6d7cc" }
-dependencies = [
-    { name = "telethon" },
 ]
 
 [[package]]

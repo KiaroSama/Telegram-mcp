@@ -10,7 +10,7 @@ os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="telegram-mcp-tests-")
 
 import pytest  # noqa: E402
 
-from telegram_mcp import secret_backend, secret_history  # noqa: E402
+from telegram_mcp import secret_backend, secret_history, secret_media_refs  # noqa: E402
 
 from secret_fakes import SECRET_ID, FakeChat, FakeManager  # noqa: E402
 
@@ -183,6 +183,7 @@ def backend(monkeypatch, tmp_path):
     """
     monkeypatch.setattr(secret_history, "_cache", {})
     monkeypatch.setattr(secret_history, "state_dir", lambda: tmp_path)
+    monkeypatch.setattr(secret_media_refs, "state_dir", lambda: tmp_path)
 
     manager = FakeManager([FakeChat(SECRET_ID)])
 
