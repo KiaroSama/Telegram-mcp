@@ -205,8 +205,8 @@ Every tool this server exposes: **330**, grouped by the module that defines it.
 | `delete_community_photo` | Remove a community's photo. | `- D I O` | **asks the owner** |
 | `get_community_chats` | List the chats linked to a community, each with its visibility (visible to every member, or hidden to all but invited members and admins). | `R - I O` | runs |
 | `list_my_communities` | List the communities this account belongs to: id, title, and who can add chats. | `R - I O` | runs |
-| `rename_community` | Rename a community. | `- D I O` | runs |
-| `set_community_photo` | Set or replace a community's photo from an image file. | `- D I O` | runs |
+| `rename_community` | Rename a community. | `- D I O` | **asks the owner** |
+| `set_community_photo` | Set a community's photo from an image file. | `- D I O` | **asks the owner** |
 | `set_community_who_can_add` | Set who can add chats to a community. | `- D I O` | runs |
 
 ## community_moderation
@@ -330,8 +330,8 @@ Every tool this server exposes: **330**, grouped by the module that defines it.
 | `create_group` | Create a new group or supergroup and add users. | `- D - O` | runs |
 | `delete_chat_photo` | Delete the photo of a chat, group, or channel. | `- D I O` | **asks the owner** |
 | `edit_chat_about` | Edit the description ("About") of a chat, group, or channel. | `- D I O` | runs |
-| `edit_chat_photo` | Edit the photo of a chat, group, or channel. | `- D I O` | runs |
-| `edit_chat_title` | Edit the title of a chat, group, or channel. | `- D I O` | runs |
+| `edit_chat_photo` | Add a new photo to a group or channel and KEEP every earlier one. | `- D I O` | **asks the owner** |
+| `edit_chat_title` | Edit the title of a chat, group, or channel. | `- D I O` | **asks the owner** |
 | `invite_to_group` | Invite users to a group or channel. | `- D I O` | runs |
 | `leave_chat` | Leave a group or channel by chat ID. | `- D I O` | **asks the owner** |
 | `toggle_slow_mode` | Enable or disable slow mode for a supergroup. | `- D I O` | runs |

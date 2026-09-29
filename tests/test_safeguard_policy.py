@@ -73,6 +73,11 @@ def test_an_unnamed_destructive_tool_is_gated_by_the_safety_net():
         "set_privacy_settings",
         "join_chat_by_link",
         "import_chat_invite",
+        # spec 027: a group's, channel's or community's photo and name
+        "edit_chat_photo",
+        "edit_chat_title",
+        "rename_community",
+        "set_community_photo",
     ],
 )
 def test_the_owners_gated_set_asks(tool):

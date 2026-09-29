@@ -36,7 +36,7 @@ __all__ = [
 ]
 
 # Deleting anything, leaving, banning or restricting members, sessions, profile and
-# privacy, joining by invite link.
+# privacy, a chat's photo and name, joining by invite link.
 GATED = frozenset(
     {
         "answer_reply_button",
@@ -61,6 +61,12 @@ GATED = frozenset(
         "delete_forum_topic",  # spec 020: the topic and every message in it
         "upgrade_to_supergroup",  # spec 020: irreversible, new chat id,
         "delete_chat_photo",
+        # A group's, channel's or community's photo and name are its public face
+        # (spec 027, owner, 2026-09-30); they were free writes until then.
+        "edit_chat_photo",
+        "edit_chat_title",
+        "rename_community",
+        "set_community_photo",
         "delete_community",
         "delete_community_photo",
         "delete_contact",
@@ -169,8 +175,6 @@ FREE_WRITES = frozenset(
         "download_media",
         "download_rich_media",
         "edit_chat_about",
-        "edit_chat_photo",
-        "edit_chat_title",
         "edit_forum_topic",
         "pin_forum_topic",
         "reorder_pinned_topics",
@@ -200,7 +204,6 @@ FREE_WRITES = frozenset(
         "remove_checklist_tasks",
         "remove_proxies",
         "remove_reaction",
-        "rename_community",
         "rename_quick_reply",
         "reorder_folders",
         "replace_custom_emoji",
@@ -216,7 +219,6 @@ FREE_WRITES = frozenset(
         "set_chat_sound_disabled",
         "set_chat_tone",
         "set_checklist_tasks_done",
-        "set_community_photo",
         "set_community_who_can_add",
         "set_contact_alias",
         "set_default_send_as",
