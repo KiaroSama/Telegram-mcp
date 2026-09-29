@@ -249,3 +249,31 @@ def test_formatting_nothing_says_what_came_back_empty():
         get_marked_id(None)
 
     assert "no longer authorised" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_get_me_reports_the_bio(monkeypatch):
+    """Reported 2026-09-29: after update_profile(about=...) nothing read the bio back."""
+    import json
+
+    from telethon.tl import types as tl
+
+    from telegram_mcp.tools import profile as profile_mod
+
+    class _Client:
+        async def get_me(self):
+            return tl.User(id=6318674786, first_name="Numera", username="NumeraGroupBotHelper")
+
+        async def __call__(self, request):
+            assert type(request).__name__ == "GetFullUserRequest"
+            return SimpleNamespace(full_user=SimpleNamespace(about="Helper for Numera Group"))
+
+    async def _connected(client):
+        return None
+
+    monkeypatch.setattr(profile_mod, "get_client", lambda account=None: _Client())
+    monkeypatch.setattr(profile_mod, "ensure_connected", _connected)
+
+    data = json.loads(await profile_mod.get_me(account="acct"))
+
+    assert data["about"] == "Helper for Numera Group"

@@ -19,9 +19,10 @@ class FakeInviteClient:
     """Records every raw request; optionally raises per-user errors for
     AddChatUserRequest to simulate already-participant / privacy failures."""
 
-    def __init__(self, add_user_errors=None):
+    def __init__(self, add_user_errors=None, missing=()):
         self.requests = []
         self.add_user_errors = add_user_errors or {}
+        self.missing = list(missing)  # MissingInvitee objects Telegram names
 
     async def __call__(self, request):
         self.requests.append(request)
@@ -29,9 +30,14 @@ class FakeInviteClient:
             err = self.add_user_errors.get(request.user_id.id)
             if err is not None:
                 raise err
-            return SimpleNamespace()
+            return types.messages.InvitedUsers(
+                updates=types.Updates([], [], [], 0, 0), missing_invitees=[]
+            )
         if isinstance(request, functions.channels.InviteToChannelRequest):
-            return SimpleNamespace(users=list(request.users), count=len(request.users))
+            # Layer 229: who was NOT added comes back in missing_invitees, with the reason.
+            return types.messages.InvitedUsers(
+                updates=types.Updates([], [], [], 0, 0), missing_invitees=self.missing
+            )
         raise AssertionError(f"unexpected request: {request!r}")
 
 
@@ -83,3 +89,34 @@ async def test_channel_still_uses_invite_to_channel(monkeypatch):
     assert len(client.requests) == 1
     assert isinstance(client.requests[0], functions.channels.InviteToChannelRequest)
     assert "Successfully invited 2 users to Announcements" in result
+
+
+@pytest.mark.asyncio
+async def test_nobody_added_is_a_failure_that_names_the_reason(monkeypatch):
+    """Live 2026-09-29: 'Successfully invited 0 users' while the helper's privacy
+    ('who can add me to groups') refused it."""
+    channel = types.Channel(id=777, title="DG Anti study", photo=None, date=None)
+    helper = SimpleNamespace(id=6318674786)
+    client = FakeInviteClient(missing=[types.MissingInvitee(user_id=6318674786)])
+    _patch(monkeypatch, client, {777: channel, "NumeraGroupBotHelper": helper})
+
+    result = await groups.invite_to_group(777, ["NumeraGroupBotHelper"], account=None)
+
+    assert result.startswith("Error: Nobody was added to DG Anti study")
+    assert "6318674786" in result and "privacy" in result.lower() and "invite link" in result
+
+
+@pytest.mark.asyncio
+async def test_a_partial_invite_names_who_was_left_out_and_why(monkeypatch):
+    channel = types.Channel(id=777, title="Announcements", photo=None, date=None)
+    client = FakeInviteClient(
+        missing=[types.MissingInvitee(user_id=42, premium_would_allow_invite=True)]
+    )
+    _patch(
+        monkeypatch, client, {777: channel, 41: SimpleNamespace(id=41), 42: SimpleNamespace(id=42)}
+    )
+
+    result = await groups.invite_to_group(777, [41, 42], account=None)
+
+    assert "Invited 1 of 2 users to Announcements" in result
+    assert "42" in result and "Premium" in result

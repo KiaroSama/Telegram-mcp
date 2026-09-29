@@ -100,3 +100,11 @@ async def test_a_basic_group_gets_a_sentence(monkeypatch, call):
 
     assert client.sent == []
     assert "basic group" in result.lower()
+
+
+def test_colour_arguments_are_optional():
+    """Measured live 2026-09-29: the preflight refused a colour with no background emoji."""
+    import inspect
+
+    params = inspect.signature(mod.set_channel_color).parameters
+    assert params["color"].default is None and params["background_emoji_id"].default is None

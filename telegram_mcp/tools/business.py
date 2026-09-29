@@ -478,19 +478,19 @@ async def set_business_intro(
 )
 @with_account(readonly=False)
 async def set_business_location(
-    latitude: Optional[float],
-    longitude: Optional[float],
     address: Optional[str],
+    latitude: Optional[float] = None,
+    longitude: Optional[float] = None,
     account: str = None,
 ) -> str:
     """
     Set or clear the business address shown on this account's profile.
 
     Args:
-        latitude: -90 to 90, or None for an address without a map point.
+        address: The address text (at most 96 characters); null clears the
+            location (then give no coordinates either).
+        latitude: -90 to 90; leave out for an address without a map point.
         longitude: -180 to 180, given together with latitude.
-        address: The address text (at most 96 characters). All three None
-            clears the location.
 
     A map point also advertises the account to nearby users; asks first.
     """

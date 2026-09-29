@@ -44,7 +44,7 @@ async def _require_channel(chat_id, cl):
     return entity, None
 
 
-async def _toggle(tool_name, chat_id, account, build, describe):
+async def _toggle(tool_name, chat_id, account, build, describe, supergroup_only=False):
     """Resolve, refuse a non-channel, send one request, say what is now true."""
     try:
         cl = get_client(account)
@@ -52,11 +52,18 @@ async def _toggle(tool_name, chat_id, account, build, describe):
         entity, refusal = await _require_channel(chat_id, cl)
         if refusal:
             return refusal
-        await cl(build(entity))
         title = sanitize_name(getattr(entity, "title", str(chat_id)))
+        if supergroup_only and not getattr(entity, "megagroup", False):
+            # A broadcast channel answers ChatIdInvalidError, naming nothing useful.
+            return f"{title} is a broadcast channel; this setting exists only for supergroups."
+        await cl(build(entity))
         return describe(title)
     except telethon.errors.rpcerrorlist.ChatAdminRequiredError:
         return "Cannot change this setting: admin privileges are required."
+    except telethon.errors.RPCError as e:
+        if "BOOSTS_REQUIRED" in str(getattr(e, "message", "")):
+            return "Telegram requires more boosts on this channel before this setting can be on."
+        return log_and_format_error(tool_name, e, chat_id=chat_id)
     except Exception as e:
         return log_and_format_error(tool_name, e, chat_id=chat_id)
 

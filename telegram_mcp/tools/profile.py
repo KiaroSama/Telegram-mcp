@@ -66,7 +66,15 @@ async def get_me(account: str = None) -> str:
                 "revoked, signed out, or ended from Settings > Devices. Add the account "
                 "again with Manage-Accounts.ps1 to sign in afresh."
             )
-        return json.dumps(format_entity(me), indent=2)
+        data = format_entity(me)
+        try:  # the bio lives on the full user; after update_profile(about=...) this reads it back
+            full = await cl(functions.users.GetFullUserRequest(id=types.InputUserSelf()))
+            data["about"] = (
+                sanitize_user_content(full.full_user.about) if full.full_user.about else None
+            )
+        except Exception:  # the profile itself is the answer; the bio is a bonus
+            data["about"] = None
+        return json.dumps(data, indent=2)
     except Exception as e:
         return log_and_format_error("get_me", e)
 
