@@ -142,8 +142,17 @@ async def set_profile_photo(
     """
     Set a profile photo - this account's, or one of the bots it owns.
 
-    Groups and channels take their photo through `edit_chat_photo` instead;
-    this is the personal-identity side of the same job.
+    Not for a group or channel: use `replace_chat_photo` (only the new photo remains)
+    or `edit_chat_photo` (the old photos stay). Without replace=True the previous
+    profile photo stays in this account's photo history.
+
+    "Change the profile photo" is ambiguous. Unless the owner already said, ask them
+    both things before calling any photo tool:
+    - whose photo: this account's own or a bot it owns (`set_profile_photo`), a group
+      or channel (`edit_chat_photo` / `replace_chat_photo`), a community
+      (`set_community_photo`);
+    - keep the earlier photos in the photo list, or remove them (`replace_chat_photo`,
+      `set_profile_photo` with replace=True).
 
     Args:
         file_path: Image to upload.

@@ -276,7 +276,24 @@ async def edit_chat_photo(
     account: str = None,
 ) -> str:
     """
-    Edit the photo of a chat, group, or channel. Requires a file path to an image.
+    Add a new photo to a group or channel and KEEP every earlier one.
+
+    Telegram keeps each previous photo as a "photo changed" message, and the chat's
+    photo list is built from those - so after this call the old photos are still
+    there. To end up with only the new photo, use `replace_chat_photo` instead. For
+    this account's own photo (or a bot's) use `set_profile_photo`.
+
+    "Change the profile photo" is ambiguous. Unless the owner already said, ask them
+    both things before calling any photo tool:
+    - whose photo: this account's own or a bot it owns (`set_profile_photo`), a group
+      or channel (`edit_chat_photo` / `replace_chat_photo`), a community
+      (`set_community_photo`);
+    - keep the earlier photos in the photo list, or remove them (`replace_chat_photo`,
+      `set_profile_photo` with replace=True).
+
+    Args:
+        chat_id: The group or channel.
+        file_path: The new picture.
     """
     try:
         cl = get_client(account)

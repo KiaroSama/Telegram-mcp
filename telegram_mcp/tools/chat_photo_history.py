@@ -48,6 +48,18 @@ async def replace_chat_photo(
     """
     Replace a group's or channel's photo so only the new one remains in its photo list.
 
+    This is what "change the group photo" usually means; `edit_chat_photo` adds the
+    new photo and keeps the old ones. For this account's own photo (or a bot's) use
+    `set_profile_photo`, for a community `set_community_photo`.
+
+    "Change the profile photo" is ambiguous. Unless the owner already said, ask them
+    both things before calling any photo tool:
+    - whose photo: this account's own or a bot it owns (`set_profile_photo`), a group
+      or channel (`edit_chat_photo` / `replace_chat_photo`), a community
+      (`set_community_photo`);
+    - keep the earlier photos in the photo list, or remove them (`replace_chat_photo`,
+      `set_profile_photo` with replace=True).
+
     Sets the new photo first, then deletes every earlier "photo changed" message -
     those are the old photos people see in the chat's photo list. Nothing is deleted
     if the new photo could not be set. Without `file_path`, the current photo stays

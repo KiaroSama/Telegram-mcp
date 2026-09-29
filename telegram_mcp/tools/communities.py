@@ -207,7 +207,19 @@ async def set_community_photo(
     ctx: Optional[Context] = None,
     account: str = None,
 ) -> str:
-    """Set or replace a community's photo from an image file."""
+    """Set a community's photo from an image file.
+
+    Only for a community. This account's own photo is `set_profile_photo`; a group or
+    channel is `replace_chat_photo` / `edit_chat_photo`.
+
+    "Change the profile photo" is ambiguous. Unless the owner already said, ask them
+    both things before calling any photo tool:
+    - whose photo: this account's own or a bot it owns (`set_profile_photo`), a group
+      or channel (`edit_chat_photo` / `replace_chat_photo`), a community
+      (`set_community_photo`);
+    - keep the earlier photos in the photo list, or remove them (`replace_chat_photo`,
+      `set_profile_photo` with replace=True).
+    """
     try:
         cl = get_client(account)
         _, channel, refusal = await _community(cl, community)
