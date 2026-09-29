@@ -448,3 +448,44 @@ async def test_both_newest_rights_are_set_on_the_plain_telethon_path():
     assert sent["flags"] >> 19 & 1, "manage_linked_peers never reached flags.19"
     assert sent["flags"] >> 20 & 1, "manage_welcome_messages never reached flags.20"
     assert answer == "Admin rights updated for user 5876481644 in chat -1002046407246."
+
+
+# --- the caller can see which keys exist, and which of theirs were ignored ----------
+
+
+def test_the_description_lists_every_right_the_builder_knows():
+    """Reported 2026-09-29: the `rights` schema was `{}`, so callers guessed the names."""
+    doc = moderation_mod.promote_admin.__doc__
+    for name in moderation_mod._admin_rights_fields():
+        assert name in doc, name
+
+
+@pytest.mark.asyncio
+async def test_an_ignored_key_and_a_privacy_refusal_are_named(monkeypatch):
+    import telethon.errors.rpcerrorlist as rpc
+
+    chat = SimpleNamespace(title="DG Anti study")
+
+    class _Client:
+        def __init__(self, error=None):
+            self.error = error
+
+        async def __call__(self, request):
+            if self.error:
+                raise self.error
+            return True
+
+    async def _resolve(value, cl):
+        return chat if value == "g" else SimpleNamespace(id=6318674786)
+
+    monkeypatch.setattr(moderation_mod, "resolve_entity", _resolve)
+    monkeypatch.setattr(moderation_mod, "get_client", lambda account=None: _Client())
+    ok = await moderation_mod.promote_admin(
+        "g", "u", rights={"delete_messages": True, "nuke": True}
+    )
+    assert "Successfully promoted" in ok and "nuke" in ok
+
+    blocked = _Client(rpc.UserPrivacyRestrictedError(request=None))
+    monkeypatch.setattr(moderation_mod, "get_client", lambda account=None: blocked)
+    refused = await moderation_mod.promote_admin("g", "u")
+    assert refused.startswith("Error") and "chat_invite" in refused

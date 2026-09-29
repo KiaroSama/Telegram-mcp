@@ -119,3 +119,16 @@ def test_the_one_way_doors_say_so():
         assert "cannot be undone" in tool.description
     for name in ("set_channel_location", "set_autotranslation"):
         assert mcp._tool_manager.get_tool(name).annotations.destructive_hint is False
+
+
+@pytest.mark.asyncio
+async def test_a_boost_gate_is_a_sentence(monkeypatch):
+    """Measured live 2026-09-29: a new channel answered BOOSTS_REQUIRED."""
+    from telethon.errors import BadRequestError
+
+    boosts = BadRequestError(request=None, message="BOOSTS_REQUIRED")
+    _wire(monkeypatch, CHANNEL, answer=boosts, modules=(mod,))
+
+    result = await mod.set_autotranslation("@announcements", True)
+
+    assert "boost" in result.lower() and "An error occurred" not in result

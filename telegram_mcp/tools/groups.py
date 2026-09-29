@@ -509,6 +509,29 @@ async def leave_chat(chat_id: Union[int, str], account: str = None) -> str:
         return log_and_format_error("leave_chat", e, chat_id=chat_id)
 
 
+def _missing_reason(missing) -> str:
+    """Why Telegram left one user out of an invite, in words (layer 229 MissingInvitee)."""
+    if getattr(missing, "premium_would_allow_invite", False):
+        return "their privacy lets only Premium users add them to groups"
+    if getattr(missing, "premium_required_for_pm", False):
+        return "they accept messages from Premium users only, so an invite link cannot reach them"
+    return (
+        "privacy restricted - they must allow you under Privacy > Groups & Channels "
+        "(chat_invite), or join by an invite link"
+    )
+
+
+def _invite_report(title: str, requested: int, missing) -> str:
+    """Invited N of M, naming who was left out and why; nobody added is a failure."""
+    added = requested - len(missing)
+    if not missing:
+        return f"Successfully invited {added} users to {title}"
+    left_out = "; ".join(f"{m.user_id}: {_missing_reason(m)}" for m in missing)
+    if added <= 0:
+        return f"Error: Nobody was added to {title}. Not added: {left_out}."
+    return f"Invited {added} of {requested} users to {title}. Not added: {left_out}."
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Invite To Group",
@@ -551,15 +574,11 @@ async def invite_to_group(
                     functions.channels.InviteToChannelRequest(channel=entity, users=users_to_add)
                 )
 
-                invited_count = 0
-                if hasattr(result, "users") and result.users:
-                    invited_count = len(result.users)
-                elif hasattr(result, "count"):
-                    invited_count = result.count
-
-                return (
-                    f"Successfully invited {invited_count} users to {sanitize_name(entity.title)}"
-                )
+                # Layer 229 answers messages.InvitedUsers: who was NOT added, and why,
+                # is in missing_invitees. Counting `.users` reported "0 invited" as a
+                # success when privacy refused everyone (live, 2026-09-29).
+                missing = list(getattr(result, "missing_invitees", None) or [])
+                return _invite_report(sanitize_name(entity.title), len(users_to_add), missing)
             else:
                 # Basic group (telethon Chat): channels.InviteToChannel cannot be used
                 # (it casts to InputChannel and fails). Add each user individually via
@@ -586,6 +605,8 @@ async def invite_to_group(
                 msg = (
                     f"Successfully invited {invited_count} users to {sanitize_name(entity.title)}"
                 )
+                if invited_count == 0 and failures:
+                    msg = f"Error: Nobody was added to {sanitize_name(entity.title)}"
                 if already:
                     msg += f" ({already} already a participant)"
                 if failures:

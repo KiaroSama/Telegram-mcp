@@ -38,8 +38,8 @@ def _sticker_set(set_short_name: Optional[str]):
 @validate_id("chat_id")
 async def set_channel_color(
     chat_id: Union[int, str],
-    color: Optional[int],
-    background_emoji_id: Optional[int],
+    color: Optional[int] = None,
+    background_emoji_id: Optional[int] = None,
     for_profile: bool = False,
     account: str = None,
 ) -> str:

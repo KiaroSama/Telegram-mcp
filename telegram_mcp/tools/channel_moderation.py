@@ -44,6 +44,7 @@ async def set_anti_spam(chat_id: Union[int, str], enabled: bool, account: str = 
         account,
         lambda entity: functions.channels.ToggleAntiSpamRequest(channel=entity, enabled=enabled),
         lambda title: f"Aggressive anti-spam is {'on' if enabled else 'off'} in {title}.",
+        supergroup_only=True,
     )
 
 
@@ -79,6 +80,7 @@ async def report_anti_spam_false_positive(
             channel=entity, msg_id=int(message_id)
         ),
         lambda title: f"Reported message {int(message_id)} in {title} as an anti-spam mistake.",
+        supergroup_only=True,
     )
 
 
@@ -117,4 +119,5 @@ async def set_boosts_to_unblock(chat_id: Union[int, str], boosts: int, account: 
             if boosts
             else f"Boosting no longer exempts members of {title} from its restrictions."
         ),
+        supergroup_only=True,
     )

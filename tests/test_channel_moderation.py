@@ -5,10 +5,17 @@ import telethon.errors.rpcerrorlist as rpc
 from telethon.tl import functions
 
 from telegram_mcp.tools import channel_moderation as mod
+from telethon.tl import types
 from test_channel_identity import BASIC_GROUP, CHANNEL, _wire
 
+# Anti-spam and boost limits exist for supergroups only (measured live 2026-09-29: a
+# broadcast channel answered ChatIdInvalidError).
+SUPERGROUP = types.Channel(
+    id=556, title="Talk", photo=None, date=None, creator=True, left=False, megagroup=True
+)
 
-def _w(monkeypatch, entity=CHANNEL, answer=True):
+
+def _w(monkeypatch, entity=SUPERGROUP, answer=True):
     return _wire(monkeypatch, entity, answer, modules=(mod,))
 
 
@@ -56,7 +63,7 @@ async def test_each_tool_sends_its_own_request(monkeypatch, tool, kwargs, reques
     assert len(client.sent) == 1
     request = client.sent[0]
     assert isinstance(request, request_type)
-    assert request.channel is CHANNEL
+    assert request.channel is SUPERGROUP
     for field, value in checks.items():
         assert getattr(request, field) == value
 
@@ -97,3 +104,21 @@ async def test_admin_required_is_a_sentence(monkeypatch):
     result = await mod.set_anti_spam("@announcements", True)
 
     assert result == "Cannot change this setting: admin privileges are required."
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: mod.set_anti_spam("@announcements", True),
+        lambda: mod.report_anti_spam_false_positive("@announcements", 1),
+        lambda: mod.set_boosts_to_unblock("@announcements", 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_broadcast_channel_gets_a_sentence(monkeypatch, call):
+    client = _w(monkeypatch, CHANNEL)
+
+    result = await call()
+
+    assert client.sent == []
+    assert "supergroup" in result.lower()

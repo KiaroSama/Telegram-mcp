@@ -268,9 +268,9 @@ async def test_location_set_address_only_and_cleared(wire_client):
     client = Recorder()
     wire_client(mod, client)
 
-    await mod.set_business_location(35.7, 51.4, "Valiasr St")
-    await mod.set_business_location(None, None, "Online only")
-    await mod.set_business_location(None, None, None)
+    await mod.set_business_location("Valiasr St", 35.7, 51.4)
+    await mod.set_business_location("Online only")
+    await mod.set_business_location(None)
 
     point, address_only, cleared = client.sent
     assert (point.geo_point.lat, point.geo_point.long, point.address) == (35.7, 51.4, "Valiasr St")
@@ -287,7 +287,7 @@ async def test_location_refusals_happen_before_any_request(wire_client, lat, lon
     client = Recorder()
     wire_client(mod, client)
 
-    result = await mod.set_business_location(lat, long, address)
+    result = await mod.set_business_location(address, lat, long)
 
     assert client.sent == []
     assert result
