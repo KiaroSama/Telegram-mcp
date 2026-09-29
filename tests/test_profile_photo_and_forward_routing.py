@@ -232,3 +232,64 @@ async def test_defaults_are_omitted_rather_than_sent_as_false(forwarding):
 
     _entity, _ids, _from, kwargs = forwarding.forwarded[-1]
     assert kwargs == {}, f"an unasked-for keyword reached the helper: {kwargs}"
+
+
+# ------------------------------------------- hide sender name / hide caption
+
+
+@pytest.mark.asyncio
+async def test_hiding_captions_also_hides_the_sender_name(forwarding):
+    """Telegram's own clients offer "Hide Caption" only as a step past "Hide
+    Sender Name" (tdesktop: NoNamesAndCaptions), so one implies the other."""
+    answer = await messages_mod.forward_message(
+        from_chat_id="@sourcechat", message_id=5, to_chat_id="@destchat", drop_captions=True
+    )
+
+    _entity, _ids, _from, kwargs = forwarding.forwarded[-1]
+    assert kwargs == {"drop_author": True, "drop_media_captions": True}
+    assert "without sender name and captions" in answer
+
+
+@pytest.mark.asyncio
+async def test_hidden_captions_reach_the_routed_request_too(forwarding):
+    await messages_mod.forward_message(
+        from_chat_id="@sourcechat",
+        message_id=5,
+        to_chat_id="@destchat",
+        topic_id=7,
+        drop_captions=True,
+    )
+
+    request = _last(forwarding, functions.messages.ForwardMessagesRequest)
+    assert request.drop_media_captions is True and request.drop_author is True
+
+
+@pytest.mark.asyncio
+async def test_a_batch_forward_can_hide_the_sender_name(forwarding):
+    answer = await messages_mod.forward_messages(
+        from_chat_id="@sourcechat", message_ids=[1, 2], to_chat_id="@destchat", drop_author=True
+    )
+
+    _entity, _ids, _from, kwargs = forwarding.forwarded[-1]
+    assert kwargs == {"drop_author": True}
+    assert "without sender name" in answer
+
+
+@pytest.mark.asyncio
+async def test_a_batch_forward_can_hide_captions(forwarding):
+    await messages_mod.forward_messages(
+        from_chat_id="@sourcechat", message_ids=[1, 2], to_chat_id="@destchat", drop_captions=True
+    )
+
+    _entity, _ids, _from, kwargs = forwarding.forwarded[-1]
+    assert kwargs == {"drop_author": True, "drop_media_captions": True}
+
+
+@pytest.mark.asyncio
+async def test_a_plain_batch_forward_sends_no_extra_keywords(forwarding):
+    await messages_mod.forward_messages(
+        from_chat_id="@sourcechat", message_ids=[1, 2], to_chat_id="@destchat"
+    )
+
+    _entity, _ids, _from, kwargs = forwarding.forwarded[-1]
+    assert kwargs == {}

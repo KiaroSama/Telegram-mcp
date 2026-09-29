@@ -71,6 +71,23 @@ def _with_ids(text: str, ids: list) -> str:
     return f"{text} {label}: {', '.join(str(i) for i in ids)}."
 
 
+def _hiding(drop_author: bool, drop_captions: bool) -> dict:
+    """The forward menu's "Hide Sender Name" / "Hide Caption" as request flags.
+
+    Hiding captions implies hiding the name, as in Telegram's own clients
+    (tdesktop's NoNamesAndCaptions). Unset flags are omitted, not sent False.
+    """
+    if drop_captions:
+        return {"drop_author": True, "drop_media_captions": True}
+    return {"drop_author": True} if drop_author else {}
+
+
+def _hidden_note(hiding: dict) -> str:
+    if "drop_media_captions" in hiding:
+        return " Sent without sender name and captions."
+    return " Sent without sender name." if hiding else ""
+
+
 @mcp.tool(
     annotations=ToolAnnotations(
         title="Forward Message",
@@ -92,6 +109,7 @@ async def forward_message(
     send_as: Union[int, str] = None,
     drop_author: bool = False,
     silent: bool = False,
+    drop_captions: bool = False,
 ) -> str:
     """
     Forward a message (or several) from a source chat to a destination chat.
@@ -121,10 +139,14 @@ async def forward_message(
             the destination's General topic, which is a different place.
         send_as: Post the forward under this identity instead of your own -
             same values `list_send_as` reports for the DESTINATION.
-        drop_author: Forward without the "Forwarded from" header.
+        drop_author: Forward without the "Forwarded from" header ("Hide Sender
+            Name" in Telegram's forward menu).
         silent: Deliver without a notification.
+        drop_captions: Also strip media captions ("Hide Caption"). Implies
+            drop_author, as in Telegram's own clients.
     """
     try:
+        hiding = _hiding(drop_author, drop_captions)
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
         to_entity = await resolve_entity(to_chat_id, cl)
@@ -148,8 +170,8 @@ async def forward_message(
                     # Telegram deduplicates on random_id, so a per-message one
                     # is required: reusing a value silently drops the copy.
                     random_id=random_ids,
-                    drop_author=drop_author or None,
                     silent=silent or None,
+                    **hiding,
                     **({"top_msg_id": topic_id} if topic_id is not None else {}),
                     **({"send_as": posting_as} if posting_as is not None else {}),
                 )
@@ -163,7 +185,7 @@ async def forward_message(
                 to_entity,
                 ids_to_forward,
                 from_entity,
-                **({"drop_author": True} if drop_author else {}),
+                **hiding,
                 **({"silent": True} if silent else {}),
             )
             new_ids = _new_ids(answer)
@@ -177,7 +199,7 @@ async def forward_message(
             )
         else:
             text = f"{count} messages forwarded from {from_chat_id} to {to_chat_id}."
-        return _with_ids(text, new_ids)
+        return _with_ids(text + _hidden_note(hiding), new_ids)
     except Exception as e:
         return log_and_format_error(
             "forward_message",
@@ -349,6 +371,8 @@ async def forward_messages(
     message_ids: List[int],
     to_chat_id: Union[int, str],
     account: str = None,
+    drop_author: bool = False,
+    drop_captions: bool = False,
 ) -> str:
     """
     Forward a BATCH of messages from a source chat to a destination chat in
@@ -370,16 +394,22 @@ async def forward_messages(
             (e.g. [12345, 12346]). Must contain at least one id.
         to_chat_id: Destination chat (id or @username).
         account: Optional account label for multi-account mode.
+        drop_author: Forward without the "Forwarded from" header ("Hide Sender
+            Name").
+        drop_captions: Also strip media captions ("Hide Caption"). Implies
+            drop_author.
     """
     try:
+        hiding = _hiding(drop_author, drop_captions)
         if not message_ids:
             return "Error: message_ids must contain at least one id."
         cl = get_client(account)
         from_entity = await resolve_entity(from_chat_id, cl)
         to_entity = await resolve_entity(to_chat_id, cl)
-        answer = await cl.forward_messages(to_entity, list(message_ids), from_entity)
+        answer = await cl.forward_messages(to_entity, list(message_ids), from_entity, **hiding)
         return _with_ids(
-            f"{len(message_ids)} messages forwarded from {from_chat_id} to {to_chat_id}.",
+            f"{len(message_ids)} messages forwarded from {from_chat_id} to {to_chat_id}."
+            + _hidden_note(hiding),
             _new_ids(answer),
         )
     except Exception as e:
