@@ -240,3 +240,23 @@ async def test_a_closed_chat_says_its_key_was_discarded(backend):
     answer = _results(await sc.secret_chat_status(chat_id=CHAT_ID, account="acct"))
 
     assert "key was discarded" in answer["key_picture"]
+
+
+def test_key_pictures_go_where_every_save_goes():
+    from telegram_mcp.safeguard import folders
+
+    assert sc.key_picture_dir() == folders.default_download_dir()
+
+
+def test_a_document_with_an_image_size_is_a_photo():
+    """The package sends a photo as a document carrying DocumentAttributeImageSize,
+    and Telegram's clients show it as a photo. Measured live 2026-09-30: the
+    receiving side listed the package's own photo as a document."""
+    size = type("DocumentAttributeImageSize", (), {})()
+    name = type("DocumentAttributeFilename", (), {})()
+    media = type("DecryptedMessageMediaDocument", (), {"attributes": [name, size]})()
+    sticker = type("DocumentAttributeSticker", (), {})()
+    as_sticker = type("DecryptedMessageMediaDocument", (), {"attributes": [size, sticker]})()
+
+    assert secret_history.media_kind(media) == "photo"
+    assert secret_history.media_kind(as_sticker) == "sticker"

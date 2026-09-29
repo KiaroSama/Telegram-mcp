@@ -29,7 +29,8 @@ the difference is invisible until a message fails to disappear.
 
 from typing import Optional, Union
 
-from telegram_mcp import file_roots, secret_media_refs
+from telegram_mcp import secret_media_refs
+from telegram_mcp.safeguard import folders
 from telegram_mcp.secret_backend import PALETTE, key_visualization, secret_manager
 from telegram_mcp.secret_common import (
     SecretChatUnavailable,
@@ -71,10 +72,8 @@ _CELL = 20
 
 
 def key_picture_dir() -> Path:
-    """Where key pictures go: the first allowed root's downloads, else the state dir."""
-    if file_roots.SERVER_ALLOWED_ROOTS:
-        return file_roots.SERVER_ALLOWED_ROOTS[0] / file_roots.DEFAULT_DOWNLOAD_SUBDIR
-    return state_dir() / "secret-chats" / "key-pictures"
+    """Where key pictures go: the server's own downloads folder, as every save does."""
+    return folders.default_download_dir()
 
 
 def _key_picture(label: str, chat) -> dict:

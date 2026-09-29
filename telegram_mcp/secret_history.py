@@ -171,6 +171,9 @@ def media_kind(media) -> Optional[str]:
         return "sticker"
     if any("Animated" in a for a in attributes):
         return "animation"
+    if any("ImageSize" in a for a in attributes):
+        # How the package sends a photo, and how Telegram's clients show one.
+        return "photo"
     return "document"
 
 
