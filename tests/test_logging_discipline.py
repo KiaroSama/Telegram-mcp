@@ -64,10 +64,17 @@ def _logger_calls(tree: ast.AST):
                 yield node, f"getLogger().{func.attr}"
 
 
+# `tdexport` is Telegram Desktop's exporter, copied verbatim into the secret-chat package, so
+# it may not import `telegram_mcp.*` (safe_log included). It logs through its own logger, and
+# the test below holds it to what safe_log would allow: a literal message, and arguments that
+# are only exception type names.
+_SELF_CONTAINED = _PACKAGE / "tdexport"
+
+
 def test_no_module_logs_around_the_primitive():
     offenders = []
     for path in sorted(_PACKAGE.rglob("*.py")):
-        if path.name == _PRIMITIVE:
+        if path.name == _PRIMITIVE or _SELF_CONTAINED in path.parents:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node, name in _logger_calls(tree):
@@ -211,3 +218,40 @@ def test_every_log_file_is_restricted_on_creation_and_on_rotation(tmp_path, monk
     assert restricted, "the log file was created without being restricted to its owner"
     assert len(restricted) >= 2, "a rotation produced a fresh log that nobody restricted"
     assert all(name == str(path) for name in restricted)
+
+
+def _is_type_name(node: ast.AST) -> bool:
+    """`type(x).__name__`, or a name bound to one (checked at its assignment)."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "__name__"
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "type"
+    )
+
+
+def test_the_self_contained_exporter_logs_no_content():
+    offenders = []
+    for path in sorted(_SELF_CONTAINED.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        type_names = {
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and _is_type_name(node.value)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for node, name in _logger_calls(tree):
+            message, *arguments = node.args
+            literal = isinstance(message, ast.Constant) and isinstance(message.value, str)
+            safe = all(
+                _is_type_name(a) or (isinstance(a, ast.Name) and a.id in type_names)
+                for a in arguments
+            )
+            if not (literal and safe and not node.keywords):
+                offenders.append(f"{path.relative_to(_PACKAGE.parent)}:{node.lineno}: {name}")
+
+    assert offenders == [], "tdexport logs something other than a literal:\n  " + "\n  ".join(
+        offenders
+    )

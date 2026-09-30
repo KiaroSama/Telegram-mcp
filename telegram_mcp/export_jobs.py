@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-log = logging.getLogger("telegram_mcp.export_jobs")
+from telegram_mcp.safe_log import log_event
 
 _jobs: Dict[str, "Job"] = {}
 _ids = itertools.count(1)
@@ -47,7 +47,7 @@ def start(kind: str, chat: Any, folder: str, work: Callable[[], Awaitable[dict]]
         except Exception as error:
             # The type and Telegram's own words; never a traceback or a file reference.
             job.error = f"{type(error).__name__}: {error}"
-            log.warning("export %s failed: %s", job.id, type(error).__name__)
+            log_event(logging.WARNING, "export_failed", job=job.id, error=error)
 
     job.task = asyncio.get_running_loop().create_task(run())
     _jobs[job.id] = job
