@@ -512,8 +512,13 @@ path. The work is not new TL, it is making the existing gate usable:
    folder rule: the always-usable `files/outbox` and `files/downloads`, the folders
    configured on the machine, the folders granted "always allow", and how any other
    folder is reached (the owner's allow / deny / always allow).
-2. ~~Bulk chat export~~ **done** (2026-09-29): `export_chat_history` writes
-   `<chat id>/messages.jsonl` (and media on request) under an allowed root.
+2. ~~Bulk chat export~~ **done** (2026-09-29; Telegram Desktop format 2026-09-30):
+   `export_chat_history` is a port of Telegram Desktop 7.2.10's single-chat export
+   (`telegram_mcp/tdexport/`): `account.initTakeoutSession` + `invokeWithTakeout` /
+   `invokeWithMessagesRange` as Desktop sends them, ordinary reads when Telegram refuses
+   the takeout, and Desktop's HTML and JSON writers and assets. The owner chooses the
+   format, media kinds, size limit and period (an elicitation form, or the agent asks);
+   the folder must sit under an allowed root.
 3. History **import** is genuinely absent — `messages.InitHistoryImport`,
    `StartHistoryImport`, `CheckHistoryImportPeer` — for pulling an exported archive
    from another app into Telegram.
@@ -574,7 +579,7 @@ what makes it a real resolution rather than a shortcut:
   here by commit. This codebase reviews the transport around it and nothing else.
 
 
-Nineteen tools, all for the chats themselves. The chat: `secret_chat_status`,
+Twenty-five tools, all for the chats themselves. The chat: `secret_chat_status`,
 `create_secret_chat`, `list_secret_chats`, `set_secret_chat_timer`, `close_secret_chat`,
 `forget_secret_chat` (`tools/secret_chats.py`). What travels through it:
 `send_secret_message`, `send_secret_media`, `read_secret_messages`, `save_secret_media`,
@@ -582,7 +587,13 @@ Nineteen tools, all for the chats themselves. The chat: `secret_chat_status`,
 `clear_secret_history`, `mark_secret_read`, `send_secret_typing`,
 `search_secret_messages`, `copy_into_secret_chat` (`tools/secret_actions.py`). And the
 two timed sends: `send_timed_secret_message`, `send_timed_secret_media`
-(`tools/secret_timed.py`). Transport for all nineteen is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
+(`tools/secret_timed.py`). Auto-save and deleting a whole chat: `start_secret_auto_save`,
+`stop_secret_auto_save`, `delete_secret_chat`, `delete_secret_chat_both_sides`,
+`delete_saved_secret_messages`, and `export_secret_chat`, which renders the saved copy as Telegram Desktop
+would export that chat through `tdexport/secret_saved.py` (all in `tools/secret_autosave.py`); all six wait for the owner's
+approval, the auto-save folder must sit inside the allowed folders and is made owner-only
+(it holds plaintext), and a deleted chat's local log and file keys go with it. Transport for
+all twenty-five is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
 
 Deleting or clearing reaches Telegram and this machine separately, and the answer says
 which: `remote_request_accepted` for the request, `local_cleanup.history` and

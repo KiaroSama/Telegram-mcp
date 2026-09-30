@@ -535,7 +535,7 @@ wheels = [
 [[package]]
 name = "kiaro-telethon-secret-chat"
 version = "0.2.0"
-source = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=45b76dfee072f905b263d659417247b1a289cbae#45b76dfee072f905b263d659417247b1a289cbae" }
+source = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=98c366ed1718b990693c5dd1566d4b4973f0b01a#98c366ed1718b990693c5dd1566d4b4973f0b01a" }
 dependencies = [
     { name = "telethon" },
 ]
@@ -1574,7 +1574,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "kiaro-telethon-secret-chat", git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=45b76dfee072f905b263d659417247b1a289cbae" },
+    { name = "kiaro-telethon-secret-chat", git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=98c366ed1718b990693c5dd1566d4b4973f0b01a" },
     { name = "mcp", extras = ["cli"], specifier = ">=2.2.0,<3" },
     { name = "pillow", specifier = ">=11.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },

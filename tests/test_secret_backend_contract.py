@@ -45,6 +45,11 @@ CALLED_OPERATIONS = {
     "delete_messages": (),
     "flush_history": (),
     "set_typing": (),
+    "start_auto_save_secret_chats": (),
+    "stop_auto_save_secret_chats": (),
+    "delete_saved_messages": (),
+    "delete_secret_chat": (),
+    "delete_secret_chat_both_sides": (),
 }
 
 

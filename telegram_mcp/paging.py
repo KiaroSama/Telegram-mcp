@@ -40,7 +40,6 @@ LIMITS: dict[str, int] = {
     # Messages: the heaviest records here, each with text, media and sender.
     "list_messages": 200,
     "get_history": 200,
-    "export_chat_history": 20000,
     "get_messages": 200,
     "search_messages": 200,
     "search_global": 100,

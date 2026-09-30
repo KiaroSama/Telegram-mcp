@@ -46,6 +46,7 @@ from telegram_mcp.tools.secret_chats import *
 from telegram_mcp.tools.secret_messaging import *
 from telegram_mcp.tools.secret_actions import *
 from telegram_mcp.tools.secret_timed import *
+from telegram_mcp.tools.secret_autosave import *
 from telegram_mcp.tools.rich_messages import *
 from telegram_mcp.tools.mini_apps import *
 from telegram_mcp.tools.invite_links import *

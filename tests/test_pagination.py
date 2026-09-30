@@ -93,13 +93,9 @@ def test_every_ceiling_is_written_down_where_the_caller_will_read_it(counting_to
 
 
 def test_every_ceiling_is_a_usable_number():
-    # export_chat_history writes to disk and answers with counts, so its ceiling bounds
-    # the work and the file, not what reaches the model (owner, spec 022: 20000).
-    writes_to_disk = {"export_chat_history": 20000}
     for name, ceiling in LIMITS.items():
         assert isinstance(ceiling, int) and not isinstance(ceiling, bool), name
-        top = writes_to_disk.get(name, 1000)
-        assert 1 <= ceiling <= top, f"{name}={ceiling} is not a ceiling anyone chose"
+        assert 1 <= ceiling <= 1000, f"{name}={ceiling} is not a ceiling anyone chose"
 
 
 # --- the tools themselves, invoked with nonsense ----------------------------

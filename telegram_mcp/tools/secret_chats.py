@@ -149,7 +149,7 @@ async def secret_chat_status(account: str = None, chat_id: Optional[int] = None)
         "key_store": str(state_dir() / "secret-chats" / label),
     }
     try:
-        await secret_manager(label)
+        manager = await secret_manager(label)
     except SecretChatUnavailable as e:
         record["secret_chats"] = "unavailable"
         record["reason"] = str(e)
@@ -159,10 +159,11 @@ async def secret_chat_status(account: str = None, chat_id: Optional[int] = None)
         return log_and_format_error("secret_chat_status", e, account=label)
 
     record["secret_chats"] = "ready"
+    # The folder every secret chat is saved into (start_secret_auto_save), or None.
+    record["auto_save"] = getattr(manager, "auto_save_secret_chats", None)
     record["capabilities"] = CAPABILITIES
     if chat_id is not None:
         try:
-            manager = await secret_manager(label)
             record["key_picture"] = _key_picture(label, manager.status(to_secret_id(chat_id)))
         except KeyError:
             record["key_picture"] = f"no secret chat {chat_id} for this login"

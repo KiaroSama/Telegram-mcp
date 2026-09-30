@@ -196,6 +196,7 @@ def backend(monkeypatch, tmp_path):
         "telegram_mcp.tools.secret_messaging",
         "telegram_mcp.tools.secret_actions",
         "telegram_mcp.tools.secret_timed",
+        "telegram_mcp.tools.secret_autosave",
     ):
         monkeypatch.setattr(f"{module}.secret_manager", _manager, raising=False)
         # A function looks a name up in ITS OWN module globals, so a seam shared

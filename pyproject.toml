@@ -52,7 +52,7 @@ dependencies = [
     # then `uv lock --upgrade-package kiaro-telethon-secret-chat`.
     # `telegram_mcp/secret_backend.py` is the only module that imports it and a
     # contract test pins what it relies on.
-    "kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@45b76dfee072f905b263d659417247b1a289cbae",
+    "kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@98c366ed1718b990693c5dd1566d4b4973f0b01a",
 ]
 
 [project.optional-dependencies]
@@ -87,6 +87,11 @@ py-modules = ["main", "session_string_generator"]
 [tool.setuptools.packages.find]
 include = ["telegram_mcp*"]
 namespaces = false
+
+# Telegram Desktop's export page styles, scripts and icons, copied into every HTML
+# export exactly as Desktop copies them (spec 030).
+[tool.setuptools.package-data]
+"telegram_mcp.tdexport" = ["assets/css/*", "assets/js/*", "assets/images/*"]
 
 [project.scripts]
 telegram-mcp = "main:main"
@@ -210,6 +215,8 @@ source = [
     "telegram_mcp.settings",
     "telegram_mcp.syscalls",
     "telegram_mcp.singleton",
+    "telegram_mcp.tdexport",
+    "telegram_mcp.export_dialog",
     "telegram_mcp.text_fidelity",
     "telegram_mcp.video_dims",
     "telegram_mcp.visual",

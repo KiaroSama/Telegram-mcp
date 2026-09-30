@@ -40,6 +40,19 @@ The relicence covers every part of the work that is this project's to license:
     Apache 2.0 from its authors, and is included here under GPLv3 by the
     compatibility above.
   * Everything written for this project is the copyright of KiaroSama, who is
-    licensing it here. No third party has contributed copyrightable material —
-    the only other author in the history is an automated dependency bot, whose
-    changes are version strings.
+    licensing it here, except the Telegram Desktop port below. Apart from that
+    port no third party has contributed copyrightable material — the only other
+    author in the history is an automated dependency bot, whose changes are
+    version strings.
+
+
+TELEGRAM DESKTOP EXPORT
+
+telegram_mcp/tdexport/ is a Python port of the chat export in Telegram Desktop
+(https://github.com/telegramdesktop/tdesktop, tag v7.2.10,
+Telegram/SourceFiles/export/), Copyright (C) the Telegram Desktop authors,
+licensed under the GNU General Public License version 3 with an OpenSSL
+exception. telegram_mcp/tdexport/assets/ (css/, js/, images/) is copied
+unchanged from Telegram/Resources/export_html/ of the same tag. Both are
+included here under GPLv3, the licence of this work, so an export this server
+writes is the same as one Telegram Desktop writes.

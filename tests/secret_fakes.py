@@ -48,6 +48,11 @@ class FakeManager:
         self.forwarded = []
         self.forgotten = []
         self.history = {}
+        self.auto_save_secret_chats = None
+        self.saved_messages = {}
+        self.deleted_chats = []
+        self.deleted_saved = []
+        self.both_sides_reached = True
         self.next_id = 700_000
 
     # --- lifecycle ---------------------------------------------------------
@@ -107,6 +112,29 @@ class FakeManager:
             raise ValueError("only a closed chat can be forgotten")
         self._chats.pop(int(chat_id))
         self.forgotten.append(int(chat_id))
+
+    # --- auto-save and deletes (package 98c366e) -----------------------------
+    async def start_auto_save_secret_chats(self, folder):
+        self.auto_save_secret_chats = str(folder)
+
+    async def stop_auto_save_secret_chats(self):
+        self.auto_save_secret_chats = None
+
+    def read_saved_messages(self, chat_id):
+        return list(self.saved_messages.get(int(chat_id), []))
+
+    def delete_saved_messages(self, chat_id):
+        self.saved_messages.pop(int(chat_id), None)
+        self.deleted_saved.append(int(chat_id))
+
+    async def delete_secret_chat(self, chat_id):
+        self._chats.pop(int(self._require(chat_id).id))
+        self.deleted_chats.append((int(chat_id), "this side"))
+
+    async def delete_secret_chat_both_sides(self, chat_id):
+        self._chats.pop(int(self._require(chat_id).id))
+        self.deleted_chats.append((int(chat_id), "both sides"))
+        return self.both_sides_reached
 
     async def save_file(self, message, path):
         self.saved.append((message, path))

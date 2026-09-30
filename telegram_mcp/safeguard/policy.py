@@ -47,6 +47,13 @@ GATED = frozenset(
         "clear_chat_history",
         "clear_secret_history",
         "close_secret_chat",
+        "export_chat_history",  # spec 030 (owner, 2026-09-30): was a free write
+        "export_secret_chat",  # spec 031 (owner, 2026-09-30)
+        "delete_saved_secret_messages",  # spec 031 (owner, 2026-09-30)
+        "delete_secret_chat",  # spec 031 (owner, 2026-09-30)
+        "delete_secret_chat_both_sides",  # spec 031 (owner, 2026-09-30)
+        "start_secret_auto_save",  # spec 031 (owner, 2026-09-30)
+        "stop_secret_auto_save",  # spec 031 (owner, 2026-09-30)
         "delete_chat",
         "delete_chat_history",
         "delete_channel",  # spec 022 (owner, 2026-09-29)
@@ -261,7 +268,6 @@ FREE_WRITES = frozenset(
         "set_autotranslation",  # spec 022
         "reorder_pinned_chats",  # spec 022
         "set_fact_check",  # spec 022
-        "export_chat_history",  # spec 022
         "create_business_chat_link",  # spec 022
         "edit_business_chat_link",  # spec 022
     }

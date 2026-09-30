@@ -27,7 +27,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from mcp.server.mcpserver import Context
 
@@ -124,6 +124,35 @@ async def _ensure_allowed_roots(
     if not roots:
         return [], f"{tool_name} has no usable folder: files/ could not be created."
     return roots, None
+
+
+async def resolve_allowed_folder(
+    folder: str, ctx: Optional[Context], tool_name: str
+) -> Tuple[Optional[Path], Optional[str]]:
+    """A folder a tool will write into, resolved inside an allowed root, or why not.
+
+    Judged before any network call. Shared by the chat export and the secret-chat
+    auto-save, so both refuse the same folders with the same words.
+    """
+    raw = str(folder or "").strip()
+    if not raw:
+        return None, "Give a folder, e.g. downloads/exports."
+    roots, error = await _ensure_allowed_roots(ctx, tool_name)
+    if error:
+        return None, error
+    pattern_error = _contains_forbidden_path_patterns(raw)
+    if pattern_error:
+        return None, pattern_error
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = _relative_base() / candidate
+    candidate = candidate.resolve(strict=False)
+    if not _path_is_within_any_root(candidate, roots):
+        return None, (
+            f"{raw} is outside the allowed folders. Use a folder under files/downloads, "
+            "or one the owner configured or allowed."
+        )
+    return candidate, None
 
 
 async def _resolve_readable_file_path(
