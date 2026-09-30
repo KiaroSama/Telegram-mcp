@@ -21,6 +21,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Set up the recorded Python interpreter
         id: python
@@ -44,6 +45,9 @@ jobs:
 
       - name: Scan tracked source before exporting it
         run: uv run --locked --all-extras python scripts/secret_scan.py
+
+      - name: Check reachable history before exporting Git objects
+        run: uv run --locked --all-extras python scripts/history_secret_scan.py
 
       - name: Record provenance and archive only explicit safe inputs
         shell: bash
@@ -108,7 +112,18 @@ jobs:
               json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8'
           )
           PY
+          git diff --exit-code -- pyproject.toml uv.lock
           git archive --format=tar.gz HEAD > reproduction/source.tar.gz
+          # Tests use git ls-files and the original commit identity. A tar export
+          # cannot replay those checks; a bundle contains objects, not Git config.
+          git bundle create reproduction/source.bundle HEAD
+          git bundle verify reproduction/source.bundle
+          git clone --quiet --no-checkout reproduction/source.bundle "$RUNNER_TEMP/reproduction-check"
+          git -C "$RUNNER_TEMP/reproduction-check" checkout --quiet --detach "$(git rev-parse HEAD)"
+          git -C "$RUNNER_TEMP/reproduction-check" fsck --full
+          git ls-files -z > "$RUNNER_TEMP/original-files"
+          git -C "$RUNNER_TEMP/reproduction-check" ls-files -z > "$RUNNER_TEMP/replayed-files"
+          cmp "$RUNNER_TEMP/original-files" "$RUNNER_TEMP/replayed-files"
           # Only installed packages: no Git config, environment dump, home
           # directory, session database, pip cache or runner credentials.
           tar -C .venv/lib/python3.13 -czf reproduction/site-packages.tar.gz site-packages
@@ -117,7 +132,7 @@ jobs:
           sha256sum reproduction/*.tar.gz > reproduction/archives.sha256
           # Hash metadata too, so the declared ABI and inventory can be verified
           # alongside the archives after the artifact leaves GitHub Actions.
-          sha256sum reproduction/*.json reproduction/*.txt reproduction/*.tar.gz > reproduction/manifest.sha256
+          sha256sum reproduction/*.json reproduction/*.txt reproduction/*.tar.gz reproduction/*.bundle > reproduction/manifest.sha256
 
       - name: Upload short-lived reproduction evidence
         uses: actions/upload-artifact@v7
