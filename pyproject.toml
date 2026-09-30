@@ -66,6 +66,13 @@ proxy = [
 lottie = [
     "rlottie-python>=1.3.8",
 ]
+# Byte-identical Telegram Desktop photo thumbnails in chat exports: Desktop encodes
+# them with mozjpeg 4.1.5, which imagecodecs ships - in its Windows wheels only (the
+# manylinux ones leave mozjpeg out), hence the marker. Without it the export still
+# writes thumbnails, through Pillow, that look the same but differ in bytes.
+thumbs = [
+    "imagecodecs>=2026.3.6; sys_platform == 'win32'",
+]
 # `secret` was an extra until secret chats stopped being optional, and the
 # encryption is a plain dependency now. Kept as an empty alias so
 # `pip install -e .[secret]`, which the docs recommended, does not start failing
@@ -108,6 +115,9 @@ dev = [
     # without these it skips, and a broken package list ships unnoticed.
     "build>=1.6.1",
     "flake8>=7.4.1",
+    # The `thumbs` extra, so tests/test_tdexport_thumbs.py runs its mozjpeg cases
+    # on the Windows CI leg instead of skipping them.
+    "imagecodecs>=2026.3.6; sys_platform == 'win32'",
     "pre-commit>=4.6.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",

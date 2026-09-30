@@ -56,3 +56,16 @@ exception. telegram_mcp/tdexport/assets/ (css/, js/, images/) is copied
 unchanged from Telegram/Resources/export_html/ of the same tag. Both are
 included here under GPLv3, the licence of this work, so an export this server
 writes is the same as one Telegram Desktop writes.
+
+Photo thumbnails reproduce Telegram Desktop's Qt 5.15.19 build byte for byte:
+telegram_mcp/tdexport/qt_scale.py ports QImage's SmoothTransformation
+(qtbase src/gui/painting/qimagescale.cpp and interpolate_4_pixels from
+qdrawhelper_p.h), Copyright (C) The Qt Company Ltd., licensed under LGPL-3.0 /
+GPL-2.0-or-later / GPL-3.0; the smooth-scaling code there is derived from
+Imlib2 (Copyright (C) Carsten Haitzler and others; Daniel M. Duley), under its
+BSD-style licence, whose notice is kept here. telegram_mcp/tdexport/qt_jpeg.py
+reproduces the settings of Qt's JPEG writer (qjpeghandler.cpp). The encoding
+itself is done by mozjpeg 4.1.5 (https://github.com/mozilla/mozjpeg; IJG,
+BSD-3-Clause and zlib licences, including the libjpeg-turbo code it contains),
+reached through the optional imagecodecs package (BSD-3-Clause); neither is
+bundled here.

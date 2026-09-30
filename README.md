@@ -995,6 +995,11 @@ base install stays verified. To exercise that path too:
 uv run --extra lottie python scripts/run_tests_guarded.py --
 ```
 
+Photo thumbnails in a chat export are byte-identical to Telegram Desktop's only with the
+`thumbs` extra (`uv sync --extra thumbs`): Desktop encodes them with mozjpeg 4.1.5, which
+imagecodecs ships in its Windows wheels only. Without it Pillow writes them - same size and
+look, different bytes. The dev group installs it, so its tests run on Windows and skip elsewhere.
+
 Run tests with coverage:
 
 ```bash

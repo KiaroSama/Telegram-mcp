@@ -8,6 +8,7 @@ MimeTypeForName, lib_base base_file_utilities{,_win}.cpp FileNameFromUserString)
 
 from __future__ import annotations
 
+import io
 import os
 from datetime import date as Date
 from enum import Enum
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .mime_globs import ALIASES, FIRST_GLOBS
+from .qt_jpeg import desktop_thumb
 from .settings import MediaSettings, Settings
 
 
@@ -177,7 +179,9 @@ def write_image_thumb(
     """Data::WriteImageThumb. Returns ("", (0, 0)) wherever tdesktop returns {}.
 
     Scaling needs Pillow, imported lazily so the package itself stays stdlib + Telethon; without
-    it every image counts as unreadable, which is tdesktop's own outcome for such a file.
+    it every image counts as unreadable, which is tdesktop's own outcome for such a file. A JPEG
+    saved as JPEG goes through qt_jpeg, byte-identical to Desktop when imagecodecs (mozjpeg) is
+    installed; anything else, or no imagecodecs, is scaled and saved by Pillow.
     """
     empty: tuple[str, tuple[int, int]] = ("", (0, 0))
     if not large_path:
@@ -187,20 +191,22 @@ def write_image_thumb(
     except ImportError:
         return empty
     try:
-        with PilImage.open(base_path + large_path) as reader:
+        source = Path(base_path + large_path).read_bytes()
+        with PilImage.open(io.BytesIO(source)) as reader:
             width, height = reader.size
             if width <= 0 or height <= 0:
                 return empty
             if width >= _MAX_IMAGE_SIZE or height >= _MAX_IMAGE_SIZE:
                 return empty
             source_format = reader.format or "JPEG"
-            image = reader.convert("RGB") if source_format == "JPEG" else reader.copy()
+            if source_format == "MPO":  # a JPEG with a multi-picture APP2, to Qt
+                source_format = "JPEG"
+            image = reader.copy()
     except (OSError, ValueError):
         return empty
     final_size = convert_size((width, height))
     if final_size[0] <= 0 or final_size[1] <= 0:
         return empty
-    image = image.resize(final_size, PilImage.Resampling.BILINEAR)
     last_slash = large_path.rfind("/")
     first_dot = large_path.find(".", last_slash + 1)
     thumb = (
@@ -210,6 +216,18 @@ def write_image_thumb(
     )
     result = prepare_relative_path(base_path, thumb)
     save_format = (image_format or source_format).upper()
+    exact = None
+    if save_format == "JPEG" and source_format == "JPEG":
+        exact = desktop_thumb(image, source, final_size, quality)
+    if exact is not None:
+        try:
+            Path(base_path + result).write_bytes(exact)
+        except OSError:
+            return empty
+        return result, final_size
+    if source_format == "JPEG":
+        image = image.convert("RGB")
+    image = image.resize(final_size, PilImage.Resampling.BILINEAR)
     options: dict[str, Any] = {}
     if quality is not None and quality >= 0:
         options["quality"] = quality
