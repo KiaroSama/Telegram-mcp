@@ -19,6 +19,8 @@ from telegram_mcp.tdexport.model import (
     CreditsType,
     Document,
     File,
+    Image,
+    Photo,
     TextPart,
     peer_from_channel,
     peer_from_user,
@@ -430,3 +432,98 @@ def test_reactions():
         "\n </div>\n"
         "\n</div>\n"
     )
+
+
+def test_service_photo_gets_a_userpic(tmp_path):
+    pytest.importorskip("PIL")
+    from PIL import Image as PilImage
+
+    (tmp_path / "photos").mkdir()
+    PilImage.new("RGB", (200, 200), "red").save(tmp_path / "photos" / "p.jpg", "JPEG")
+    base = str(tmp_path).replace("\\", "/") + "/"
+    photo = Photo(image=Image(200, 200, File(relative_path="photos/p.jpg")))
+    message = Message(id=3, date=DATE, from_id=ANN)
+    message.action.content = act.ActionChatEditPhoto(photo)
+    wrap = MessageMixin("")
+    _, html = wrap.push_message(message, None, GROUP, base, peers(), "", link)
+    assert html == (
+        '\n<div class="message service" id="message3">\n'
+        '\n <div class="body details">\nAnn Lee changed group photo\n </div>\n'
+        '\n <div class="userpic_wrap">\n'
+        '\n  <a class="userpic_link" href="photos/p.jpg">\n'
+        '\n   <img class="userpic" src="photos/p_thumb.jpg" style="width: 60px; height: 60px"/>\n'
+        "\n  </a>\n"
+        "\n </div>\n"
+        "\n</div>\n"
+    )
+    assert (tmp_path / "photos" / "p_thumb.jpg").exists()
+    suggestion = Message(id=4, date=DATE, from_id=ANN)
+    suggestion.action.content = act.ActionSuggestProfilePhoto(Photo())
+    _, html = MessageMixin("").push_message(suggestion, None, GROUP, base, peers(), "", link)
+    assert html.endswith(
+        '\n <div class="userpic_wrap">\n'
+        '\n  <div class="userpic userpic1" style="width: 60px; height: 60px">\n'
+        '\n   <div class="initials" style="line-height: 60px">\nG\n   </div>\n'
+        "\n  </div>\n"
+        "\n </div>\n"
+        "\n</div>\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "marker"),
+    [
+        (Photo(), '\n     <div class="title bold">\nPhoto\n     </div>\n'),
+        (Document(is_sticker=True), '\n     <div class="title bold">\nSticker\n     </div>\n'),
+        (Document(is_animated=True), '\n     <div class="title bold">\nAnimation\n     </div>\n'),
+        (
+            Document(is_video_file=True),
+            '\n     <div class="title bold">\nVideo file\n     </div>\n',
+        ),
+        (Poll(question=[TextPart(text="Q")]), '\n   <div class="media_poll">\n'),
+        (TodoList(), "\nTo-do List\n"),
+        (GiveawayStart(quantity=1), "\nGiveaway Prize\n"),
+        (GiveawayResults(winners_count=1), "\nWinner Selected!\n"),
+    ],
+)
+def test_media_dispatch(content, marker):
+    _, html = render(text_message(text=[], media=Media(content)))
+    assert marker in html
+
+
+def _info(**fields):
+    base = dict(type=MessageInfo.Type.Default, from_id=ANN, date=DATE)
+    base.update(fields)
+    return MessageInfo(**base)
+
+
+@pytest.mark.parametrize(
+    ("fields", "previous", "joined"),
+    [
+        ({}, {}, True),
+        ({"via_bot_id": peer_from_user(7)}, {}, False),
+        ({"date": DATE + 86400}, {"date": DATE + 86399}, False),
+        ({"forwarded": True}, {}, False),
+        ({"forwarded_from_name": "B", "date": DATE + 1}, {"forwarded_from_name": "B"}, True),
+        ({"forwarded_from_name": "B", "date": DATE + 2}, {"forwarded_from_name": "B"}, False),
+    ],
+)
+def test_message_join_rules(fields, previous, joined):
+    message = text_message(**fields)
+    assert MessageMixin("").message_needs_wrap(message, _info(**previous)) is not joined
+
+
+@pytest.mark.parametrize(
+    ("forwarded_from", "forwarded_date", "wraps"),
+    [
+        (ANN, DATE + 10, False),
+        (ANN, DATE + 901, True),
+        (peer_from_channel(3), DATE, True),
+    ],
+)
+def test_forwarded_join_rules(forwarded_from, forwarded_date, wraps):
+    forwarded = dict(forwarded=True, forwarded_from_id=forwarded_from)
+    message = text_message(forwarded_date=forwarded_date, **forwarded)
+    previous = _info(forwarded_date=DATE, **forwarded)
+    assert MessageMixin("").forwarded_needs_wrap(message, previous) is wraps
+    assert MessageMixin("").forwarded_needs_wrap(message, None)

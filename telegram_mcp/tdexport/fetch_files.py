@@ -389,9 +389,9 @@ class MessageFiles:
                 ):
                     return refreshed
                 return None
-            if not origin.message_id:
-                raise RuntimeError("FILE_REFERENCE error for non-message file.")
             if origin.rich_message:
+                if not origin.message_id:
+                    return None
                 result = await self.main(
                     functions.messages.GetRichMessageRequest(origin.peer, origin.message_id)
                 )
@@ -403,9 +403,15 @@ class MessageFiles:
                 if parsed.part:
                     return None
                 return refresh_rich_message_file_reference(location, parsed)
+            if not origin.message_id:
+                raise RuntimeError("FILE_REFERENCE error for non-message file.")
             ids = [tl.InputMessageID(origin.message_id)]
-            if isinstance(origin.peer, tl.InputPeerChannel):
-                channel = tl.InputChannel(origin.peer.channel_id, origin.peer.access_hash)
+            peer = origin.peer
+            if isinstance(peer, (tl.InputPeerChannel, tl.InputPeerChannelFromMessage)):
+                if isinstance(peer, tl.InputPeerChannel):
+                    channel = tl.InputChannel(peer.channel_id, peer.access_hash)
+                else:
+                    channel = tl.InputChannelFromMessage(peer.peer, peer.msg_id, peer.channel_id)
                 result = await self.main(functions.channels.GetMessagesRequest(channel, ids))
             else:
                 request = functions.messages.GetMessagesRequest(ids)
