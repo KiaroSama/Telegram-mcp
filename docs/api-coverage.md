@@ -579,6 +579,15 @@ Nineteen tools, all for the chats themselves. The chat: `secret_chat_status`,
 two timed sends: `send_timed_secret_message`, `send_timed_secret_media`
 (`tools/secret_timed.py`). Transport for all nineteen is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
 
+Deleting or clearing reaches Telegram and this machine separately, and the answer says
+which: `remote_request_accepted` for the request, `local_cleanup.history` and
+`local_cleanup.media` for the two local files (decrypted text, and the stored file keys),
+and `deleted`/`cleared` is true only when both local stores confirmed. A peer's delete or
+clear arrives as a service action and erases the same local copies. The key store's owner
+record and the stored file keys are written owner-only or not at all, so on a filesystem
+without ACLs (FAT/exFAT drives, some network shares) secret chats refuse rather than
+store keys readable by others.
+
 **The boundary is the protocol's, not this server's.** MTProto's encrypted layer has a
 closed vocabulary — thirteen `decryptedMessageAction*` constructors and ten
 `decryptedMessageMedia*` — and anything outside those lists has no representation at all.
