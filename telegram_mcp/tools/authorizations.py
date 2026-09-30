@@ -43,7 +43,9 @@ __all__ = [
 def _record(auth) -> dict:
     """One authorization as the owner reads it, with both switches un-negated."""
     return {
-        "hash": getattr(auth, "hash", None),
+        # A string: a 64-bit hash does not survive a client that reads JSON numbers
+        # as doubles, and this is the value the other tools are called back with.
+        "hash": str(getattr(auth, "hash", None)),
         "device_model": sanitize_name(getattr(auth, "device_model", None)),
         "platform": sanitize_name(getattr(auth, "platform", None)),
         "system_version": sanitize_name(getattr(auth, "system_version", None)),
@@ -63,7 +65,62 @@ def _record(auth) -> dict:
         # what is ALLOWED.
         "accept_secret_chats": not getattr(auth, "encrypted_requests_disabled", False),
         "accept_calls": not getattr(auth, "call_requests_disabled", False),
+        "secret_chat_support": _secret_chat_support(auth)[0],
+        "secret_chat_support_reason": _secret_chat_support(auth)[1],
     }
+
+
+# Official client families by api_id, as Telegram's own clients tell them apart:
+# tdesktop's TypeFromEntry (settings_active_sessions.cpp) and tweb's
+# sessionPlatformIcon.ts. Of Telegram's official apps only the mobile ones and the
+# native macOS app hold secret chats; Telegram Desktop (tdesktop issue #871, open
+# since 2015) and the web apps (no messages.requestEncryption in tweb) do not.
+_SECRET_CHAT_FAMILIES = frozenset({5, 6, 24, 1026, 1083, 2458, 2521, 21724})  # Android, X
+_SECRET_CHAT_FAMILIES |= frozenset({1, 7, 10840, 16352})  # iOS
+_SECRET_CHAT_FAMILIES |= frozenset({2834})  # macOS
+
+
+def _secret_chat_support(auth) -> tuple:
+    """("yes" | "no" | "unknown", why) - whether this app can hold secret chats at all.
+
+    Telegram sends no capability flag, so this is read from the app: an official
+    app is known either way; a third-party one depends on what it implemented.
+    """
+    if getattr(auth, "current", False):
+        return "yes", "this server; its secret-chat backend holds them"
+    if not getattr(auth, "official_app", False):
+        return "unknown", "a third-party app; secret chats depend on what it implemented"
+    if getattr(auth, "api_id", None) in _SECRET_CHAT_FAMILIES:
+        return "yes", "an official Telegram mobile or macOS app"
+    return "no", "an official Telegram app without secret chats, like Desktop or Web"
+
+
+def _exact_hash(raw):
+    """The hash as the exact integer, or None when it cannot be one.
+
+    A hash is a 64-bit integer and a JSON number is a double in many clients, so a
+    hash sent as a number arrives with its last digits rounded off (measured live
+    2026-09-30: -8303803612053944012 arrived as -8303803612053944000). A string
+    carries it exactly; a float has already lost it.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return int(raw.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _unreadable_hash() -> str:
+    return (
+        "That hash is not an exact whole number, so nothing was changed. A hash is 64 bits "
+        "and a JSON number loses its last digits: pass it as the string list_authorizations "
+        "shows, quotes included."
+    )
 
 
 def _describe(auth) -> str:
@@ -90,7 +147,8 @@ def _no_such_hash(did_not: str) -> str:
     return (
         f"No authorization on this account has that hash, so {did_not}. A device gets a "
         "new hash every time it signs in, so a hash from an earlier listing goes stale. "
-        "Read list_authorizations again and name one from that answer."
+        "Read list_authorizations again and name one from that answer, passing the hash "
+        "as the string it shows: sent as a JSON number, its last digits are rounded off."
     )
 
 
@@ -116,6 +174,11 @@ async def list_authorizations(account: str = None) -> str:
     `accept_secret_chats` and `accept_calls` are the switches as Telegram draws
     them: True means that device accepts them. Telegram stores those negated
     internally, and this is the un-negated form.
+
+    `secret_chat_support` says whether the app can hold secret chats at all:
+    "yes" (official Android, iOS, macOS apps, and this server), "no" (official
+    Telegram Desktop, Web and the like - their switch changes nothing), "unknown"
+    (a third-party app). `hash` is a string; pass it back exactly as given.
 
     `ttl_days` in the result is the account-wide setting for automatically
     signing out a device that has been inactive that long.
@@ -151,7 +214,7 @@ async def list_authorizations(account: str = None) -> str:
 )
 @with_account(readonly=False)
 async def terminate_authorization(
-    hash: int, include_current: bool = False, account: str = None
+    hash: Union[int, str], include_current: bool = False, account: str = None
 ) -> str:
     """
     Sign ONE named device out of this account. This cannot be undone.
@@ -161,7 +224,8 @@ async def terminate_authorization(
     no form of this tool that signs out more than the one authorization named.
 
     Args:
-        hash: The `hash` of the device to sign out, from `list_authorizations`.
+        hash: The `hash` of the device to sign out, from `list_authorizations` - pass it as that
+            string; a JSON number loses its last digits.
             Required, and checked against this account before anything is sent -
             a hash this account does not have signs nothing out rather than
             reaching Telegram.
@@ -171,6 +235,9 @@ async def terminate_authorization(
             again. Pass True to say that is what you mean.
     """
     try:
+        hash = _exact_hash(hash)
+        if hash is None:
+            return _unreadable_hash()
         cl = get_client(account)
         await ensure_connected(cl)
         target = await _find(cl, hash)
@@ -206,7 +273,7 @@ async def terminate_authorization(
 )
 @with_account(readonly=False)
 async def set_authorization_secret_chats(
-    hash: int, accept_secret_chats: bool, account: str = None
+    hash: Union[int, str], accept_secret_chats: bool, account: str = None
 ) -> str:
     """
     Turn "accept secret chats" on or off for ONE named device.
@@ -225,12 +292,16 @@ async def set_authorization_secret_chats(
     flag - are left exactly as they are.
 
     Args:
-        hash: The `hash` of the device, from `list_authorizations`. Checked
+        hash: The `hash` of the device, from `list_authorizations` - pass it as that
+            string; a JSON number loses its last digits. Checked
             against this account first, so a stale hash changes nothing.
         accept_secret_chats: True to let that device accept new secret chats,
             False to make it decline them.
     """
     try:
+        hash = _exact_hash(hash)
+        if hash is None:
+            return _unreadable_hash()
         cl = get_client(account)
         await ensure_connected(cl)
         target = await _find(cl, hash)
@@ -254,7 +325,13 @@ async def set_authorization_secret_chats(
                 f"{state} on that device now. Read list_authorizations to see the state "
                 "Telegram actually holds."
             )
-        return f"Accepting secret chats is now {state} for {_describe(target)}."
+        said = f"Accepting secret chats is now {state} for {_describe(target)}."
+        support, why = _secret_chat_support(target)
+        if accept_secret_chats and support == "no":
+            said += (
+                f" That device cannot hold secret chats ({why}), so this changes nothing there."
+            )
+        return said
     except Exception as e:
         return log_and_format_error("set_authorization_secret_chats", e)
 
@@ -269,7 +346,9 @@ async def set_authorization_secret_chats(
     )
 )
 @with_account(readonly=False)
-async def set_authorization_calls(hash: int, accept_calls: bool, account: str = None) -> str:
+async def set_authorization_calls(
+    hash: Union[int, str], accept_calls: bool, account: str = None
+) -> str:
     """
     Turn "accept calls" on or off for ONE named device.
 
@@ -280,10 +359,14 @@ async def set_authorization_calls(hash: int, accept_calls: bool, account: str = 
     ACCEPTS calls. The secret-chat switch is left exactly as it is.
 
     Args:
-        hash: The `hash` of the device, from `list_authorizations`.
+        hash: The `hash` of the device, from `list_authorizations` - pass it as that
+            string; a JSON number loses its last digits.
         accept_calls: True to let that device accept calls, False to refuse them.
     """
     try:
+        hash = _exact_hash(hash)
+        if hash is None:
+            return _unreadable_hash()
         cl = get_client(account)
         await ensure_connected(cl)
         target = await _find(cl, hash)
@@ -316,7 +399,7 @@ async def set_authorization_calls(hash: int, accept_calls: bool, account: str = 
     )
 )
 @with_account(readonly=False)
-async def set_secret_chats_only_device(hash: int, account: str = None) -> str:
+async def set_secret_chats_only_device(hash: Union[int, str], account: str = None) -> str:
     """
     Make ONE device the only one that accepts new secret chats.
 
@@ -326,9 +409,13 @@ async def set_secret_chats_only_device(hash: int, account: str = None) -> str:
     Existing secret chats are unaffected. Calls are left as they are.
 
     Args:
-        hash: The `hash` of the device that keeps secret chats, from `list_authorizations`.
+        hash: The `hash` of the device that keeps secret chats, from `list_authorizations` - pass it as that
+            string; a JSON number loses its last digits.
     """
     try:
+        hash = _exact_hash(hash)
+        if hash is None:
+            return _unreadable_hash()
         cl = get_client(account)
         await ensure_connected(cl)
         answer = await cl(functions.account.GetAuthorizationsRequest())
@@ -354,6 +441,11 @@ async def set_secret_chats_only_device(hash: int, account: str = None) -> str:
         if not changed and not unconfirmed:
             return f"Already so: only {_describe(chosen)} accepts secret chats. Nothing changed."
         answer_lines = [f"Only {_describe(chosen)} accepts new secret chats now."]
+        support, why = _secret_chat_support(chosen)
+        if support == "no":
+            answer_lines.append(
+                f"Warning: that device cannot hold secret chats ({why}), so no device will."
+            )
         answer_lines += [f"- {line}" for line in changed]
         if unconfirmed:
             answer_lines.append("Telegram did not confirm these; check list_authorizations:")

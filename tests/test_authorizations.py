@@ -31,15 +31,26 @@ RESET = functions.account.ResetAuthorizationRequest
 CHANGE = functions.account.ChangeAuthorizationSettingsRequest
 
 
-def _auth(hash=111, *, current=False, encrypted_requests_disabled=False, device_model="Pixel 8"):
+def _auth(
+    hash=111,
+    *,
+    current=False,
+    encrypted_requests_disabled=False,
+    device_model="Pixel 8",
+    api_id=6,
+    official_app=True,
+    app_name="Telegram Android",
+    platform="Android",
+):
     """One Authorization, with the fields Telegram always fills."""
     return types.Authorization(
         hash=hash,
         device_model=device_model,
-        platform="Android",
+        platform=platform,
         system_version="SDK 34",
-        api_id=6,
-        app_name="Telegram Android",
+        api_id=api_id,
+        official_app=official_app,
+        app_name=app_name,
         app_version="10.14.5",
         date_created=datetime(2026, 1, 1, tzinfo=timezone.utc),
         date_active=datetime(2026, 9, 1, tzinfo=timezone.utc),
@@ -266,5 +277,76 @@ async def test_the_list_carries_the_hash_and_telegrams_own_inactivity_window(_wi
 
     answer = await _listed(client)
 
-    assert answer["results"][0]["hash"] == 111
+    # A string, so a client that reads JSON numbers as doubles copies it exactly.
+    assert answer["results"][0]["hash"] == "111"
     assert answer["ttl_days"] == 180
+
+
+# --------------------------------------------------------------------------
+# A 64-bit hash survives a client that reads JSON numbers as doubles (spec 028)
+# --------------------------------------------------------------------------
+
+BIG = -8303803612053944012  # measured live 2026-09-30: arrived as ...944000 as a number
+
+
+@pytest.mark.asyncio
+async def test_a_hash_given_as_a_string_reaches_telegram_exactly(_wire):
+    client = _wire(_Client([_auth(hash=BIG)]))
+
+    await mod.set_authorization_secret_chats(hash=str(BIG), accept_secret_chats=False, account="a")
+
+    assert client.sent_of(CHANGE).hash == BIG
+
+
+@pytest.mark.asyncio
+async def test_a_rounded_hash_is_refused_with_how_to_pass_it(_wire):
+    client = _wire(_Client([_auth(hash=BIG)]))
+
+    said = await mod.set_authorization_calls(hash=float(BIG), accept_calls=False, account="a")
+    # What the MCP schema makes of a rounded number: an int that is not the hash.
+    coerced = await mod.set_authorization_calls(
+        hash=int(float(BIG)), accept_calls=False, account="a"
+    )
+
+    assert client.sent_of(CHANGE) is None
+    assert "string" in said and "string" in coerced
+
+
+# --------------------------------------------------------------------------
+# Which devices can hold secret chats at all (spec 028)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "device, support",
+    [
+        (dict(api_id=6), "yes"),  # Telegram Android
+        (dict(api_id=21724), "yes"),  # Telegram X
+        (dict(api_id=10840, platform="iOS", app_name="Telegram iOS"), "yes"),
+        (dict(api_id=2834, platform="macOS", app_name="Telegram macOS"), "yes"),
+        (dict(api_id=2040, platform="", app_name="Telegram Desktop"), "no"),
+        (dict(api_id=2496, platform="Web", app_name="Telegram Web K"), "no"),
+        (dict(api_id=22, app_name="Telegram Widgets"), "no"),  # official, not a messenger
+        (dict(api_id=20419924, official_app=False, app_name="Selfnew"), "unknown"),
+        (dict(api_id=38501903, official_app=False, current=True), "yes"),  # this server
+    ],
+)
+async def test_the_list_says_whether_a_device_can_hold_secret_chats(_wire, device, support):
+    _wire(_Client([_auth(**device)]))
+
+    record = (await _listed(None))["results"][0]
+
+    assert record["secret_chat_support"] == support
+    assert record["secret_chat_support_reason"]
+
+
+@pytest.mark.asyncio
+async def test_turning_secret_chats_on_for_a_device_without_them_says_it_does_nothing(_wire):
+    _wire(_Client([_auth(api_id=2040, platform="", app_name="Telegram Desktop")]))
+
+    said = await mod.set_authorization_secret_chats(
+        hash=111, accept_secret_chats=True, account="a"
+    )
+
+    assert "cannot hold secret chats" in said
