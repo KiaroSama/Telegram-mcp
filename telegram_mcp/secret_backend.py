@@ -22,6 +22,8 @@ shutdown is flushing races the flush for key material that cannot be recovered.
 import asyncio
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -46,7 +48,7 @@ from telethon_secret_chat.errors import (
 from telethon_secret_chat.schema import secret_tl
 
 from telegram_mcp import secret_history, secret_media_refs
-from telegram_mcp.alias_store import restrict_to_owner
+from telegram_mcp.owner_only import restrict_to_owner_strict
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.settings import state_dir
 
@@ -69,6 +71,7 @@ __all__ = [
     "StorageRequired",
     "close_all",
     "key_visualization",
+    "erase_local",
     "media_source",
     "secret_manager",
     "secret_tl",
@@ -101,6 +104,77 @@ _verified_against: Dict[str, object] = {}
 _closing = False
 
 _lock = asyncio.Lock()
+
+# Tasks, not callers, own startup, native shutdown and threaded acquisition.
+# A cancelled tool call cannot abandon a subscription or a newly acquired lease.
+_starts: Dict[str, asyncio.Task] = {}
+_stops: Dict[int, asyncio.Task] = {}
+_acquisitions: Dict[str, asyncio.Task] = {}
+_START_SECONDS = 60.0
+_CLEANUP_SECONDS = 5.0
+_CLOSE_SECONDS = 30.0
+
+
+def _check_current(account: str, client) -> None:
+    if _closing:
+        raise SecretChatUnavailable(account, "the server is shutting down")
+    try:
+        current = _telethon_client(account)
+    except (KeyError, ValueError):
+        current = None
+    if current is not client:
+        raise SecretChatUnavailable(account, "the account was reconfigured; retry the call")
+
+
+def _release_store(account: str) -> None:
+    lease = _store_locks.pop(account, None)
+    if lease is not None:
+        lease.release()
+
+
+def _stop_owned(account: str, manager) -> asyncio.Task:
+    """One stop per manager; retain failures and reap a successful late stop."""
+    key = id(manager)
+    existing = _stops.get(key)
+    if existing is not None:
+        return existing
+    _verified_against.pop(account, None)
+    task = asyncio.create_task(_stop(manager))
+    _stops[key] = task
+
+    def finished(done):
+        if _stops.get(key) is done:
+            _stops.pop(key, None)
+        if done.cancelled():
+            return
+        error = done.exception()
+        if error is not None:
+            log_event(
+                logging.ERROR, "secret manager closure failed; ownership retained", error=error
+            )
+            return
+        if _by_account.get(account) is manager:
+            _by_account.pop(account, None)
+            _verified_against.pop(account, None)
+            _release_store(account)
+
+    task.add_done_callback(finished)
+    return task
+
+
+def _guard_event(account, client, manager, handler):
+    """An old subscription cannot write under a label's new generation."""
+
+    async def guarded(event):
+        try:
+            _check_current(account, client)
+        except SecretChatUnavailable:
+            return
+        if _by_account.get(account) is not manager or id(manager) in _stops:
+            return
+        await handler(event)
+
+    return guarded
 
 
 def _telethon_client(account: str):
@@ -142,27 +216,38 @@ def _store_identity(account: str) -> str:
 
 
 async def _claim_store(account: str) -> None:
-    """Hold this account's key store for the life of the process, or refuse.
-
-    The session lock stops two processes sharing one SESSION; it does not stop two
-    logins of one account, under one label, sharing this folder. Two managers over
-    one store overwrite each other's keys, so the second process is refused.
-    Released by `close_all`, and by the OS if the process dies.
-    """
+    """Own the actual acquire even when its asynchronous waiter is cancelled."""
     if account in _store_locks:
         return
     from telegram_mcp.singleton import SessionLock, SessionLockError
 
-    lock = SessionLock(_store_identity(account), lock_dir=_store_lock_dir())
+    lease = SessionLock(_store_identity(account), lock_dir=_store_lock_dir())
+    task = asyncio.create_task(
+        asyncio.to_thread(lease.acquire, grace_seconds=2.0, poll_interval=0.2)
+    )
+    _acquisitions[account] = task
     try:
-        await asyncio.to_thread(lock.acquire, grace_seconds=2.0, poll_interval=0.2)
-    except SessionLockError:
-        raise SecretChatUnavailable(
-            account,
-            "another telegram-mcp process holds this account's secret-chat keys; stop "
-            "it first - two processes over one key store overwrite each other's keys",
-        ) from None
-    _store_locks[account] = lock
+        await asyncio.shield(task)
+    except BaseException as error:
+        # Cancellation does not stop a thread. Its completion keeps a strong
+        # reference to the lease and releases it without ever publishing it.
+        def abandoned(done):
+            if _acquisitions.get(account) is done:
+                _acquisitions.pop(account, None)
+            if not done.cancelled() and done.exception() is None:
+                lease.release()
+
+        task.add_done_callback(abandoned)
+        if isinstance(error, SessionLockError):
+            raise SecretChatUnavailable(
+                account, "another telegram-mcp process holds this account's secret-chat keys"
+            ) from None
+        raise
+    _acquisitions.pop(account, None)
+    if _closing:
+        lease.release()
+        raise SecretChatUnavailable(account, "the server is shutting down")
+    _store_locks[account] = lease
 
 
 def _owner_path(account: str) -> Path:
@@ -171,84 +256,141 @@ def _owner_path(account: str) -> Path:
 
 
 async def _bind_store(account: str, client) -> None:
-    """Refuse a key store written for a different Telegram account.
+    """Compare a valid identity record, or atomically adopt a genuinely new one.
 
-    The store is found by LABEL, and a label can be re-pointed at another account in
-    `.env`. Without this the new account would open - and try to decrypt with - the
-    old account's keys. A store with no record yet (every store written before this
-    check existed) is adopted by the account using it now.
+    Legacy stores with no binding are still adopted as documented. A PRESENT
+    but corrupt/unreadable binding is not a legacy store and is never replaced.
     """
     me = await client.get_me(input_peer=True)
     user_id = getattr(me, "user_id", None) or getattr(me, "id", None)
+    if type(user_id) is not int or user_id <= 0:
+        raise SecretChatUnavailable(account, "Telegram did not prove a valid account identity")
+    _check_current(account, client)
     path = _owner_path(account)
-    if path.exists():
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        raw = None
+    except OSError as error:
+        raise SecretChatUnavailable(
+            account, "the key-store identity record could not be read"
+        ) from error
+    if raw is not None:
         try:
-            recorded = json.loads(path.read_text(encoding="utf-8")).get("user_id")
-        except (OSError, ValueError, AttributeError):
-            recorded = None
-        if recorded is not None and user_id is not None and int(recorded) != int(user_id):
+            record = json.loads(raw)
+            recorded = record["user_id"]
+            if type(recorded) is not int or recorded <= 0:
+                raise ValueError("invalid recorded identity")
+        except (ValueError, TypeError, KeyError):
+            raise SecretChatUnavailable(
+                account, "the key-store identity record is invalid; its bytes were preserved"
+            ) from None
+        if recorded != user_id:
             raise SecretChatUnavailable(
                 account,
                 "this label's secret-chat keys belong to a different Telegram account "
-                f"(user {recorded}, not {user_id}); move state/secret-chats/{account}* "
-                "aside or give this account its own label",
+                f"(user {recorded}, not {user_id}); stop the server and repair the label binding",
             )
-        if recorded is not None:
-            return
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"user_id": user_id}), encoding="utf-8")
-    restrict_to_owner(path)
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, suffix=".owner.tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            # Restrict before writing identity data, including on Windows.
+            if not restrict_to_owner_strict(temporary):
+                raise OSError("Temporary secret state could not be made owner-only")
+            json.dump({"user_id": user_id}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            Path(temporary).unlink(missing_ok=True)
+        except OSError as error:
+            log_event(logging.WARNING, "could not remove temporary identity record", error=error)
+        raise
+
+
+async def _start_manager(account: str, client):
+    """Hold startup resources until publication or positively confirmed cleanup."""
+    manager = None
+    claimed = False
+    try:
+        async with asyncio.timeout(_START_SECONDS):
+            _check_current(account, client)
+            existing = _by_account.get(account)
+            if existing is not None:
+                await asyncio.shield(_stop_owned(account, existing))
+                _check_current(account, client)
+            await _claim_store(account)
+            claimed = True
+            _check_current(account, client)
+            await _bind_store(account, client)
+            _check_current(account, client)
+            manager = SecretChatManager(client, _storage_for(account))
+            # Reserve before start(): it can subscribe and then raise/cancel.
+            _by_account[account] = manager
+            _verified_against.pop(account, None)
+            for event, handler in (
+                ("ChatRequested", _accept_incoming(manager, account)),
+                ("MessageReceived", _remember(account)),
+                ("ChatClosed", _closed(account)),
+                ("SendFailed", _withdrawn(account)),
+                ("ServiceActionReceived", _service_action(account)),
+            ):
+                manager.on(event, _guard_event(account, client, manager, handler))
+            await manager.start()
+            _check_current(account, client)
+            _verified_against[account] = client
+            return manager
+    except BaseException:
+        if manager is not None:
+            cleanup = _stop_owned(account, manager)
+            # asyncio.wait never cancels the owned cleanup at its deadline.
+            await asyncio.wait({cleanup}, timeout=_CLEANUP_SECONDS)
+        elif claimed:
+            _release_store(account)
+        raise
 
 
 async def secret_manager(account: str) -> SecretChatManager:
-    """The account's started secret-chat manager.
+    """Return one fully started manager for the current client generation.
 
-    Raises rather than returning a half-usable object: every secret-chat operation
-    needs a real authorization, and a manager that is merely constructed would fail
-    later with a message about whichever call happened to come first.
-
-    Lazy. An account that never opens a secret chat never builds one.
+    Startup is single-flight and owned independently of its waiters. The final
+    proof is repeated after every initialization wait, including shared waits.
     """
-    if _closing:
-        raise SecretChatUnavailable(account, "the server is shutting down")
-
     client = _telethon_client(account)
-
+    _check_current(account, client)
     async with _lock:
-        # RE-READ both inside the lock. The checks above only describe the moment
-        # this caller arrived; a caller that queued on the lock passed them and then
-        # would act on state that changed while it waited.
-        if _closing:
-            raise SecretChatUnavailable(account, "the server is shutting down")
-        if _telethon_client(account) is not client:
-            raise SecretChatUnavailable(
-                account,
-                "the account was reconfigured while its secret-chat backend was being "
-                "started, so this generation is no longer current; retry the call",
-            )
-
+        _check_current(account, client)
         existing = _by_account.get(account)
-        if existing is not None and _verified_against.get(account) is client:
+        if (
+            existing is not None
+            and _verified_against.get(account) is client
+            and id(existing) not in _stops
+            and not getattr(existing, "_stopping", False)
+            and getattr(existing, "_running", True)
+        ):
             return existing
+        task = _starts.get(account)
+        if task is None:
+            task = asyncio.create_task(_start_manager(account, client))
+            _starts[account] = task
 
-        if existing is not None:
-            # A manager from a generation that has since been replaced. Stop it
-            # before building its successor, so the old subscription is gone and its
-            # chats are flushed; two managers over one account would mean two key
-            # stores for one conversation.
-            await _stop(existing)
+            def finished(done):
+                if _starts.get(account) is done:
+                    _starts.pop(account, None)
+                if not done.cancelled():
+                    error = done.exception()
+                    if error is not None:
+                        log_event(logging.WARNING, "secret manager startup refused", error=error)
 
-        await _claim_store(account)
-        await _bind_store(account, client)
-        manager = SecretChatManager(client, _storage_for(account))
-        manager.on("ChatRequested", _accept_incoming(manager, account))
-        manager.on("MessageReceived", _remember(account))
-        manager.on("ChatClosed", _closed(account))
-        manager.on("SendFailed", _withdrawn(account))
-        await manager.start()
-        _by_account[account] = manager
-        _verified_against[account] = client
-        return manager
+            task.add_done_callback(finished)
+    manager = await asyncio.shield(task)
+    _check_current(account, client)
+    if _verified_against.get(account) is not client or _by_account.get(account) is not manager:
+        raise SecretChatUnavailable(account, "the manager generation changed; retry the call")
+    return manager
 
 
 def _accept_incoming(manager: SecretChatManager, account: str):
@@ -349,6 +491,47 @@ def _closed(account: str):
     return _handler
 
 
+def erase_local(account: str, chat_id: int, message_ids=None) -> dict:
+    """Try BOTH stores and report partial cleanup without misreporting a send.
+
+    These are two atomic files, not one transaction. Failure in one never skips
+    the other, and callers may only claim complete local erasure if both agree.
+    """
+    ids = None if message_ids is None else tuple(message_ids)
+    result = {"history": False, "media": False, "messages_removed_here": None}
+    try:
+        result["messages_removed_here"] = (
+            secret_history.clear(account, chat_id)
+            if ids is None
+            else secret_history.forget(account, chat_id, ids)
+        )
+        result["history"] = True
+    except Exception as error:
+        log_event(logging.ERROR, "could not erase secret message history", error=error)
+    try:
+        if ids is None:
+            secret_media_refs.drop_chat(account, chat_id)
+        else:
+            secret_media_refs.forget(account, chat_id, ids)
+        result["media"] = True
+    except Exception as error:
+        log_event(logging.ERROR, "could not erase secret message file references", error=error)
+    return result
+
+
+def _service_action(account: str):
+    """The library clears its memory; the application must clear its own files."""
+
+    async def handler(event):
+        action = event.action
+        if isinstance(action, secret_tl.DecryptedMessageActionDeleteMessages):
+            erase_local(account, event.chat_id, action.random_ids)
+        elif isinstance(action, secret_tl.DecryptedMessageActionFlushHistory):
+            erase_local(account, event.chat_id)
+
+    return handler
+
+
 def _withdrawn(account: str):
     """Log a message Telegram rejected for good; the package already withdrew it."""
 
@@ -389,35 +572,40 @@ async def _stop(manager: SecretChatManager) -> None:
     await manager.stop()
 
 
-async def close_all() -> List[Tuple[str, BaseException]]:
-    """Stop every manager, flushing key material. Idempotent.
+async def close_all(budget: float = _CLOSE_SECONDS) -> List[Tuple[str, BaseException]]:
+    """Request every closure, retain failed owners, and spend one total budget.
 
-    Returns one ``(account, error)`` per manager that did NOT close cleanly, so the
-    caller can name each one. Collected rather than raised: the first account's
-    failure must not skip the flush of every account after it, and a key that is
-    never written is a chat's history gone for good.
-
-    Shutdown can be reached twice - once from a signal handler and once from the
-    runner's own path - so the second call must be a no-op rather than a failure.
+    Cancellation/timeout of this observer never cancels the owned stop tasks.
+    Repeated calls retry failed stops and share those still in progress.
     """
     global _closing
     _closing = True
-
-    failures: List[Tuple[str, BaseException]] = []
-    async with _lock:
-        for account in list(_by_account):
-            manager = _by_account.pop(account, None)
-            _verified_against.pop(account, None)
-            if manager is None:
-                continue
-            try:
-                await _stop(manager)
-            except Exception as error:
-                # Keep the store's lock: its keys may still be flushing, and no
-                # other process may open them until this one is gone.
-                failures.append((account, error))
-                continue
-            lock = _store_locks.pop(account, None)
-            if lock is not None:
-                lock.release()
+    pending = set()
+    for task in list(_starts.values()):
+        if not task.done():
+            task.cancel()
+            pending.add(task)
+    attempts = {}
+    for account, manager in list(_by_account.items()):
+        # A cancelled initializer owns cleanup of its partial subscription; a
+        # concurrent native stop/start would itself corrupt lifecycle state.
+        if account in _starts and not _starts[account].done():
+            continue
+        task = _stop_owned(account, manager)
+        attempts[account] = task
+        pending.add(task)
+    pending.update(t for t in _acquisitions.values() if not t.done())
+    if pending:
+        await asyncio.wait(pending, timeout=max(0.0, budget))
+    failures = []
+    accounts = set(_by_account) | set(_starts) | set(_acquisitions)
+    for account in sorted(accounts):
+        task = attempts.get(account)
+        error = None
+        if task is not None and task.done() and not task.cancelled():
+            error = task.exception()
+        if account in _by_account or account in _store_locks or account in _acquisitions:
+            failures.append(
+                (account, error or TimeoutError("secret backend closure is unconfirmed"))
+            )
     return failures

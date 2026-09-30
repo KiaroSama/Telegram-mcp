@@ -56,6 +56,9 @@ class Staged:
     label: str
     client: object
     previous: Optional[object] = None
+    is_current: Optional[Callable[[], bool]] = None
+    on_publish: Optional[Callable[[], None]] = None
+    on_failure: Optional[Callable[[BaseException], None]] = None
 
 
 @dataclass
@@ -69,6 +72,68 @@ class Outcome:
 # Staged transactions in flight, so shutdown can wait for them and a test can
 # see that one was started at all.
 _admissions: set = set()
+# Deferred (no-loop) and running admissions share this same owned operation.
+_pending: dict = {}
+_tasks: dict = {}
+
+
+def _check(staged: Staged) -> None:
+    if _admission._stopped or (staged.is_current is not None and not staged.is_current()):
+        raise _admission.AdmissionSuperseded(
+            f"Account '{staged.label}' activation was superseded or shutdown began"
+        )
+
+
+def supersede(registry: dict, keep=None, is_current=None) -> None:
+    """Cancel only candidates invalidated by the caller's new revision token."""
+    for key, (one, target, _connect, _grace) in list(_pending.items()):
+        if target is not registry:
+            continue
+        if (keep or {}).get(one.label) is one.client:
+            # A cold unchanged candidate is reused, never disconnected merely
+            # because another label or a comment changed in the same file.
+            one.is_current = is_current
+            continue
+        if one.is_current is None or one.is_current():
+            continue
+        task = _tasks.get(key)
+        if task is not None and not task.done():
+            task.cancel()
+        elif task is None:
+            _pending.pop(key, None)
+            dispose(one.label, one.client, "the desired configuration changed")
+
+
+def pending_labels(registry: dict) -> set:
+    return {
+        one.label
+        for one, target, _connect, _grace in _pending.values()
+        if target is registry and (one.is_current is None or one.is_current())
+    }
+
+
+async def wait_for_client(client) -> bool:
+    """Wait for the FULL existing activation, not a competing lease-only claim."""
+    key = id(client)
+    operation = _pending.get(key)
+    if operation is None:
+        return False
+    resume(operation[1])
+    task = _tasks.get(key)
+    if task is not None and not await asyncio.shield(task):
+        raise StartupMessage(f"Account '{operation[0].label}' could not be activated")
+    return True
+
+
+async def wait_for_label(registry: dict, label: str) -> None:
+    if label in registry:
+        await wait_for_client(registry[label])
+        return
+    for one, target, _connect, _grace in list(_pending.values()):
+        if target is registry and one.label == label:
+            await wait_for_client(one.client)
+            return
+
 
 # Labels whose admission REACHED the registry in the current transaction. The
 # caller advances its record of the active configuration from this and from
@@ -174,10 +239,14 @@ async def admit(
     """
     connect = connect or _connect_and_authorize
     label, client = staged.label, staged.client
+    _activated.discard(label)
     try:
         async with asyncio.timeout(ADMIT_PHASE_SECONDS):
+            _check(staged)
             await _admission.claim_session(label, client, grace_seconds=grace_seconds)
+            _check(staged)
             await connect(label, client)
+            _check(staged)
     except BaseException as error:
         # The lease first: an acquire that succeeded before the connect failed
         # would otherwise keep a session claimed for a client nobody serves.
@@ -188,6 +257,12 @@ async def admit(
         # was disposed of - and "dispose every staged resource" is the property
         # this path exists for, not a task queued behind the answer.
         await _settled(closing)
+        if staged.previous is None and registry.get(label) is client:
+            registry.pop(label, None)
+        if registry.get(label) is staged.previous:
+            _admission.restore_active(label, staged.previous)
+        if staged.on_failure is not None:
+            staged.on_failure(error)
         if isinstance(error, asyncio.CancelledError):
             raise
         log_event(
@@ -202,6 +277,8 @@ async def admit(
     # client has a lease, a socket and an authorized session.
     registry[label] = client
     _activated.add(label)
+    if staged.on_publish is not None:
+        staged.on_publish()
     if staged.previous is not None and staged.previous is not client:
         # The old one goes only once its replacement is actually serving. Its
         # lease is NOT gone: publishing the replacement retired it rather than
@@ -243,31 +320,72 @@ async def admit_all(
     return outcome
 
 
-def begin(
-    staged: List[Staged],
-    registry: Dict[str, object],
-    connect: Optional[Callable] = None,
-    grace_seconds: Optional[float] = None,
-) -> Optional[asyncio.Task]:
-    """Start the transaction from synchronous code, when there is a loop.
+def _launch(key: int) -> asyncio.Task:
+    existing = _tasks.get(key)
+    if existing is not None:
+        return existing
+    operation = _pending[key]
+    one, registry, connect, grace = operation
+    task = asyncio.create_task(admit(one, registry, connect, grace))
+    _tasks[key] = task
 
-    `refresh_accounts()` is synchronous, so this is the seam. With no loop the
-    staged clients stay staged and the previous generation keeps serving, which
-    is the safe direction: nothing was published half-admitted.
-    """
+    def done(completed):
+        if _pending.get(key) is operation:
+            _pending.pop(key, None)
+        if _tasks.get(key) is completed:
+            _tasks.pop(key, None)
+        if not completed.cancelled() and completed.exception() is not None:
+            log_event(logging.ERROR, "account activation failed", error=completed.exception())
+
+    task.add_done_callback(done)
+    return task
+
+
+def _collect(tasks):
+    async def collect():
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
+    task = asyncio.create_task(collect())
+    _admissions.add(task)
+    task.add_done_callback(_admissions.discard)
+    return task
+
+
+def resume(registry: dict) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    new = [key for key, op in _pending.items() if op[1] is registry and key not in _tasks]
+    if new:
+        _collect([_launch(key) for key in new])
+
+
+def begin(staged, registry, connect=None, grace_seconds=None) -> Optional[asyncio.Task]:
+    """Own candidates now; resume deferred cold discovery on the serving loop."""
     if not staged:
         return None
-    # One transaction, one record: a label left over from the previous reload
-    # must not be reported as activated by this one.
-    _activated.difference_update({one.label for one in staged})
+    for one in staged:
+        _activated.discard(one.label)
+        _pending[id(one.client)] = (one, registry, connect, grace_seconds)
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return None
-    task = asyncio.ensure_future(admit_all(staged, registry, connect, grace_seconds))
-    _admissions.add(task)
-    task.add_done_callback(_admissions.discard)
-    return task
+    return _collect([_launch(id(one.client)) for one in staged])
+
+
+def stop(registry: dict) -> None:
+    """Stop admission before any serving resource is torn down."""
+    for key, (one, target, _connect, _grace) in list(_pending.items()):
+        if target is not registry:
+            continue
+        task = _tasks.get(key)
+        if task is None:
+            _pending.pop(key, None)
+            dispose(one.label, one.client, "shutdown")
+        elif not task.done():
+            task.cancel()
 
 
 async def drain(timeout: float = ADMIT_PHASE_SECONDS) -> int:

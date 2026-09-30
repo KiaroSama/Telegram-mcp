@@ -36,7 +36,7 @@ from telegram_mcp.safeguard import note_records
 from telegram_mcp import secret_history
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
-from telegram_mcp.secret_backend import secret_manager, secret_tl
+from telegram_mcp.secret_backend import erase_local, secret_manager, secret_tl
 from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
 from telegram_mcp.secret_limits import require_ready_chat
 from telegram_mcp.secret_media_content import infer_kind
@@ -127,10 +127,12 @@ async def delete_secret_message(chat_id: int, message_id: int, account: str = No
         # And from this server's own record. A delete that left the text in a
         # local file would be a delete in name only, and `read_secret_messages`
         # would keep showing what both devices had just destroyed.
-        secret_history.forget(label, secret_id, [int(message_id)])
+        cleanup = erase_local(label, secret_id, [int(message_id)])
         return format_tool_result(
             {
-                "deleted": True,
+                "deleted": cleanup["history"] and cleanup["media"],
+                "remote_request_accepted": True,
+                "local_cleanup": cleanup,
                 "chat_id": int(chat_id),
                 "message_id": int(message_id),
                 "reached": "both sides — a secret chat has no delete-for-me-only",
@@ -193,12 +195,14 @@ async def clear_secret_history(chat_id: int, confirm_chat_id: int, account: str 
             return refusal
 
         await manager.flush_history(secret_id)
-        removed = secret_history.clear(label, secret_id)
+        cleanup = erase_local(label, secret_id)
         return format_tool_result(
             {
-                "cleared": True,
+                "cleared": cleanup["history"] and cleanup["media"],
+                "remote_request_accepted": True,
+                "local_cleanup": cleanup,
                 "chat_id": int(chat_id),
-                "messages_removed_here": removed,
+                "messages_removed_here": cleanup["messages_removed_here"],
                 "reached": "both sides — and there is no server copy to restore from",
             }
         )

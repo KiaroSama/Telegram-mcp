@@ -61,7 +61,9 @@ def _configured_labels() -> Iterable[str]:
     from telegram_mcp import connection
 
     connection.refresh_accounts()
-    return sorted(connection.clients)
+    from telegram_mcp.account_lifecycle import pending_labels
+
+    return sorted(set(connection.clients) | pending_labels(connection.clients))
 
 
 class AccountGate:

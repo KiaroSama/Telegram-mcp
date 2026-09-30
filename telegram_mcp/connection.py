@@ -318,6 +318,7 @@ except NoAccountsConfigured as _no_accounts:
 # from and nothing else. They are separate names because a revision can be seen
 # and refused: the stamp moves so a broken file is not re-parsed on every call,
 # while the digests stay on the generation still serving.
+_revision = object()
 _env_stamp: tuple = _boot.stamp
 _env_digests: dict = _boot.digests
 
@@ -376,7 +377,9 @@ def refresh_accounts() -> list:
     """
     # `_env_digests` is no longer assigned here: `record_activated` owns it, so
     # that what is recorded as active is decided in one place.
-    global _env_stamp
+    global _env_stamp, _revision
+    if _admission._stopped:
+        return []
 
     # ONE read. Fingerprinting the file and then parsing it again is two
     # readings of something being rewritten underneath, and the pair could
@@ -399,12 +402,16 @@ def refresh_accounts() -> list:
         return []
 
     if snapshot.stamp == _env_stamp:
+        _lifecycle.resume(clients)
         return []
     stamp, env, digests = snapshot.stamp, snapshot.env, snapshot.digests
+    _revision = revision = object()
 
     if digests == _env_digests:
         # The file moved but no account did - a comment, an unrelated setting.
         _env_stamp = stamp
+        _lifecycle.supersede(clients, clients, lambda: _revision is revision)
+        _lifecycle.resume(clients)
         return []
 
     keep = {label: client for label, client in clients.items() if not _replaced(label, digests)}
@@ -443,6 +450,7 @@ def refresh_accounts() -> list:
         _lifecycle.record_rejection(stamp, f"{type(error).__name__}: {error}")
         return []
 
+    _lifecycle.supersede(clients, keep, lambda: _revision is revision)
     before = dict(clients)
     changed = sorted(set(rebuilt) ^ set(clients)) + sorted(
         label for label in set(rebuilt) & set(clients) if _replaced(label, digests)
@@ -459,29 +467,47 @@ def refresh_accounts() -> list:
     # the working client had already been retired and replaced. Until then the
     # previous client keeps answering.
     staged = []
+    try:
+        asyncio.get_running_loop()
+        cold = False
+    except RuntimeError:
+        cold = True
     for label, client in rebuilt.items():
         if label in clients and not _replaced(label, digests):
             continue
         previous = clients.get(label)
-        if previous is None:
-            # Nothing is serving this label, so there is nothing to protect:
-            # publish it and let admission gate what is served FROM it.
+        if previous is None and cold:
+            # Cold discovery has no running transport. Keep compatibility with
+            # startup callers, but first asynchronous use must finish admission.
             clients[label] = client
-        staged.append(_lifecycle.Staged(label=label, client=client, previous=previous))
 
-    # The STAMP moves now: this revision has been read, and re-parsing it on
-    # every call would be work with no answer attached. The DIGESTS do not, past
-    # the accounts that are not part of the transaction - they say what is
-    # SERVING, and nothing staged is serving yet.
+        def published(label=label, client=client):
+            if clients.get(label) is client:
+                record_activated(clients, digests, {label})
+                _notify_clients_changed({label}, set())
+
+        def failed(error, label=label):
+            if _revision is revision:
+                from telegram_mcp.safe_log import safe_exception
+
+                _lifecycle.record_rejection(stamp, safe_exception(error))
+
+        staged.append(
+            _lifecycle.Staged(
+                label,
+                client,
+                previous,
+                is_current=lambda: _revision is revision,
+                on_publish=published,
+                on_failure=failed,
+            )
+        )
+
     _env_stamp = stamp
-    # Everything except a REPLACEMENT. A replacement's digest waits because its
-    # predecessor is the one still serving, and recording the candidate's is what
-    # made a failed one look already applied. Everything else - untouched
-    # accounts, and a brand-new one, which has no predecessor and was published
-    # into the registry above - is serving now, and a digest left unrecorded
-    # makes the next reload believe it changed and rebuild it.
-    replacing = {one.label for one in staged if one.previous is not None}
-    record_activated(clients, digests, set(clients) - replacing)
+    # A running server publishes only after authorization. Cold discovery keeps
+    # its historical registry shape, and the pending operation gates first use.
+    waiting = {one.label for one in staged if not cold or one.previous is not None}
+    record_activated(clients, digests, set(clients) - waiting)
     _lifecycle.clear_rejection()
 
     # A pure label move first, and it is not a transaction: the SAME session and
@@ -521,15 +547,9 @@ def refresh_accounts() -> list:
     # connects, proves the session is authorized, and only then swaps a
     # replacement in; a failure leaves the previous client serving.
     _admission.mark_awaiting_admission(still_pending)
-    settling = _lifecycle.begin(staged, clients)
-    if settling is not None:
-        # Recorded when the transaction settles, from what REACHED the registry.
-        # With no loop to settle on, nothing is recorded, which is the same safe
-        # direction the staging itself takes.
-        settling.add_done_callback(
-            lambda _t: record_activated(clients, digests, _lifecycle.activated_labels())
-        )
-    _notify_clients_changed(set(added), set(before) - set(clients))
+    _lifecycle.begin(staged, clients)
+    _lifecycle.resume(clients)
+    _notify_clients_changed(set(added) if cold else set(), set(before) - set(clients))
     return sorted(set(changed))
 
 
@@ -574,7 +594,9 @@ def record_activated(clients: dict, digests: dict, labels: set) -> None:
     the file against itself, found nothing to do, and the account never retried.
     """
     global _env_digests
-    moved = dict(_env_digests)
+    moved = {
+        key: value for key, value in _env_digests.items() if _account_label_of(key) not in labels
+    }
     for key, value in digests.items():
         if _account_label_of(key) in labels:
             moved[key] = value
@@ -600,7 +622,7 @@ def get_client(account: str = None) -> TelegramClient:
         if len(clients) == 1:
             return next(iter(clients.values()))
         raise ValueError(f"Account is required. Available accounts: {', '.join(clients.keys())}")
-    label = account.lower()
+    label = account.strip().lower()
     if label not in clients:
         raise ValueError(
             f"Unknown account '{account}'. Available accounts: {', '.join(clients.keys())}"
@@ -639,6 +661,8 @@ def with_account(readonly=False):
             # and a write with no `account` was refused for being single-mode
             # right up until some other call happened to refresh first.
             refresh_accounts()
+            if isinstance(account, str):
+                await _lifecycle.wait_for_label(clients, account.strip().lower())
 
             # Explicit account OR single-mode -> call once
             if account is not None or not is_multi_mode():
