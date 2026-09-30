@@ -10,7 +10,7 @@ Every tool here waits for the owner's approval in the safeguard (owner, 2026-09-
 
 from typing import Optional
 
-from telegram_mcp import export_dialog, file_roots, secret_history, secret_media_refs
+from telegram_mcp import export_dialog, export_jobs, file_roots, secret_history, secret_media_refs
 from telegram_mcp.owner_only import restrict_to_owner_strict
 from telegram_mcp.secret_backend import secret_manager
 from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
@@ -233,6 +233,9 @@ async def export_secret_chat(
     """
     Export a secret chat's AUTO-SAVED messages exactly as Telegram Desktop exports a chat.
 
+    Runs in the background and answers at once with a `job_id`; `export_status` shows
+    its progress and result, `cancel_export` stops it.
+
     Only what `start_secret_auto_save` kept can be exported: a secret chat has no
     server copy. Same options, and the same rule, as `export_chat_history`: a client
     with forms shows Desktop's export dialog; otherwise ASK THE OWNER format, photos,
@@ -288,19 +291,27 @@ async def export_secret_chat(
         config = await cl(functions.help.GetConfigRequest())
         environment = Environment(internal_links_domain=config.me_url_prefix)
         writer = export_dialog.writer_for(settings.format)
-        # Copying saved files is blocking disk work; keep the event loop free.
-        result = await asyncio.to_thread(
-            export_saved_chat, records, settings, writer, me, peer, environment
-        )
-        return format_tool_result(
-            {
+        # A secret chat exports as the 1:1 chat with its peer (export_saved_chat sets the
+        # same peer); set here so the folder is named ChatExport_ before the job starts.
+        settings.single_peer = types.InputPeerUser(peer.id, getattr(peer, "access_hash", 0) or 0)
+        export_dialog.pin_folder(settings)
+
+        async def work() -> dict:
+            # Copying saved files is blocking disk work; keep the event loop free.
+            # ponytail: a cancel stops waiting, not the copy thread; fine for local copies.
+            result = await asyncio.to_thread(
+                export_saved_chat, records, settings, writer, me, peer, environment
+            )
+            return {
                 "secret_chat_id": secret_id,
                 "folder": result.path,
                 "format": settings.format.name,
                 "messages": result.messages,
                 "files": result.files,
             }
-        )
+
+        job = export_jobs.start("secret chat", secret_id, settings.path, work)
+        return format_tool_result(export_jobs.describe(job))
     except (asyncio.TimeoutError, TimeoutError):
         return "Export cancelled: the export dialog was not answered in 15 minutes."
     except Exception as e:

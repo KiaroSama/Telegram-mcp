@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 from telethon.tl import types
 
+from telegram_mcp import export_jobs
 from telegram_mcp.safeguard import folders
 from telegram_mcp.tdexport.fetch import ExportResult
 from telegram_mcp.tdexport.settings import Format, MediaSettings
@@ -95,20 +96,25 @@ async def test_explicit_choices_become_telegram_desktop_settings(export):
         "@news", **{**EVERY_OPTION, "stickers": True, "size_limit_mb": 20, "format": "json"}
     )
 
+    await export_jobs.settle()
     settings = export.runs[0].settings
     assert settings.single_peer == INPUT
     assert settings.format is Format.Json and export.runs[0].writer == "writer:Json"
     assert settings.media.types == M.Photo | M.Sticker
     assert settings.media.size_limit == 20 * 1024 * 1024
     assert settings.path.startswith(str(folders.default_download_dir()).replace("\\", "/"))
-    assert settings.force_sub_path is True
-    assert '"messages": 12' in answer and '"takeout": true' in answer
+    assert "/ChatExport_" in settings.path  # the default folder always gets one
+    assert '"status": "running"' in answer and '"job_id"' in answer
+    await export_jobs.settle()
+    status = await mod.export_status()
+    assert '"messages": 12' in status and '"takeout": true' in status
 
 
 @pytest.mark.asyncio
 async def test_a_chosen_folder_is_used_as_is(export):
     await mod.export_chat_history("@news", destination="downloads/mine", **EVERY_OPTION)
 
+    await export_jobs.settle()
     settings = export.runs[0].settings
     assert settings.path.rstrip("/").endswith("downloads/mine")
     assert settings.force_sub_path is False
@@ -120,6 +126,7 @@ async def test_dates_start_at_the_local_day_like_the_desktop_calendar(export):
         "@news", date_from="2026-09-01", date_to="2026-09-10 18:30", **EVERY_OPTION
     )
 
+    await export_jobs.settle()
     settings = export.runs[0].settings
     assert settings.single_peer_from == int(datetime(2026, 9, 1).timestamp())
     assert settings.single_peer_till == int(datetime(2026, 9, 10, 18, 30).timestamp())
@@ -131,6 +138,7 @@ async def test_a_till_before_the_from_moves_ten_minutes_after_it(export):
         "@news", date_from="2026-09-10", date_to="2026-09-01", **EVERY_OPTION
     )
 
+    await export_jobs.settle()
     settings = export.runs[0].settings
     assert settings.single_peer_till == settings.single_peer_from + 600
 
@@ -165,6 +173,7 @@ async def test_the_form_shows_the_desktop_defaults_and_its_answer_wins(export):
     schema = session.forms[0][1]["properties"]
     assert schema["photos"]["default"] is True and schema["gifs"]["default"] is False
     assert schema["size_limit_mb"]["default"] == 8 and schema["format"]["default"] == "html"
+    await export_jobs.settle()
     settings = export.runs[0].settings
     assert settings.format is Format.HtmlAndJson and settings.media.types == M.Photo | M.GIF
 

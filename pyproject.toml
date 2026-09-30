@@ -217,6 +217,7 @@ source = [
     "telegram_mcp.singleton",
     "telegram_mcp.tdexport",
     "telegram_mcp.export_dialog",
+    "telegram_mcp.export_jobs",
     "telegram_mcp.text_fidelity",
     "telegram_mcp.video_dims",
     "telegram_mcp.visual",

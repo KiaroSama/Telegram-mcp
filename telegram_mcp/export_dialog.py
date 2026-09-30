@@ -13,6 +13,7 @@ from typing import Optional
 
 from telegram_mcp import file_roots
 from telegram_mcp.safeguard import folders
+from telegram_mcp.tdexport.files import normalize_path
 from telegram_mcp.tdexport.settings import Format, MediaSettings, Settings
 
 _FORM_SECONDS = 900
@@ -186,3 +187,10 @@ async def choose(ctx, choices: dict, tool: str, title: str) -> "tuple[Optional[S
     settings.path = base.as_posix()
     settings.force_sub_path = not chosen or base.resolve() == Path(default).resolve()
     return settings, ""
+
+
+def pin_folder(settings: Settings) -> None:
+    """Fix the export's own folder now (`ChatExport_...` when due), so a background job can
+    name it and count its files. The exporter normalizes again and finds it as chosen."""
+    settings.path = normalize_path(settings)
+    settings.force_sub_path = False

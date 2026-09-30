@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from telethon.tl import types
 
+from telegram_mcp import export_jobs
 from telegram_mcp.safeguard import policy
 from telegram_mcp.tdexport.fetch import ExportResult
 from telegram_mcp.tdexport.settings import Format
@@ -71,11 +72,13 @@ async def test_saved_records_and_both_users_reach_the_exporter(exported):
 
     answer = await mod.export_secret_chat(CHAT_ID, **OPTIONS)
 
+    await export_jobs.settle()
     run = exported.runs[0]
     assert run.records == RECORDS and run.self_user is ME and run.peer_user is PEER
     assert run.settings.format is Format.Json and run.writer == "writer:Json"
     assert run.environment.internal_links_domain == "https://t.me/"
-    assert '"messages": 1' in answer
+    assert '"status": "running"' in answer
+    assert '"messages": 1' in await export_jobs_status()
 
 
 @pytest.mark.asyncio
@@ -93,6 +96,7 @@ async def test_a_deleted_chat_needs_its_peer_named(exported):
     assert "peer_user" in said and exported.runs == []
 
     await mod.export_secret_chat(424242, peer_user=PEER.id, **OPTIONS)
+    await export_jobs.settle()
     assert exported.runs[0].peer_user is PEER
 
 
@@ -103,3 +107,9 @@ async def test_the_choices_are_the_owners(exported):
     said = await mod.export_secret_chat(CHAT_ID, format="html")
 
     assert "Ask the owner" in said and exported.runs == []
+
+
+async def export_jobs_status():
+    from telegram_mcp.tools import chat_export
+
+    return await chat_export.export_status()

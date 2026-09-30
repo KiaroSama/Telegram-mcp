@@ -156,6 +156,7 @@ SEND = frozenset(
 # Ordinary writes the owner chose to leave free.
 FREE_WRITES = frozenset(
     {
+        "cancel_export",  # spec 030 (owner, 2026-10-01): stops a background export
         "add_chat_to_community",
         "add_chat_to_folder",
         "add_checklist_tasks",

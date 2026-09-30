@@ -8,12 +8,12 @@ every choice the owner's - is `telegram_mcp.export_dialog`; the safeguard asks t
 owner before the tool runs at all.
 """
 
-from telegram_mcp import export_dialog
+from telegram_mcp import export_dialog, export_jobs
 from telegram_mcp.runtime import *
 from telegram_mcp.tdexport.fetch import export_single_chat
 from telegram_mcp.tdexport.settings import Environment
 
-__all__ = ["export_chat_history"]
+__all__ = ["cancel_export", "export_chat_history", "export_status"]
 
 _TOOL = "export_chat_history"
 
@@ -48,6 +48,9 @@ async def export_chat_history(
 ) -> str:
     """
     Export one chat exactly as Telegram Desktop's "Export chat history" does.
+
+    Runs in the background and answers at once with a `job_id`: an export takes minutes.
+    `export_status` shows its progress and result; `cancel_export` stops it.
 
     Same folder (`ChatExport_YYYY-MM-DD`), same `messages.html` pages with Desktop's own
     styles, same `result.json`, same media folders. Uses Telegram's export (takeout)
@@ -95,12 +98,14 @@ async def export_chat_history(
         # export_view_panel_controller.cpp: serverConfig().internalLinksDomain.
         config = await cl(functions.help.GetConfigRequest())
         environment = Environment(internal_links_domain=config.me_url_prefix)
-        result = await export_single_chat(
-            cl, settings, export_dialog.writer_for(settings.format), environment
-        )
-        return format_tool_result(
-            {
-                "chat_id": get_marked_id(entity),
+        export_dialog.pin_folder(settings)
+        writer = export_dialog.writer_for(settings.format)
+        chat_key = get_marked_id(entity)
+
+        async def work() -> dict:
+            result = await export_single_chat(cl, settings, writer, environment)
+            return {
+                "chat_id": chat_key,
                 "folder": result.path,
                 "format": settings.format.name,
                 "messages": result.messages,
@@ -108,8 +113,55 @@ async def export_chat_history(
                 "takeout": result.takeout,
                 "takeout_refused": result.takeout_error or None,
             }
-        )
+
+        job = export_jobs.start("chat", chat_key, settings.path, work)
+        return format_tool_result(export_jobs.describe(job))
     except (asyncio.TimeoutError, TimeoutError):
         return "Export cancelled: the export dialog was not answered in 15 minutes."
     except Exception as e:
         return log_and_format_error(_TOOL, e, chat_id=chat_id, destination=destination)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Export Status",
+        openWorldHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        readOnlyHint=True,
+    )
+)
+async def export_status(job_id: Optional[str] = None) -> str:
+    """
+    Progress and result of the exports started by `export_chat_history` and
+    `export_secret_chat`: status (running, done, failed, cancelled), the files written so
+    far, and when done the folder, message and file counts.
+
+    Args:
+        job_id: One export; empty lists every export since the server started.
+    """
+    if job_id:
+        job = export_jobs.get(job_id)
+        if job is None:
+            return f"No export {job_id}. `export_status` without a job_id lists them."
+        return format_tool_result(export_jobs.describe(job))
+    return format_tool_result([export_jobs.describe(j) for j in export_jobs.all_jobs()])
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Cancel Export",
+        openWorldHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        readOnlyHint=False,
+    )
+)
+async def cancel_export(job_id: str) -> str:
+    """
+    Stop a running export. What was already written stays in its folder.
+
+    Args:
+        job_id: From `export_chat_history`, `export_secret_chat` or `export_status`.
+    """
+    return format_tool_result({"job_id": job_id, "cancelled": export_jobs.cancel(job_id)})

@@ -518,7 +518,8 @@ path. The work is not new TL, it is making the existing gate usable:
    `invokeWithMessagesRange` as Desktop sends them, ordinary reads when Telegram refuses
    the takeout, and Desktop's HTML and JSON writers and assets. The owner chooses the
    format, media kinds, size limit and period (an elicitation form, or the agent asks);
-   the folder must sit under an allowed root.
+   the folder must sit under an allowed root. It runs as a background job
+   (`export_jobs.py`): `export_status` reports progress and result, `cancel_export` stops it.
 3. History **import** is genuinely absent — `messages.InitHistoryImport`,
    `StartHistoryImport`, `CheckHistoryImportPeer` — for pulling an exported archive
    from another app into Telegram.
