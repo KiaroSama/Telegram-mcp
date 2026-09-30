@@ -146,6 +146,23 @@ def test_a_chat_without_a_username_still_gets_its_title(monkeypatch):
     assert asyncio.run(wiring.chat_label("refx", 93372553)) == "BotFather | 93372553"
 
 
+def test_a_right_to_left_name_keeps_the_id_in_its_own_field(monkeypatch):
+    """R6 (owner, 2026-10-01): "Farbod <Persian> | 1016867850 | @x" rendered with the id
+    pulled next to the Latin part, because digits after RTL text take its direction. The
+    name is isolated (FSI ... PDI) so every field stays where the separators put it."""
+    from telethon.tl import types as tl
+
+    persian = "\u0641\u0631\u06cc\u062f"
+    user = tl.User(
+        id=1016867850, first_name="Farbod", last_name=persian, username="x", access_hash=3
+    )
+    _patch_resolve(monkeypatch, user)
+
+    label = asyncio.run(wiring.chat_label("refx", 1016867850))
+
+    assert label == f"\u2068Farbod {persian}\u2069 | 1016867850 | @x"
+
+
 def test_a_chat_that_cannot_be_resolved_is_shown_as_given(monkeypatch):
     _patch_resolve(monkeypatch, ValueError("unknown"))
     assert asyncio.run(wiring.chat_label("refx", "-100555")) == "-100555"

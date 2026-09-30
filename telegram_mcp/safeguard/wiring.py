@@ -13,6 +13,7 @@ import asyncio
 import logging
 import os
 import time
+import unicodedata
 from typing import Any, Dict, Optional, Set, Tuple
 
 from telegram_mcp.safe_log import log_event
@@ -163,6 +164,21 @@ async def identity(account: Optional[str]) -> str:
     return _identities[account]
 
 
+_FSI, _PDI = chr(0x2068), chr(0x2069)
+
+
+def _isolated(name: str) -> str:
+    """A right-to-left name, isolated so the " | id" after it stays its own field (R6).
+
+    Digits take the direction of the text before them, so "Latin <Persian> | 123" showed
+    the id next to the Latin part. Only names with right-to-left letters are wrapped: every
+    other label reads exactly as before.
+    """
+    if any(unicodedata.bidirectional(c) in ("R", "AL") for c in name):
+        return f"{_FSI}{name}{_PDI}"
+    return name
+
+
 async def chat_label(account: Optional[str], chat: Any) -> str:
     """ "title | marked id | @username" - the Chat line, named like the Account line.
 
@@ -185,7 +201,7 @@ async def chat_label(account: Optional[str], chat: Any) -> str:
             runtime.resolve_entity(chat, client=get_client(account), account=account),
             _FIRST_MESSAGE_SECONDS,
         )
-        name = sanitize_name(getattr(entity, "title", None) or full_name(entity) or "")
+        name = _isolated(sanitize_name(getattr(entity, "title", None) or full_name(entity) or ""))
         parts = [p for p in (name, str(runtime.get_marked_id(entity))) if p]
         username = _username_of(entity)
         if username:
