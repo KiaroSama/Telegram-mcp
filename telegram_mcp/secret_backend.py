@@ -595,6 +595,9 @@ async def close_all(budget: float = _CLOSE_SECONDS) -> List[Tuple[str, BaseExcep
         attempts[account] = task
         pending.add(task)
     pending.update(t for t in _acquisitions.values() if not t.done())
+    # A stop already in flight (an old manager still flushing) is waited for too:
+    # returning before it finishes lets the runner disconnect under it (review).
+    pending.update(t for t in _stops.values() if not t.done())
     if pending:
         await asyncio.wait(pending, timeout=max(0.0, budget))
     failures = []

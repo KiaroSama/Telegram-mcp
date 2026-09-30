@@ -227,3 +227,28 @@ async def test_owner_permission_refusal_releases_unused_store(state, monkeypatch
     assert not backend._owner_path("acct").exists()
     assert not backend._store_locks
     assert not list(state.root.glob("*.owner.tmp"))
+
+
+@pytest.mark.asyncio
+async def test_close_all_waits_for_a_stop_already_in_flight(monkeypatch):
+    """Review 2026-09-30: an old manager still flushing under `_stops` was not waited
+    for, so shutdown could disconnect the client underneath it."""
+    release, finished = asyncio.Event(), []
+
+    async def flushing():
+        await release.wait()
+        finished.append(True)
+
+    stop = asyncio.create_task(flushing())
+    monkeypatch.setattr(backend, "_stops", {1: stop})
+    monkeypatch.setattr(backend, "_starts", {})
+    monkeypatch.setattr(backend, "_by_account", {})
+    monkeypatch.setattr(backend, "_acquisitions", {})
+    closing = asyncio.create_task(backend.close_all(budget=2))
+    await asyncio.sleep(0)
+    assert not closing.done()
+
+    release.set()
+    await closing
+
+    assert finished == [True]

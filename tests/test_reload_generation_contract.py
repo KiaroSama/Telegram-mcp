@@ -323,3 +323,71 @@ async def test_shutdown_releases_only_positively_confirmed_clients(reload_state)
     assert not second_lease.lock.released
     assert admission._active["second"] is second_lease
     assert "second" in admission.unreleased_leases
+
+
+@pytest.mark.asyncio
+async def test_a_waiting_call_follows_a_superseded_activation(reload_state, monkeypatch):
+    """Review 2026-09-30: a caller waiting on a hot-added label got CancelledError when
+    the label was edited again, because the wait went through `shield`."""
+    entered = asyncio.Event()
+
+    async def connect(label, client):
+        if client.value == "X":
+            entered.set()
+            await asyncio.Event().wait()  # held until superseded
+        client.connected = True
+
+    monkeypatch.setattr(life, "_connect_and_authorize", connect)
+    reload_state.write("A", other="X")
+    await asyncio.wait_for(entered.wait(), 2)
+    waiter = asyncio.create_task(life.wait_for_label(reload_state.registry, "other"))
+    await barrier()
+    reload_state.write("A", other="Y")
+
+    await asyncio.wait_for(waiter, 2)  # an answer, not CancelledError
+    await life.drain(timeout=2)
+    assert reload_state.registry["other"] is reload_state.built["Y"]
+
+
+@pytest.mark.asyncio
+async def test_a_new_account_that_failed_once_is_tried_again(reload_state, monkeypatch):
+    """Review 2026-09-30: one failed connect of a hot-added label dropped it until the
+    next .env edit. Now the next refresh after the backoff stages it again."""
+    attempts = []
+
+    async def connect(label, client):
+        attempts.append(client.value)
+        if len(attempts) == 1:
+            raise ConnectionError("network blip")
+        client.connected = True
+
+    monkeypatch.setattr(life, "_connect_and_authorize", connect)
+    monkeypatch.setattr(life, "RETRY_SECONDS", 0.0)
+    reload_state.write("A", other="X")
+    await life.drain(timeout=2)
+    assert "other" not in reload_state.registry
+
+    conn.refresh_accounts()  # what the next tool call does first
+    await life.wait_for_label(reload_state.registry, "other")
+    await life.drain(timeout=2)
+
+    assert attempts == ["X", "X"]
+    assert reload_state.registry["other"].value == "X"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_account_is_not_retried_inside_the_backoff(reload_state, monkeypatch):
+    attempts = []
+
+    async def connect(label, client):
+        attempts.append(client.value)
+        raise ConnectionError("still down")
+
+    monkeypatch.setattr(life, "_connect_and_authorize", connect)
+    monkeypatch.setattr(life, "RETRY_SECONDS", 3600.0)
+    reload_state.write("A", other="X")
+    await life.drain(timeout=2)
+    conn.refresh_accounts()
+    await life.drain(timeout=2)
+
+    assert attempts == ["X"]

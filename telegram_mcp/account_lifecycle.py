@@ -30,6 +30,7 @@ for the transaction.
 from __future__ import annotations
 
 import asyncio
+import time
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
@@ -113,26 +114,67 @@ def pending_labels(registry: dict) -> set:
 
 
 async def wait_for_client(client) -> bool:
-    """Wait for the FULL existing activation, not a competing lease-only claim."""
+    """Wait for the FULL existing activation, not a competing lease-only claim.
+
+    `asyncio.wait`, not `shield`: a superseded activation is cancelled, and shield
+    handed that cancellation to this waiter as if the waiter had been cancelled -
+    the tool call then ended with no answer at all (review, 2026-09-30).
+    """
     key = id(client)
     operation = _pending.get(key)
     if operation is None:
         return False
     resume(operation[1])
     task = _tasks.get(key)
-    if task is not None and not await asyncio.shield(task):
+    if task is None:
+        return True
+    await asyncio.wait((task,))
+    if task.cancelled():
+        raise _admission.AdmissionSuperseded(
+            f"Account '{operation[0].label}' activation was superseded"
+        )
+    if not task.result():
         raise StartupMessage(f"Account '{operation[0].label}' could not be activated")
     return True
 
 
-async def wait_for_label(registry: dict, label: str) -> None:
+def _waited_client(registry: dict, label: str):
     if label in registry:
-        await wait_for_client(registry[label])
-        return
+        return registry[label]
     for one, target, _connect, _grace in list(_pending.values()):
         if target is registry and one.label == label:
-            await wait_for_client(one.client)
+            return one.client
+    return None
+
+
+async def wait_for_label(registry: dict, label: str) -> None:
+    """Wait for whatever activation the label has NOW, following a superseded one."""
+    # ponytail: three re-edits of one label during a single wait end in an error.
+    for _ in range(3):
+        client = _waited_client(registry, label)
+        if client is None:
             return
+        try:
+            await wait_for_client(client)
+            return
+        except _admission.AdmissionSuperseded:
+            continue
+    raise StartupMessage(f"Account '{label}' kept changing while this call waited; try again.")
+
+
+#: How long a label whose activation failed waits before a refresh stages it again,
+#: so a broken account is not reconnected on every tool call.
+RETRY_SECONDS = 30.0
+_retry = {"stamp": None, "not_before": 0.0}
+
+
+def note_failed(stamp) -> None:
+    """A staged label failed: the next refresh after the backoff stages it again."""
+    _retry["stamp"], _retry["not_before"] = stamp, time.monotonic() + RETRY_SECONDS
+
+
+def holding_off(stamp) -> bool:
+    return stamp == _retry["stamp"] and time.monotonic() < _retry["not_before"]
 
 
 # Labels whose admission REACHED the registry in the current transaction. The

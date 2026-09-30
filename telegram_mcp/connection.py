@@ -401,7 +401,7 @@ def refresh_accounts() -> list:
         _lifecycle.record_rejection(None, f"{type(error).__name__}: {error}")
         return []
 
-    if snapshot.stamp == _env_stamp:
+    if snapshot.stamp == _env_stamp or _lifecycle.holding_off(snapshot.stamp):
         _lifecycle.resume(clients)
         return []
     stamp, env, digests = snapshot.stamp, snapshot.env, snapshot.digests
@@ -486,11 +486,20 @@ def refresh_accounts() -> list:
                 record_activated(clients, digests, {label})
                 _notify_clients_changed({label}, set())
 
-        def failed(error, label=label):
+        def failed(error, label=label, fresh=previous is None):
+            global _env_stamp, _env_digests
             if _revision is revision:
                 from telegram_mcp.safe_log import safe_exception
 
                 _lifecycle.record_rejection(stamp, safe_exception(error))
+                # Not in force, so not "seen": the next refresh after the backoff
+                # stages it again instead of waiting for another .env edit.
+                if fresh:
+                    _env_digests = {
+                        k: v for k, v in _env_digests.items() if _account_label_of(k) != label
+                    }
+                _env_stamp = None
+                _lifecycle.note_failed(stamp)
 
         staged.append(
             _lifecycle.Staged(
