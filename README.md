@@ -963,6 +963,11 @@ telegram_mcp/install_guard.py # refuses a copy installed from PyPI (see the warn
 telegram_mcp/tools/           # tool modules grouped by domain
 telegram_mcp/tools/feed_lifecycle.py  # one feed consumer at a time, and who owns one that will not stop
 telegram_mcp/message_view.py  # deep structured message view
+telegram_mcp/tdexport/        # port of Telegram Desktop 7.2.10's chat export (HTML/JSON writers,
+                              #   takeout fetch, assets); self-contained - the secret-chat
+                              #   package copies it verbatim
+telegram_mcp/export_dialog.py # Desktop's export dialog: the owner's choices, form or explicit
+telegram_mcp/export_jobs.py   # exports run as background jobs (export_status, cancel_export)
 telegram_mcp/visual/          # Telegram Desktop capture and image/frame helpers
                               #   capture.py runs inside the worker; capture_runner.py
                               #   is the parent that spawns and bounds it
