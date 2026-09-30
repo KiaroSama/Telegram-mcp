@@ -573,6 +573,10 @@ async def _main() -> None:
             sys.exit(EXIT_SESSION_HELD)
         sys.exit(1)
     finally:
+        _admission._stopped = True
+        from telegram_mcp.account_lifecycle import stop as _stop_admissions
+
+        _stop_admissions(clients)
         # STOP NEW WORK FIRST. The incoming-event consumer writes to the feed and
         # calls into clients, so tearing the clients down underneath it produced
         # errors from a component that was merely still running. Nothing below
@@ -619,6 +623,12 @@ async def _main() -> None:
         except Exception as exc:
             startup_note(f"Closing the encrypted-chat backend failed: {_startup_text(exc)}")
 
+        confirmed_clients = set()
+
+        async def _disconnect_confirmed(cl):
+            await cl.disconnect()
+            confirmed_clients.add(id(cl))
+
         # BOUNDED, and that is the whole point of the deadline. This gather was
         # unbounded, so a single client whose disconnect never returned held
         # shutdown here forever - and everything below it simply never ran. One
@@ -626,7 +636,7 @@ async def _main() -> None:
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    *(cl.disconnect() for cl in clients.values()), return_exceptions=True
+                    *(_disconnect_confirmed(cl) for cl in clients.values()), return_exceptions=True
                 ),
                 timeout=_DISCONNECT_ALL_SECONDS,
             )
@@ -648,8 +658,8 @@ async def _main() -> None:
             if still_closing:
                 startup_note(
                     f"{still_closing} retired client(s) did not finish disconnecting "
-                    f"within {_RETIRE_DRAIN_SECONDS:.0f}s; releasing their session locks "
-                    "anyway so this process can exit."
+                    f"within {_RETIRE_DRAIN_SECONDS:.0f}s; keeping their session leases "
+                    "until closure is confirmed or this process fully exits."
                 )
         except Exception as exc:
             startup_note(f"Waiting for retired clients failed: {_startup_text(exc)}")
@@ -701,12 +711,12 @@ async def _main() -> None:
         # keeps its lease deliberately, and the next start of this server will
         # refuse to connect it. Saying which accounts, and why, is the difference
         # between a recoverable state and a mystery.
+        _admission.release_all(confirmed_clients=confirmed_clients)
         for account, why in sorted(_admission.unreleased_leases.items()):
             startup_note(
                 f"[{account}] its session lease was NOT released: {why}. Nothing else "
                 "may connect that session until this process has fully exited."
             )
-        _admission.release_all()
 
 
 # How long one account gets to connect AND prove its session, together. Neither

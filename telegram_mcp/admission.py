@@ -67,7 +67,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional
 
-from telegram_mcp.safe_log import log_event
+from telegram_mcp.safe_log import log_event, safe_exception
 from telegram_mcp.settings import StartupMessage
 from telegram_mcp.singleton import DEFAULT_GRACE_SECONDS, SessionLock, session_identity
 
@@ -116,6 +116,8 @@ _admitting: Dict[int, asyncio.Task] = {}
 
 # Releases waiting on a socket to finish closing, so shutdown can wait for them.
 _releasing: set = set()
+_claims: Dict[int, asyncio.Task] = {}
+_abandoned_claims: set = set()
 
 # Leases whose socket never confirmed it closed. The lock is STILL HELD - giving
 # it back would let a second process connect a session this one may still have
@@ -317,6 +319,11 @@ async def claim_session(
     operator a sentence about.
     """
 
+    key = id(client)
+    lease = _active.get(label)
+    if not _stopped and lease is not None and lease.client is client:
+        return
+
     async def owned() -> None:
         # The acquire's result belongs to THIS coroutine, never to the caller.
         # `asyncio.to_thread` cannot be cancelled, so a cancelled caller used to
@@ -336,13 +343,27 @@ async def claim_session(
                 )
             )
             acquired = True
+            if key in _abandoned_claims:
+                raise AdmissionSuperseded(f"Account '{label}' was retired during acquisition")
             _publish(label, client, lock, identity)
         except BaseException:
             if acquired:
                 _release_lock(lock, "a claim that could not be published")
             raise
 
-    task = asyncio.ensure_future(owned())
+    task = _claims.get(key)
+    if task is None:
+        task = asyncio.ensure_future(owned())
+        _claims[key] = task
+
+        def finished(done):
+            if _claims.get(key) is done:
+                _claims.pop(key, None)
+                _abandoned_claims.discard(key)
+            if not done.cancelled() and done.exception() is not None:
+                log_event(logging.WARNING, "session acquisition refused", error=done.exception())
+
+        task.add_done_callback(finished)
     # Shielded: cancelling the caller must not cancel the owner, or the lock the
     # thread is about to return has no one to dispose of it.
     await asyncio.shield(task)
@@ -366,6 +387,10 @@ async def admit_if_pending(client) -> None:
     Shielded: a cancelled CALLER must not cancel the admission, whose thread
     cannot be cancelled anyway and whose lock would then have no owner.
     """
+    from telegram_mcp.account_lifecycle import wait_for_client
+
+    if await wait_for_client(client):
+        return
     if not _awaiting_admission:
         return
     task = _start_admission(client)
@@ -397,6 +422,17 @@ def transfer_lease(from_label: str, to_label: str, client) -> bool:
     return True
 
 
+def restore_active(label: str, client) -> None:
+    """A failed candidate must leave the predecessor's bookkeeping active too."""
+    if client is None or label in _active:
+        return
+    lease = _lease_of(label, client)
+    if lease is not None:
+        _retiring.pop(id(lease), None)
+        _active[label] = lease
+        session_locks[label] = lease.lock
+
+
 def forget(label: str, closing=None, *, client=None) -> bool:
     """Retire ONE client's lease: stop admitting it, release once its socket is down.
 
@@ -415,7 +451,10 @@ def forget(label: str, closing=None, *, client=None) -> bool:
     Returns whether a lease was actually retired, so a caller can see that its
     retirement did not apply rather than assuming it did.
     """
-    _awaiting_admission.pop(label, None)
+    if client is not None and id(client) in _claims:
+        _abandoned_claims.add(id(client))
+    if client is None or _awaiting_admission.get(label) is client:
+        _awaiting_admission.pop(label, None)
     if client is None:
         lease = _drop(label)
     else:
@@ -432,8 +471,21 @@ def forget(label: str, closing=None, *, client=None) -> bool:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        _release_lock(lease.lock, "retirement with no loop to wait on")
-        unreleased_leases.pop(lease.label, None)
+        # No running loop is not a closure receipt. Synchronous refusal returns
+        # an awaitable too; retain the actual handle until closure is proved.
+        confirmed = (
+            asyncio.isfuture(closing)
+            and closing.done()
+            and not closing.cancelled()
+            and closing.exception() is None
+        )
+        if confirmed:
+            _release_lock(lease.lock, "synchronously confirmed retirement")
+            unreleased_leases.pop(lease.label, None)
+        else:
+            _retire_lease(lease)
+            unreleased_leases[lease.label] = "closure could not be confirmed without a loop"
+            log_event(logging.WARNING, "retaining a session lease after unconfirmed retirement")
         return True
     # Owned while it waits: the lease is back in `_retiring` for the whole of the
     # close, so nothing can collect the lock out from under a socket that is
@@ -458,23 +510,34 @@ async def _release_when_closed(lease: _Lease, closing) -> None:
     cost is a session this process will not reuse until it restarts, which is
     recoverable; the alternative is not.
     """
+    future = _as_future(closing)
+    _retire_lease(lease)
+
+    def confirmed(done):
+        # The callback also owns completion AFTER the observer's deadline.
+        if done.cancelled():
+            return
+        error = done.exception()
+        if error is not None:
+            unreleased_leases[lease.label] = safe_exception(error)
+            return
+        if _retiring.pop(id(lease), None) is lease:
+            if not any(one.label == lease.label for one in _retiring.values()):
+                unreleased_leases.pop(lease.label, None)
+            _release_lock(lease.lock, "a confirmed close")
+
+    future.add_done_callback(confirmed)
     try:
-        await asyncio.wait_for(asyncio.shield(_as_future(closing)), _CLOSE_BEFORE_RELEASE_SECONDS)
-    except Exception as error:
-        # The lease STAYS in `_retiring`. That is what keeps the lock: recording
-        # the reason is for the operator, and a string in a dict holds nothing.
-        _retire_lease(lease)
-        unreleased_leases[lease.label] = f"{type(error).__name__}: {error}"
-        log_event(
-            logging.WARNING,
-            "keeping a session lease: its socket never confirmed it closed",
-            account=lease.label,
-            error=error,
-        )
-        return
-    _retiring.pop(id(lease), None)
-    unreleased_leases.pop(lease.label, None)
-    _release_lock(lease.lock, "a confirmed close")
+        await asyncio.wait_for(asyncio.shield(future), _CLOSE_BEFORE_RELEASE_SECONDS)
+    except (Exception, asyncio.CancelledError) as error:
+        if id(lease) in _retiring:
+            unreleased_leases[lease.label] = safe_exception(error)
+            log_event(logging.WARNING, "keeping an unconfirmed session lease", error=error)
+        if isinstance(error, asyncio.CancelledError):
+            raise
+    else:
+        # An already-completed Future may not yield a loop turn for callbacks.
+        confirmed(future)
 
 
 def _as_future(closing):
@@ -507,7 +570,7 @@ def begin_serving() -> None:
     _stopped = False
 
 
-def release_all() -> None:
+def release_all(*, confirmed_clients: Optional[set] = None) -> None:
     """Drop every lock this process holds, and close the door behind it.
 
     Shutdown's last step. The `_stopped` flag is the half that was missing: an
@@ -517,6 +580,20 @@ def release_all() -> None:
     """
     global _stopped
     _stopped = True
+    if confirmed_clients is not None:
+        # Graceful shutdown may give back only positively confirmed sockets.
+        # Unaccounted handles remain owned until OS process teardown; a failed
+        # disconnect is not a release receipt.
+        for label, lease in list(_active.items()):
+            if id(lease.client) in confirmed_clients:
+                _drop(label)
+                _release_lock(lease.lock, "confirmed shutdown")
+            else:
+                unreleased_leases[label] = "client closure was not confirmed"
+        for lease in _retiring.values():
+            unreleased_leases.setdefault(lease.label, "retired client closure was not confirmed")
+        _awaiting_admission.clear()
+        return
     for lease in list(_active.values()):
         _release_lock(lease.lock, "shutdown")
     for label, lock in list(session_locks.items()):
