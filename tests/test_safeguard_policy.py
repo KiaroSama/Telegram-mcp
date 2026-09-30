@@ -235,6 +235,11 @@ def test_a_path_elsewhere_is_not_refused():
 
 def test_granting_admin_powers_asks_like_editing_them():
     """One power, one answer: promote, edit and demote all wait for the owner (plan 004)."""
-    for name in ("promote_admin", "edit_admin_rights", "demote_admin"):
+    names = ["demote_admin"] + [
+        f"{family}_{kind}"
+        for family in ("promote_admin", "edit_admin_rights")
+        for kind in ("group", "channel", "community")
+    ]
+    for name in names:
         assert name in policy.GATED, name
         assert _decide(name, {"group_id": 1, "user_id": 2, "account": "a"}).outcome == "ask", name

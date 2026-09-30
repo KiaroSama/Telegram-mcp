@@ -24,21 +24,34 @@ and then delivered over TDLib. Telethon 1.45 announces layer 229 and carries
 both as ordinary fields, so the detour is gone and the installed type is the
 whole truth again. What stays is where these are pinned: the bytes on the wire,
 because an attribute set on a Python object proves nothing.
+
+Spec 033 split `promote_admin` and `edit_admin_rights` into one tool per chat type; the
+tests that pinned their old defaults now pin the builder, the wire bits and the per-type
+tools (`test_admin_rights_tools.py` holds the per-type behaviour).
 """
 
 import inspect
 from types import SimpleNamespace
 
 import pytest
+from telethon.tl import types
+from telethon.tl.functions import communities as community_requests
 from telethon.tl.types import ChatAdminRights
+
+from telegram_mcp import admin_rights_sets as sets
 
 # The admin-rights model moved out of `moderation` into its own module; the
 # alias is kept so the assertions below still read as they did.
 from telegram_mcp.tools import admin_rights as moderation_mod
+from telegram_mcp.tools import admin_rights_by_type as by_type
 
 # Telegram's two most recent admin rights, flags.19 and flags.20 - the pair a
 # client one layer behind drops silently.
 _THE_TWO_NEWEST = {"manage_linked_peers", "manage_welcome_messages"}
+
+_PHOTO = types.ChatPhotoEmpty()
+_CHANNEL = types.Channel(id=5876481644, title="News", photo=_PHOTO, date=None, broadcast=True)
+_COMMUNITY = types.Community(id=900, title="Hub", photo=_PHOTO, date=None, access_hash=77)
 
 
 def _telethon_fields():
@@ -96,9 +109,7 @@ def test_the_two_newest_rights_reach_telegram_as_the_right_bits():
         granted = _flags_on_the_wire(moderation_mod._build_admin_rights({name: True}))
         assert granted >> bit & 1, f"{name} never reached flags.{bit}"
 
-        withheld = _flags_on_the_wire(
-            moderation_mod._build_admin_rights({name: False}, defaults={})
-        )
+        withheld = _flags_on_the_wire(moderation_mod._build_admin_rights({name: False}))
         assert not (withheld >> bit & 1), f"{name} set flags.{bit} when it was declined"
 
 
@@ -106,10 +117,10 @@ def test_the_two_newest_bits_are_the_only_ones_a_bare_grant_sets():
     """A flags field is one integer, so a wrong bit corrupts a neighbouring
     right rather than failing loudly. Pinned as an exact integer for that
     reason, rather than as two independent bit checks."""
-    without = _flags_on_the_wire(moderation_mod._build_admin_rights({}, defaults={}))
+    without = _flags_on_the_wire(moderation_mod._build_admin_rights({}))
     with_later = _flags_on_the_wire(
         moderation_mod._build_admin_rights(
-            {"manage_linked_peers": True, "manage_welcome_messages": True}, defaults={}
+            {"manage_linked_peers": True, "manage_welcome_messages": True}
         )
     )
 
@@ -132,42 +143,31 @@ def test_the_five_that_were_unreachable_are_named_explicitly():
         assert right in fields, right
 
 
-def test_a_declined_right_is_declined_and_the_rest_keep_their_default():
-    """The long-standing contract, which the story fix must not have changed:
-    asking for less gets you less, but declining ONE right does not silently
-    decline the others."""
-    rights = moderation_mod._build_admin_rights({"ban_users": False})
-
-    assert rights.ban_users is False
-    assert rights.change_info is True, "an unmentioned right lost its default"
-
-
-def test_the_five_formerly_unreachable_rights_are_granted_by_default_too():
+def test_the_five_formerly_unreachable_rights_are_part_of_a_full_admin_where_they_exist():
     """The user-visible bug: a promotion reported success while Telegram's own
     panel showed "Manage stories 0/3" and two switches sitting off."""
-    rights = moderation_mod._build_admin_rights()
+    channel = sets.full_admin("channel")
+    group = sets.full_admin("group", is_forum=True)
 
-    assert rights.post_stories is True
-    assert rights.edit_stories is True
-    assert rights.delete_stories is True
-    assert rights.manage_direct_messages is True
-    assert rights.manage_ranks is True
+    for right in ("post_stories", "edit_stories", "delete_stories", "manage_direct_messages"):
+        assert channel[right] is True, right
+    assert group["manage_ranks"] is True
+    assert all(group[right] for right in ("post_stories", "edit_stories", "delete_stories"))
 
 
-def test_the_two_held_back_stay_off_unless_asked_for():
-    """One lets an admin mint more admins, the other changes who they appear to
-    be. Neither should arrive by default."""
-    rights = moderation_mod._build_admin_rights()
-
-    assert rights.add_admins is False
-    assert rights.anonymous is False
-    assert moderation_mod._build_admin_rights({"add_admins": True}).add_admins is True
+def test_a_full_admin_holds_add_admins_and_never_anonymous():
+    """The owner's definition (spec 033): every right of the type except "Remain
+    anonymous", "Add new admins" included."""
+    for kind in sets.KINDS:
+        rights = sets.full_admin(kind, is_forum=True)
+        assert rights["add_admins"] is True
+        assert rights.get("anonymous", False) is False
 
 
 def test_a_demotion_clears_every_field_including_the_new_ones():
     """`ChatAdminRights` fields left unset serialise as absent, which is how the
     old demotion could leave story and direct-message rights standing."""
-    rights = moderation_mod._build_admin_rights({}, defaults={})
+    rights = moderation_mod._build_admin_rights({})
 
     for name in _all_fields():
         assert getattr(rights, name) is False, f"{name} was not explicitly cleared"
@@ -178,28 +178,29 @@ def test_an_unknown_key_is_ignored_rather_than_raising():
     lose that one right, not have the whole promotion refused."""
     rights = moderation_mod._build_admin_rights({"some_right_from_the_future": True})
 
-    assert rights.post_stories is True
+    assert not any(getattr(rights, name) for name in _all_fields())
 
 
-@pytest.mark.parametrize("tool_name", ["promote_admin", "demote_admin", "edit_admin_rights"])
-def test_no_tool_hand_rolls_the_rights_object_any_more(tool_name):
-    """All three built their own `ChatAdminRights(...)` and all three fell behind
+@pytest.mark.parametrize(
+    "tool",
+    [
+        moderation_mod.demote_admin,
+        *(
+            getattr(by_type, f"{family}_{kind}")
+            for family in ("promote_admin", "edit_admin_rights")
+            for kind in sets.KINDS
+        ),
+    ],
+)
+def test_no_tool_hand_rolls_the_rights_object_any_more(tool):
+    """All of them built their own `ChatAdminRights(...)` and fell behind
     together. One builder is the reason they cannot drift apart again."""
-    source = inspect.getsource(getattr(moderation_mod, tool_name))
+    source = inspect.getsource(tool)
 
     assert "ChatAdminRights(" not in source, (
-        f"{tool_name} constructs ChatAdminRights directly again; use "
+        f"{tool.__name__} constructs ChatAdminRights directly again; use "
         "_build_admin_rights so a new Telethon field cannot go missing"
     )
-
-
-def test_edit_admin_rights_exposes_every_field_as_a_parameter():
-    """This tool's whole purpose is per-right control, so a right it cannot name
-    is a right it cannot set."""
-    params = set(inspect.signature(moderation_mod.edit_admin_rights).parameters)
-
-    missing = _all_fields() - params
-    assert not missing, f"edit_admin_rights cannot set: {sorted(missing)}"
 
 
 def test_the_later_flags_survive_a_round_trip_through_telethons_reader():
@@ -214,7 +215,7 @@ def test_the_later_flags_survive_a_round_trip_through_telethons_reader():
     from telethon.extensions.binaryreader import BinaryReader
 
     granted = moderation_mod._build_admin_rights(
-        {"manage_welcome_messages": True, "manage_linked_peers": True}, defaults={}
+        {"manage_welcome_messages": True, "manage_linked_peers": True}
     )
 
     read_back = BinaryReader(bytes(granted)).tgread_object()
@@ -230,15 +231,54 @@ def test_the_reported_rights_cover_exactly_what_can_be_set():
     reader cannot name is a right nobody can see the absence of - which is how
     "one or two admins are missing this permission" became unanswerable
     without opening Telegram itself."""
-    granted = moderation_mod._build_admin_rights()
+    granted = moderation_mod._build_admin_rights({name: True for name in _all_fields()})
 
     assert set(moderation_mod.admin_rights_to_dict(granted)) == set(
         moderation_mod._admin_rights_fields()
     )
 
 
+class _Fake:
+    """A client answering what the per-type tools send; ``edit`` decides the edit's fate."""
+
+    def __init__(self, edit=None, participant=None):
+        self._edit = edit
+        self._participant = participant
+        self.edits = []
+
+    def is_connected(self):
+        return True
+
+    async def __call__(self, request):
+        name = type(request).__name__
+        if isinstance(request, community_requests.GetJoinedCommunitiesRequest):
+            return types.messages.Chats(chats=[_COMMUNITY])
+        if name == "EditAdminRequest":
+            self.edits.append(request)
+            if self._edit is not None:
+                raise self._edit
+            return SimpleNamespace(updates=[])
+        if name == "GetParticipantRequest":
+            applied = self._participant(self.edits[-1]) if self._participant else None
+            return SimpleNamespace(participant=SimpleNamespace(admin_rights=applied))
+        raise AssertionError(f"unexpected request {name}")
+
+
+@pytest.fixture
+def _fake(wire_client):
+    def _make(**kwargs):
+        async def _resolve(reference, cl=None, account=None):
+            return _CHANNEL
+
+        return wire_client(by_type, _Fake(**kwargs), resolve=_resolve)
+
+    return _make
+
+
 @pytest.mark.asyncio
-async def test_a_session_too_new_to_promote_says_so_instead_of_looking_like_a_permission_gap():
+async def test_a_session_too_new_to_promote_says_so_instead_of_looking_like_a_permission_gap(
+    _fake,
+):
     """Telegram refuses admin changes from a login younger than about 24 hours,
     however complete its rights are. Measured live: the channel's own CREATOR
     was refused, minutes after that account was added.
@@ -250,36 +290,11 @@ async def test_a_session_too_new_to_promote_says_so_instead_of_looking_like_a_pe
     """
     import telethon
 
-    from telegram_mcp.tools import admin_rights as mod
+    _fake(edit=telethon.errors.rpcerrorlist.FreshChangeAdminsForbiddenError(request=None))
 
-    class _Refuses:
-        def is_connected(self):
-            return True
-
-        async def __call__(self, request):
-            raise telethon.errors.rpcerrorlist.FreshChangeAdminsForbiddenError(request=None)
-
-    client = _Refuses()
-
-    async def _connected(_client):
-        return None
-
-    async def _resolve(reference, _client):
-        class _Peer:
-            id = 5876481644
-
-        return _Peer()
-
-    original = (mod.get_client, mod.ensure_connected, mod.resolve_entity)
-    mod.get_client = lambda account=None: client
-    mod.ensure_connected = _connected
-    mod.resolve_entity = _resolve
-    try:
-        answer = await mod.edit_admin_rights(
-            chat_id=-1002046407246, user_id=5876481644, account="acct", change_info=True
-        )
-    finally:
-        mod.get_client, mod.ensure_connected, mod.resolve_entity = original
+    answer = await by_type.edit_admin_rights_channel(
+        5876481644, 5876481644, change_info=True, account="acct"
+    )
 
     assert "24 hours" in answer, "the age rule was not named"
     assert "anti-hijack" in answer
@@ -287,109 +302,66 @@ async def test_a_session_too_new_to_promote_says_so_instead_of_looking_like_a_pe
 
 
 @pytest.mark.asyncio
-async def test_a_right_telegram_declined_is_read_back_not_assumed_applied():
+async def test_a_right_telegram_declined_is_read_back_not_assumed_applied(_fake):
     """Measured live on a broadcast channel: `channels.editAdmin` was accepted in
     full and `pin_messages`, `manage_topics` and `manage_ranks` came back False,
-    because pinning is a supergroup right, topics need a forum, and ranks need
-    the supergroup context. Setting each one alone through TDLib produced the
-    same False, so it is Telegram scoping them out, not a transport fault.
+    because those are not channel rights. Setting each one alone through TDLib
+    produced the same False, so it is Telegram scoping them out, not a transport
+    fault.
 
     The tool used to end its note with "Every other right in this call was
     applied" - a claim about an outcome nobody had read back. The owner acted on
     it and believed a user held rights Telegram had never granted. So the write
     is no longer the report: the rights are re-read and a declined one is named.
     """
-    from telethon.tl.types import ChatAdminRights
-
-    from telegram_mcp.tools import admin_rights as mod
-
-    # What a broadcast channel actually returns for the request above.
     applied = ChatAdminRights(
-        change_info=True, delete_messages=True, pin_messages=False, manage_topics=False
+        change_info=True,
+        delete_messages=True,
+        post_messages=False,
+        manage_direct_messages=False,
+    )
+    _fake(participant=lambda request: applied)
+
+    answer = await by_type.edit_admin_rights_channel(
+        5876481644,
+        5876481644,
+        account="acct",
+        change_info=True,
+        delete_messages=True,
+        post_messages=True,
+        manage_direct_messages=True,
     )
 
-    class _Channel:
-        async def __call__(self, request):
-            name = type(request).__name__
-            if name == "EditAdminRequest":
-                return SimpleNamespace(updates=[])
-            if name == "GetParticipantRequest":
-                return SimpleNamespace(participant=SimpleNamespace(admin_rights=applied))
-            raise AssertionError(f"unexpected request {name}")
-
-        def is_connected(self):
-            return True
-
-    async def _connected(_client):
-        return None
-
-    async def _resolve(reference, _client):
-        return SimpleNamespace(id=5876481644)
-
-    original = (mod.get_client, mod.ensure_connected, mod.resolve_entity)
-    mod.get_client = lambda account=None: _Channel()
-    mod.ensure_connected = _connected
-    mod.resolve_entity = _resolve
-    try:
-        answer = await mod.edit_admin_rights(
-            chat_id=-1002046407246,
-            user_id=5876481644,
-            account="acct",
-            change_info=True,
-            delete_messages=True,
-            pin_messages=True,
-            manage_topics=True,
-        )
-    finally:
-        mod.get_client, mod.ensure_connected, mod.resolve_entity = original
-
-    assert "Telegram declined: manage_topics, pin_messages" in answer
+    assert "Telegram declined: manage_direct_messages, post_messages" in answer
     # A right that WAS applied must not be named as declined, or the report is
     # noise the reader learns to skip.
-    assert "change_info" not in answer
-    assert "delete_messages" not in answer
+    declined = answer.split("Telegram declined:")[1]
+    assert "change_info" not in declined
+    assert "delete_messages" not in declined
 
 
 @pytest.mark.asyncio
-async def test_a_failed_read_back_does_not_turn_an_applied_change_into_an_error():
+async def test_a_failed_read_back_does_not_turn_an_applied_change_into_an_error(_fake):
     """The check is an improvement to the report, not a second thing that can
     fail the call. If Telegram will not answer the read-back, the rights were
     still written - saying otherwise would be a worse lie than the one it
     replaced."""
-    from telegram_mcp.tools import admin_rights as mod
 
-    class _WontRead:
-        async def __call__(self, request):
-            if type(request).__name__ == "EditAdminRequest":
-                return SimpleNamespace(updates=[])
-            raise ConnectionError("read-back refused")
+    def _refused(request):
+        raise ConnectionError("read-back refused")
 
-        def is_connected(self):
-            return True
+    _fake(participant=_refused)
 
-    async def _connected(_client):
-        return None
-
-    async def _resolve(reference, _client):
-        return SimpleNamespace(id=5876481644)
-
-    original = (mod.get_client, mod.ensure_connected, mod.resolve_entity)
-    mod.get_client = lambda account=None: _WontRead()
-    mod.ensure_connected = _connected
-    mod.resolve_entity = _resolve
-    try:
-        answer = await mod.edit_admin_rights(
-            chat_id=-1002046407246, user_id=5876481644, account="acct", change_info=True
-        )
-    finally:
-        mod.get_client, mod.ensure_connected, mod.resolve_entity = original
+    answer = await by_type.edit_admin_rights_channel(
+        5876481644, 5876481644, account="acct", change_info=True
+    )
 
     assert answer.startswith("Admin rights updated")
     assert "declined" not in answer, "an unread right was reported as declined"
 
 
 @pytest.mark.asyncio
-async def test_both_newest_rights_are_set_on_the_plain_telethon_path():
+async def test_both_newest_rights_are_set_on_the_plain_telethon_path(_fake):
     """Telethon 1.45 announces layer 229 - the same layer TDLib does - so
     `channels.editAdmin` carries flags.19 and flags.20 by itself.
 
@@ -401,91 +373,40 @@ async def test_both_newest_rights_are_set_on_the_plain_telethon_path():
 
     So the answer has to be the plain one. Anything appended about TDLib means
     the detour is back, and with it a second Telegram authorisation for
-    something Telethon already does.
+    something Telethon already does. Linked peers is a community right and
+    welcome messages a channel one, so each goes through its own tool.
     """
-    from telegram_mcp.tools import admin_rights as mod
+    client = _fake(participant=lambda request: request.admin_rights)
 
-    sent = {}
+    await by_type.edit_admin_rights_channel(
+        5876481644, 5876481644, account="acct", manage_welcome_messages=True
+    )
+    await by_type.edit_admin_rights_community(
+        900, 5876481644, account="acct", manage_linked_peers=True
+    )
 
-    class _Channel:
-        async def __call__(self, request):
-            name = type(request).__name__
-            if name == "EditAdminRequest":
-                # Read off the wire form, not off the Python object: the whole
-                # class of bug here is a right that looks set and never leaves
-                # the process.
-                sent["flags"] = _flags_on_the_wire(request.admin_rights)
-                sent["rights"] = request.admin_rights
-                return SimpleNamespace(updates=[])
-            if name == "GetParticipantRequest":
-                return SimpleNamespace(participant=SimpleNamespace(admin_rights=sent["rights"]))
-            raise AssertionError(f"unexpected request {name}")
-
-        def is_connected(self):
-            return True
-
-    async def _connected(_client):
-        return None
-
-    async def _resolve(reference, _client):
-        return SimpleNamespace(id=5876481644)
-
-    original = (mod.get_client, mod.ensure_connected, mod.resolve_entity)
-    mod.get_client = lambda account=None: _Channel()
-    mod.ensure_connected = _connected
-    mod.resolve_entity = _resolve
-    try:
-        answer = await mod.edit_admin_rights(
-            chat_id=-1002046407246,
-            user_id=5876481644,
-            account="acct",
-            manage_linked_peers=True,
-            manage_welcome_messages=True,
-        )
-    finally:
-        mod.get_client, mod.ensure_connected, mod.resolve_entity = original
-
-    assert sent["flags"] >> 19 & 1, "manage_linked_peers never reached flags.19"
-    assert sent["flags"] >> 20 & 1, "manage_welcome_messages never reached flags.20"
-    assert answer == "Admin rights updated for user 5876481644 in chat -1002046407246."
+    welcome, linked = client.edits
+    assert _flags_on_the_wire(welcome.admin_rights) == 1 << 20, "flags.20 missing or mixed"
+    assert _flags_on_the_wire(linked.admin_rights) == 1 << 19, "flags.19 missing or mixed"
 
 
-# --- the caller can see which keys exist, and which of theirs were ignored ----------
+# --- the caller can see which keys exist ------------------------------------------
 
 
-def test_the_description_lists_every_right_the_builder_knows():
+@pytest.mark.parametrize("kind", sets.KINDS)
+def test_the_description_lists_every_right_of_the_type(kind):
     """Reported 2026-09-29: the `rights` schema was `{}`, so callers guessed the names."""
-    doc = moderation_mod.promote_admin.__doc__
-    for name in moderation_mod._admin_rights_fields():
+    doc = getattr(by_type, f"promote_admin_{kind}").__doc__
+    for name in sets.fields(kind, is_forum=True):
         assert name in doc, name
 
 
 @pytest.mark.asyncio
-async def test_an_ignored_key_and_a_privacy_refusal_are_named(monkeypatch):
+async def test_a_privacy_refusal_is_named(_fake):
     import telethon.errors.rpcerrorlist as rpc
 
-    chat = SimpleNamespace(title="DG Anti study")
+    _fake(edit=rpc.UserPrivacyRestrictedError(request=None))
 
-    class _Client:
-        def __init__(self, error=None):
-            self.error = error
+    refused = await by_type.promote_admin_channel(5876481644, 5876481644, account="acct")
 
-        async def __call__(self, request):
-            if self.error:
-                raise self.error
-            return True
-
-    async def _resolve(value, cl):
-        return chat if value == "g" else SimpleNamespace(id=6318674786)
-
-    monkeypatch.setattr(moderation_mod, "resolve_entity", _resolve)
-    monkeypatch.setattr(moderation_mod, "get_client", lambda account=None: _Client())
-    ok = await moderation_mod.promote_admin(
-        "g", "u", rights={"delete_messages": True, "nuke": True}
-    )
-    assert "Successfully promoted" in ok and "nuke" in ok
-
-    blocked = _Client(rpc.UserPrivacyRestrictedError(request=None))
-    monkeypatch.setattr(moderation_mod, "get_client", lambda account=None: blocked)
-    refused = await moderation_mod.promote_admin("g", "u")
     assert refused.startswith("Error") and "chat_invite" in refused

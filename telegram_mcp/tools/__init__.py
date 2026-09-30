@@ -18,7 +18,9 @@ from telegram_mcp.tools.messages_queue import *
 from telegram_mcp.tools.groups import *
 from telegram_mcp.tools.chat_photo_history import *
 from telegram_mcp.tools.moderation import *
+from telegram_mcp.tools.group_permissions import *
 from telegram_mcp.tools.admin_rights import *
+from telegram_mcp.tools.admin_rights_by_type import *
 from telegram_mcp.tools.invites import *
 from telegram_mcp.tools.media import *
 from telegram_mcp.tools.gifs import *

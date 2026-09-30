@@ -282,7 +282,7 @@ assumed missing and is not. Nothing below needs building.
 |---|---|
 | Create a channel, private or public | `create_channel` (an optional `username` makes it public; the name is checked BEFORE the chat exists) |
 | Create a group | `create_group`, then `enable_forum_topics` for topic mode |
-| Member tags (the short label next to a member's name) | `set_member_tag` (empty removes); tags read back in `get_participants`; `set_default_chat_permissions(edit_rank=...)` for self-tags |
+| Member tags (the short label next to a member's name) | `set_member_tag` (empty removes); tags read back in `get_participants`; `set_group_permissions(edit_own_tags=...)` for self-tags |
 | Find, pin and flag your own chats | `search_my_chats` (name/username, archived included, optionally inside a folder), `pin_chat` / `unpin_chat` (All chats or a folder), `mark_chat_unread`; folders themselves: `list_folders`, `get_folder`, `add_chat_to_folder` |
 | A bot's reply keyboard (the buttons in place of the typing keyboard) | `inspect_buttons` without a message id reports the active one (Telegram Desktop's rule, last 100 messages); `press_reply_button` presses a plain button and returns the bot's answer; `answer_reply_button` answers phone, location, chat-choice, poll and Mini App buttons, always with the owner's approval |
 | A chat's notifications | `mute_chat` (days/hours/minutes or forever), `unmute_chat`, `set_chat_sound_disabled`, `set_chat_tone`, `list_saved_sounds`, `remove_saved_sound` |
@@ -290,8 +290,8 @@ assumed missing and is not. Nothing below needs building.
 | A Telegram community (groups channels, groups and bots) | `list_my_communities`, `get_community_chats`, `create_community`, `rename_community`, `set_community_photo`, `delete_community_photo`, `set_community_who_can_add`, `delete_community`; linking with `add_chat_to_community` (visibility required, permanent) and `remove_chat_from_community`; `get_community_link_requests`, `approve_community_link_request`, `reject_community_link_request` (one or all); `ban_community_member` (optionally from the chats joined through it), `unban_community_member` |
 | Ban, unban, list bans | `ban_user`, `unban_user`, `get_banned_users` |
 | Block / unblock a user | `block_user`, `unblock_user`, `get_blocked_users` |
-| Promote, demote, set rights | `promote_admin`, `demote_admin`, `edit_admin_rights`, `get_admins` |
-| Default member permissions | `set_default_chat_permissions` |
+| Promote, demote, set rights, per chat type (Telegram Desktop's rights for each) | `promote_admin_group`, `promote_admin_channel`, `promote_admin_community`, `edit_admin_rights_group`, `edit_admin_rights_channel`, `edit_admin_rights_community`, `demote_admin`, `get_admins` |
+| Member permissions (Telegram Desktop's Permissions screen) | `set_group_permissions`: Send messages, the ten Send media kinds, Add members, Create topics, Pin messages, Edit own tags, Change group info, Charge Stars for Messages, Do not restrict boosters, Slow mode; an item not passed keeps its value. Exceptions: `set_member_exception`, `remove_member_exception`; removed users: `get_banned_users`, `unban_user` |
 | Add members, invite links | `invite_to_group`, `export_chat_invite`, `get_invite_link`, `import_chat_invite` |
 | Rename a channel or group | `edit_chat_title` |
 | Set its description / bio | `edit_chat_about` |
@@ -302,7 +302,7 @@ assumed missing and is not. Nothing below needs building.
 | An owned bot's name, about, description | `set_bot_info` |
 | Posting in a topic | `topic_id` on `send_message`, `reply_to_message`, `save_draft`, `schedule_message` and the media senders; the id comes from `list_topics`, and every message-returning tool reports the `topic_id` it was in |
 | Slow mode, forum mode | `toggle_slow_mode`, `enable_forum_topics`; the interval and this account's next allowed send are read back by `get_full_chat` |
-| Admin log (recent actions) | `get_recent_actions` |
+| Admin log (recent actions) | `get_recent_actions`, filtered like Telegram Desktop's dialog: by type (Members and admins, Group settings, Messages checkboxes), by admins, search text; pages back through `max_id` |
 | Participants | `get_participants` |
 | Archive, mute, pin | `archive_chat`, `mute_chat`, `pin_message`, `unpin_all_messages` |
 | Leave, clear history | `leave_chat`, `delete_chat_history` |
@@ -469,8 +469,9 @@ The settings an operator actually reaches for are all missing:
 | Forum topics | ~~`EditForumTopic`~~ **built**, using Telethon's own request. It ships all three under `functions.messages` - looking in `functions.channels` is what made them seem absent, and the `channels.*` forms found there are RETIRED (they take an InputChannel; the live ones take an InputPeer). Telegram still serves the retired ids, so the hand-rolled encoders this module carried looked correct. Pinning built 2026-09-28 (`pin_forum_topic`, `reorder_pinned_topics`). |
 | Structural | ~~`ConvertToGigagroup`, `EditLocation`, `DeleteChannel`, `ToggleAutotranslation`~~ **built** |
 
-`UpdatePaidMessagesPrice` sets a Stars price on messages and falls under *Deliberately not
-building* (payments and Stars); it is not part of this phase.
+`UpdatePaidMessagesPrice` sets a Stars price on messages. It stayed out of this phase under
+*Deliberately not building*; the owner asked for Desktop's "Charge Stars for Messages" in spec
+033, so a group's price is now set by `set_group_permissions(charge_stars_per_message=...)`.
 
 Self-contained, no new dependency, and every one is a single request. `DeleteChannel`
 and `ConvertToGigagroup` are irreversible and must be annotated `destructiveHint`
@@ -620,7 +621,7 @@ never anything to notify about and no tool sends it.
 
 Two admin-rights tools used to sit here as well, because layer 227 could not carry
 `manage_linked_peers` or `manage_welcome_messages`. Telethon 1.45 announces layer 229 and
-`edit_admin_rights` sets both over MTProto, so they were removed — which left secret chats
+`edit_admin_rights_channel` and `edit_admin_rights_community` set them over MTProto, so they were removed — which left secret chats
 as TDLib's only remaining reason to exist here, and then that went too.
 
 ### Measured: `can_be_saved` is advisory

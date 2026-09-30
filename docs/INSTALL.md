@@ -163,8 +163,15 @@ Every request names the **Account** acting, the **Action**, the **Tool** and **C
 **Sends** (up to 300 characters of the text and the file names, when it sends any) and **Why
 asked** in plain words (for example "first message to someone this account never messaged").
 
+The six admin-rights tools (`promote_admin_*`, `edit_admin_rights_*`) add a line under **Tool** listing
+every right about to be granted, in Telegram Desktop's words and order: `permissions: A | B | Parent: sub1, sub2`.
+`set_group_permissions`, `set_member_exception` and `remove_member_exception` add the same kind of line for
+member permissions (what is allowed, then `not allowed: ...`, and an exception's end date). A right sent as
+anything but true/false is refused before you are asked, so the line always matches what runs; when the
+chat cannot be looked up in time the line still lists the rights and says `(chat not checked)`.
+
 **Always approve** covers one tool in one chat of one account and survives restarts.
-The chat is where the action happens - the group for `promote_admin`, not the person
+The chat is where the action happens - the group for `promote_admin_group`, not the person
 promoted; a secret chat is shown as `secret chat <id>`.
 `safeguard_status` lists every such grant and `revoke_always_approval` removes one; the
 approval bot's `/always` and `/reset_always` do the same from your phone. It also covers

@@ -90,11 +90,15 @@ GATED = frozenset(
         "delete_secret_message",
         "delete_story",
         "demote_admin",
-        "edit_admin_rights",
+        "edit_admin_rights_group",  # spec 033 (owner, 2026-10-01): replaces edit_admin_rights
+        "edit_admin_rights_channel",  # spec 033 (owner, 2026-10-01): replaces edit_admin_rights
+        "edit_admin_rights_community",  # spec 033 (owner, 2026-10-01): replaces edit_admin_rights
         "import_chat_invite",
         "join_chat_by_link",
         "kick_user",
-        "promote_admin",  # one power with edit_admin_rights and demote_admin (owner, 2026-09-29)
+        "promote_admin_group",  # spec 033 (owner, 2026-10-01): replaces promote_admin
+        "promote_admin_channel",  # spec 033 (owner, 2026-10-01): replaces promote_admin
+        "promote_admin_community",  # spec 033 (owner, 2026-10-01): replaces promote_admin
         "leave_chat",
         "reject_community_link_request",
         "remove_chat_from_community",
@@ -105,7 +109,9 @@ GATED = frozenset(
         "set_authorization_calls",
         "set_authorization_secret_chats",
         "set_bot_info",
-        "set_default_chat_permissions",
+        "set_group_permissions",  # spec 033 (owner, 2026-10-01)
+        "set_member_exception",  # spec 033 (owner, 2026-10-01)
+        "remove_member_exception",  # spec 033 (owner, 2026-10-01)
         "set_my_username",
         "set_privacy_settings",
         "set_profile_photo",

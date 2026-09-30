@@ -10,7 +10,7 @@ import pytest
 from telethon.tl import functions, types
 
 from telegram_mcp.tools import members as mod
-from telegram_mcp.tools import moderation
+from telegram_mcp.tools import group_permissions
 
 GROUP = types.Channel(
     id=777,
@@ -57,7 +57,7 @@ def client(monkeypatch):
     async def _connected(cl=None):
         return None
 
-    for module in (mod, moderation):
+    for module in (mod, group_permissions):
         monkeypatch.setattr(module, "get_client", lambda account=None: fake)
         monkeypatch.setattr(module, "resolve_entity", _resolve)
         monkeypatch.setattr(module, "ensure_connected", _connected)
@@ -121,13 +121,14 @@ async def test_the_member_list_shows_each_tag(client):
 
 @pytest.mark.asyncio
 async def test_self_tags_can_be_turned_off(client):
-    await moderation.set_default_chat_permissions(chat_id="@testgroup_x", edit_rank=False)
+    await group_permissions.set_group_permissions(chat_id="@testgroup_x", edit_own_tags=False)
     assert client.sent[0].banned_rights.edit_rank is True
 
 
 @pytest.mark.asyncio
 async def test_default_permissions_still_allow_self_tags(client):
-    await moderation.set_default_chat_permissions(chat_id="@testgroup_x")
+    """An item not passed keeps its current value: changing photos leaves self-tags on."""
+    await group_permissions.set_group_permissions(chat_id="@testgroup_x", photos=False)
     assert not client.sent[0].banned_rights.edit_rank
 
 

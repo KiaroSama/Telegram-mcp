@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from telegram_mcp import approval_details
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.safeguard import channels as approvals
 from telegram_mcp.safeguard import bypass, folders, ghost, grants, policy, sealed, taint
@@ -312,6 +313,7 @@ class Safeguard:
                     decision.reasons,
                     identity=who,
                     preview=preview(arguments),
+                    detail=await approval_details.detail_for(name, arguments),
                 )
                 outcome, kind, failures = await approvals.request_approval(
                     request, self._channels(ctx, account), self._timeout

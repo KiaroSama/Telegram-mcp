@@ -15,13 +15,13 @@ import pytest
 import telethon
 from telethon.tl.types import ChatAdminRights, ChatBannedRights
 
-from telegram_mcp.tools import admin_rights, moderation as mod
-from telegram_mcp.tools.admin_rights import promote_admin
+from telegram_mcp.tools import admin_rights, admin_rights_by_type, moderation as mod
+from telegram_mcp.tools.admin_rights_by_type import promote_admin_group
 from telegram_mcp.tools.moderation import ban_user
 
 # Bans and the admin-rights model are two modules now. A tool resolves a
 # seam from ITS OWN globals, so patching one module would miss the other.
-_MODULES = (mod, admin_rights)
+_MODULES = (mod, admin_rights, admin_rights_by_type)
 
 
 def _patch_both(monkeypatch, name, value):
@@ -149,14 +149,14 @@ async def test_a_non_mutual_contact_ban_is_refused_in_a_sentence_not_a_code(_wir
 
 @pytest.mark.asyncio
 async def test_promoting_an_admin_sends_the_rights_it_was_given(_wire):
-    """The defaults are generous; a caller who asks for less must get less."""
+    """The default is a full admin; a caller who declines a right must get less."""
     client = _wire(_Client())
 
-    await promote_admin("c", "u", rights={"add_admins": True, "ban_users": False}, account="a")
+    await promote_admin_group("c", "u", anonymous=True, ban_users=False, account="a")
 
-    assert client.names == ["EditAdminRequest"]
+    assert client.names == ["EditAdminRequest", "GetParticipantRequest"]  # the read-back follows
     granted = client.sent("EditAdminRequest").admin_rights
     assert isinstance(granted, ChatAdminRights)
-    assert granted.add_admins is True, "the requested right was not granted"
+    assert granted.anonymous is True, "the requested right was not granted"
     assert granted.ban_users is False, "a right the caller declined was granted anyway"
     assert granted.change_info is True, "an unmentioned right lost its default"

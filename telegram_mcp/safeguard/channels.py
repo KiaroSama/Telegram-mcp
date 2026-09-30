@@ -118,6 +118,7 @@ class ApprovalRequest:
     nonce: str = ""
     identity: str = ""  # "name | user id | @username" of the account acting
     preview: str = ""  # spec 018: the start of what will be sent, if anything
+    detail: str = ""  # spec 033: a tool's own extra line, shown under "Tool:"
 
     def _who(self) -> str:
         return self.identity or self.account or "not named in the call"
@@ -127,10 +128,12 @@ class ApprovalRequest:
 
     def text(self) -> str:
         sends = f"Sends: {self.preview}\n" if self.preview else ""
+        detail = f"{self.detail}\n" if self.detail else ""
         return (
             f"Account: {self._who()}\n"
             f"Action: {self.effect}\n"
             f"Tool: {self.tool}\n"
+            f"{detail}"
             f"Chat: {self.chat or '-'}\n"
             f"{sends}"
             f"Why asked: {self._why()}"
@@ -141,10 +144,12 @@ class ApprovalRequest:
         sends = (
             f"Sends:<blockquote>{html_escape(self.preview)}</blockquote>\n" if self.preview else ""
         )
+        detail = f"{html_escape(self.detail)}\n" if self.detail else ""
         return (
             f"<blockquote>Account: {html_escape(self._who())}</blockquote>\n"
             f"<b>Action: {html_escape(self.effect)}</b>\n"
             f"Tool: <code>{html_escape(self.tool)}</code>\n"
+            f"{detail}"
             f"Chat: {html_escape(self.chat or '-')}\n"
             f"{sends}"
             f"Why asked: {html_escape(self._why())}"
@@ -159,6 +164,7 @@ def new_request(
     reasons: List[str],
     identity: str = "",
     preview: str = "",
+    detail: str = "",
 ) -> ApprovalRequest:
     code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(4))
     while code in _pending:  # two open requests never share a code
@@ -173,6 +179,7 @@ def new_request(
         nonce=secrets.token_hex(8),
         identity=identity,
         preview=preview,
+        detail=detail,
     )
 
 

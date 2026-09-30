@@ -13,9 +13,10 @@ import pathlib
 
 import pytest
 
-from telegram_mcp.tools import admin_rights, groups, invites, members, moderation
+from telegram_mcp.tools import admin_rights, admin_rights_by_type, groups, invites
+from telegram_mcp.tools import members, moderation
 
-MODULES = (groups, moderation, invites, admin_rights, members)
+MODULES = (groups, moderation, invites, admin_rights, admin_rights_by_type, members)
 
 # The full tool set that lived in groups.py before the split. Moving a tool
 # between these three modules is fine; losing one is not.
@@ -26,7 +27,9 @@ EXPECTED_TOOLS = {
     "create_group",
     "delete_chat_photo",
     "demote_admin",
-    "edit_admin_rights",
+    "edit_admin_rights_channel",  # spec 033: one tool per chat type
+    "edit_admin_rights_community",
+    "edit_admin_rights_group",
     "edit_chat_about",
     "edit_chat_photo",
     "edit_chat_title",
@@ -40,8 +43,9 @@ EXPECTED_TOOLS = {
     "invite_to_group",
     "join_chat_by_link",
     "leave_chat",
-    "promote_admin",
-    "set_default_chat_permissions",
+    "promote_admin_channel",
+    "promote_admin_community",
+    "promote_admin_group",
     "set_member_tag",  # added in members.py with get_participants (spec 010)
     "toggle_slow_mode",
     "unban_user",
