@@ -375,6 +375,11 @@ the tree, which is the cost of having deferred them.
    interchangeable authorized sessions by advisory lock, which is a different decision
    from building a client).
 
+   **Once more on 2026-09-30**, after the account-lifecycle repairs (PR #55) took it to 774:
+   `connection.py` 774 -> 687 (`account_discovery.py` - which accounts `.env` declares and
+   the clients built for them; `connection._discover_accounts` still passes its own
+   `StringSession`/`_build_client`/`_acquire_session`, which tests patch there).
+
    **`Manage-Accounts.ps1` was split on 2026-09-06**, 1152 -> 650 plus three
    dot-sourced pieces: `account-manager/FileSafety.ps1` (private files, atomic writes, the
    log), `account-manager/EnvFile.ps1` (reading and rewriting `.env`) and `account-manager/Console.ps1`

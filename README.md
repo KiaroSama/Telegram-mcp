@@ -934,6 +934,7 @@ telegram_mcp/dialog_warm.py   # warming the entity cache once, with shared waite
 telegram_mcp/errors.py        # error classes, refusal wording, id validation
 telegram_mcp/connection.py    # building a client per account, and which one a call routes to
 telegram_mcp/session_pool.py  # which of several interchangeable sessions this process claims
+telegram_mcp/account_discovery.py # which accounts .env declares, built as clients
 telegram_mcp/reconnect.py     # whether the socket still answers, and bringing it back
 telegram_mcp/account_snapshot.py # one reading of the configuration, used for every decision
 telegram_mcp/account_config.py # what the .env says about accounts, and what changed
