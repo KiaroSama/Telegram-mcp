@@ -164,6 +164,8 @@ Every request names the **Account** acting, the **Action**, the **Tool** and **C
 asked** in plain words (for example "first message to someone this account never messaged").
 
 **Always approve** covers one tool in one chat of one account and survives restarts.
+The chat is where the action happens - the group for `promote_admin`, not the person
+promoted; a secret chat is shown as `secret chat <id>`.
 `safeguard_status` lists every such grant and `revoke_always_approval` removes one; the
 approval bot's `/always` and `/reset_always` do the same from your phone. It also covers
 a call that carries text someone else wrote, so grant it only for a chat you trust.

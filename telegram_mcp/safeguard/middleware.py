@@ -20,7 +20,21 @@ from telegram_mcp.safeguard import bypass, folders, ghost, grants, policy, seale
 
 __all__ = ["Safeguard", "install", "refusal"]
 
-_TARGET_KEYS = ("to_chat_id", "chat_id", "user_id", "username")
+# The chat an action happens in, before the user it is done to: `promote_admin(group_id,
+# user_id)` happens in the group. What is shown as "Chat" and what an "always approve" is
+# stored for both come from here, so a missing name here is a grant bound to no chat (032).
+_TARGET_KEYS = (
+    "to_chat_id",
+    "chat_id",
+    "chat",
+    "channel_id",
+    "group_id",
+    "channel",
+    "community",
+    "secret_chat_id",
+    "user_id",
+    "username",
+)
 
 _REFUSALS = {
     "declined": (
@@ -87,8 +101,15 @@ def _target(arguments: Dict[str, Any]) -> Any:
     return None
 
 
+def _is_secret(arguments: Dict[str, Any], chat: Any) -> bool:
+    """A secret chat's id is the package's, not a Telegram peer: never look it up as one."""
+    return "secret_chat_id" in arguments and arguments["secret_chat_id"] == chat
+
+
 def _shown_target(arguments: Dict[str, Any], chat: Any) -> Optional[str]:
     """What the "Chat" line shows: the chat, else the bot or the account's own profile."""
+    if chat is not None and _is_secret(arguments, chat):
+        return f"secret chat {chat}"
     if chat is not None:
         return str(chat)
     if arguments.get("bot") not in (None, ""):
@@ -278,7 +299,7 @@ class Safeguard:
                 except Exception:
                     who = account or ""
                 shown = _shown_target(arguments, chat)
-                if chat is not None:
+                if chat is not None and not _is_secret(arguments, chat):
                     try:  # "title | id | @username", like the Account line
                         shown = await self._chat_label(account, chat) or shown
                     except Exception:
