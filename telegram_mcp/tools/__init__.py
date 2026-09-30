@@ -89,6 +89,7 @@ from telegram_mcp.tools.message_views import *
 from telegram_mcp.tools.pinned_order import *
 from telegram_mcp.tools.fact_checks import *
 from telegram_mcp.tools.chat_export import *
+from telegram_mcp.tools.admin_log_export import *
 from telegram_mcp.tools.business import *
 from telegram_mcp.tools.business_links import *
 

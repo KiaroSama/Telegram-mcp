@@ -133,8 +133,8 @@ async def export_chat_history(
 )
 async def export_status(job_id: Optional[str] = None) -> str:
     """
-    Progress and result of the exports started by `export_chat_history` and
-    `export_secret_chat`: status (running, done, failed, cancelled), the files written so
+    Progress and result of the exports started by `export_chat_history`,
+    `export_secret_chat` and `export_recent_actions`: status (running, done, failed, cancelled), the files written so
     far, and when done the folder, message and file counts.
 
     Args:
@@ -162,6 +162,7 @@ async def cancel_export(job_id: str) -> str:
     Stop a running export. What was already written stays in its folder.
 
     Args:
-        job_id: From `export_chat_history`, `export_secret_chat` or `export_status`.
+        job_id: From `export_chat_history`, `export_secret_chat`, `export_recent_actions`
+            or `export_status`.
     """
     return format_tool_result({"job_id": job_id, "cancelled": export_jobs.cancel(job_id)})

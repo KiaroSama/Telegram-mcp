@@ -238,6 +238,32 @@ _ACTION_FILTER = {
 _INFO_ACTIONS = ("Change", "Toggle", "DefaultBannedRights")
 
 
+def unknown_event_types(event_types: Optional[List[str]]) -> str:
+    """The refusal for names Desktop's filter does not have; "" when every one is known."""
+    unknown = [t for t in (event_types or []) if t not in _LOG_FILTERS]
+    if unknown:
+        return f"Error: unknown event type(s) {unknown}; choose from {sorted(_LOG_FILTERS)}."
+    return ""
+
+
+def admin_log_filter(
+    event_types: Optional[List[str]], is_channel: bool
+) -> "tuple[Optional[ChannelAdminLogEventsFilter], str]":
+    """The ChannelAdminLogEventsFilter Desktop sends for these checkboxes (None: all
+    actions), or the refusal for a checkbox a channel does not have."""
+    if is_channel:
+        group_only = [t for t in (event_types or []) if _LOG_FILTERS[t][2] is None]
+        if group_only:
+            return (
+                None,
+                f"Error: {group_only} exist only in groups; Desktop hides them for channels.",
+            )
+    if not event_types:
+        return None, ""
+    flags = {flag for t in event_types for flag in _LOG_FILTERS[t][0]}
+    return ChannelAdminLogEventsFilter(**{flag: True for flag in flags}), ""
+
+
 def _event_type(action_name: str, is_channel: bool) -> str:
     key = _ACTION_FILTER.get(action_name)
     if key is None and action_name.startswith(_INFO_ACTIONS):
@@ -315,25 +341,17 @@ async def get_recent_actions(
             return bound.error
         if isinstance(max_id, bool) or not isinstance(max_id, int) or max_id < 0:
             return f"Error: max_id must be a whole number from 0 upwards, not {max_id!r}."
-        unknown = [t for t in (event_types or []) if t not in _LOG_FILTERS]
-        if unknown:
-            return f"Error: unknown event type(s) {unknown}; choose from {sorted(_LOG_FILTERS)}."
+        refusal = unknown_event_types(event_types)
+        if refusal:
+            return refusal
 
         cl = get_client(account)
         await ensure_connected(cl)
         entity = await resolve_entity(chat_id, cl)
         is_channel = bool(getattr(entity, "broadcast", False))
-        if is_channel:
-            group_only = [t for t in (event_types or []) if _LOG_FILTERS[t][2] is None]
-            if group_only:
-                return (
-                    f"Error: {group_only} exist only in groups; Desktop hides them for channels."
-                )
-
-        events_filter = None
-        if event_types:
-            flags = {flag for t in event_types for flag in _LOG_FILTERS[t][0]}
-            events_filter = ChannelAdminLogEventsFilter(**{flag: True for flag in flags})
+        events_filter, refusal = admin_log_filter(event_types, is_channel)
+        if refusal:
+            return refusal
         admin_users = [utils.get_input_user(await resolve_entity(a, cl)) for a in (admins or [])]
 
         result = await cl(

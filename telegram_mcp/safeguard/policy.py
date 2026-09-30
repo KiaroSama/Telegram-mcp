@@ -49,6 +49,7 @@ GATED = frozenset(
         "close_secret_chat",
         "export_chat_history",  # spec 030 (owner, 2026-09-30): was a free write
         "export_secret_chat",  # spec 031 (owner, 2026-09-30)
+        "export_recent_actions",  # spec 033 R10 (owner, 2026-10-01)
         "delete_saved_secret_messages",  # spec 031 (owner, 2026-09-30)
         "delete_secret_chat",  # spec 031 (owner, 2026-09-30)
         "delete_secret_chat_both_sides",  # spec 031 (owner, 2026-09-30)

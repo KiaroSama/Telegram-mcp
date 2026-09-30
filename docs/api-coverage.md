@@ -303,6 +303,7 @@ assumed missing and is not. Nothing below needs building.
 | Posting in a topic | `topic_id` on `send_message`, `reply_to_message`, `save_draft`, `schedule_message` and the media senders; the id comes from `list_topics`, and every message-returning tool reports the `topic_id` it was in |
 | Slow mode, forum mode | `toggle_slow_mode`, `enable_forum_topics`; the interval and this account's next allowed send are read back by `get_full_chat` |
 | Admin log (recent actions) | `get_recent_actions`, filtered like Telegram Desktop's dialog: by type (Members and admins, Group settings, Messages checkboxes), by admins, search text; pages back through `max_id` |
+| Admin log export | `export_recent_actions`: the whole kept log (about 48 hours) paged back through `max_id`, written as a Telegram Desktop chat export (`messages.html` and/or `result.json`), each event in Desktop's Recent actions wording, deleted and edited messages as bubbles with their media; same filters as `get_recent_actions`, same dialog and background job as `export_chat_history` |
 | Participants | `get_participants` |
 | Archive, mute, pin | `archive_chat`, `mute_chat`, `pin_message`, `unpin_all_messages` |
 | Leave, clear history | `leave_chat`, `delete_chat_history` |
