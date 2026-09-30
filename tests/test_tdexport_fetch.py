@@ -424,3 +424,20 @@ def test_supergroup_exports_migrated_chat_first(tmp_path):
     assert writer.dialog.migrated_from_input == tl.InputPeerChat(chat_id=200)
     shift = -1_000_000_000
     assert [m.id for m in writer.messages()] == [1 + shift, 2 + shift, 1, 2]
+
+
+def test_takeout_sends_the_size_even_at_the_4000_mb_ceiling():
+    """files and file_max_size share flags.5 in account.initTakeoutSession: Desktop always
+    serializes MTP_long(sizeLimit), so a 4000 MB limit is sent, never dropped (a dropped size
+    made Telethon refuse the request - found live, spec 030 T005)."""
+    from telegram_mcp.tdexport import fetch
+    from telegram_mcp.tdexport.settings import MAX_FILE_SIZE, MediaSettings, Settings
+
+    settings = Settings(media=MediaSettings(size_limit=MAX_FILE_SIZE))
+
+    kwargs = fetch._takeout_kwargs(settings)
+
+    assert kwargs["files"] is True and kwargs["max_file_size"] == MAX_FILE_SIZE
+    functions.account.InitTakeoutSessionRequest(
+        files=kwargs["files"], file_max_size=kwargs["max_file_size"]
+    )

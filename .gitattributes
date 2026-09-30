@@ -27,3 +27,8 @@
 # the tree today; this is here so that adding one cannot break it.
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+# Telegram Desktop's Windows build ships its export page style and script with CRLF, and an
+# export has to match it byte for byte (spec 030): these two are stored exactly as shipped.
+telegram_mcp/tdexport/assets/css/style.css -text
+telegram_mcp/tdexport/assets/js/script.js -text

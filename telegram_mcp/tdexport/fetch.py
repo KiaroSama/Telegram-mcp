@@ -42,7 +42,7 @@ from .model_message import (
     skip_message_by_date,
 )
 from .model_rich_parse import extract_full_rich_message, parse_rich_message
-from .settings import MAX_FILE_SIZE, Environment, Settings, normalize_settings
+from .settings import Environment, Settings, normalize_settings
 
 log = logging.getLogger(__name__)
 
@@ -404,7 +404,9 @@ def _takeout_kwargs(settings: Settings) -> dict[str, Any]:
         megagroups=bool(settings.types & (kind.PrivateGroups | kind.PublicGroups)) or None,
         channels=bool(settings.types & (kind.PrivateChannels | kind.PublicChannels)) or None,
         files=has_files or None,
-        max_file_size=size_limit if has_files and size_limit < MAX_FILE_SIZE else None,
+        # files and file_max_size are one flag (flags.5); Desktop always serializes
+        # MTP_long(sizeLimit), the 4000 MB ceiling included.
+        max_file_size=size_limit if has_files else None,
     )
 
 
