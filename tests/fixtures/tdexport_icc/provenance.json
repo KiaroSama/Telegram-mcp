@@ -152,5 +152,6 @@
     "source_sha256": "d3f11a96ca9b556041b4dbfc05ea35c613e0615eb46d14477fabbae77776431d",
     "expected_sha256": "86d99ce08c595e65c0db20cc29c589de9fe8806db82cdf03a14981a791c1acc6",
     "pipeline": "exact patched Qt5.15.19 QImageReader -> scaled SmoothTransformation -> mozjpeg4.1.5, 96dpi Desktop default"
-  }
+  },
+  "pixel_transport": "UTF-8 ASCII hexadecimal, 32 decoded bytes per line; bytes.fromhex round-trips exact original binary hashes."
 }
