@@ -153,8 +153,9 @@ def desktop_thumb(
     if image.mode == "CMYK":
         # Use raw libjpeg samples, including its YCCK conversion, as Qt does.
         try:
+            # Both locked wheels enable fancy upsampling by default; 2026.3.6 has no keyword.
             cmyk = imagecodecs.jpeg8_decode(
-                source, outcolorspace=imagecodecs.JPEG8.CS.CMYK, fancyupsampling=True
+                source, outcolorspace=imagecodecs.JPEG8.CS.CMYK
             ).astype(numpy.uint16)
         except (imagecodecs.Jpeg8Error, ValueError):
             return None

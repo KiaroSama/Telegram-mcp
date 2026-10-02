@@ -225,10 +225,17 @@ def test_without_mozjpeg_pillow_still_writes_a_thumb(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("size", [(16, 16), (8, 8)])
-def test_cmyk_thumbnail_uses_desktop_rgb_conversion(tmp_path, size):
-    _mozjpeg()
+def test_cmyk_thumbnail_uses_desktop_rgb_conversion(tmp_path, size, monkeypatch):
+    imagecodecs = _mozjpeg()
     from PIL import Image
 
+    decode = imagecodecs.jpeg8_decode
+
+    # Python 3.11's locked wheel enables fancy upsampling without exposing a keyword.
+    def older_decoder(data, /, *, outcolorspace):
+        return decode(data, outcolorspace=outcolorspace)
+
+    monkeypatch.setattr(imagecodecs, "jpeg8_decode", older_decoder)
     image = Image.new("CMYK", (16, 16), (70, 130, 190, 90))
     buffer = io.BytesIO()
     image.save(buffer, "JPEG", quality=90)
