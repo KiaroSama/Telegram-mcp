@@ -263,3 +263,13 @@ def test_jpeg_comments_use_qt_key_order_and_utf8(tmp_path):
     data = _thumb(tmp_path, source[:2] + markers + source[2:], (8, 8))
     written = [payload for marker, payload in _segments(data) if marker == 0xFE]
     assert written == [b"Alpha: first", b"Description: a description", b"Zeta: replaced"]
+
+
+def test_non_srgb_thumbnail_matches_exact_qt_oracle(tmp_path):
+    _mozjpeg()
+    from pathlib import Path
+
+    fixtures = Path(__file__).parent / "fixtures" / "tdexport_icc"
+    source = (fixtures / "adobe-thumbnail.source.jpg").read_bytes()
+    expected = (fixtures / "adobe-thumbnail.expected.jpg").read_bytes()
+    assert _thumb(tmp_path, source, (8, 8)) == expected

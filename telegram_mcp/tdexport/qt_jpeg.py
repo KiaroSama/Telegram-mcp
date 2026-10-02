@@ -18,16 +18,17 @@ the APP0 and APP2 bytes are ones libjpeg would have written itself, and the entr
 does not depend on them. The decode side needs no port: Pillow's libjpeg-turbo produces the same
 pixels as mozjpeg's decoder with Qt's settings (ISLOW, fancy upsampling).
 
-Known gap: a source ICC profile Qt does not consider sRGB makes Desktop convert the pixels
-(tdesktop's 0021-convert-qimage-to-srgb) and write a Qt-generated profile; this copies both
-unchanged. COM markers and raw CMYK conversion follow Qt; byte parity for these branches
-still needs independent Desktop oracle fixtures.
+Qt's supported non-sRGB matrix/TRC profiles convert through qt_icc before scaling, including
+its generated sRGB output profile. Unsupported profiles retain their original bytes, as in Qt.
+COM markers and raw CMYK conversion also follow Qt; synthetic branches were compared with an
+exact-source Qt 5.15.19 oracle, not an all-input or all-platform parity guarantee.
 """
 
 import struct
 from importlib import import_module
 from typing import Any
 
+from .qt_icc import convert_to_srgb
 from .qt_scale import smooth_scale
 
 # QImageData::dpmx = qt_defaultDpiX() * 100 / 2.54, read back through qRound.
@@ -161,15 +162,17 @@ def desktop_thumb(
             return None
         pixels = (cmyk[..., :3] * cmyk[..., 3:] // 255).astype(numpy.uint8)
     else:
-        # QImage::smoothScaled turns Grayscale8 into RGB32 before scaling.
-        rgb = image.convert("RGB") if image.mode == "L" and size != image.size else image
-        pixels = numpy.ascontiguousarray(numpy.asarray(rgb))
+        pixels = numpy.ascontiguousarray(numpy.asarray(image))
+    dpm, icc = source_metadata(source)
+    pixels, icc = convert_to_srgb(pixels, icc)
     if size != image.size:
+        # QImage::smoothScaled promotes Grayscale8 only after color conversion.
+        if pixels.ndim == 2:
+            pixels = numpy.repeat(pixels[..., None], 3, axis=-1)
         pixels = smooth_scale(pixels, size[0], size[1])
     level = min(quality, 100) if quality is not None and quality >= 0 else 75
     try:
         encoded = bytes(imagecodecs.mozjpeg_encode(pixels, level, subsampling="444"))
     except (imagecodecs.MozjpegError, ValueError):
         return None  # the caller falls back to Pillow rather than losing the thumbnail
-    dpm, icc = source_metadata(source)
     return _splice(encoded, dpm, icc if pixels.ndim == 3 else b"", source_comments(source))

@@ -1,0 +1,156 @@
+{
+  "qt_commit": "c68297f66533200c9ff626b056d096c78b4b94db",
+  "qt_version": "5.15.19",
+  "patches_commit": "c6b2868d527e2d00a2438e95225a22ce9346d79f",
+  "patches": [
+    "0020-no-jpeg-chroma-subsampling",
+    "0021-convert-qimage-to-srgb"
+  ],
+  "mozjpeg": "4.1.5",
+  "generated_utc": "2026-10-03",
+  "input": "Synthetic 16x16 RGB pattern encoded as JPEG, decoded unchanged with Pillow; independently converted by native patched QImageReader before scaling. ICC matrix tags from Qt-generated AdobeRgb, curves and custom matrix synthesized from public ICC forms. No personal images or native runtime required by tests.",
+  "cases": [
+    {
+      "case": "adobe-rgb",
+      "input_mode": "RGB",
+      "source_sha256": "bd136e4241f6f7739e373e70c0845c3bfff3667ed0577d55bcbb321aa9fe8754",
+      "icc_sha256": "bef6452d3d1fb52ca3eda93766acced06f120f54538e0716d78bf7b666cf991d",
+      "expected_rgb_sha256": "6508ffbc0d7ed76aade45f799f764aba8cdb3642f89e3ce9b9334ecd17bd09a4",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "parametric-0",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "d83ce015796e93721f90836fadb29bea64075e7eafc9cb96da93b72bc14a029c",
+      "expected_rgb_sha256": "7a7e8a0af443ff4e78ebafd3bb6b33ffdd3dbf4d1ad17f618aa34272c65ce29b",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "parametric-1",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "77a9905bb30b2ef5cb5f56336256495c5957eb6a12250460b5f2dd49ba241e44",
+      "expected_rgb_sha256": "c7e5c8256581a679e80c088db6374065eb8553af70128437a7d5686b6893a8d6",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "parametric-2",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "9b120924776bc6c1b6d0365b7b9f2aa13f23f6e30ed977078c3b075fdbb5253e",
+      "expected_rgb_sha256": "626b22a241df4935637c3bef974cd77c5251366b9ac14e503291f30c0f685405",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "parametric-3",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "f495add1171af59e34ebaff80c4216d61ce1068d66dfc65759160114883c8539",
+      "expected_rgb_sha256": "6ee794494cb1b42b581634a07e05e8b0419a21b9311edace4d62a8e238ce2144",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "parametric-4",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "2a6e55511be38780f431482b6a3dd415d995d049869ca08d52e533f736519dee",
+      "expected_rgb_sha256": "95367885cce195dd9810ffa9376199f626e97af30b1863720e2f149f3abc735a",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "table",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "12206c48a32efb7e0b60ff3640d21e8cb3c3c991129ee6c73e591ed743acddf6",
+      "expected_rgb_sha256": "be3f919848a7e39d1670b6c3a22d5950fdad3bd1d22117e42ade4c2bc47693ec",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "table-offset",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "32bba44efd583cdf67dcb315710d5449bca2cf01f7137ece258d569970c14a41",
+      "expected_rgb_sha256": "ba917f2f3b230008dba4daf34994d5838f06c66f413d6e2816f57c8a0da49148",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "linear-table",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "955c07a453c24cd7b1bdaad25030f23d2282bc4057d686136447f292c27d6e1f",
+      "expected_rgb_sha256": "bba26388ea7cfc4cdbf8b1cece4b0b388d4554cd6994d5d144b5f59f9f75f37c",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "linear",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "d5fb87f4a55a8e7b9748fbe5b88a93e8a0d8fb4d52e891a9fe734ec32344e8f4",
+      "expected_rgb_sha256": "bba26388ea7cfc4cdbf8b1cece4b0b388d4554cd6994d5d144b5f59f9f75f37c",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "gamma88",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "d4d99f818f97ae20f71c102a23374b7349343dda9a9aca1cf7c62ad739c795aa",
+      "expected_rgb_sha256": "85af4ef7bd22d47ab05f7e8ffabbf60f80182faf3d8f2b12cd29cdfbfd6ecf04",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "channels",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "f0dcc015e7d61c439c61a4428221870790540f94cc9a37523dee757e3fe2a0de",
+      "expected_rgb_sha256": "2a2205e1ec0fe6b90c657322af59415531cb0d7eacf9c09e75b3921e49c7f1f5",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "apple",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "80720781fff23dbdc31fd14827b23555bb9849daca5bbd247c19caed676f5bb5",
+      "expected_rgb_sha256": "2a2205e1ec0fe6b90c657322af59415531cb0d7eacf9c09e75b3921e49c7f1f5",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "custom-matrix",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "94e40f9702398fc0bd5150913ee4216ee2f20a6d5ac3f2f95ce284ccce93ff43",
+      "expected_rgb_sha256": "adaa39543e8e7315a5982cadc63c25799e2a7ebe224dbaffed88a0c4200fb09c",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "gray",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "2bff823d6404b7134e38411eef6833e38028b394be01a1c86281910f28901630",
+      "expected_rgb_sha256": "dc70782abd14931524fd80b9070cefd919ac3ffb5880e234345567b1370b9e15",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "srgb",
+      "source_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7",
+      "expected_rgb_sha256": "2716b1c4d0917969839e6bc4fb1e21b0d5e254bbde2f76a63f43eafe245857a9",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "gray-jpeg",
+      "input_mode": "L",
+      "source_sha256": "45cc04ce636c7a583ffd7a84ae115f071d7cc0a9c90429a05273dbcd20f63c2d",
+      "icc_sha256": "2bff823d6404b7134e38411eef6833e38028b394be01a1c86281910f28901630",
+      "expected_gray_sha256": "e17ceb5f76d324f6e21cc68c1ab10d72617dde5350a1bb4587d2626cf47db489",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    },
+    {
+      "case": "gray-adobe",
+      "input_mode": "L",
+      "source_sha256": "45cc04ce636c7a583ffd7a84ae115f071d7cc0a9c90429a05273dbcd20f63c2d",
+      "icc_sha256": "bef6452d3d1fb52ca3eda93766acced06f120f54538e0716d78bf7b666cf991d",
+      "expected_gray_sha256": "8230f88a7a9ba01bd9c35fad9ff07c2619fc52ff7cad58d51939e19c1b4354b0",
+      "emitted_icc_sha256": "c7cca1570db007c63b46bd364837a74fcbb2af6c50c66d16c888e581888422d7"
+    }
+  ],
+  "output_profile_invariance": "QIcc::toIccProfile emits fixed size459 Qt5.15 sRGB matrix/TRC/description; dates, profile ID and reserved fields zero. All17 converted cases independently emitted identical profile bytes; sRGB equal-space case preserves input bytes.",
+  "pixel_fixture_encoding": "RawRGB/grayscale byte fixtures stored as ASCII hexadecimal in UTF-8 .hex files; bytes.fromhex reconstructs exact original bytes. Hashes above refer to reconstructed binary pixels, not text. Roundtrip verified for every transported fixture; binary ICC files unchanged.",
+  "thumbnail": {
+    "source": "adobe-thumbnail.source.jpg",
+    "expected": "adobe-thumbnail.expected.jpg",
+    "size": [
+      8,
+      8
+    ],
+    "source_sha256": "d3f11a96ca9b556041b4dbfc05ea35c613e0615eb46d14477fabbae77776431d",
+    "expected_sha256": "86d99ce08c595e65c0db20cc29c589de9fe8806db82cdf03a14981a791c1acc6",
+    "pipeline": "exact patched Qt5.15.19 QImageReader -> scaled SmoothTransformation -> mozjpeg4.1.5, 96dpi Desktop default"
+  }
+}

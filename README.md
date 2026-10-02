@@ -996,9 +996,12 @@ uv run --extra lottie python scripts/run_tests_guarded.py --
 ```
 
 Photo thumbnails matched the tested Windows Desktop references with the `thumbs` extra
-(`uv sync --extra thumbs`), using mozjpeg 4.1.5. Non-sRGB ICC conversion remains incomplete;
-COM/CMYK branches need independent Desktop byte comparisons. Other platforms use Pillow
-fallback, not byte parity. The dev group exercises the mozjpeg path on Windows.
+(`uv sync --extra thumbs`), using mozjpeg 4.1.5. Qt's supported RGB/gray matrix/TRC ICC profiles
+are converted before scaling; unsupported profiles keep their original bytes. Synthetic ICC,
+COM and CMYK cases were compared against the exact patched Qt 5.15.19 image engine, including
+an end-to-end non-sRGB JPEG fixture. This is tested-case parity, not a guarantee for every
+input. Other platforms use Pillow fallback, not byte parity. The dev group exercises the
+mozjpeg path on Windows.
 
 Run tests with coverage:
 

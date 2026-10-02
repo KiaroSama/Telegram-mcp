@@ -68,7 +68,11 @@ reproduces the settings of Qt's JPEG writer (qjpeghandler.cpp). The encoding
 itself is done by mozjpeg 4.1.5 (https://github.com/mozilla/mozjpeg; IJG,
 BSD-3-Clause and zlib licences, including the libjpeg-turbo code it contains),
 reached through the optional imagecodecs package (BSD-3-Clause); neither is
-bundled here.
+bundled here. telegram_mcp/tdexport/qt_icc.py ports QtGui's matrix/TRC ICC parser,
+color-space matrices, transfer curves and color-transform LUTs from Qt 5.15.19,
+Copyright (C) 2016, 2018 The Qt Company Ltd., under the same GPL-3.0 option noted
+above. Synthetic oracle fixtures were generated with that exact patched source;
+no native Qt runtime is bundled or required by the Python port.
 
 
 QIMAGE SMOOTH-SCALING NOTICE AND CREDITS
