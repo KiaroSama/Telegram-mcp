@@ -16,6 +16,7 @@ what a call sets, for the safeguard approval, and ``refusal(arguments)`` answers
 arguments alone why a call cannot run.
 """
 
+import copy
 from typing import Any, Dict, Optional
 
 from telegram_mcp import approval_details, preflight
@@ -127,6 +128,8 @@ def permissions_line(arguments: Dict[str, Any]) -> str:
     """
     member = "user_id" in arguments
     wanted = _requested(arguments)
+    if wanted.get("send_messages") is False:
+        wanted["embed_links"] = False
     allowed = _render(k for k, v in wanted.items() if v)
     denied = _render(k for k, v in wanted.items() if not v)
     if member:
@@ -158,8 +161,21 @@ def permissions_line(arguments: Dict[str, Any]) -> str:
 
 def _allowed_from(rights) -> Dict[str, bool]:
     """Desktop's checkboxes for a ChatBannedRights (None = nothing restricted)."""
+    media_keys = {key for key, _label, _fields in MEDIA}
     return {
-        key: not any(getattr(rights, f, False) for f in fields) if rights else True
+        key: (
+            not (
+                getattr(rights, "view_messages", False)
+                or any(getattr(rights, f, False) for f in fields)
+                or (
+                    (key == "send_messages" or key in media_keys)
+                    and getattr(rights, "send_messages", False)
+                )
+                or (key in media_keys and getattr(rights, "send_media", False))
+            )
+            if rights
+            else True
+        )
         for key, _label, fields in ITEMS
     }
 
@@ -198,7 +214,7 @@ async def _step(label: str, cl, request, applied: list) -> Optional[str]:
     except Exception as e:
         log_event(logging.ERROR, "group permission step failed", step=label, error=e)
         done = ", ".join(applied) or "nothing"
-        return f"{label} was not applied ({type(e).__name__}). Applied before it: {done}."
+        return f"{label} was not applied ({type(e).__name__}). Requests accepted before it: {done}. Final state was not verified."
     applied.append(label)
     return None
 
@@ -351,7 +367,11 @@ async def set_group_permissions(
             if failed:
                 return f"{title}: {failed}"
         now = permissions_line(dict(allowed, **settings))
-        return f"{title}: {', '.join(applied)} set. Now {now.removeprefix('permissions: ')}."
+        return (
+            f"{title}: requests accepted for {', '.join(applied)}. "
+            f"Requested permissions: {now.removeprefix('permissions: ')}. "
+            "Final state was not verified."
+        )
     except Exception as e:
         return log_and_format_error("set_group_permissions", e, chat_id=chat_id)
 
@@ -434,8 +454,8 @@ async def set_member_exception(
         if reason:
             return f"Error: {reason}"
         wanted = _requested(arguments)
-        if not wanted:
-            return "Nothing to change: pass at least one permission."
+        if not wanted and until_date is None:
+            return "Nothing to change: pass at least one permission or until_date."
 
         cl = get_client(account)
         await ensure_connected(cl)
@@ -451,22 +471,29 @@ async def set_member_exception(
             return f"Error: {', '.join(LABELS[k] for k in forbidden)}: {_FOR_ALL}"
 
         own = getattr(participant, "banned_rights", None)
-        start = _allowed_from(own) if own is not None else group
-        if until_date is None:  # review M2: editing must not make a temporary one permanent
-            until_date = getattr(own, "until_date", None) or 0
-        allowed = _fixed({k: v and group[k] for k, v in dict(start, **wanted).items()})
-        if not getattr(entity, "forum", False):
-            allowed.pop("create_topics")
+        if not wanted:
+            if own is None:
+                return "Nothing to change: this member has no exception to expire."
+            # An expiry edit must not make inherited group bans personal restrictions.
+            banned = copy.copy(own)
+            banned.until_date = until_date or None
+            allowed = _allowed_from(own)
+        else:
+            start = _allowed_from(own) if own is not None else group
+            if until_date is None:  # editing must not make a temporary one permanent
+                until_date = getattr(own, "until_date", None) or 0
+            allowed = _fixed({k: v and group[k] for k, v in dict(start, **wanted).items()})
+            if not getattr(entity, "forum", False):
+                allowed.pop("create_topics")
+            banned = _banned_rights(allowed, until_date)
         await cl(
             functions.channels.EditBannedRequest(
-                channel=entity,
-                participant=user,
-                banned_rights=_banned_rights(allowed, until_date),
+                channel=entity, participant=user, banned_rights=banned
             )
         )
         now = permissions_line(dict(allowed, user_id=user_id)).removeprefix("permissions: ")
         until = "forever" if not until_date else f"until {until_date}"
-        return f"Exception set for {user_id} ({until}): {now}."
+        return f"Exception request accepted for {user_id} ({until}): {now}. Final state was not verified."
     except Exception as e:
         return log_and_format_error("set_member_exception", e, chat_id=chat_id, user_id=user_id)
 
@@ -507,7 +534,7 @@ async def remove_member_exception(
                 channel=entity, participant=user, banned_rights=ChatBannedRights(until_date=None)
             )
         )
-        return f"Exception removed: the group's permissions apply to {user_id} again."
+        return f"Exception removal request accepted for {user_id}. Final state was not verified."
     except Exception as e:
         return log_and_format_error("remove_member_exception", e, chat_id=chat_id, user_id=user_id)
 

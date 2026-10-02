@@ -475,9 +475,12 @@ def _remember(account: str):
 
 
 def _closed(account: str):
-    """Drop a closed chat's file references: its keys go when the chat does."""
+    """Drop closed-chat keys, and honor a peer's history-deleted event."""
 
     async def _handler(event):
+        if getattr(event, "history_deleted", False):
+            erase_local(account, event.chat_id)
+            return
         try:
             secret_media_refs.drop_chat(account, event.chat_id)
         except Exception as error:

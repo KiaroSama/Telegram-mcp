@@ -308,6 +308,14 @@ assumed missing and is not. Nothing below needs building.
 | Archive, mute, pin | `archive_chat`, `mute_chat`, `pin_message`, `unpin_all_messages` |
 | Leave, clear history | `leave_chat`, `delete_chat_history` |
 
+Admin writes distinguish acceptance from observed rights: failed read-back is unverified;
+a mismatch names requested rights still off or unexpected rights still on, without claiming
+Telegram finally declined them (immediate read-back can lag). Group permission and exception
+writes likewise report accepted requests, not an independently verified final state. Partial
+edits preserve effective legacy aggregate restrictions; an expiry-only exception edit changes
+the expiry without resetting its restrictions. Disabling Send messages also disables Embed
+links, and the approval names both.
+
 **Only two things from that whole area were genuinely missing, and both are now
 built**: channel/group **statistics** (`get_channel_statistics`) and changing a
 channel's **public username** (`set_channel_username`, with `check_channel_username`
@@ -597,6 +605,14 @@ would export that chat through `tdexport/secret_saved.py` (all in `tools/secret_
 approval, the auto-save folder must sit inside the allowed folders and is made owner-only
 (it holds plaintext), and a deleted chat's local log and file keys go with it. Transport for
 all twenty-five is `telegram_mcp/secret_backend.py`, the one module that imports the encryption package.
+`delete_secret_chat_both_sides` reports `delete_request_accepted` separately from
+`peer_history_deleted`: acceptance leaves the latter null, not true, because erasure on the
+peer is not confirmed. A received history-deleted chat event clears this server's local
+history and media references; an ordinary close keeps the history. Whole-chat deletion also
+attempts both local stores independently: partial cleanup reports `deleted=false` and
+`local_cleanup` while preserving the remote request's acceptance. Fresh live pair checks
+found that Telegram accepted deletion but the peer's local state did not receive the closing
+update; peer erasure remains unverified, not advertised as successful.
 
 Deleting or clearing reaches Telegram and this machine separately, and the answer says
 which: `remote_request_accepted` for the request, `local_cleanup.history` and

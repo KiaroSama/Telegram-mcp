@@ -332,10 +332,9 @@ async def test_a_right_telegram_declined_is_read_back_not_assumed_applied(_fake)
         manage_direct_messages=True,
     )
 
-    assert "Telegram declined: manage_direct_messages, post_messages" in answer
-    # A right that WAS applied must not be named as declined, or the report is
-    # noise the reader learns to skip.
-    declined = answer.split("Telegram declined:")[1]
+    assert "Requested rights read back as off: manage_direct_messages, post_messages" in answer
+    # A right that WAS applied must not be named as off.
+    declined = answer.split("Requested rights read back as off:")[1]
     assert "change_info" not in declined
     assert "delete_messages" not in declined
 
@@ -356,7 +355,8 @@ async def test_a_failed_read_back_does_not_turn_an_applied_change_into_an_error(
         5876481644, 5876481644, account="acct", change_info=True
     )
 
-    assert answer.startswith("Admin rights updated")
+    assert "request was accepted" in answer.lower()
+    assert "not verified" in answer
     assert "declined" not in answer, "an unread right was reported as declined"
 
 

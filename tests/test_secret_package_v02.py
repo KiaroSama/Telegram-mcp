@@ -102,6 +102,23 @@ async def test_a_file_never_received_here_is_still_explained(refs):
     assert "no stored reference" in answer
 
 
+@pytest.mark.asyncio
+async def test_peer_history_deleted_clears_only_that_chats_local_stores(refs):
+    await secret_backend._remember("acct")(_arrival())
+    await secret_backend._remember("acct")(
+        SimpleNamespace(**{**vars(_arrival(random_id=88)), "chat_id": OTHER_SECRET})
+    )
+
+    await secret_backend._closed("acct")(
+        SimpleNamespace(chat_id=SECRET_ID, reason="peer", history_deleted=True)
+    )
+
+    assert secret_history.read("acct", SECRET_ID, 10) == []
+    assert secret_media_refs.load("acct", SECRET_ID, 77) is None
+    assert secret_history.read("acct", OTHER_SECRET, 10)
+    assert secret_media_refs.load("acct", OTHER_SECRET, 88) is not None
+
+
 # --- forwarding --------------------------------------------------------------------
 
 

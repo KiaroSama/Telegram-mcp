@@ -164,8 +164,19 @@ async def _grant(tool, kind, chat_ref, user_ref, given, account, rank, exact):
             answer = f"Admin rights updated for user {user_ref} in {title}. {line}"
         else:
             answer = f"Successfully promoted user {user_ref} to admin in {title}. {line}"
-        declined = await _rights_telegram_declined(cl, target.chat, target.user, rights)
-        return answer + (_declined_note(declined) if declined else "")
+        verified = await _rights_telegram_declined(cl, target.chat, target.user, rights)
+        if verified is None:
+            return f"Admin request was accepted for user {user_ref} in {title}. Rights were not verified. Requested {line}"
+        declined, retained = verified
+        if declined or (exact and retained):
+            answer = f"Admin request was accepted for user {user_ref} in {title}. Requested {line}"
+        note = _declined_note(declined) if declined else ""
+        if exact and retained:
+            note += (
+                f" Rights still enabled: {', '.join(retained)}. "
+                "The read-back may lag behind the request; exact application is not confirmed."
+            )
+        return answer + note
     except Exception as e:
         for error_type, text in _REFUSALS:
             if isinstance(e, error_type):

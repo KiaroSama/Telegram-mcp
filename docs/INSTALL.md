@@ -162,6 +162,8 @@ A call that is bound to fail never reaches you: a missing account (`ACCOUNT REQU
 Every request names the **Account** acting, the **Action**, the **Tool** and **Chat** (both as `name | id | @username` when Telegram knows them), what it
 **Sends** (up to 300 characters of the text and the file names, when it sends any) and **Why
 asked** in plain words (for example "first message to someone this account never messaged").
+In the approval bot, Account, Action, permissions (when present), Chat and Why asked each
+have their own quote block; Action is bold and Tool is monospaced.
 
 The six admin-rights tools (`promote_admin_*`, `edit_admin_rights_*`) add a line under **Tool** listing
 every right about to be granted, in Telegram Desktop's words and order: `permissions: A | B | Parent: sub1, sub2`.

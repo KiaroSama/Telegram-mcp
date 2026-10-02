@@ -140,19 +140,21 @@ class ApprovalRequest:
         )
 
     def html(self) -> str:
-        """The same, for the bot: the account quoted first, so one bot can serve many."""
+        """The same fields, quoted separately as in the owner's reference."""
         sends = (
-            f"Sends:<blockquote>{html_escape(self.preview)}</blockquote>\n" if self.preview else ""
+            f"Sends:<blockquote> {html_escape(self.preview)}</blockquote>\n"
+            if self.preview
+            else ""
         )
-        detail = f"{html_escape(self.detail)}\n" if self.detail else ""
+        detail = f"<blockquote>{html_escape(self.detail)}</blockquote>\n" if self.detail else ""
         return (
             f"<blockquote>Account: {html_escape(self._who())}</blockquote>\n"
-            f"<b>Action: {html_escape(self.effect)}</b>\n"
+            f"<blockquote><b>Action: {html_escape(self.effect)}</b></blockquote>\n"
             f"Tool: <code>{html_escape(self.tool)}</code>\n"
             f"{detail}"
-            f"Chat: {html_escape(self.chat or '-')}\n"
+            f"<blockquote>Chat: {html_escape(self.chat or '-')}</blockquote>\n"
             f"{sends}"
-            f"Why asked: {html_escape(self._why())}"
+            f"<blockquote>Why asked: {html_escape(self._why())}</blockquote>"
         )
 
 

@@ -261,8 +261,10 @@ async def test_a_right_telegram_read_back_as_off_is_reported_declined(wire_clien
 
     answer = await mod.promote_admin_channel("news", "ann", account="a")
 
-    assert "Telegram declined: manage_direct_messages" in answer
-    assert "change_info" not in answer.split("Telegram declined:")[1]
+    assert "Requested rights read back as off: manage_direct_messages" in answer
+    assert "change_info" not in answer.split("Requested rights read back as off:")[1]
+    assert "request was accepted" in answer.lower()
+    assert "not confirmed" in answer
 
 
 @pytest.mark.asyncio
@@ -276,7 +278,8 @@ async def test_a_failed_read_back_does_not_turn_the_grant_into_an_error(wire_cli
 
     answer = await mod.promote_admin_channel("news", "ann", account="a")
 
-    assert answer.startswith("Successfully promoted")
+    assert "request was accepted" in answer.lower()
+    assert "not verified" in answer
     assert "declined" not in answer
 
 
@@ -378,7 +381,10 @@ def test_the_detail_line_follows_the_tool_line_in_every_channel():
     lines = request.text().splitlines()
     assert lines[lines.index("Tool: promote_admin_channel") + 1] == "permissions: Ban users"
     assert "permissions: Ban users" in request.html()
-    assert "Tool: <code>promote_admin_channel</code>\npermissions: Ban users\n" in request.html()
+    assert (
+        "Tool: <code>promote_admin_channel</code>\n"
+        "<blockquote>permissions: Ban users</blockquote>\n"
+    ) in request.html()
 
 
 def test_a_request_without_a_detail_reads_as_before():
@@ -509,3 +515,23 @@ async def test_a_detail_line_is_one_bounded_line():
     line = await approval_details.detail_for("_probe_tool", {})
 
     assert "\n" not in line and len(line) <= 500
+
+
+@pytest.mark.asyncio
+async def test_exact_edit_reports_a_right_that_remained_enabled(wire_client):
+    class RetainsRight(_Client):
+        async def __call__(self, request):
+            result = await super().__call__(request)
+            if type(request).__name__ == "GetParticipantRequest":
+                result.participant.admin_rights.delete_messages = True
+            return result
+
+    async def resolve(value, cl=None, account=None):
+        return ENTITIES[value]
+
+    wire_client(mod, RetainsRight(), resolve=resolve)
+    answer = await mod.edit_admin_rights_channel("news", "ann", change_info=True, account="a")
+    assert "still enabled: delete_messages" in answer
+    assert "request was accepted" in answer.lower()
+    assert "not confirmed" in answer
+    assert "updated for" not in answer

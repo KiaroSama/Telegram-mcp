@@ -110,7 +110,7 @@ async def test_an_item_not_passed_keeps_its_current_value(wire):
 async def test_desktop_never_sends_the_legacy_flags(wire):
     client = wire(_group(types.ChatBannedRights(until_date=None, send_media=True)))
     await mod.set_group_permissions("@group", send_messages=False)
-    assert _banned(client.sent[0]) == {"send_plain", "embed_links"}
+    assert _banned(client.sent[0]) == MEDIA_FIELDS | {"send_plain"}
 
 
 @pytest.mark.asyncio
@@ -487,3 +487,46 @@ def test_the_approval_shows_an_exceptions_end_date():
     line = mod.permissions_line({"chat_id": 1, "user_id": 42, "photos": False, "until_date": 99})
 
     assert "until 99" in line
+
+
+def test_approval_names_implicit_embed_link_restriction():
+    line = mod.permissions_line({"send_messages": False})
+    assert "Embed links" in line and "not allowed" in line
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("until", [0, 1893456000])
+async def test_expiry_only_change_preserves_the_member_restrictions(wire, until):
+    own = types.ChatBannedRights(until_date=1800000000, send_voices=True)
+    participant = types.ChannelParticipantBanned(
+        peer=types.PeerUser(42), kicked_by=1, date=None, banned_rights=own
+    )
+    client = wire(
+        _group(types.ChatBannedRights(until_date=None, send_polls=True)),
+        participant=participant,
+    )
+    await mod.set_member_exception("@group", 42, until_date=until)
+    (request,) = client.sent
+    assert _banned(request) == {"send_voices"}
+    assert (request.banned_rights.until_date or 0) == until
+
+
+@pytest.mark.asyncio
+async def test_member_partial_edit_keeps_legacy_media_restrictions(wire):
+    own = types.ChatBannedRights(until_date=1893456000, send_media=True)
+    participant = types.ChannelParticipantBanned(
+        peer=types.PeerUser(42), kicked_by=1, date=None, banned_rights=own
+    )
+    client = wire(participant=participant)
+    await mod.set_member_exception("@group", 42, add_members=False)
+    (request,) = client.sent
+    assert _banned(request) == MEDIA_FIELDS | {"invite_users"}
+    assert request.banned_rights.until_date == 1893456000
+
+
+@pytest.mark.asyncio
+async def test_expiry_only_without_an_exception_does_not_create_one(wire):
+    client = wire(_group(types.ChatBannedRights(until_date=None, send_polls=True)))
+    answer = await mod.set_member_exception("@group", 42, until_date=0)
+    assert client.sent == []
+    assert "no exception" in answer

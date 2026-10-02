@@ -26,6 +26,43 @@ def _request(**overrides):
     return ac.new_request(**fields)
 
 
+def test_bot_format_matches_the_reference_without_changing_the_text():
+    from telethon.extensions import html
+    from telethon.helpers import add_surrogate
+    from telethon.tl import types
+
+    request = _request(
+        identity="owner | 111 | @owner",
+        effect="change <settings> & keep names",
+        chat="⁨Example فرید⁩ | -100123",
+        detail="permissions: Photos | Voice messages",
+        preview="hello <world> & \U0001f600",
+    )
+    text, entities = html.parse(request.html())
+    assert text == request.text()
+    units = add_surrogate(text)
+    quotes = [
+        units[e.offset : e.offset + e.length]
+        for e in entities
+        if isinstance(e, types.MessageEntityBlockquote)
+    ]
+    assert quotes == [
+        "Account: owner | 111 | @owner",
+        "Action: change <settings> & keep names",
+        "permissions: Photos | Voice messages",
+        "Chat: ⁨Example فرید⁩ | -100123",
+        add_surrogate(" hello <world> & \U0001f600"),
+        "Why asked: first message to someone this account never messaged",
+    ]
+    styled = {
+        type(e): units[e.offset : e.offset + e.length]
+        for e in entities
+        if isinstance(e, (types.MessageEntityBold, types.MessageEntityCode))
+    }
+    assert styled[types.MessageEntityBold] == "Action: change <settings> & keep names"
+    assert styled[types.MessageEntityCode] == "send_message"
+
+
 def test_every_line_is_labelled():
     lines = _request().text().splitlines()
     assert [line.split(":")[0] for line in lines] == [

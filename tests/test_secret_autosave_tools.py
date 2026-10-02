@@ -97,6 +97,18 @@ async def test_both_sides_reports_when_telegram_could_not_reach_the_peer(backend
 
 
 @pytest.mark.asyncio
+async def test_accepted_delete_request_is_not_claimed_as_peer_observed_erasure(backend):
+    backend.both_sides_reached = True
+
+    answer = _result(await mod.delete_secret_chat_both_sides(CHAT_ID, account="acct"))
+
+    assert answer["deleted"] is True
+    assert answer["delete_request_accepted"] is True
+    assert answer["peer_history_deleted"] is None
+    assert "not confirmed" in answer["note"]
+
+
+@pytest.mark.asyncio
 async def test_saved_messages_are_deleted_on_request_only(backend):
     backend.saved_messages[SECRET_ID] = [{"type": "message", "id": 1}]
 
@@ -121,3 +133,30 @@ async def test_the_status_says_whether_auto_save_is_on_and_where(backend):
     on = _result(await sc.secret_chat_status(account="acct"))
 
     assert off["auto_save"] is None and on["auto_save"] == "D:/saved"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("store", ["history", "media"])
+async def test_local_cleanup_failure_preserves_accepted_delete_and_attempts_both_stores(
+    backend, monkeypatch, store
+):
+    secret_history.record("acct", SECRET_ID, {"message_id": "1", "text": "x"})
+    secret_media_refs.remember("acct", SECRET_ID, 1, {"version": 1}, 0)
+
+    def fail(*args):
+        raise OSError("fixture storage failure")
+
+    target, method = (
+        (secret_history, "clear") if store == "history" else (secret_media_refs, "drop_chat")
+    )
+    monkeypatch.setattr(target, method, fail)
+    answer = _result(await mod.delete_secret_chat_both_sides(CHAT_ID, account="acct"))
+    assert answer["delete_request_accepted"] is True
+    assert answer["peer_history_deleted"] is None
+    assert answer["deleted"] is False
+    assert answer["local_cleanup"][store] is False
+    assert answer["local_cleanup"]["media" if store == "history" else "history"] is True
+    if store == "history":
+        assert secret_media_refs.load("acct", SECRET_ID, 1) is None
+    else:
+        assert secret_history.read("acct", SECRET_ID, 10) == []

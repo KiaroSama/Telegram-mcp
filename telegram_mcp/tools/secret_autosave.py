@@ -10,9 +10,9 @@ Every tool here waits for the owner's approval in the safeguard (owner, 2026-09-
 
 from typing import Optional
 
-from telegram_mcp import export_dialog, export_jobs, file_roots, secret_history, secret_media_refs
+from telegram_mcp import export_dialog, export_jobs, file_roots
 from telegram_mcp.owner_only import restrict_to_owner_strict
-from telegram_mcp.secret_backend import secret_manager
+from telegram_mcp.secret_backend import erase_local, secret_manager
 from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
 from telegram_mcp.tdexport.secret_saved import export_saved_chat
 from telegram_mcp.tdexport.settings import Environment
@@ -115,11 +115,20 @@ async def _delete(tool: str, secret_chat_id: int, account: Optional[str], both: 
             reached = await manager.delete_secret_chat_both_sides(secret_id)
         else:
             await manager.delete_secret_chat(secret_id)
-        secret_history.clear(label, secret_id)
-        secret_media_refs.drop_chat(label, secret_id)
-        result = {"deleted": True, "secret_chat_id": secret_id}
+        cleanup = erase_local(label, secret_id)
+        cleared = cleanup["history"] and cleanup["media"]
+        result = {"deleted": cleared, "secret_chat_id": secret_id}
+        if not cleared:
+            result["local_cleanup"] = cleanup
+            result["local_cleanup_note"] = "The chat was removed, but local cleanup is incomplete."
         if both:
-            result["peer_history_deleted"] = reached
+            result["delete_request_accepted"] = reached
+            result["peer_history_deleted"] = None if reached else False
+            result["note"] = (
+                "Telegram accepted the deletion request; erasure on the peer is not confirmed."
+                if reached
+                else "Telegram could not accept the peer-deletion request; local cleanup was attempted."
+            )
         return format_tool_result(result)
     except KeyError:
         return _unknown(secret_chat_id)
@@ -166,8 +175,11 @@ async def delete_secret_chat_both_sides(secret_chat_id: int, account: str = None
     Delete a secret chat here AND ask Telegram to erase the other side's history.
 
     Best effort, like the official apps: a chat already ended on the server can no
-    longer carry the request, and then `peer_history_deleted` is false. This side is
-    cleared either way. Saved messages (auto-save) are not touched.
+    longer carry the request. `delete_request_accepted` reports Telegram's acceptance;
+    `peer_history_deleted` is null when accepted (the peer's erasure is not confirmed),
+    false otherwise. Local cleanup is attempted either way; `deleted` is true only when
+    both local stores were cleared. Partial cleanup includes `local_cleanup` details.
+    Auto-saved messages are not touched.
 
     Args:
         secret_chat_id: From `list_secret_chats`; the `chat_id` is accepted too.

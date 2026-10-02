@@ -25,7 +25,7 @@ __all__ = [
 ]
 
 
-async def _rights_telegram_declined(cl, entity, user, requested: dict) -> list:
+async def _rights_telegram_declined(cl, entity, user, requested: dict):
     """Rights asked for that Telegram did not grant, read back from Telegram.
 
     The write is not the outcome. Telegram accepts `channels.editAdmin` in full
@@ -39,29 +39,26 @@ async def _rights_telegram_declined(cl, entity, user, requested: dict) -> list:
     "Every other right in this call was applied", which was a claim, not a
     measurement.
 
-    Never raises: a failed read-back must not turn an applied change into an
-    error. It returns nothing to report instead, which is what it knows.
+    Never raises: None means read-back was unavailable, not that every right stuck.
     """
-    wanted = {name for name, on in requested.items() if on}
-    if not wanted:
-        return []
     try:
         got = await cl(functions.channels.GetParticipantRequest(channel=entity, participant=user))
         actual = admin_rights_to_dict(getattr(got.participant, "admin_rights", None))
     except Exception:
-        return []
-    # Only a right that came back explicitly False was declined. A name absent
-    # from the read-back is not a right at all, which is a caller's mistake
-    # rather than an answer from Telegram.
-    return sorted(name for name in wanted if actual.get(name) is False)
+        return None
+    if not actual:
+        return None
+    return (
+        sorted(name for name, on in requested.items() if on and actual.get(name) is False),
+        sorted(name for name, on in requested.items() if not on and actual.get(name) is True),
+    )
 
 
 def _declined_note(declined: list) -> str:
     return (
-        f" Telegram declined: {', '.join(declined)}. The request was accepted and these "
-        "were read back as still off - normally because the right does not apply to this "
-        "chat type (pinning and ranks are supergroup rights; topics need a forum), or "
-        "because this account may not grant it here."
+        f" Requested rights read back as off: {', '.join(declined)}. "
+        "The read-back may lag behind the accepted request, or Telegram may not grant "
+        "these rights for this chat type or account. Final application is not confirmed."
     )
 
 
