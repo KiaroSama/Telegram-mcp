@@ -222,3 +222,37 @@ def test_without_mozjpeg_pillow_still_writes_a_thumb(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "imagecodecs", None)
     data = _thumb(tmp_path, _jpeg((64, 48)), (40, 30))
     assert 0xC0 in [marker for marker, _ in _segments(data)]  # Pillow's baseline encoder
+
+
+@pytest.mark.parametrize("size", [(16, 16), (8, 8)])
+def test_cmyk_thumbnail_uses_desktop_rgb_conversion(tmp_path, size):
+    _mozjpeg()
+    from PIL import Image
+
+    image = Image.new("CMYK", (16, 16), (70, 130, 190, 90))
+    buffer = io.BytesIO()
+    image.save(buffer, "JPEG", quality=90)
+    source = buffer.getvalue()
+    data = _thumb(tmp_path, source, size)
+    assert 0xC2 in [marker for marker, _ in _segments(data)]
+    with Image.open(io.BytesIO(source)) as decoded:
+        c, m, y, k = decoded.getpixel((0, 0))
+    expected = tuple((255 - k) * (255 - value) // 255 for value in (c, m, y))
+    with Image.open(io.BytesIO(data)) as thumb:
+        assert thumb.mode == "RGB"
+        assert all(abs(a - b) <= 2 for a, b in zip(thumb.getpixel((0, 0)), expected))
+
+
+def test_jpeg_comments_use_qt_key_order_and_utf8(tmp_path):
+    _mozjpeg()
+    comments = ["Zeta: final", "a description", "Alpha: first", "Zeta: replaced"]
+    source = _jpeg((16, 16))
+    markers = b"".join(
+        bytes((0xFF, 0xFE))
+        + struct.pack(">H", len(text.encode("utf-8")) + 2)
+        + text.encode("utf-8")
+        for text in comments
+    )
+    data = _thumb(tmp_path, source[:2] + markers + source[2:], (8, 8))
+    written = [payload for marker, payload in _segments(data) if marker == 0xFE]
+    assert written == [b"Alpha: first", b"Description: a description", b"Zeta: replaced"]

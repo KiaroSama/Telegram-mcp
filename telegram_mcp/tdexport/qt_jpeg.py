@@ -20,8 +20,8 @@ pixels as mozjpeg's decoder with Qt's settings (ISLOW, fancy upsampling).
 
 Known gap: a source ICC profile Qt does not consider sRGB makes Desktop convert the pixels
 (tdesktop's 0021-convert-qimage-to-srgb) and write a Qt-generated profile; this copies both
-unchanged. COM text and CMYK sources are not reproduced either (the caller falls back to Pillow
-for CMYK).
+unchanged. COM markers and raw CMYK conversion follow Qt; byte parity for these branches
+still needs independent Desktop oracle fixtures.
 """
 
 import struct
@@ -83,8 +83,41 @@ def density_fields(dpm_x: int, dpm_y: int) -> tuple[int, int, int]:
     return 2, (dpm_x + 50) // 100, (dpm_y + 50) // 100
 
 
-def _splice(encoded: bytes, dpm: tuple[int, int], icc: bytes) -> bytes | None:
-    """Put Qt's density into the JFIF header and its APP2 ICC markers right after it."""
+def source_comments(data: bytes) -> bytes:
+    """QJpegHandler's readTexts -> QImage text map -> sorted UTF-8 COM markers."""
+    text = {}
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker = data[i + 1]
+        if marker == 0xFF:
+            i += 1
+            continue
+        if marker in (0xD9, 0xDA):
+            break
+        length = struct.unpack(">H", data[i + 2 : i + 4])[0]
+        if length < 2 or i + 2 + length > len(data):
+            break
+        if marker == 0xFE:
+            comment = data[i + 4 : i + 2 + length].decode("utf-8", errors="replace")
+            index = comment.find(": ")
+            if index == -1 or comment.find(" ") < index:
+                key, value = "Description", comment
+            else:
+                key, value = comment[:index], comment[index + 2 :]
+            if key:
+                text[key] = value
+        i += 2 + length
+    markers = bytearray()
+    for key in sorted(text, key=lambda value: value.encode("utf-16-be")):
+        payload = (key + ": " + text[key]).encode("utf-8")[:65533]
+        markers.extend(bytes((0xFF, 0xFE)) + struct.pack(">H", len(payload) + 2) + payload)
+    return bytes(markers)
+
+
+def _splice(
+    encoded: bytes, dpm: tuple[int, int], icc: bytes, comments: bytes = b""
+) -> bytes | None:
+    """Put Qt's density, COM text and APP2 ICC markers after the JFIF header."""
     if encoded[2:4] != b"\xff\xe0" or encoded[6:11] != b"JFIF\x00":
         return None
     end = 4 + struct.unpack(">H", encoded[4:6])[0]
@@ -93,7 +126,7 @@ def _splice(encoded: bytes, dpm: tuple[int, int], icc: bytes) -> bytes | None:
     if x_density > 0xFFFF or y_density > 0xFFFF:
         return None
     app0[9:14] = struct.pack(">BHH", unit, x_density, y_density)
-    markers = b""
+    markers = comments
     chunks = [icc[i : i + _MAX_ICC_CHUNK] for i in range(0, len(icc), _MAX_ICC_CHUNK)]
     for number, chunk in enumerate(chunks, 1):
         block = b"ICC_PROFILE\x00" + bytes([number, len(chunks)]) + chunk
@@ -106,9 +139,9 @@ def desktop_thumb(
 ) -> bytes | None:
     """The thumbnail file Desktop writes for a decoded JPEG `image` (Pillow) whose file bytes are
     `source`, or None when this cannot reproduce it: no imagecodecs with mozjpeg, or a mode
-    other than RGB and L.
+    other than RGB, L and CMYK.
     """
-    if image.mode not in ("RGB", "L"):
+    if image.mode not in ("RGB", "L", "CMYK"):
         return None
     try:  # by name, like qt_scale: their stubs need a 3.12+ type checker
         imagecodecs = import_module("imagecodecs")
@@ -117,16 +150,25 @@ def desktop_thumb(
         return None
     if not imagecodecs.MOZJPEG.available:  # the manylinux wheels leave mozjpeg out
         return None
-    if size != image.size:
+    if image.mode == "CMYK":
+        # Use raw libjpeg samples, including its YCCK conversion, as Qt does.
+        try:
+            cmyk = imagecodecs.jpeg8_decode(
+                source, outcolorspace=imagecodecs.JPEG8.CS.CMYK, fancyupsampling=True
+            ).astype(numpy.uint16)
+        except (imagecodecs.Jpeg8Error, ValueError):
+            return None
+        pixels = (cmyk[..., :3] * cmyk[..., 3:] // 255).astype(numpy.uint8)
+    else:
         # QImage::smoothScaled turns Grayscale8 into RGB32 before scaling.
-        rgb = image.convert("RGB") if image.mode == "L" else image
-        pixels = smooth_scale(numpy.asarray(rgb), size[0], size[1])
-    else:  # QImage::scaled returns the image itself, saved again as it is
-        pixels = numpy.ascontiguousarray(numpy.asarray(image))
+        rgb = image.convert("RGB") if image.mode == "L" and size != image.size else image
+        pixels = numpy.ascontiguousarray(numpy.asarray(rgb))
+    if size != image.size:
+        pixels = smooth_scale(pixels, size[0], size[1])
     level = min(quality, 100) if quality is not None and quality >= 0 else 75
     try:
         encoded = bytes(imagecodecs.mozjpeg_encode(pixels, level, subsampling="444"))
     except (imagecodecs.MozjpegError, ValueError):
         return None  # the caller falls back to Pillow rather than losing the thumbnail
     dpm, icc = source_metadata(source)
-    return _splice(encoded, dpm, icc)
+    return _splice(encoded, dpm, icc if pixels.ndim == 3 else b"", source_comments(source))
