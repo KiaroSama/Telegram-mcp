@@ -59,7 +59,12 @@ async def probe(client):
 
 
 def read_config(path):
-    raw = Path(path).read_bytes()
+    return parse_config(Path(path).read_bytes())
+
+
+def parse_config(raw):
+    from telegram_mcp.account_snapshot import PROCESS_ACCOUNT_VARS, _interpolate
+
     bindings = list(parse_stream(io.StringIO(raw.decode("utf-8"))))
     if any(binding.error for binding in bindings):
         raise ValueError("Configuration cannot be parsed.")
@@ -69,7 +74,8 @@ def read_config(path):
             if binding.key in values:
                 raise ValueError("Configuration contains a duplicate key.")
             values[binding.key] = binding.value
-    return values
+    populated = {key: value for key, value in values.items() if value is not None}
+    return {**_interpolate(populated, PROCESS_ACCOUNT_VARS), **PROCESS_ACCOUNT_VARS}
 
 
 def digest(value):

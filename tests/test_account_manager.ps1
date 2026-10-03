@@ -230,9 +230,9 @@ $($functions.Value -join "`n`n")
 
 
     # --- the backup is a real restore point ----------------------------------
-    Copy-Item -LiteralPath $backup -Destination $envPath -Force
+    $backup = Set-EnvValue -Key 'RESTORE_CANARY' -Value 'synthetic'; Copy-Item -LiteralPath $backup -Destination $envPath -Force
     $restored = Get-Accounts
-    if ($restored.Count -ne 2 -or -not $restored.Contains('work')) {
+    if ($restored.Count -ne 1 -or -not $restored.Contains('moved') -or [IO.File]::ReadAllText($envPath).Contains('RESTORE_CANARY')) {
         throw "Restoring the backup did not bring the file back: $($restored.Keys -join ', ')"
     }
     Write-Host 'ok  the backup restores the file by a plain copy'

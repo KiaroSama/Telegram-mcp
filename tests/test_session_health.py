@@ -271,3 +271,46 @@ async def test_unknown_startup_failure_is_not_treated_as_invalid():
     with pytest.raises(OSError):
         await account_startup.start_accounts(accounts, connect, lambda text: None)
     assert list(accounts) == ["work"]
+
+
+@pytest.mark.parametrize("prefix", ["TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME"])
+def test_health_config_uses_runtime_interpolation(tmp_path, monkeypatch, prefix):
+    from telegram_mcp import account_snapshot
+
+    key = prefix + "_WORK"
+    monkeypatch.setattr(account_snapshot, "PROCESS_ACCOUNT_VARS", {})
+    monkeypatch.delenv(key, raising=False)
+    monkeypatch.delenv("SESSION_VALUE", raising=False)
+    path = tmp_path / ".env"
+    path.write_text(
+        f"SESSION_VALUE=synthetic-session\n{key}=${{SESSION_VALUE}}\n", encoding="utf-8"
+    )
+    assert health.read_config(path)[key] == account_snapshot.read_snapshot(str(path)).env[key]
+    assert health.read_config(path)[key] == "synthetic-session"
+
+
+def test_health_config_preserves_runtime_process_precedence(tmp_path, monkeypatch):
+    from telegram_mcp import account_snapshot
+
+    key = "TELEGRAM_SESSION_STRING_WORK"
+    monkeypatch.setattr(account_snapshot, "PROCESS_ACCOUNT_VARS", {key: "process-session"})
+    path = tmp_path / ".env"
+    path.write_text(f"SESSION_VALUE=file-session\n{key}=${{SESSION_VALUE}}\n", encoding="utf-8")
+    assert health.read_config(path)[key] == account_snapshot.read_snapshot(str(path)).env[key]
+    assert health.read_config(path)[key] == "process-session"
+
+
+def test_valueless_reference_uses_runtime_fallback(tmp_path, monkeypatch):
+    from telegram_mcp import account_snapshot
+
+    monkeypatch.setattr(account_snapshot, "PROCESS_ACCOUNT_VARS", {})
+    monkeypatch.delenv("SESSION_VALUE", raising=False)
+    key = "TELEGRAM_SESSION_STRING_WORK"
+    monkeypatch.delenv(key, raising=False)
+    path = tmp_path / ".env"
+    path.write_text(
+        f"SESSION_VALUE\n{key}=${{SESSION_VALUE:-synthetic-session}}\n", encoding="utf-8"
+    )
+    assert health.read_config(path)[key] == account_snapshot.read_snapshot(str(path)).env[key]
+    assert health.read_config(path)[key] == "synthetic-session"
+    assert "SESSION_VALUE" not in health.read_config(path)

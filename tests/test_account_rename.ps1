@@ -27,6 +27,8 @@ try {
         . ([scriptblock]::Create($block))
     }
     $script:LogPath = $null
+    $script:EnvBackupRetention = 5
+    $script:MaxBackupCollisions = 100
     $envPath = Join-Path $sandbox '.env'
     $secretsPath = Join-Path $sandbox 'secrets.md'
     $PSScriptRoot = $sandbox

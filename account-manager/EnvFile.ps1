@@ -46,7 +46,7 @@ function Backup-EnvFile {
             throw "Refusing to keep a backup of $envPath that is not owner-only."
         }
         Remove-StaleFiles -Directory (Split-Path -Parent $envPath) `
-            -Filter "$(Split-Path -Leaf $envPath).backup-*" -Keep $script:EnvBackupRetention
+            -Filter "$(Split-Path -Leaf $envPath).backup-*" -Keep $script:EnvBackupRetention -Latest $backup
         Write-Log "Backed up .env to $(Split-Path -Leaf $backup)"
         return $backup
     }
@@ -94,18 +94,22 @@ function Set-EnvValue {
         [Parameter(Mandatory)] [string] $Key,
         [Parameter(Mandatory)] [AllowEmptyString()] [string] $Value
     )
-    $lines = @(Get-EnvLines)
-    $written = $false
-    $updated = foreach ($line in $lines) {
-        if ($line.Trim() -match "^$([regex]::Escape($Key))\s*=") {
-            $written = $true
-            "$Key=$Value"
+    Invoke-EnvWriteLock {
+        $backup = Backup-EnvFile
+        $lines = @(Get-EnvLines)
+        $written = $false
+        $updated = foreach ($line in $lines) {
+            if ($line.Trim() -match "^$([regex]::Escape($Key))\s*=") {
+                $written = $true
+                "$Key=$Value"
+            }
+            else { $line }
         }
-        else { $line }
+        if (-not $written) { $updated = @($updated) + "$Key=$Value" }
+        Write-FileAtomic -Path $envPath `
+            -Text (($updated -join [Environment]::NewLine) + [Environment]::NewLine)
+        return $backup
     }
-    if (-not $written) { $updated = @($updated) + "$Key=$Value" }
-    Write-FileAtomic -Path $envPath `
-        -Text (($updated -join [Environment]::NewLine) + [Environment]::NewLine)
 }
 
 function Rename-EnvKey {
@@ -125,24 +129,32 @@ function Rename-EnvKey {
         [Parameter(Mandatory)] [string] $From,
         [Parameter(Mandatory)] [string] $To
     )
-    $moved = $false
-    $updated = foreach ($line in @(Get-EnvLines)) {
-        if ($line.Trim() -match "^$([regex]::Escape($From))\s*=(.*)$") {
-            $moved = $true
-            "$To=$($Matches[1].Trim())"
+    Invoke-EnvWriteLock {
+        $backup = Backup-EnvFile
+        $moved = $false
+        $updated = foreach ($line in @(Get-EnvLines)) {
+            if ($line.Trim() -match "^$([regex]::Escape($From))\s*=(.*)$") {
+                $moved = $true
+                "$To=$($Matches[1].Trim())"
+            }
+            else { $line }
         }
-        else { $line }
+        if (-not $moved) { throw "'$From' is not defined in .env, so there is nothing to rename." }
+        Write-FileAtomic -Path $envPath `
+            -Text ((@($updated) -join [Environment]::NewLine) + [Environment]::NewLine)
+        return $backup
     }
-    if (-not $moved) { throw "'$From' is not defined in .env, so there is nothing to rename." }
-    Write-FileAtomic -Path $envPath `
-        -Text ((@($updated) -join [Environment]::NewLine) + [Environment]::NewLine)
 }
 
 function Remove-EnvKey {
     param([Parameter(Mandatory)] [string] $Key)
-    $kept = @(Get-EnvLines | Where-Object { $_.Trim() -notmatch "^$([regex]::Escape($Key))\s*=" })
-    Write-FileAtomic -Path $envPath `
-        -Text (($kept -join [Environment]::NewLine) + [Environment]::NewLine)
+    Invoke-EnvWriteLock {
+        $backup = Backup-EnvFile
+        $kept = @(Get-EnvLines | Where-Object { $_.Trim() -notmatch "^$([regex]::Escape($Key))\s*=" })
+        Write-FileAtomic -Path $envPath `
+            -Text (($kept -join [Environment]::NewLine) + [Environment]::NewLine)
+        return $backup
+    }
 }
 
 # --- secrets.md --------------------------------------------------------------

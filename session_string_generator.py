@@ -34,12 +34,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
+from telegram_mcp.session_health import parse_config
 from telethon import errors
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
 from telegram_mcp.client_identity import client_identity_kwargs
 from telegram_mcp.aliases import normalise_account_label, restrict_to_owner
+from telegram_mcp.alias_store import _alias_lock
 from telegram_mcp.console_theme import default_hint, failure, heading, hint, note
 from telegram_mcp.install_guard import UnsafeInstallationError, assert_safe_distribution
 
@@ -99,14 +101,16 @@ def _backup_env(env_path: Path) -> Path:
     raise OSError(f"could not find a free backup name for {env_path} within one second")
 
 
-def _prune_env_backups(env_path: Path) -> None:
+def _prune_env_backups(env_path: Path, latest: Optional[Path] = None) -> None:
     """Keep the newest ``ENV_BACKUP_RETENTION`` backups and delete the rest.
 
     Each one holds a complete login to every account configured at the time, so
     an unbounded pile of them turns one readable directory into a leak of every
     session ever generated on the machine.
     """
-    backups = sorted(env_path.parent.glob(f"{env_path.name}.backup-*"))
+    backups = sorted(
+        env_path.parent.glob(f"{env_path.name}.backup-*"), key=lambda path: (path == latest, path)
+    )
     for stale in backups[: max(0, len(backups) - ENV_BACKUP_RETENTION)]:
         try:
             stale.unlink()
@@ -148,64 +152,70 @@ def write_env_value(
         # value is read back under a different key than the one written.
         raise ValueError(f"not a usable env key: {key!r}")
 
-    original = env_path.read_bytes() if env_path.exists() else None
-    if expected is not _UNCHECKED and original != expected:
-        raise RuntimeError("Configuration changed during login; nothing was replaced.")
-    if any(c in value for c in "\r\n\x00"):
-        raise ValueError("A session value cannot contain a newline or NUL.")
-    old_key = replace_key or key
-    if not _ENV_KEY_RE.fullmatch(old_key):
-        raise ValueError("Not a usable replacement key.")
-    text = original.decode("utf-8") if original is not None else ""
-    # Parse the same syntax the runtime accepts, including whitespace and quotes.
-    from dotenv.parser import parse_stream
+    env_path = env_path.resolve()
+    with _alias_lock(env_path):
+        original = env_path.read_bytes() if env_path.exists() else None
+        if expected is not _UNCHECKED and original != expected:
+            raise RuntimeError("Configuration changed during login; nothing was replaced.")
+        if any(c in value for c in "\r\n\x00"):
+            raise ValueError("A session value cannot contain a newline or NUL.")
+        old_key = replace_key or key
+        if not _ENV_KEY_RE.fullmatch(old_key):
+            raise ValueError("Not a usable replacement key.")
+        text = original.decode("utf-8") if original is not None else ""
+        # Parse the same syntax the runtime accepts, including whitespace and quotes.
+        from dotenv.parser import parse_stream
 
-    bindings = list(parse_stream(io.StringIO(text)))
-    if any(binding.error for binding in bindings):
-        raise ValueError("Configuration cannot be parsed; nothing was replaced.")
-    found = [binding for binding in bindings if binding.key == old_key]
-    if len(found) > 1 or (replace_key and len(found) != 1):
-        raise ValueError("The account must have exactly one configuration entry.")
-    if old_key != key and any(binding.key == key for binding in bindings):
-        raise ValueError("The replacement string key already exists; nothing was replaced.")
-    newline = "\r\n" if "\r\n" in text else "\n"
-    updated = "".join(
-        f"{key}={value}{newline}" if binding.key == old_key else binding.original.string
-        for binding in bindings
-    )
-    if not found:
-        if updated and not updated.endswith(("\n", "\r")):
-            updated += newline
-        updated += f"{key}={value}{newline}"
-    backup = _backup_env(env_path) if original is not None else None
+        bindings = list(parse_stream(io.StringIO(text)))
+        if any(binding.error for binding in bindings):
+            raise ValueError("Configuration cannot be parsed; nothing was replaced.")
+        found = [binding for binding in bindings if binding.key == old_key]
+        if len(found) > 1 or (replace_key and len(found) != 1):
+            raise ValueError("The account must have exactly one configuration entry.")
+        if old_key != key and any(binding.key == key for binding in bindings):
+            raise ValueError("The replacement string key already exists; nothing was replaced.")
+        newline = "\r\n" if "\r\n" in text else "\n"
+        updated = "".join(
+            f"{key}={value}{newline}" if binding.key == old_key else binding.original.string
+            for binding in bindings
+        )
+        if not found:
+            if updated and not updated.endswith(("\n", "\r")):
+                updated += newline
+            updated += f"{key}={value}{newline}"
+        backup = _backup_env(env_path) if original is not None else None
 
-    # mkstemp makes a 0600 file with an unpredictable name in the same
-    # directory, so the rename is atomic and no reader ever sees a partial file.
-    fd, tmp = tempfile.mkstemp(dir=str(env_path.parent), prefix=env_path.name + ".", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+        # mkstemp makes a 0600 file with an unpredictable name in the same
+        # directory, so the rename is atomic and no reader ever sees a partial file.
+        fd, tmp = tempfile.mkstemp(
+            dir=str(env_path.parent), prefix=env_path.name + ".", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                if not restrict_to_owner(tmp):
+                    raise OSError("Private file permissions could not be verified.")
+                handle.write(updated)
+                handle.flush()
+                os.fsync(handle.fileno())  # the rename must not outrun the bytes
+            # Before the rename: an ACL travels with the file, so `.env` is never
+            # briefly readable under its real name.
             if not restrict_to_owner(tmp):
                 raise OSError("Private file permissions could not be verified.")
-            handle.write(updated)
-            handle.flush()
-            os.fsync(handle.fileno())  # the rename must not outrun the bytes
-        # Before the rename: an ACL travels with the file, so `.env` is never
-        # briefly readable under its real name.
-        if not restrict_to_owner(tmp):
-            raise OSError("Private file permissions could not be verified.")
-        current = env_path.read_bytes() if env_path.exists() else None
-        if current != original:
-            raise RuntimeError("Configuration changed before publication; nothing was replaced.")
-        os.replace(tmp, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
+            current = env_path.read_bytes() if env_path.exists() else None
+            if current != original:
+                raise RuntimeError(
+                    "Configuration changed before publication; nothing was replaced."
+                )
+            os.replace(tmp, env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
 
-    _prune_env_backups(env_path)
-    return backup
+        _prune_env_backups(env_path, latest=backup)
+        return backup
 
 
 def _parse_args() -> argparse.Namespace:
@@ -475,8 +485,8 @@ def _main(event) -> None:
 
     original = _ENV_PATH.read_bytes() if _ENV_PATH.exists() else None
     if args.replace_key:
-        values = dotenv_values(stream=io.StringIO((original or b"").decode("utf-8")))
-        if not values.get(args.replace_key):
+        values = parse_config(original or b"")
+        if args.replace_key not in values:
             print(failure("The selected account entry is missing. Nothing was changed."))
             sys.exit(1)
         if (

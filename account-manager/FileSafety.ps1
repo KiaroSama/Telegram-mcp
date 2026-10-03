@@ -112,6 +112,36 @@ function Test-OwnerOnlyAcl {
     }
     catch { return $false }
 }
+function Invoke-EnvWriteLock {
+    param(
+        [Parameter(Mandatory)] [scriptblock] $Action,
+        [int] $TimeoutMilliseconds = 10000
+    )
+    # Keep the sidecar: deleting it lets later writers lock a different file.
+    $path = [IO.Path]::GetFullPath($envPath) + '.lock'
+    $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate,
+        [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    $locked = $false
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        while (-not $locked) {
+            try { $stream.Lock(0, 1); $locked = $true }
+            catch [IO.IOException] {
+                if ($clock.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                    throw 'Configuration write lock timed out.'
+                }
+                Start-Sleep -Milliseconds 50
+            }
+        }
+        if ($stream.Length -eq 0) { $stream.WriteByte(0); $stream.Flush() }
+        & $Action
+    }
+    finally {
+        try { if ($locked) { $stream.Unlock(0, 1) } }
+        finally { $stream.Dispose() }
+    }
+}
+
 function Write-FileAtomic {
     <#
       Write a file so a crash cannot leave it half-written.
@@ -175,11 +205,12 @@ function Remove-StaleFiles {
     param(
         [Parameter(Mandatory)] [string] $Directory,
         [Parameter(Mandatory)] [string] $Filter,
-        [Parameter(Mandatory)] [int] $Keep
+        [Parameter(Mandatory)] [int] $Keep,
+        [string] $Latest = ''
     )
     $files = @(
         Get-ChildItem -LiteralPath $Directory -Filter $Filter -File -Force -ErrorAction SilentlyContinue |
-            Sort-Object Name
+            Sort-Object @{ Expression = { $_.FullName -eq $Latest } }, Name
     )
     for ($index = 0; $index -lt $files.Count - $Keep; $index++) {
         Remove-Item -LiteralPath $files[$index].FullName -Force -ErrorAction SilentlyContinue

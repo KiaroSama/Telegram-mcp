@@ -76,7 +76,12 @@ to a string session; the old session file is retained.
 
 Cancellation, wrong identity, a changed configuration, failed private permissions,
 failed disconnect or failed saving leaves the old configuration unchanged and
-returns failure. A private backup precedes an atomic replacement. The server picks
+returns failure. A private backup precedes an atomic replacement. The generator and
+Windows account manager share a bounded configuration-write lock, covering the
+read, backup and replacement; they do not hold it while you enter login details.
+The newly created backup is retained even when several writes occur in one second.
+Health checks and re-login resolve configuration variables using the same rules as
+the server, and an existing empty account entry can be repaired. The server picks
 up the new entry and verifies it before activation; no ordinary restart is needed.
 **A new login cannot restore old device-bound secret chats.** Their keys, history
 and media are kept rather than automatically deleted.

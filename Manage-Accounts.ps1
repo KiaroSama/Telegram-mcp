@@ -250,9 +250,8 @@ function Add-Account {
         }
     }
 
-    $backup = Backup-EnvFile
     $key = "TELEGRAM_SESSION_STRING_$($label.ToUpperInvariant())"
-    Set-EnvValue -Key $key -Value $sessionString
+    $backup = Set-EnvValue -Key $key -Value $sessionString
     $sessionString = $null
 
     Write-Log "Added account '$label' as $key"
@@ -356,8 +355,7 @@ function Remove-Account {
     Write-Host 'session from Telegram: Settings > Devices.'
     if (-not (Read-Confirmation "Remove '$label'?")) { Write-Host 'Cancelled.'; return }
 
-    $backup = Backup-EnvFile
-    Remove-EnvKey -Key $accounts[$label]
+    $backup = Remove-EnvKey -Key $accounts[$label]
     Remove-SecretChatKeys -Label $label
     Write-Log "Removed account '$label' ($($accounts[$label]))"
     Write-Host ''
@@ -441,11 +439,10 @@ function Rename-Account {
     $registry = $false
     try {
         $moved = @(Move-AccountState -From $from -To $to)
-        $backup = Backup-EnvFile
         try {
             # One write. The value is never read into a variable here - it moves inside
             # the transform, so nothing in this scope ever holds a session string.
-            Rename-EnvKey -From $oldKey -To $newKey
+            $backup = Rename-EnvKey -From $oldKey -To $newKey
         }
         catch {
             $null = Move-AccountState -From $to -To $from
@@ -506,15 +503,12 @@ try {
         Write-Host 'It also has to hold TELEGRAM_API_ID and TELEGRAM_API_HASH, which this menu'
         Write-Host 'does not manage - copy .env.example first, fill those in, then come back.'
         if (Read-Confirmation 'Create an empty .env now so accounts can be added?') {
-            [IO.File]::WriteAllText($envPath, '', [Text.UTF8Encoding]::new($false))
-            # Before anything is put in it: this file ends up holding session
-            # strings, and a session string is the account.
-            if (-not (Set-OwnerOnlyAcl -Path $envPath)) {
-                Remove-Item -LiteralPath $envPath -Force -ErrorAction SilentlyContinue
-                Write-Host 'The .env could not be made owner-only, so it was not created.'
-                exit 1
+            Invoke-EnvWriteLock {
+                if (-not (Test-Path -LiteralPath $envPath)) {
+                    Write-FileAtomic -Path $envPath -Text ''
+                    Write-Log 'Created an empty .env'
+                }
             }
-            Write-Log 'Created an empty .env'
         }
         else {
             Write-Host 'Nothing was changed.'
