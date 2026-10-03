@@ -23,6 +23,8 @@ and usernames (e.g., "@mychannel").
 import argparse
 import asyncio
 import getpass
+import hashlib
+import json
 import io
 import os
 import re
@@ -32,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from telethon import errors
 from telethon.sessions import StringSession
 from telethon.sync import TelegramClient
@@ -44,7 +46,8 @@ from telegram_mcp.install_guard import UnsafeInstallationError, assert_safe_dist
 # How many times the QR code is regenerated after expiry before giving up.
 _QR_MAX_REFRESHES = 10
 
-load_dotenv()
+_ENV_PATH = Path(__file__).resolve().with_name(".env")
+_UNCHECKED = object()
 
 
 _ENV_KEY_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
@@ -76,14 +79,15 @@ def _write_owner_only(path: Path, text: str) -> None:
     """
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+        if not restrict_to_owner(path):
+            raise OSError("Private file permissions could not be verified.")
         handle.write(text)
-    restrict_to_owner(path)
 
 
 def _backup_env(env_path: Path) -> Path:
     """Copy `.env` aside owner-only, under a name nothing else has taken."""
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S_UTC")
-    text = env_path.read_text(encoding="utf-8")
+    text = env_path.read_bytes().decode("utf-8")
     for attempt in range(_MAX_BACKUP_COLLISIONS):
         suffix = "" if attempt == 0 else f"-{attempt}"
         backup = env_path.with_name(f"{env_path.name}.backup-{stamp}{suffix}")
@@ -110,7 +114,14 @@ def _prune_env_backups(env_path: Path) -> None:
             pass
 
 
-def write_env_value(key: str, value: str, env_path: Path = Path(".env")) -> Optional[Path]:
+def write_env_value(
+    key: str,
+    value: str,
+    env_path: Path = Path(".env"),
+    *,
+    expected: object = _UNCHECKED,
+    replace_key: Optional[str] = None,
+) -> Optional[Path]:
     r"""Set one key in `.env`, replacing its line or appending it, and back the file up.
 
     Returns the backup's path, or None when there was no file to back up.
@@ -137,35 +148,54 @@ def write_env_value(key: str, value: str, env_path: Path = Path(".env")) -> Opti
         # value is read back under a different key than the one written.
         raise ValueError(f"not a usable env key: {key!r}")
 
-    backup = None
-    if env_path.exists():
-        backup = _backup_env(env_path)
-        lines = env_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    else:
-        lines = []
+    original = env_path.read_bytes() if env_path.exists() else None
+    if expected is not _UNCHECKED and original != expected:
+        raise RuntimeError("Configuration changed during login; nothing was replaced.")
+    if any(c in value for c in "\r\n\x00"):
+        raise ValueError("A session value cannot contain a newline or NUL.")
+    old_key = replace_key or key
+    if not _ENV_KEY_RE.fullmatch(old_key):
+        raise ValueError("Not a usable replacement key.")
+    text = original.decode("utf-8") if original is not None else ""
+    # Parse the same syntax the runtime accepts, including whitespace and quotes.
+    from dotenv.parser import parse_stream
 
-    replaced = False
-    for index, line in enumerate(lines):
-        if line.startswith(f"{key}="):
-            lines[index] = f"{key}={value}" + "\n"
-            replaced = True
-            break
-    if not replaced:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(f"{key}={value}" + "\n")
+    bindings = list(parse_stream(io.StringIO(text)))
+    if any(binding.error for binding in bindings):
+        raise ValueError("Configuration cannot be parsed; nothing was replaced.")
+    found = [binding for binding in bindings if binding.key == old_key]
+    if len(found) > 1 or (replace_key and len(found) != 1):
+        raise ValueError("The account must have exactly one configuration entry.")
+    if old_key != key and any(binding.key == key for binding in bindings):
+        raise ValueError("The replacement string key already exists; nothing was replaced.")
+    newline = "\r\n" if "\r\n" in text else "\n"
+    updated = "".join(
+        f"{key}={value}{newline}" if binding.key == old_key else binding.original.string
+        for binding in bindings
+    )
+    if not found:
+        if updated and not updated.endswith(("\n", "\r")):
+            updated += newline
+        updated += f"{key}={value}{newline}"
+    backup = _backup_env(env_path) if original is not None else None
 
     # mkstemp makes a 0600 file with an unpredictable name in the same
     # directory, so the rename is atomic and no reader ever sees a partial file.
     fd, tmp = tempfile.mkstemp(dir=str(env_path.parent), prefix=env_path.name + ".", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            handle.write("".join(lines))
+            if not restrict_to_owner(tmp):
+                raise OSError("Private file permissions could not be verified.")
+            handle.write(updated)
             handle.flush()
             os.fsync(handle.fileno())  # the rename must not outrun the bytes
         # Before the rename: an ACL travels with the file, so `.env` is never
         # briefly readable under its real name.
-        restrict_to_owner(tmp)
+        if not restrict_to_owner(tmp):
+            raise OSError("Private file permissions could not be verified.")
+        current = env_path.read_bytes() if env_path.exists() else None
+        if current != original:
+            raise RuntimeError("Configuration changed before publication; nothing was replaced.")
         os.replace(tmp, env_path)
     except BaseException:
         try:
@@ -209,7 +239,22 @@ def _parse_args() -> argparse.Namespace:
             "scrollback, often a screen share, and sometimes a shell log."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--replace-key", help="Re-login for this exact existing configuration key."
+    )
+    parser.add_argument("--expected-user-id", type=int, help="Refuse a login to a different user.")
+    parser.add_argument(
+        "--expected-config-digest", help="Refuse repair if the checked entry changed."
+    )
+    args = parser.parse_args()
+    if args.replace_key and (
+        not re.fullmatch(r"TELEGRAM_SESSION_(?:STRING|NAME)(?:_[A-Za-z0-9_]+)?", args.replace_key)
+        or not args.no_echo
+    ):
+        parser.error("Replacement requires an exact session key and --no-echo.")
+    if args.expected_user_id is not None and (not args.replace_key or args.expected_user_id <= 0):
+        parser.error("--expected-user-id requires a replacement and a positive user ID.")
+    return args
 
 
 def _check_installation() -> None:
@@ -360,7 +405,7 @@ def _phone_login(client: TelegramClient) -> None:
         sys.exit(1)
     except Exception as e:
         print()
-        print(failure(f"Telegram would not send the code: {e}"))
+        print(failure(f"Telegram would not send the code ({type(e).__name__})."))
         client.disconnect()
         sys.exit(1)
 
@@ -393,9 +438,10 @@ def _report_session(env_var: str, session_string: str, *, echo: bool) -> None:
         print(note(f"The session will be saved to .env as {env_var} and not printed."))
 
 
-def main() -> None:
+def _main(event) -> None:
     args = _parse_args()
     _check_installation()
+    load_dotenv(_ENV_PATH, encoding="utf-8")
 
     API_ID = os.getenv("TELEGRAM_API_ID")
     API_HASH = os.getenv("TELEGRAM_API_HASH")
@@ -427,9 +473,34 @@ def main() -> None:
         "\nYour credentials will NOT be stored on any server and are only used for local authentication.\n"
     )
 
-    if args.label is not None:
-        # Supplied by the account manager, which asked for it already. Asking a
-        # second time is how the same account ended up described twice.
+    original = _ENV_PATH.read_bytes() if _ENV_PATH.exists() else None
+    if args.replace_key:
+        values = dotenv_values(stream=io.StringIO((original or b"").decode("utf-8")))
+        if not values.get(args.replace_key):
+            print(failure("The selected account entry is missing. Nothing was changed."))
+            sys.exit(1)
+        if (
+            args.expected_config_digest
+            and hashlib.sha256(values[args.replace_key].encode("utf-8")).hexdigest()
+            != args.expected_config_digest
+        ):
+            print(failure("The checked session changed. Check health again before re-login."))
+            sys.exit(1)
+        suffix = (
+            args.replace_key.removeprefix("TELEGRAM_SESSION_STRING")
+            .removeprefix("TELEGRAM_SESSION_NAME")
+            .lstrip("_")
+        )
+        label = suffix.lower()
+        print(note("Re-login cannot restore old device-bound secret chats. Their files are kept."))
+        if args.replace_key.startswith("TELEGRAM_SESSION_NAME"):
+            if input(
+                "Convert this file-based account to a string session? [Y/n]: "
+            ).strip().lower() not in {"", "y", "yes"}:
+                print(note("Cancelled. Nothing was changed."))
+                sys.exit(1)
+    elif args.label is not None:
+        # Supplied by the account manager, which asked for it already.
         label = args.label.strip()
     else:
         try:
@@ -460,30 +531,78 @@ def main() -> None:
         safe_label = "default"
         env_var = "TELEGRAM_SESSION_STRING"
 
-    if args.qr:
+    if args.replace_key:
+        env_var = args.replace_key.replace("TELEGRAM_SESSION_NAME", "TELEGRAM_SESSION_STRING", 1)
+
+    if args.phone:
         method = "1"
-    elif args.phone:
+    elif args.qr:
         method = "2"
     else:
         print()
         print(heading("Choose login method:"))
-        print("  1) QR code login (recommended -- scan from your Telegram app)")
-        print("  2) Phone number + verification code")
+        print("  1) Phone number + verification code (default)")
+        print("  2) QR code login (scan from your Telegram app)")
         print()
         method = input(f'Selection {default_hint("[1]")}: ').strip() or "1"
+    if method not in {"1", "2"}:
+        print(failure("Choose 1 for phone login or 2 for QR login. Nothing was saved."))
+        sys.exit(1)
 
+    expected_user_id = args.expected_user_id
+    if args.replace_key:
+        base = os.getenv("XDG_STATE_HOME") or Path.home() / ".local" / "state"
+        owner = Path(base) / "telegram-mcp" / "secret-chats" / f"{safe_label.lower()}.owner.json"
+        if owner.exists():
+            try:
+                recorded = json.loads(owner.read_text(encoding="utf-8"))["user_id"]
+                if type(recorded) is not int or recorded <= 0:
+                    raise ValueError("Invalid owner identity.")
+                if expected_user_id is not None and expected_user_id != recorded:
+                    raise ValueError("Conflicting owner identity.")
+                expected_user_id = recorded
+            except Exception:
+                print(
+                    failure(
+                        "The existing account identity cannot be verified. Nothing was changed."
+                    )
+                )
+                sys.exit(1)
+    client = None
+    disconnected = False
     try:
         client = TelegramClient(StringSession(), API_ID, API_HASH, **client_identity_kwargs())
         client.connect()
 
         if not client.is_user_authorized():
             if method == "1":
-                _qr_login(client)
-            else:
                 _phone_login(client)
+            else:
+                _qr_login(client)
 
+        me = client.get_me()
+        if me is None:
+            raise RuntimeError("Authentication was not completed.")
+        if args.replace_key:
+            if expected_user_id is not None:
+                if me.id != expected_user_id:
+                    raise RuntimeError(
+                        "A different Telegram account signed in; nothing was replaced."
+                    )
+            else:
+                print(note(f"Authenticated user ID: {me.id}."))
+                if input(
+                    "Is this the account you intend to repair? [Y/n]: "
+                ).strip().lower() not in {"", "y", "yes"}:
+                    raise RuntimeError("Account confirmation cancelled; nothing was replaced.")
         session_string = StringSession.save(client.session)
-
+        if not session_string:
+            raise RuntimeError("Authentication produced no session; nothing was saved.")
+        client.disconnect()
+        if client.is_connected():
+            raise RuntimeError("The new login did not disconnect; nothing was saved.")
+        disconnected = True
+        event("INFO", "Authentication completed; connection closed")
         _report_session(env_var, session_string, echo=not args.no_echo)
 
         if args.no_echo:
@@ -501,30 +620,57 @@ def main() -> None:
             save = choice.strip().lower() in {"", "y", "yes"}
         if save:
             try:
-                backup = write_env_value(env_var, session_string)
+                backup = write_env_value(
+                    env_var,
+                    session_string,
+                    _ENV_PATH,
+                    expected=original,
+                    replace_key=args.replace_key,
+                )
                 print("")
+                event("INFO", "Session saved atomically")
                 print(f".env updated: {env_var} is saved.")
                 if backup:
                     print(hint(f"The previous file is kept as {backup.name}."))
             except Exception as e:
-                print("")
-                print(f"Error updating .env file: {e}")
-                print(hint("Add the session string to .env by hand instead."))
+                print(
+                    failure(
+                        f"Saving failed ({type(e).__name__}). The original configuration is unchanged."
+                    )
+                )
+                sys.exit(1)
             else:
                 # Nothing follows. Until 2026-09-21 this signed the same account
                 # in to a SECOND client as well, because secret chats ran on
                 # a second authorisation. They run on this one now, so an account
                 # that reaches here is finished - see docs/adr/0006.
                 print()
-                print(f"'{safe_label}' is ready, secret chats included.")
+                print(f"'{safe_label}' is saved. The server verifies it before activation.")
+        elif args.label is not None:
+            print(note("Nothing was saved."))
+            sys.exit(1)
 
-        client.disconnect()
-
-    except Exception as e:
+    except (Exception, KeyboardInterrupt) as e:
         print()
-        print(failure(f"{e}"))
-        print(failure("No session string was generated."))
+        print(failure(f"Login failed or was cancelled ({type(e).__name__}). Nothing was saved."))
         sys.exit(1)
+    finally:
+        if client is not None and not disconnected:
+            try:
+                client.disconnect()
+            except Exception:
+                print(failure("Disconnect could not be confirmed. No session was published."))
+
+
+def main():
+    from telegram_mcp.session_log import session_log
+
+    with session_log("session_string_generator") as event:
+        try:
+            _main(event)
+        except (EOFError, KeyboardInterrupt):
+            print(failure("Cancelled. Nothing was saved."))
+            sys.exit(1)
 
 
 if __name__ == "__main__":

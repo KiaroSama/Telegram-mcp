@@ -29,6 +29,7 @@ Set-StrictMode -Version Latest
 $exitCode = 0
 $script:LogPath = $null
 $envPath = Join-Path $PSScriptRoot '.env'
+$script:ProjectRoot = $PSScriptRoot
 
 # How many of each are kept. Both hold private material - a log names the accounts
 # on this machine, a backup holds a full login to every one of them - so an
@@ -43,7 +44,7 @@ $script:MaxBackupCollisions = 100
 # `$script:` state above and `$envPath` are visible to them without being passed
 # around. `$PSScriptRoot` is per-FILE, which is why every function that resolves
 # the project root - the ones that call the venv - stayed in this file.
-foreach ($piece in 'FileSafety', 'EnvFile', 'Console', 'Server') {
+foreach ($piece in 'FileSafety', 'EnvFile', 'Console', 'Server', 'Health') {
     $module = Join-Path $PSScriptRoot (Join-Path 'account-manager' "$piece.ps1")
     if (-not (Test-Path -LiteralPath $module)) {
         Write-Host "Missing $module - this launcher needs the lib folder beside it." -ForegroundColor Red
@@ -71,39 +72,13 @@ function Show-Accounts {
     }
     Write-Host ''
     Write-Host "Configured accounts ($($accounts.Count)):" -ForegroundColor Cyan
-    $unfinished = @()
     $number = 0
     foreach ($label in $accounts.Keys) {
         $number++
-        $note = if ($label -eq 'default') { '  (used when a tool is called without account=)' } else { '' }
+        $note = if ($label -eq 'default') { '  (default configuration)' } else { '' }
         Write-Host ("  {0,2}. {1,-16} {2}{3}" -f $number, $label, $accounts[$label], $note)
-        # One login per account since 2026-09-21: a configured account has every
-        # capability, secret chats included, so there is no second half to report.
-        $state = 'authorizationStateReady'
-        $summary = 'ready'
-        # Indented under the name, past the number, so the two lines read as one
-        # entry rather than as two accounts.
-        $continuation = '      {0,-16} {1}'
-        if ($state -eq 'authorizationStateReady') {
-            Write-Host ($continuation -f '', $summary) -ForegroundColor Green
-        }
-        else {
-            Write-Host ($continuation -f '', $summary) -ForegroundColor Yellow
-            $unfinished += $label
-        }
     }
-    if ($unfinished.Count -gt 0) {
-        Write-Host ''
-        Write-Host "Not finished: $($unfinished -join ', ')" -ForegroundColor Yellow
-        # Write-Host, not Write-Hint: the rest of this listing paints directly,
-        # and Write-Hint needs colour state a caller that only wants the list
-        # has no reason to have set up.
-        # Name a remedy that EXISTS. This line used to point at a menu entry
-        # that had been removed, which is worse than saying nothing: the reader
-        # scans the menu for it and concludes the tool is broken.
-        Write-Host 'Option 2, same label: it offers to finish just that half.' -ForegroundColor Yellow
-        Write-Host 'No scan and no code - only the two-step password.' -ForegroundColor Yellow
-    }
+    Write-Host 'Configured does not mean authorized. Option 6 checks current session health.' -ForegroundColor Yellow
     if ($accounts.Count -gt 1) {
         Write-Host ''
         Write-Host 'Every tool call names its account with account=<label>, as it did with one.' -ForegroundColor Yellow
@@ -115,11 +90,16 @@ function Invoke-SessionGenerator {
         [string] $Label,
         # Add-Account has just asked whether to generate one. Asking again here is
         # the same question twice in a row, which is what a caller reports as noise.
-        [switch] $AlreadyConfirmed
+        [switch] $AlreadyConfirmed,
+        [string] $ReplaceKey,
+        [long] $ExpectedUserId = 0,
+        [string] $ExpectedConfigDigest
     )
 
+    $script:GeneratorExitCode = 1
     Write-Host ''
-    Write-Host 'Log in as the account you want to ADD, not one already configured.'
+    if ($ReplaceKey) { Write-Host 'Log in to the same account you are repairing.' }
+    else { Write-Host 'Log in as the account you want to ADD, not one already configured.' }
     if ($Label) {
         Write-Hint "It will save the result as '$Label' - press Enter when it offers to."
     }
@@ -131,7 +111,13 @@ function Invoke-SessionGenerator {
     $script = 'session_string_generator.py'
     # The label it would otherwise ask for. Passing it is what stops the same
     # question being put twice, once by each half of this flow.
-    $arguments = if ($Label) { @($script, '--label', $Label) } else { @($script) }
+    $arguments = @($script)
+    if ($ReplaceKey) {
+        $arguments += @('--replace-key', $ReplaceKey, '--no-echo')
+        if ($ExpectedConfigDigest) { $arguments += @('--expected-config-digest', $ExpectedConfigDigest) }
+        if ($ExpectedUserId -gt 0) { $arguments += @('--expected-user-id', "$ExpectedUserId") }
+    }
+    elseif ($Label) { $arguments += @('--label', $Label, '--no-echo') }
     $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 
     Push-Location -LiteralPath $PSScriptRoot
@@ -165,20 +151,9 @@ function Invoke-SessionGenerator {
 
     if ($script:GeneratorExitCode -ne 0) {
         Write-Host ''
-        # Check, do not assume: the generator writes .env before finishing the
-        # secret-chat half, so a late failure leaves a PERFECTLY GOOD account
-        # behind. Announcing "nothing was saved" there sent the owner back to
-        # log in again - which is the one cost this whole flow exists to avoid.
-        $saved = if ($Label) { (Get-Accounts).Contains($Label) } else { $false }
-        if ($saved) {
-            Write-Failure 'The generator stopped before it finished everything.'
-            Write-Host "'$Label' IS saved and usable - do not log in again." -ForegroundColor Yellow
-            Write-Host 'Only the step after it failed; the message above says which.'
-        }
-        else {
-            Write-Failure 'The generator did not finish, so it produced no session string.'
-            Write-Host 'Nothing was saved. Run it again once the problem above is resolved.'
-        }
+        Write-Failure 'The generator did not save a replacement.'
+        Write-Host 'The previous configuration is unchanged. Resolve the reported problem before trying again.'
+
     }
 }
 
@@ -234,18 +209,22 @@ function Add-Account {
     Write-Host ''
     Write-Host (Get-Painted -Text 'A session string authorises full access to that Telegram account.' -ColorName 'NoteYellow')
     if (Read-Confirmation 'Do you need to generate one first?') {
-        Invoke-SessionGenerator -Label $label -AlreadyConfirmed
+        if ($accounts.Contains($label)) {
+            Invoke-SessionGenerator -Label $label -ReplaceKey $accounts[$label] -AlreadyConfirmed
+        }
+        else { Invoke-SessionGenerator -Label $label -AlreadyConfirmed }
 
         # The generator can write the line itself now. Asking for a paste after it
         # already did would be asking someone to copy a 350-character secret across
         # a terminal for no reason - which is how a mis-paste got saved once.
-        if ((Get-Accounts).Contains($label)) {
+        if ($script:GeneratorExitCode -eq 0 -and (Get-Accounts).Contains($label)) {
             Write-Host ''
             Write-Host "The generator saved '$label' to .env." -ForegroundColor Green
             Write-Host 'A running server picks this up on its own - no restart needed.' -ForegroundColor Cyan
             return
         }
-        Write-Hint 'The generator did not save it, so paste the string it printed.'
+        Write-Note 'The generator did not save it. No account was changed.'
+        return
     }
 
     $sessionString = Read-SessionString 'Paste the session string (input stays hidden)'
@@ -505,6 +484,7 @@ $script:MenuItems = [ordered] @{
     '3' = 'Remove an account'
     '4' = 'Rename an account'
     '5' = 'Generate a session string only'
+    '6' = 'Check session health / re-login'
 }
 
 function Show-Menu {
@@ -557,6 +537,7 @@ try {
             '3' { Remove-Account }
             '4' { Rename-Account }
             '5' { Invoke-SessionGenerator }
+            '6' { Test-AccountSessions }
             default { Write-Failure "Enter a menu number from 1 to $($script:MenuItems.Count), or exit." }
         }
         if ($script:Quitting) { break }

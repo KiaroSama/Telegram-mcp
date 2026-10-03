@@ -543,7 +543,7 @@ to their own location, so they work from any directory and from a shortcut.
 | Script | What it does |
 |---|---|
 | `start-mcp.ps1` | Runs the server through `uv` without losing the terminal's colours or its TTY. Works under Windows PowerShell 5.1 (`powershell.exe`) as well as `pwsh` 7. Keeps a timestamped log per run by default, in `logs/` inside the private state directory - never beside the source - recording only this server's own diagnostics. Pass `-NoLogToFile` (or set `TELEGRAM_MCP_LAUNCHER_LOG=off`) for a run that leaves nothing on disk. **Opened by hand, it replaces a copy that is already running**: every running copy of this checkout's server (its whole process tree) is stopped first, the launcher says which, and its own copy starts - clients reconnect to it. Started hidden, with `-NonInteractive`, or by a client over stdio it stops nothing, so an always-on supervisor and a stdio client cannot stop each other's copy in a loop; there, exit code 75 means another instance already holds the session. |
-| `Manage-Accounts.ps1` | Menu for the accounts in `.env`: list, add, remove, rename, or generate a session string. One login per account, and one device. |
+| `Manage-Accounts.ps1` | Menu for accounts in `.env`: list, add, remove, rename, generate a session, or **check health / re-login (6)**. Phone **1/default**, QR **2**. [Safe repair details](docs/INSTALL.md#check-or-repair-a-session). One connection per authorization key. |
 
 `Manage-Accounts.ps1` edits only the `TELEGRAM_SESSION_*` lines and leaves the rest of
 `.env` byte-for-byte alone — comments, ordering and every key it does not recognise.

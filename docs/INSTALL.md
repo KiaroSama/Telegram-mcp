@@ -28,7 +28,7 @@ uv sync
 ### 3. Log in once
 
 ```bash
-uv run session_string_generator.py --qr
+uv run session_string_generator.py --phone
 ```
 
 `--qr` shows a code to scan from Telegram on your phone; `--phone` asks for the number
@@ -51,6 +51,40 @@ TELEGRAM_SESSION_STRING=...
 ```
 
 Several accounts: see [Multi-Account Setup](../README.md#multi-account-setup).
+
+### Check or repair a session
+
+On Windows, open `Manage-Accounts.ps1` and choose **6: Check session health / re-login**.
+A current authenticated request checks each account. `healthy` is proven authorization;
+`unauthorized`, `revoked` or `invalid` offers re-login. `network`, `unknown` and `busy`
+are unverified, not invalid: the menu does not replace credentials on those results.
+A running shared HTTP server checks its own connection; the manager never opens a
+second connection with the same authorization key. An offline check first acquires
+the same exclusive session lease. Each account check has a bounded deadline.
+
+Select an unhealthy account by number and complete login locally. **Phone is option
+1 and the Enter default; QR is option 2.** Explicit `--phone`/`--qr` still work.
+The generator keeps the exact account entry (including the unsuffixed default),
+checks a known account identity, disconnects before publication and saves without
+printing the session. If no trusted identity record exists, you confirm the newly
+signed-in account locally. File-backed accounts ask before converting their entry
+to a string session; the old session file is retained.
+
+Cancellation, wrong identity, a changed configuration, failed private permissions,
+failed disconnect or failed saving leaves the old configuration unchanged and
+returns failure. A private backup precedes an atomic replacement. The server picks
+up the new entry and verifies it before activation; no ordinary restart is needed.
+**A new login cannot restore old device-bound secret chats.** Their keys, history
+and media are kept rather than automatically deleted.
+
+The generator and health helper write one private UTF-8 log per run under the
+configured state directory's `telegram-mcp/logs/`, using
+`<script>_YYYY-MM-DD_HH-mm-ss_UTC.log` (collision suffixes prevent overwrites).
+Entries use `[timestamp UTC] [LEVEL] [COMPONENT] Message`, recording stages and
+status only, never phone/code/password/session values or raw exceptions. Logging
+failure falls back to stderr. There is no verbose credential mode; close handlers
+are flushed. Logs are not automatically pruned: remove old logs locally as needed,
+and share only reviewed, sanitized diagnostics.
 
 ### 5. Start the server
 

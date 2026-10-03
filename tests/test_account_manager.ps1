@@ -508,8 +508,8 @@ try {
     if ($onNo) { throw 'A typed no was ignored.' }
     Write-Host 'ok  Enter accepts and a typed n declines'
 
-    if ($source -match "'6' = ") {
-        throw 'Menu entry 6 is back; there is no second half for it to finish.'
+    if ($source -notmatch "'6' = 'Check session health / re-login'") {
+        throw 'The session health menu is missing.'
     }
 
     $dispatch = [regex]::Match($source, '(?ms)switch \(\$choice\) \{.*?^        \}').Value

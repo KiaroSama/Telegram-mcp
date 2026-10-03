@@ -41,4 +41,27 @@ async def list_accounts() -> str:
     return "\n".join(lines)
 
 
-__all__ = ["list_accounts"]
+__all__ = ["list_accounts", "check_account_session"]
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Check Account Session",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
+async def check_account_session(config_key: str, config_digest: str) -> str:
+    """Check authorization on the runtime-owned connection matching a local configuration.
+
+    No login, credential disclosure or second Telegram connection. Unknown/busy is
+    not invalid authorization. Used by the local account manager's health menu.
+    """
+    from telegram_mcp.session_health import check_runtime, result
+
+    try:
+        return json.dumps(await check_runtime(config_key, config_digest))
+    except Exception:
+        return json.dumps(result("unknown"))

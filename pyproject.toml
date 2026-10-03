@@ -173,6 +173,8 @@ source = [
     "telegram_mcp.button_view",
     "telegram_mcp.client_identity",
     "telegram_mcp.client_capabilities",
+  "telegram_mcp.session_health",
+  "telegram_mcp.session_log",
     "telegram_mcp.connection",
     "telegram_mcp.console_theme",
     "telegram_mcp.contact_sheet",
