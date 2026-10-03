@@ -154,12 +154,13 @@ function Remove-StaleFiles {
     param(
         [Parameter(Mandatory)] [string] $Directory,
         [Parameter(Mandatory)] [string] $Filter,
-        [Parameter(Mandatory)] [int] $Keep
+        [Parameter(Mandatory)] [int] $Keep,
+        [string] $Latest = ''
     )
     # Named by a UTC timestamp, so the name order IS the age order.
     $files = @(
         Get-ChildItem -LiteralPath $Directory -Filter $Filter -File -Force -ErrorAction SilentlyContinue |
-            Sort-Object Name
+            Sort-Object @{ Expression = { $_.FullName -eq $Latest } }, Name
     )
     for ($index = 0; $index -lt $files.Count - $Keep; $index++) {
         Remove-Item -LiteralPath $files[$index].FullName -Force -ErrorAction SilentlyContinue
