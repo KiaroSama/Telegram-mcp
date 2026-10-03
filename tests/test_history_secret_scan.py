@@ -412,3 +412,17 @@ def test_the_patterns_match_what_they_claim_to():
         assert re.compile(pattern), name
     assert scan.credential_kinds(b"key = " + SYNTHETIC_MARKER) == ["AWS access key"]
     assert scan.credential_kinds(b"nothing interesting here") == []
+
+
+def test_verified_synthetic_pixel_blob_is_not_a_session_but_other_shapes_still_fail():
+    oid = "23f836408ecffb26cbfe8e8a032102dd3dea0ee9"
+    path = "tests/fixtures/tdexport_icc/parametric-4.rgb.hex"
+    records = [(oid, "blob", ["Telethon session string", "AWS access key"])]
+    findings, scanned, seen = scan.scan_records(records, {oid: path})
+    assert scanned == 1 and seen == {oid}
+    assert len(findings) == 1 and "AWS access key" in findings[0]
+    assert "Telethon session string" not in findings[0]
+    findings, _, _ = scan.scan_records(
+        [("different", "blob", ["Telethon session string"])], {"different": path}
+    )
+    assert len(findings) == 1 and "Telethon session string" in findings[0]

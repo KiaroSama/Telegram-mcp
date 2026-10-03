@@ -63,6 +63,12 @@ PATTERNS = {
 }
 COMPILED = {name: re.compile(pattern) for name, pattern in PATTERNS.items()}
 
+# This exact historical blob is synthetic Qt oracle pixel hex, not a session.
+# Its reconstructed pixels match the fixture's public provenance; no path is exempt.
+_VERIFIED_SYNTHETIC_BLOBS = {
+    "23f836408ecffb26cbfe8e8a032102dd3dea0ee9": frozenset({"Telethon session string"}),
+}
+
 # One megabyte at a time, with an overlap wide enough that a credential lying
 # across a boundary still forms one contiguous run inside some window. The
 # longest shape above is the session string; 64 KiB is far past any of them.
@@ -261,6 +267,8 @@ def scan_records(
         scanned += 1
         where = names.get(oid) or "(unreachable object, not published)"
         for name in kinds:
+            if name in _VERIFIED_SYNTHETIC_BLOBS.get(oid, ()):
+                continue
             findings.append(f"{where} (object {oid[:12]}): {name}")
     return sorted(set(findings)), scanned, seen
 
