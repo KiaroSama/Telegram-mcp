@@ -1,0 +1,10 @@
+{
+  "name": "telegram-mcp",
+  "version": "1.0.0",
+  "description": "Connect to your existing local Telegram MCP service.",
+  "mcpServers": {
+    "telegram-mcp": {
+      "httpUrl": "http://127.0.0.1:8765/mcp"
+    }
+  }
+}

@@ -79,6 +79,65 @@ codex mcp add telegram --url http://127.0.0.1:8765/mcp               # Codex
 Claude Desktop and Cursor take a JSON entry; see
 [MCP Client Configuration](../README.md#mcp-client-configuration).
 
+### Gemini CLI
+
+The repository includes a native Gemini CLI extension. Attach it to the **existing**
+HTTP server; do not launch a second Telegram server for another client. Install only
+its manifest-only subdirectory, never the operational checkout root: local extension
+installation recursively copies its source, including ignored private files.
+
+```bash
+gemini extensions install ./integrations/gemini/telegram-mcp
+```
+
+Restart the Gemini session after installation. The extension uses the server's
+public default, `http://127.0.0.1:8765/mcp`. For a different configured port, add a
+user-level entry with the same name; Gemini settings override the extension entry:
+
+```bash
+gemini mcp add --scope user --transport http telegram-mcp http://127.0.0.1:18765/mcp
+```
+
+Use your actual endpoint, not necessarily the example's port. Check discovery:
+
+```bash
+gemini mcp list
+```
+
+No Telegram credentials belong in the extension or client configuration. Do not
+set `trust: true`: native client confirmations and this server's safeguard remain
+in force. Gemini's web chat is not Gemini CLI and does not load this extension.
+
+### Google Antigravity
+
+Antigravity uses its native MCP configuration rather than a Gemini CLI extension.
+Open **MCP Servers → Manage MCP Servers → View raw config**, then merge the entry
+from [the example](../integrations/antigravity/mcp_config.example.json) into the
+existing `mcpServers` object, preserving every other entry:
+
+```json
+{
+  "mcpServers": {
+    "telegram-mcp": {"serverUrl": "http://127.0.0.1:8765/mcp"}
+  }
+}
+```
+
+Current Antigravity uses `~/.gemini/config/mcp_config.json` globally and
+`.agents/mcp_config.json` for a workspace. Remote entries require **`serverUrl`**,
+not Gemini CLI's `httpUrl`. Use the existing server's configured port and refresh
+the MCP server in the client. An invalid or empty configuration is not a valid
+JSON object: back it up and repair it explicitly rather than overwrite unrelated
+settings. Retain Antigravity's default Ask permissions.
+
+Both Google clients use the same named-account tools and export writers. If the
+client cannot show elicitation, approval uses the existing bot/Saved Messages
+fallback. Exports require every option to be explicitly supplied after the owner
+chooses it when form-mode is unavailable. URL-only elicitation is not export form
+support. The protected approval kernel is unchanged; its URL-only capability
+handling still requires a separately authorized repair. Closing or declining a
+form never authorizes an operation.
+
 ### 7. Set up the approval bot (recommended)
 
 The safeguard asks you before risky actions. In Claude Code the question appears as a

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Optional
 
 from telegram_mcp import file_roots
+from telegram_mcp.client_capabilities import supports_form
 from telegram_mcp.safeguard import folders
 from telegram_mcp.tdexport.files import normalize_path
 from telegram_mcp.tdexport.settings import Format, MediaSettings, Settings
@@ -89,8 +90,7 @@ async def _ask_form(ctx, choices: dict, title: str) -> Optional[dict]:
 
 
 def _has_form(ctx) -> bool:
-    caps = getattr(getattr(ctx, "session", None), "client_capabilities", None)
-    return getattr(caps, "elicitation", None) is not None
+    return supports_form(getattr(ctx, "session", None))
 
 
 def _timestamp(value: str, name: str) -> "tuple[int, Optional[str]]":
