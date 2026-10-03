@@ -235,3 +235,39 @@ async def test_runtime_transport_preserves_only_known_status(payload, status):
         "synthetic-session",
     )
     assert answer["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_invalid_session_does_not_stop_healthy_accounts(monkeypatch):
+    from telegram_mcp import account_startup, admission, retirement
+
+    accounts = {"healthy": object(), "revoked": object()}
+    failed = accounts["revoked"]
+    cleanup = []
+
+    async def connect(label, client):
+        if label == "revoked":
+            raise errors.SessionRevokedError(None)
+
+    async def close():
+        cleanup.append("closed")
+
+    monkeypatch.setattr(retirement, "retire", lambda client: close())
+    monkeypatch.setattr(admission, "forget", lambda label, closing, client: cleanup.append(label))
+    await account_startup.start_accounts(accounts, connect, lambda text: None)
+    assert list(accounts) == ["healthy"]
+    assert failed is not accounts["healthy"]
+    assert cleanup == ["revoked", "closed"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_startup_failure_is_not_treated_as_invalid():
+    from telegram_mcp import account_startup
+
+    async def connect(label, client):
+        raise OSError("private-canary")
+
+    accounts = {"work": object()}
+    with pytest.raises(OSError):
+        await account_startup.start_accounts(accounts, connect, lambda text: None)
+    assert list(accounts) == ["work"]

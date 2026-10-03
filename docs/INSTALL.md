@@ -61,6 +61,10 @@ are unverified, not invalid: the menu does not replace credentials on those resu
 A running shared HTTP server checks its own connection; the manager never opens a
 second connection with the same authorization key. An offline check first acquires
 the same exclusive session lease. Each account check has a bounded deadline.
+At startup, a proven invalid login is disabled without stopping healthy accounts;
+its configuration and secret-chat files remain available for repair. Unknown startup
+failures and duplicate-session/lease conflicts still stop startup rather than being
+silently treated as invalid authorization.
 
 Select an unhealthy account by number and complete login locally. **Phone is option
 1 and the Enter default; QR is option 2.** Explicit `--phone`/`--qr` still work.

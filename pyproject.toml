@@ -162,6 +162,7 @@ source = [
     "telegram_mcp.account_rename",
     "telegram_mcp.account_lifecycle",
     "telegram_mcp.account_snapshot",
+    "telegram_mcp.account_startup",
     "telegram_mcp.admin_log_events",
     "telegram_mcp.admin_log_export",
     "telegram_mcp.admin_log_text",

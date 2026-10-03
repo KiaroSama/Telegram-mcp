@@ -515,18 +515,10 @@ async def _main() -> None:
             )
 
         startup_note(f"Starting {len(clients)} Telegram client(s) ({labels})...")
-        # OWNED siblings. A bare `gather` propagates the first exception while
-        # the others are still running and unawaited, so cleanup began beside
-        # live connects - one of which could still take a session lock after
-        # this function had decided to give up. `return_exceptions=True` waits
-        # for every sibling to settle; the first real failure is raised after.
-        outcomes = await asyncio.gather(
-            *(_connect_authorized_client(label, cl) for label, cl in clients.items()),
-            return_exceptions=True,
-        )
-        for outcome in outcomes:
-            if isinstance(outcome, BaseException):
-                raise outcome
+        from telegram_mcp.account_startup import start_accounts
+
+        await start_accounts(clients, _connect_authorized_client, startup_note)
+        labels = ", ".join(clients)
 
         # Warm entity caches — StringSession has no persistent cache,
         # so fetch all dialogs once per client to populate them.
