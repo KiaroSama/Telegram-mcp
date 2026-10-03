@@ -360,6 +360,14 @@ class _AuthorizedClient:
     def is_user_authorized(self):
         return True
 
+    def get_me(self):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(id=42)
+
+    def is_connected(self):
+        return not self.disconnected
+
     def disconnect(self):
         self.disconnected = True
 
@@ -369,6 +377,8 @@ def test_a_whole_no_echo_run_saves_the_session_without_showing_it(
 ):
     """End to end: the canary reaches `.env` and nothing else."""
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(generator, "_ENV_PATH", tmp_path / ".env")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(
         sys, "argv", ["session_string_generator.py", "--qr", "--label", "work", "--no-echo"]
     )

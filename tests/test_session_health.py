@@ -164,13 +164,13 @@ async def test_runtime_reuses_only_matching_client_generation(monkeypatch):
 
 
 def test_private_run_logs_are_distinct_and_closed(tmp_path, monkeypatch):
-    from telegram_mcp.session_log import session_log
+    from telegram_mcp.session_log import run_log
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state with spaces"))
-    with session_log("session_health") as event:
+    with run_log("session_health") as event:
         event("INFO", "Session health: healthy")
     with pytest.raises(RuntimeError):
-        with session_log("session_health"):
+        with run_log("session_health"):
             raise RuntimeError("private-canary")
     logs = list((tmp_path / "state with spaces" / "telegram-mcp" / "logs").glob("*.log"))
     assert len(logs) == 2

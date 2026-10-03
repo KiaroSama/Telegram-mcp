@@ -263,9 +263,9 @@ def _main(event):
 
 
 def main():
-    from telegram_mcp.session_log import session_log
+    from telegram_mcp.session_log import run_log
 
-    with session_log("session_health") as event:
+    with run_log("session_health") as event:
         _main(event)
 
 

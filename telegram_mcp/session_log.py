@@ -10,7 +10,7 @@ from telegram_mcp.owner_only import restrict_to_owner_strict as restrict_to_owne
 
 
 @contextmanager
-def session_log(component):
+def run_log(component):
     handle = None
     try:
         base = os.getenv("XDG_STATE_HOME") or Path.home() / ".local" / "state"
