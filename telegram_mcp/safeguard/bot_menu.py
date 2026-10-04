@@ -13,6 +13,7 @@ its position, so a list that changed since it was shown cannot remove the wrong 
 """
 
 import hashlib
+import re
 from dataclasses import dataclass
 from html import escape
 from typing import Any, List, Optional
@@ -172,12 +173,22 @@ async def _status() -> Reply:
     return Reply(_lines("Safeguard status", lines))
 
 
-_DURATIONS = [("1 hour", "3600"), ("1 day", "86400"), ("Until I turn it off", "inf")]
+_DURATIONS = [
+    ("1 hour", "3600"),
+    ("6 hours", "21600"),
+    ("1 day", "86400"),
+    ("7 days", "604800"),
+    ("Until I turn it off", "inf"),
+]
 
 
 def _bypass() -> Reply:
-    rows = [[_button(label, f"sgm:bp:{key}") for label, key in _DURATIONS[:2]]]
-    rows.append([_button(_DURATIONS[2][0], "sgm:bp:inf")])
+    rows = [
+        [_button(label, f"sgm:bp:{key}") for label, key in _DURATIONS[start : start + 2]]
+        for start in (0, 2)
+    ]
+    rows.append([_button("Custom time", "sgm:bp:custom")])
+    rows.append([_button(_DURATIONS[-1][0], "sgm:bp:inf")])
     if bypass.active():
         rows.append([_button("Turn bypass off", "sgm:bp:off")])
     return Reply(
@@ -196,7 +207,8 @@ async def answer_command(text: str, sender_id: Any, owners) -> Optional[Reply]:
     """The answer to one message, or ``None`` for a stranger or for plain text."""
     if sender_id not in owners or not str(text).startswith("/"):
         return None
-    command = str(text)[1:].split()[0].split("@")[0].lower() if len(str(text)) > 1 else ""
+    parts = str(text)[1:].split(maxsplit=1)
+    command = parts[0].split("@")[0].lower() if parts else ""
     if command == "always":
         return _always()
     if command == "reset_always":
@@ -217,6 +229,21 @@ async def answer_command(text: str, sender_id: Any, owners) -> Optional[Reply]:
     if command == "status":
         return await _status()
     if command == "bypass":
+        if len(parts) > 1:
+            duration = parts[1].strip()
+            match = (
+                re.fullmatch(r"(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?", duration, re.IGNORECASE)
+                if len(duration) <= 32
+                else None
+            )
+            seconds = (int(match[1] or 0) * 3600 + int(match[2] or 0) * 60) if match else 0
+            if not 0 < seconds <= 2**53 - 1:
+                return Reply(
+                    "Invalid duration. Use positive whole hours/minutes, for example "
+                    "<code>/bypass 2h30m</code> or <code>/bypass 90m</code>. "
+                    "The current bypass is unchanged."
+                )
+            bypass.turn_on(seconds, by=int(sender_id))
         return _bypass()
     return _help()  # /help, /start and anything unknown
 
@@ -235,6 +262,12 @@ async def answer_button(data: Any, sender_id: Any, owners) -> Optional[Reply]:
         count = grants.clear()
         return Reply(f"Removed {count} always approvals. Folders are kept.", toast="Removed.")
     if action == "bp":
+        if key == "custom":
+            return Reply(
+                "Send a custom duration here: <code>/bypass 2h30m</code> or "
+                "<code>/bypass 90m</code>. Use positive whole hours/minutes. "
+                "Nothing changes until you send a valid command."
+            )
         if key == "off":
             bypass.turn_off()
             reply = _bypass()

@@ -139,12 +139,21 @@ async def test_a_command_with_the_bot_name_and_unknown_commands():
 
 
 @pytest.mark.asyncio
-async def test_bypass_is_switched_only_by_the_owner_with_three_durations(tmp_path, monkeypatch):
+async def test_bypass_is_switched_only_by_the_owner_with_fixed_and_unlimited_durations(
+    tmp_path, monkeypatch
+):
     from telegram_mcp.safeguard import bypass
 
     monkeypatch.setattr(bypass, "bypass_path", lambda: tmp_path / "bypass.json")
     reply = await bot_menu.answer_command("/bypass", OWNER, {OWNER})
-    assert {"sgm:bp:3600", "sgm:bp:86400", "sgm:bp:inf"} <= set(_datas(reply))
+    assert {
+        "sgm:bp:3600",
+        "sgm:bp:21600",
+        "sgm:bp:86400",
+        "sgm:bp:604800",
+        "sgm:bp:custom",
+        "sgm:bp:inf",
+    } <= set(_datas(reply))
     assert await bot_menu.answer_button(b"sgm:bp:inf", STRANGER, {OWNER}) is None
     assert not bypass.active()
     await bot_menu.answer_button(b"sgm:bp:3600", OWNER, {OWNER})
@@ -156,3 +165,79 @@ async def test_bypass_is_switched_only_by_the_owner_with_three_durations(tmp_pat
     assert "sgm:bp:off" in _datas(await bot_menu.answer_command("/bypass", OWNER, {OWNER}))
     await bot_menu.answer_button(b"sgm:bp:off", OWNER, {OWNER})
     assert not bypass.active()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "duration, seconds", [("2h30m", 9000), ("90m", 5400), ("7h", 25200), ("1H 15M", 4500)]
+)
+async def test_custom_bypass_uses_owner_command_and_exact_expiry(
+    tmp_path, monkeypatch, duration, seconds
+):
+    from telegram_mcp.safeguard import bypass
+
+    monkeypatch.setattr(bypass, "bypass_path", lambda: tmp_path / "bypass.json")
+    monkeypatch.setattr(bypass.time, "time", lambda: 1000)
+    prompt = await bot_menu.answer_button(b"sgm:bp:custom", OWNER, {OWNER})
+    assert "/bypass 2h30m" in prompt.text and not bypass.active()
+    reply = await bot_menu.answer_command("/bypass " + duration, OWNER, {OWNER})
+    assert bypass.until() == 1000 + seconds and "Bypass" in reply.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("seconds", [3600, 21600, 86400, 604800])
+async def test_fixed_bypass_buttons_store_exact_duration(tmp_path, monkeypatch, seconds):
+    from telegram_mcp.safeguard import bypass
+
+    monkeypatch.setattr(bypass, "bypass_path", lambda: tmp_path / "bypass.json")
+    monkeypatch.setattr(bypass.time, "time", lambda: 1000)
+    await bot_menu.answer_button(f"sgm:bp:{seconds}".encode(), OWNER, {OWNER})
+    assert bypass.until() == 1000 + seconds
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "duration",
+    [
+        "0m",
+        "0h0m",
+        "-1h",
+        "1.5h",
+        "90",
+        "1d",
+        "nan",
+        "inf",
+        "1h bad",
+        "9" * 33 + "m",
+        "9999999999999999999999999999999h",
+    ],
+)
+async def test_invalid_custom_bypass_keeps_current_state(tmp_path, monkeypatch, duration):
+    from telegram_mcp.safeguard import bypass
+
+    target = tmp_path / "bypass.json"
+    monkeypatch.setattr(bypass, "bypass_path", lambda: target)
+    monkeypatch.setattr(bypass.time, "time", lambda: 1000)
+    bypass.turn_on(3600, by=OWNER)
+    original = target.read_bytes()
+    reply = await bot_menu.answer_command("/bypass " + duration, OWNER, {OWNER})
+    assert "Invalid duration" in reply.text
+    assert target.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_custom_prompt_stranger_and_unknown_callback_cannot_change_bypass(
+    tmp_path, monkeypatch
+):
+    from telegram_mcp.safeguard import bypass
+
+    target = tmp_path / "bypass.json"
+    monkeypatch.setattr(bypass, "bypass_path", lambda: target)
+    bypass.turn_on(3600, by=OWNER)
+    original = target.read_bytes()
+    assert await bot_menu.answer_command("/bypass 90m", STRANGER, {OWNER}) is None
+    assert await bot_menu.answer_button(b"sgm:bp:custom", STRANGER, {OWNER}) is None
+    assert await bot_menu.answer_button(b"sgm:bp:123", OWNER, {OWNER}) is None
+    assert await bot_menu.answer_command("90m", OWNER, {OWNER}) is None
+    prompt = await bot_menu.answer_button(b"sgm:bp:custom", OWNER, {OWNER})
+    assert "Nothing changes" in prompt.text and target.read_bytes() == original

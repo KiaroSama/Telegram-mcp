@@ -281,9 +281,12 @@ promoted; a secret chat is shown as `secret chat <id>`.
 approval bot's `/always` and `/reset_always` do the same from your phone. It also covers
 a call that carries text someone else wrote, so grant it only for a chat you trust.
 
-**Bypass.** The approval bot's `/bypass` skips every approval question for 1 hour, 1 day,
-or until you turn it off. Only the bot can switch it; no tool can. The locks that protect
-the safeguard itself (the bot's chat, its files, approval codes) stay on.
+**Bypass.** The approval bot's `/bypass` offers 1 hour, 6 hours, 1 day, 7 days,
+**Custom time**, or until you turn it off. For a custom duration, send the bot
+`/bypass 2h30m` or `/bypass 90m`: positive whole hours/minutes, not a bare number.
+The Custom time button only shows instructions; invalid input leaves the current
+bypass unchanged. Only the owner in the bot can switch it; no tool can. The locks
+that protect the safeguard itself (the bot's chat, its files, approval codes) stay on.
 
 **Folders.** Put files to send in `files/outbox`; downloads land in `files/downloads`
 (both inside the installation, created on first use, never committed). A relative path
