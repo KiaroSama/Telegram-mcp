@@ -1,6 +1,5 @@
 <div align="center">
   <img src="https://capsule-render.vercel.app/api?type=waving&color=gradient&height=200&section=header&text=Telegram%20MCP%20Server&fontSize=50&fontAlignY=35&animation=fadeIn&fontColor=FFFFFF&descAlignY=55&descAlign=62" alt="Telegram MCP Server" width="100%" />
-</div>
 
 [![Tests](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml)
 [![Python Lint & Format Check](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/python-lint-format.yml/badge.svg)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/python-lint-format.yml)
@@ -15,10 +14,11 @@
 [![M8ven Verified](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp?variant=verified)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
 [![Last commit](https://img.shields.io/github/last-commit/KiaroSama/Telegram-mcp?style=flat-square)](https://github.com/KiaroSama/Telegram-mcp/commits/main)
 [![Built with Telethon 1.45+](https://img.shields.io/badge/built%20with-Telethon%201.45%2B-2CA5E0?style=flat-square)](https://codeberg.org/Lonami/Telethon)
-[![MCP SDK 2.2+](https://img.shields.io/badge/MCP%20SDK-2.2%2B-6E56CF?style=flat-square)](https://github.com/modelcontextprotocol/python-sdk)
+[![MCP SDK 2.3+](https://img.shields.io/badge/MCP%20SDK-2.3%2B-6E56CF?style=flat-square)](https://github.com/modelcontextprotocol/python-sdk)
 [![Top language](https://img.shields.io/github/languages/top/KiaroSama/Telegram-mcp?style=flat-square)](https://github.com/KiaroSama/Telegram-mcp)
 [![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)
 
+</div>
 Drive a **real Telegram account** from an MCP client. Not a bot account — your account, with
 its chats, its channels, its admin rights and its history, exposed as tools an agent can call.
 

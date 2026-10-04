@@ -174,12 +174,12 @@ JSON object: back it up and repair it explicitly rather than overwrite unrelated
 settings. Retain Antigravity's default Ask permissions.
 
 Both Google clients use the same named-account tools and export writers. If the
-client cannot show elicitation, approval uses the existing bot/Saved Messages
-fallback. Exports require every option to be explicitly supplied after the owner
-chooses it when form-mode is unavailable. URL-only elicitation is not export form
-support. The protected approval kernel is unchanged; its URL-only capability
-handling still requires a separately authorized repair. Closing or declining a
-form never authorizes an operation.
+client cannot show form-mode elicitation, approval uses the existing bot/Saved
+Messages fallback. URL-only elicitation is not form support for approvals or
+exports; legacy empty elicitation capabilities retain form compatibility. Exports
+require every option to be explicitly supplied after the owner chooses it when
+form-mode is unavailable. Closing or declining a form never authorizes an
+operation; approval decisions, grants and fallback order are unchanged.
 
 ### 7. Set up the approval bot (recommended)
 

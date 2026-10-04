@@ -8,6 +8,7 @@ import pytest
 from mcp.types import ClientCapabilities
 
 from telegram_mcp import export_dialog
+from telegram_mcp.safeguard.channels import DialogChannel, new_request, request_approval
 
 
 @pytest.mark.parametrize(
@@ -24,6 +25,32 @@ def test_export_uses_only_supported_forms(elicitation, expected):
     caps = ClientCapabilities(elicitation=elicitation)
     session = SimpleNamespace(client_capabilities=caps)
     assert export_dialog._has_form(SimpleNamespace(session=session)) is expected
+    assert DialogChannel(session).available() is expected
+
+
+@pytest.mark.asyncio
+async def test_url_only_skips_form_and_preserves_fallback_denial():
+    class Session:
+        client_capabilities = ClientCapabilities(elicitation={"url": {}})
+
+        async def elicit_form(self, *args, **kwargs):
+            raise AssertionError("URL-only client was asked to show a form")
+
+    class Fallback:
+        kind = "bot"
+
+        def available(self):
+            return True
+
+        async def ask(self, request, timeout):
+            return "declined"
+
+    request = new_request(tool="fixture", account="test", chat="1", effect="test", reasons=[])
+    assert await request_approval(request, [DialogChannel(Session()), Fallback()], timeout=1) == (
+        "declined",
+        "bot",
+        [],
+    )
 
 
 @pytest.mark.parametrize(

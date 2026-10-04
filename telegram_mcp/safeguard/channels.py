@@ -32,6 +32,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
+from telegram_mcp.client_capabilities import supports_form
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.safeguard import sealed
 
@@ -214,8 +215,7 @@ class DialogChannel:
         self.related_request_id = related_request_id
 
     def available(self) -> bool:
-        caps = getattr(self.session, "client_capabilities", None)
-        return getattr(caps, "elicitation", None) is not None
+        return supports_form(self.session)
 
     async def ask(self, request: ApprovalRequest, timeout: float) -> str:
         try:

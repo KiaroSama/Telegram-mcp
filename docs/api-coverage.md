@@ -308,6 +308,10 @@ assumed missing and is not. Nothing below needs building.
 | Archive, mute, pin | `archive_chat`, `mute_chat`, `pin_message`, `unpin_all_messages` |
 | Leave, clear history | `leave_chat`, `delete_chat_history` |
 
+`get_admins` also reads joined communities directly, without asking for their unsupported
+ordinary member list. It follows every admin page, excludes auxiliary users, and reports
+an error rather than a partial list if a page or required user is missing.
+
 Admin writes distinguish acceptance from observed rights: failed read-back is unverified;
 a mismatch names requested rights still off or unexpected rights still on, without claiming
 Telegram finally declined them (immediate read-back can lag). Group permission and exception

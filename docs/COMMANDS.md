@@ -24,7 +24,7 @@ Every tool this server exposes: **346**, grouped by the module that defines it.
 | Tool | What it does | Hints | Safeguard |
 |---|---|---|---|
 | `demote_admin` | Demote a user from admin in a group/channel. | `- D I O` | **asks the owner** |
-| `get_admins` | Get all admins in a group or channel. | `R - I O` | runs |
+| `get_admins` | Get all admins in a group, channel or joined community. | `R - I O` | runs |
 
 ## admin_rights_by_type
 

@@ -31,10 +31,13 @@ tools (`test_admin_rights_tools.py` holds the per-type behaviour).
 """
 
 import inspect
+import json
 from types import SimpleNamespace
 
 import pytest
-from telethon.tl import types
+from telethon.client.chats import ChatMethods
+from telethon.errors import BadRequestError
+from telethon.tl import functions, types
 from telethon.tl.functions import communities as community_requests
 from telethon.tl.types import ChatAdminRights
 
@@ -410,3 +413,108 @@ async def test_a_privacy_refusal_is_named(_fake):
     refused = await by_type.promote_admin_channel(5876481644, 5876481644, account="acct")
 
     assert refused.startswith("Error") and "chat_invite" in refused
+
+
+class _AdminReader:
+    get_participants = ChatMethods.get_participants
+    iter_participants = ChatMethods.iter_participants
+
+    def __init__(self, pages, *, joined=True, failure=None):
+        self.pages = pages
+        self.joined = joined
+        self.failure = failure
+        self.requests = []
+
+    async def get_input_entity(self, target):
+        return types.InputPeerChannel(900, 77)
+
+    async def __call__(self, request):
+        if isinstance(request, community_requests.GetJoinedCommunitiesRequest):
+            if self.failure == "joined":
+                raise ConnectionError("joined-list unavailable")
+            return types.messages.Chats(chats=[_COMMUNITY] if self.joined else [])
+        assert isinstance(request, functions.channels.GetParticipantsRequest)
+        self.requests.append((type(request.filter), request.offset, request.limit))
+        if isinstance(request.filter, types.ChannelParticipantsRecent):
+            if self.joined:
+                raise BadRequestError(request, "COMMUNITY_FILTER_INVALID")
+            return SimpleNamespace(count=3)
+        assert isinstance(request.filter, types.ChannelParticipantsAdmins)
+        assert request.hash == 0
+        assert request.channel.channel_id == 900 and request.channel.access_hash == 77
+        page = self.pages[request.offset]
+        if isinstance(page, Exception):
+            raise page
+        return page
+
+
+def _admin_page(ids, *, missing=False):
+    rights = ChatAdminRights(change_info=True, manage_linked_peers=True)
+    participants = [
+        types.ChannelParticipantCreator(user_id=user_id, admin_rights=rights, rank="Owner")
+        for user_id in ids
+    ]
+    users = [types.User(id=user_id, first_name=f"Admin {user_id}") for user_id in reversed(ids)]
+    if missing:
+        users.pop()
+    users.append(types.User(id=99, first_name="Auxiliary inviter"))
+    return types.channels.ChannelParticipants(
+        count=3, participants=participants, chats=[], users=users
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", [900, "900", -100900])
+async def test_get_admins_reads_community_without_recent_and_pages_by_participants(
+    wire_client, target
+):
+    client = wire_client(
+        moderation_mod,
+        _AdminReader({0: _admin_page([1, 2]), 2: _admin_page([3]), 3: _admin_page([])}),
+    )
+    answer = await moderation_mod.get_admins(target)
+    records = json.loads(answer)["results"]
+    assert [record["id"] for record in records] == [1, 2, 3]
+    assert [record["name"] for record in records] == ["Admin 1", "Admin 2", "Admin 3"]
+    assert all(record["role"] == "creator" and record["rank"] == "Owner" for record in records)
+    assert all(record["rights"]["manage_linked_peers"] for record in records)
+    assert all(record["rights"]["ban_users"] is False for record in records)
+    assert [(kind, offset) for kind, offset, _ in client.requests] == [
+        (types.ChannelParticipantsAdmins, 0),
+        (types.ChannelParticipantsAdmins, 2),
+        (types.ChannelParticipantsAdmins, 3),
+    ]
+    assert all(0 < limit <= 200 for _, _, limit in client.requests)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["missing_user", "later_page", "joined"])
+async def test_get_admins_never_reports_incomplete_community_pages_as_success(
+    wire_client, failure
+):
+    pages = {0: _admin_page([1]), 1: _admin_page([2], missing=True)}
+    if failure == "later_page":
+        pages[1] = ConnectionError("admin page unavailable")
+    client = wire_client(moderation_mod, _AdminReader(pages, failure=failure))
+    answer = await moderation_mod.get_admins(900)
+    assert "error" in answer.lower() and '"results"' not in answer
+    expected_offsets = [] if failure == "joined" else [0, 1]
+    assert [offset for _, offset, _ in client.requests] == expected_offsets
+
+
+@pytest.mark.asyncio
+async def test_get_admins_empty_community_ignores_auxiliary_users(wire_client):
+    client = wire_client(moderation_mod, _AdminReader({0: _admin_page([])}))
+    assert await moderation_mod.get_admins(900) == "No admins found."
+    assert [offset for _, offset, _ in client.requests] == [0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target", [123, -100123, "@ordinary_channel"])
+async def test_get_admins_preserves_ordinary_numeric_and_username_paths(wire_client, target):
+    client = wire_client(
+        moderation_mod, _AdminReader({0: _admin_page([1]), 1: _admin_page([])}, joined=False)
+    )
+    answer = await moderation_mod.get_admins(target)
+    assert [record["id"] for record in json.loads(answer)["results"]] == [1]
+    assert client.requests[0][:2] == (types.ChannelParticipantsRecent, 0)
