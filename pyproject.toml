@@ -221,6 +221,7 @@ source = [
     "telegram_mcp.secret_media_refs",
     "telegram_mcp.secret_limits",
     "telegram_mcp.secret_media_content",
+    "telegram_mcp.secret_updates",
     "telegram_mcp.safe_log",
     "telegram_mcp.sent",
     "telegram_mcp.session_files",
