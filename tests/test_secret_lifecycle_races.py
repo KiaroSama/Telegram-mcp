@@ -24,16 +24,22 @@ async def state(monkeypatch, tmp_path):
         "_starts",
         "_stops",
         "_acquisitions",
+        "_recoveries",
     ):
         monkeypatch.setattr(backend, name, {}, raising=False)
     monkeypatch.setattr(backend, "_lock", asyncio.Lock())
     monkeypatch.setattr(backend, "_closing", False)
+    from telegram_mcp import connection
+
+    monkeypatch.setattr(connection, "clients", active)
     monkeypatch.setattr(backend, "_telethon_client", lambda account: active[account])
     monkeypatch.setattr(backend, "_storage_for", lambda account: MemoryStorage())
     monkeypatch.setattr(backend, "_owner_path", lambda account: tmp_path / f"{account}.owner.json")
     monkeypatch.setattr(backend, "_store_lock_dir", lambda: tmp_path)
     yield SimpleNamespace(active=active, root=tmp_path)
     # Unconditional fixture cleanup is not a production success assertion.
+    for recovery in list(backend._recoveries.values()):
+        await recovery.stop()
     for name in ("_starts", "_stops", "_acquisitions"):
         tasks = [t for t in getattr(backend, name, {}).values() if isinstance(t, asyncio.Future)]
         for task in tasks:

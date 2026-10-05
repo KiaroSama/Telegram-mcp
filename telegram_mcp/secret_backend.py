@@ -50,6 +50,7 @@ from telethon_secret_chat.schema import secret_tl
 from telegram_mcp import secret_history, secret_media_refs
 from telegram_mcp.owner_only import restrict_to_owner_strict
 from telegram_mcp.safe_log import log_event
+from telegram_mcp.secret_updates import SecretUpdateRecovery
 from telegram_mcp.settings import state_dir
 
 # Re-exported, because this module is the ONLY one allowed to import the package
@@ -110,6 +111,7 @@ _lock = asyncio.Lock()
 _starts: Dict[str, asyncio.Task] = {}
 _stops: Dict[int, asyncio.Task] = {}
 _acquisitions: Dict[str, asyncio.Task] = {}
+_recoveries: Dict[int, SecretUpdateRecovery] = {}
 _START_SECONDS = 60.0
 _CLEANUP_SECONDS = 5.0
 _CLOSE_SECONDS = 30.0
@@ -342,6 +344,20 @@ async def _start_manager(account: str, client):
             await manager.start()
             _check_current(account, client)
             _verified_against[account] = client
+
+            def current():
+                from telegram_mcp.connection import clients
+
+                return (
+                    not _closing
+                    and clients.get(account) is client
+                    and _by_account.get(account) is manager
+                    and id(manager) not in _stops
+                )
+
+            recovery = SecretUpdateRecovery(client, manager, current, account)
+            _recoveries[id(manager)] = recovery
+            recovery.start()
             return manager
     except BaseException:
         if manager is not None:
@@ -572,6 +588,10 @@ async def _stop(manager: SecretChatManager) -> None:
     `stop()` flushes each chat. A swallowed failure here is lost key material, which
     no restart brings back, so it is reported rather than absorbed.
     """
+    recovery = _recoveries.get(id(manager))
+    if recovery is not None:
+        await recovery.stop()
+        _recoveries.pop(id(manager), None)
     await manager.stop()
 
 

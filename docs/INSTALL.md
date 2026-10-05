@@ -288,6 +288,18 @@ The Custom time button only shows instructions; invalid input leaves the current
 bypass unchanged. Only the owner in the bot can switch it; no tool can. The locks
 that protect the safeguard itself (the bot's chat, its files, approval codes) stay on.
 
+**Secret-chat update recovery.** A started secret-chat manager checks Telegram's update
+state every five seconds only while it holds an active chat (including a pending
+request). If the server is ahead, Telethon's existing update loop retrieves the
+missing events and applies them normally; received state is never overwritten with
+an older server snapshot. Closed or empty managers make no state requests. A state
+request has a ten-second budget; failures back off, and Telegram's flood waits are
+respected. Recovery and failure transitions use the existing redacted runtime log.
+Shutdown drains the recovery worker before closing its manager. This uses the same
+account connection and does not change Ghost Mode, approval rules or saved copies.
+`delete_request_accepted` still does not prove erasure on the peer; network/server
+failures can delay recovery, and deletion is never retried by this worker.
+
 **Folders.** Put files to send in `files/outbox`; downloads land in `files/downloads`
 (both inside the installation, created on first use, never committed). A relative path
 starts in `files/`, so `outbox/photo.jpg` works. Any other folder, including the one

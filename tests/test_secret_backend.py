@@ -24,16 +24,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import pytest_asyncio
 
 
-@pytest.fixture
-def backend(monkeypatch):
+@pytest_asyncio.fixture
+async def backend(monkeypatch):
     from telegram_mcp import secret_backend
 
     monkeypatch.setattr(secret_backend, "_by_account", {}, raising=False)
     monkeypatch.setattr(secret_backend, "_verified_against", {}, raising=False)
+    monkeypatch.setattr(secret_backend, "_recoveries", {}, raising=False)
     monkeypatch.setattr(secret_backend, "_closing", False, raising=False)
-    return secret_backend
+    yield secret_backend
+    for recovery in list(secret_backend._recoveries.values()):
+        await recovery.stop()
 
 
 class _Client:
@@ -63,6 +67,9 @@ def _wire(monkeypatch, backend, client, owners=None):
     from telethon_secret_chat import MemoryStorage
 
     owners = owners or Path(tempfile.mkdtemp())
+    from telegram_mcp import connection
+
+    monkeypatch.setattr(connection, "clients", {"acct": client})
     monkeypatch.setattr(backend, "_telethon_client", lambda account: client)
     monkeypatch.setattr(backend, "_storage_for", lambda account: MemoryStorage())
     monkeypatch.setattr(backend, "_owner_path", lambda account: owners / f"{account}.owner.json")

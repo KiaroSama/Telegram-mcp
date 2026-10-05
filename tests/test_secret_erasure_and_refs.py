@@ -86,6 +86,7 @@ async def test_real_service_event_erases_application_copies(monkeypatch, tmp_pat
         "_starts",
         "_stops",
         "_acquisitions",
+        "_recoveries",
     ):
         monkeypatch.setattr(secret_backend, name, {}, raising=False)
     monkeypatch.setattr(secret_backend, "_closing", False)
