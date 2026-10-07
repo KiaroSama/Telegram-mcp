@@ -313,7 +313,7 @@ async def test_a_rounded_hash_is_refused_with_how_to_pass_it(_wire):
 
 
 # --------------------------------------------------------------------------
-# Which devices can hold secret chats at all (spec 028)
+# Telegram Android device-settings eligibility (spec 028)
 # --------------------------------------------------------------------------
 
 
@@ -327,12 +327,21 @@ async def test_a_rounded_hash_is_refused_with_how_to_pass_it(_wire):
         (dict(api_id=2834, platform="macOS", app_name="Telegram macOS"), "yes"),
         (dict(api_id=2040, platform="", app_name="Telegram Desktop"), "no"),
         (dict(api_id=2496, platform="Web", app_name="Telegram Web K"), "no"),
-        (dict(api_id=22, app_name="Telegram Widgets"), "no"),  # official, not a messenger
-        (dict(api_id=20419924, official_app=False, app_name="Selfnew"), "unknown"),
-        (dict(api_id=38501903, official_app=False, current=True), "yes"),  # this server
+        (dict(api_id=22, app_name="Telegram Widgets"), "yes"),  # Android settings rule
+        (dict(api_id=27256899, official_app=False, app_name="nftbuying"), "yes"),
+        (dict(api_id=20419924, official_app=False, app_name="Another client"), "yes"),
+        (dict(api_id=2040, official_app=False, current=True), "no"),
+        (dict(api_id=2496, official_app=False), "no"),
+        (dict(api_id=38501903, official_app=False, current=True), "yes"),
+        (dict(api_id=None), "unknown"),
+        (dict(api_id=True), "unknown"),
+        (dict(api_id="6"), "unknown"),
+        (dict(api_id=0), "unknown"),
+        (dict(api_id=-1), "unknown"),
+        (dict(api_id=6.0), "unknown"),
     ],
 )
-async def test_the_list_says_whether_a_device_can_hold_secret_chats(_wire, device, support):
+async def test_the_list_matches_android_secret_chat_settings(_wire, device, support):
     _wire(_Client([_auth(**device)]))
 
     record = (await _listed(None))["results"][0]
@@ -349,4 +358,30 @@ async def test_turning_secret_chats_on_for_a_device_without_them_says_it_does_no
         hash=111, accept_secret_chats=True, account="a"
     )
 
-    assert "cannot hold secret chats" in said
+    assert "does not offer the secret-chat setting" in said
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("disabled", [True, False])
+async def test_secret_chat_eligibility_is_independent_of_acceptance(_wire, disabled):
+    _wire(
+        _Client([_auth(api_id=27256899, official_app=False, encrypted_requests_disabled=disabled)])
+    )
+
+    record = (await _listed(None))["results"][0]
+
+    assert record["secret_chat_support"] == "yes"
+    assert record["accept_secret_chats"] is not disabled
+    assert "Android" in record["secret_chat_support_reason"]
+
+
+@pytest.mark.asyncio
+async def test_only_device_warning_describes_android_eligibility(_wire):
+    client = _wire(_Client([_auth(api_id=2040, encrypted_requests_disabled=True)]))
+
+    said = await mod.set_secret_chats_only_device(hash="111", account="a")
+
+    assert "does not offer the secret-chat setting" in said
+    assert "not verified" in said
+    assert "no device will" not in said
+    assert client.sent_of(CHANGE).encrypted_requests_disabled is False
