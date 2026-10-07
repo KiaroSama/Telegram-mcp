@@ -70,29 +70,16 @@ def _record(auth) -> dict:
     }
 
 
-# Official client families by api_id, as Telegram's own clients tell them apart:
-# tdesktop's TypeFromEntry (settings_active_sessions.cpp) and tweb's
-# sessionPlatformIcon.ts. Of Telegram's official apps only the mobile ones and the
-# native macOS app hold secret chats; Telegram Desktop (tdesktop issue #871, open
-# since 2015) and the web apps (no messages.requestEncryption in tweb) do not.
-_SECRET_CHAT_FAMILIES = frozenset({5, 6, 24, 1026, 1083, 2458, 2521, 21724})  # Android, X
-_SECRET_CHAT_FAMILIES |= frozenset({1, 7, 10840, 16352})  # iOS
-_SECRET_CHAT_FAMILIES |= frozenset({2834})  # macOS
-
-
 def _secret_chat_support(auth) -> tuple:
-    """("yes" | "no" | "unknown", why) - whether this app can hold secret chats at all.
-
-    Telegram sends no capability flag, so this is read from the app: an official
-    app is known either way; a third-party one depends on what it implemented.
-    """
-    if getattr(auth, "current", False):
-        return "yes", "this server; its secret-chat backend holds them"
-    if not getattr(auth, "official_app", False):
-        return "unknown", "a third-party app; secret chats depend on what it implemented"
-    if getattr(auth, "api_id", None) in _SECRET_CHAT_FAMILIES:
-        return "yes", "an official Telegram mobile or macOS app"
-    return "no", "an official Telegram app without secret chats, like Desktop or Web"
+    """Telegram Android's Devices-screen eligibility, not a remote backend probe."""
+    api_id = getattr(auth, "api_id", None)
+    if isinstance(api_id, bool) or not isinstance(api_id, int) or api_id <= 0:
+        return "unknown", "missing or invalid application ID; device-settings eligibility unknown"
+    # SessionBottomSheet.secretChatsEnabled, DrKLO/Telegram f2908b14133b.
+    # The acceptance flag and official/current status do not control this option.
+    if api_id in (2040, 2496):
+        return "no", "Telegram Android excludes this application from its secret-chat setting"
+    return "yes", "Telegram Android offers this application the secret-chat setting"
 
 
 def _exact_hash(raw):
@@ -175,10 +162,11 @@ async def list_authorizations(account: str = None) -> str:
     them: True means that device accepts them. Telegram stores those negated
     internally, and this is the un-negated form.
 
-    `secret_chat_support` says whether the app can hold secret chats at all:
-    "yes" (official Android, iOS, macOS apps, and this server), "no" (official
-    Telegram Desktop, Web and the like - their switch changes nothing), "unknown"
-    (a third-party app). `hash` is a string; pass it back exactly as given.
+    `secret_chat_support` matches Telegram Android's Devices-screen eligibility:
+    "no" for application IDs 2040 and 2496, "yes" for other valid application IDs,
+    "unknown" when the ID is missing or invalid. This is separate from the acceptance
+    switch and does not verify a remote client's encryption implementation.
+    `hash` is a string; pass it back exactly as given.
 
     `ttl_days` in the result is the account-wide setting for automatically
     signing out a device that has been inactive that long.
@@ -329,7 +317,8 @@ async def set_authorization_secret_chats(
         support, why = _secret_chat_support(target)
         if accept_secret_chats and support == "no":
             said += (
-                f" That device cannot hold secret chats ({why}), so this changes nothing there."
+                f" Telegram Android does not offer the secret-chat setting for this device "
+                f"({why}); this server changed the stored acceptance flag only."
             )
         return said
     except Exception as e:
@@ -444,7 +433,8 @@ async def set_secret_chats_only_device(hash: Union[int, str], account: str = Non
         support, why = _secret_chat_support(chosen)
         if support == "no":
             answer_lines.append(
-                f"Warning: that device cannot hold secret chats ({why}), so no device will."
+                f"Warning: Telegram Android does not offer the secret-chat setting for the "
+                f"chosen device ({why}); receiving encrypted chats there is not verified."
             )
         answer_lines += [f"- {line}" for line in changed]
         if unconfirmed:
