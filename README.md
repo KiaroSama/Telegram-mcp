@@ -205,9 +205,9 @@ Aliases live in `${XDG_STATE_HOME:-~/.local/state}/telegram-mcp/aliases.json` (o
   `set_authorization_secret_chats` is the per-device switch Telegram draws: it is stored
   negated on the wire (`encrypted_requests_disabled`) and is exposed here only as
   `accept_secret_chats`, the way the switch reads on screen; `set_authorization_calls` is the
-  same for calls. `secret_chat_support` says whether the app can hold secret chats at all:
-  official Android, iOS and macOS apps can, Telegram Desktop and Web cannot (their switch
-  changes nothing), a third-party app is "unknown". The `hash` is returned as a string and
+  same for calls. `secret_chat_support` matches Telegram Android's Devices screen: IDs 2040
+  and 2496 are "no", other valid app IDs "yes", missing/invalid IDs "unknown". Eligibility
+  is not a remote encryption test and is independent of acceptance. The `hash` is a string and
   should be passed back as one - a 64-bit number sent as JSON loses its last digits.
 - **Folders and drafts:** list, create, update, reorder, and delete Telegram folders; save, list, and clear drafts.
 - **Events:** wait for incoming messages with debounce (`wait_for_new_message`, `wait_for_settled_message`), optionally for one chat only via `chat_id` — without it any unrelated conversation wakes the wait — or enable the opt-in incoming event feed for callback-style delivery (see below).
