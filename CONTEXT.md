@@ -264,6 +264,11 @@ device separately accepts or refuses incoming calls and new secret chats; "secre
 on this device" leaves exactly one device accepting them.
 _Avoid_: authorization (in prose), session (that is this server's own login)
 
+**Secret-chat eligibility**:
+Whether Telegram's Devices screen offers a device its secret-chat setting. Separate from
+whether acceptance is switched on and whether the remote app actually implements encryption.
+_Avoid_: verified encryption support, acceptance state
+
 ### Reaching Telegram
 
 **Connection route**:
