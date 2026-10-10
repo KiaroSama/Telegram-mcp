@@ -33,10 +33,10 @@ So the requirement names the repository:
 way the resolved commit is recorded in `uv.lock`, so the version actually in force is
 visible in one place and cannot drift.
 
-`tests/test_secret_backend_contract.py` asserts the installed distribution really came
-from that repository, by reading the `direct_url.json` the installer writes. A machine
-that already had the archived package fails that test rather than shadowing the real one
-in silence.
+`tests/test_secret_backend_contract.py` reads the installer's `direct_url.json` and
+requires the exact repository and Git commit to match the manifest and resolved lockfile.
+The version number alone is insufficient: newer commits may retain the same version.
+An archived package or stale installed commit fails rather than shadowing the pinned one.
 
 ## Why no source change should be needed
 

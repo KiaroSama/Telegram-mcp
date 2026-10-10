@@ -14,6 +14,7 @@ assumption, and the fix is one file.
 import ast
 import inspect
 import json
+import tomllib
 from importlib.metadata import distribution
 from pathlib import Path
 
@@ -67,9 +68,55 @@ def test_the_installed_distribution_is_the_owners_not_the_one_on_pypi():
         "no direct_url.json: this was installed from an index, not from the owner's "
         "repository. PyPI's package of the same name is a different project."
     )
-    assert (
-        OWNER_REPO.lower() in json.loads(recorded)["url"].lower()
-    ), f"installed from {json.loads(recorded)['url']!r}, which is not {OWNER_REPO}"
+    provenance = json.loads(recorded)
+    assert provenance["url"].removesuffix(".git") == f"https://github.com/{OWNER_REPO}"
+    root = Path(__file__).resolve().parents[1]
+    manifest = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    requirement = next(
+        item
+        for item in manifest["project"]["dependencies"]
+        if item.startswith(DISTRIBUTION + " @")
+    )
+    expected_commit = requirement.rsplit("@", 1)[1]
+    lock = tomllib.loads((root / "uv.lock").read_text(encoding="utf-8"))
+    package = next(item for item in lock["package"] if item["name"] == DISTRIBUTION)
+    source = package["source"]["git"]
+    assert source == (
+        f"https://github.com/{OWNER_REPO}.git?rev={expected_commit}#{expected_commit}"
+    ), "the resolved secret-chat commit differs from the manifest pin"
+    vcs = provenance["vcs_info"]
+    assert vcs["vcs"] == "git"
+    assert vcs["commit_id"] == expected_commit, "the installed secret-chat commit is stale"
+
+
+@pytest.mark.parametrize("mismatch", ["repository", "vcs", "commit"])
+def test_incorrect_installed_provenance_is_rejected(monkeypatch, mismatch):
+    root = Path(__file__).resolve().parents[1]
+    manifest = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    requirement = next(
+        item
+        for item in manifest["project"]["dependencies"]
+        if item.startswith(DISTRIBUTION + " @")
+    )
+    provenance = {
+        "url": f"https://github.com/{OWNER_REPO}.git",
+        "vcs_info": {"vcs": "git", "commit_id": requirement.rsplit("@", 1)[1]},
+    }
+    if mismatch == "repository":
+        provenance["url"] = "https://github.com/example/unrelated.git"
+    elif mismatch == "vcs":
+        provenance["vcs_info"]["vcs"] = "hg"
+    else:
+        provenance["vcs_info"]["commit_id"] = "0" * 40
+
+    class Installed:
+        def read_text(self, name):
+            assert name == "direct_url.json"
+            return json.dumps(provenance)
+
+    monkeypatch.setitem(globals(), "distribution", lambda _name: Installed())
+    with pytest.raises(AssertionError):
+        test_the_installed_distribution_is_the_owners_not_the_one_on_pypi()
 
 
 def test_the_seam_is_the_only_module_that_imports_the_package():
