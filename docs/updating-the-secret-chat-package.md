@@ -9,7 +9,7 @@ this project takes a newer version of it.
 1. Read the package's `CHANGELOG.md`: every public API change is listed there, and a
    pre-1.0 minor version may break.
 2. Edit one line in `pyproject.toml` — the `@<ref>` at the end of the
-   `kiaro-telethon-secret-chat` requirement — to the tag or commit you want.
+   `kiaro-telethon-secret-chat` requirement — to the full commit SHA you reviewed.
 3. `uv lock --upgrade-package kiaro-telethon-secret-chat`
 4. Commit both files, push, read CI.
 
@@ -29,9 +29,9 @@ So the requirement names the repository:
 "kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@<ref>"
 ```
 
-`<ref>` is a tag once the package has releases, and a commit SHA before then. Either
-way the resolved commit is recorded in `uv.lock`, so the version actually in force is
-visible in one place and cannot drift.
+`<ref>` is a full commit SHA, including when selecting a tagged release: resolve the
+tag to its commit first. The same commit is recorded in `uv.lock` and checked against
+the installed package, so a tag label or unchanged version cannot hide a stale install.
 
 `tests/test_secret_backend_contract.py` reads the installer's `direct_url.json` and
 requires the exact repository and Git commit to match the manifest and resolved lockfile.
