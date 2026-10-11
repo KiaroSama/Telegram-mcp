@@ -41,3 +41,6 @@ async def start_accounts(accounts, connect, note):
         raise StartupMessage(
             "No authorized accounts remain. Use Manage-Accounts.ps1 option 6 to re-login."
         )
+    from telegram_mcp import secret_activation
+
+    await secret_activation.start(accounts)

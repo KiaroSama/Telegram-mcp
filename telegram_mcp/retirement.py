@@ -111,7 +111,40 @@ def retire(client):
     except Exception:
         pass
     try:
-        closing = client.disconnect()
+        from telegram_mcp import secret_backend
+
+        owners = [
+            (account, manager, secret_backend._starts.get(account))
+            for account, manager in secret_backend._by_account.items()
+            if secret_backend._manager_clients.get(id(manager)) is client
+        ]
+        if owners:
+
+            async def close_after_managers():
+                try:
+                    for account, manager, start in owners:
+                        if (
+                            start is not None
+                            and getattr(start, "secret_client", None) is client
+                            and not start.done()
+                        ):
+                            start.cancel()
+                            await asyncio.wait({start}, timeout=secret_backend._CLEANUP_SECONDS)
+                            if not start.done():
+                                raise ClosureRefused("Secret startup cleanup is unconfirmed")
+                        if secret_backend._by_account.get(account) is manager:
+                            await asyncio.shield(secret_backend._stop_owned(account, manager))
+                    closing = client.disconnect()
+                    if closing is not None:
+                        await closing
+                except Exception as error:
+                    raise ClosureRefused(
+                        "Secret backend or client closure is unconfirmed"
+                    ) from error
+
+            closing = close_after_managers()
+        else:
+            closing = client.disconnect()
     except Exception as error:
         # NOT `None`. The socket is probably still up, and the caller decides
         # whether to give a session lease away on this answer.

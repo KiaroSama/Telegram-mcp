@@ -611,7 +611,15 @@ what makes it a real resolution rather than a shortcut:
   here by commit. This codebase reviews the transport around it and nothing else.
 
 
-Twenty-five tools, all for the chats themselves. The chat: `secret_chat_status`,
+Default archive is ON once for existing/new accounts, with later explicit OFF retained.
+Normal remains default; optional bounded mode is empty-account-only with no migration.
+Its additional configuration/status, pause/check/resume, pending-delivery, durable local
+acknowledgment and capped RAM receipt tools are documented in
+[the integration guide](updating-the-secret-chat-package.md#optional-bounded-integration).
+Bounded close preserves custody locally; deletion/forget refuse. Quotas do not bound the
+independent plaintext archive or total process RAM, and polling never sends a read receipt.
+
+The original twenty-five chat tools remain. The chat: `secret_chat_status`,
 `create_secret_chat`, `list_secret_chats`, `set_secret_chat_timer`, `close_secret_chat`,
 `forget_secret_chat` (`tools/secret_chats.py`). What travels through it:
 `send_secret_message`, `send_secret_media`, `read_secret_messages`, `save_secret_media`,

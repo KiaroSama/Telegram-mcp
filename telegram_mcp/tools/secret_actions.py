@@ -123,6 +123,10 @@ async def delete_secret_message(chat_id: int, message_id: int, account: str = No
         if refusal:
             return refusal
 
+        if hasattr(manager, "pause_status"):
+            return (
+                "Bounded mode preserves consumer custody; message erasure is not supported here."
+            )
         await manager.delete_messages(secret_id, [int(message_id)])
         # And from this server's own record. A delete that left the text in a
         # local file would be a delete in name only, and `read_secret_messages`
@@ -194,6 +198,10 @@ async def clear_secret_history(chat_id: int, confirm_chat_id: int, account: str 
         if refusal:
             return refusal
 
+        if hasattr(manager, "pause_status"):
+            return (
+                "Bounded mode preserves consumer custody; history erasure is not supported here."
+            )
         await manager.flush_history(secret_id)
         cleanup = erase_local(label, secret_id)
         return format_tool_result(
@@ -282,6 +290,13 @@ async def mark_secret_read(chat_id: int, message_id: int = None, account: str = 
                     }
                 )
 
+        if any("date" not in item for item in incoming):
+            return format_tool_result(
+                {
+                    "marked": False,
+                    "reason": "Retained bounded receipts have no observed arrival date; an ordered read receipt cannot be inferred. Nothing was sent.",
+                }
+            )
         # Everything at or before that moment, which is what a receipt means -
         # and the protocol carries the list, so the list is what is sent.
         up_to = [m["message_id"] for m in incoming if m["date"] <= target["date"]]

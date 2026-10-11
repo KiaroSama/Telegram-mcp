@@ -191,6 +191,26 @@ def backend(monkeypatch, tmp_path):
         return manager
 
     monkeypatch.setattr(secret_backend, "secret_manager", _manager)
+    from telethon_secret_chat import MemoryStorage
+    from telegram_mcp import secret_control
+
+    monkeypatch.setattr(secret_backend, "_manager", _manager)
+    monkeypatch.setattr(secret_backend, "_by_account", {"acct": manager})
+    monkeypatch.setattr(secret_backend, "_storages", {id(manager): MemoryStorage()})
+    monkeypatch.setattr(secret_backend, "_starts", {})
+    monkeypatch.setattr(secret_backend, "_storage_for", lambda account: MemoryStorage())
+    monkeypatch.setattr(secret_backend, "_store_locks", {})
+    monkeypatch.setattr(secret_backend, "_check_current", lambda *args: None)
+    monkeypatch.setattr(secret_backend, "_telethon_client", lambda account: object())
+
+    async def no_op(*args):
+        pass
+
+    monkeypatch.setattr(secret_backend, "_claim_store", no_op)
+    monkeypatch.setattr(secret_backend, "_bind_store", no_op)
+    monkeypatch.setattr(secret_control, "_locks", {})
+    monkeypatch.setattr(secret_control, "_operations", {})
+    monkeypatch.setattr(secret_control, "_archive_stops", set())
     for module in (
         "telegram_mcp.tools.secret_chats",
         "telegram_mcp.tools.secret_messaging",

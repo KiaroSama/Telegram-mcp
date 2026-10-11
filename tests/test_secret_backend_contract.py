@@ -224,6 +224,33 @@ def test_the_storage_backend_this_server_uses_takes_a_path():
     assert list(inspect.signature(FileStorage.__init__).parameters)[1:] == ["path"]
 
 
+def test_bounded_contract_requires_limits_and_exposes_preserving_controls():
+    from telethon_secret_chat import BoundedSecretChatManager, CustodyLimits
+
+    parameters = inspect.signature(BoundedSecretChatManager).parameters
+    assert parameters["limits"].default is inspect.Parameter.empty
+    assert parameters["limits"].kind is inspect.Parameter.KEYWORD_ONLY
+    for name in (
+        "pause_chat",
+        "pause_status",
+        "check_custody",
+        "resume_chat",
+        "pending_deliveries",
+        "acknowledge_delivery",
+        "receive_file",
+    ):
+        assert callable(getattr(BoundedSecretChatManager, name))
+    limits = CustodyLimits(records=512, bytes=8388608, age_seconds=3600)
+    assert (limits.chats, limits.frame_bytes, limits.operation_seconds, limits.tasks) == (
+        64,
+        262144,
+        15,
+        8,
+    )
+    with pytest.raises(ValueError):
+        CustodyLimits(records=True, bytes=8388608, age_seconds=3600)
+
+
 def test_the_packages_public_surface_still_carries_what_the_seam_imports():
     """The seam imports exactly these names. A narrowed export fails here."""
     import telethon_secret_chat as package

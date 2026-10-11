@@ -284,7 +284,15 @@ def record_received(account: str, message) -> None:
 def read(account: str, chat_id: int, limit: int) -> List[dict]:
     """The most recent `limit` messages, oldest first."""
     with _history_lock:
-        return deepcopy(_load(account).get(str(int(chat_id)), [])[-limit:])
+        messages = deepcopy(_load(account).get(str(int(chat_id)), []))
+    if (state_dir() / "secret-chats" / f"{account}-consumer.json").exists():
+        from telegram_mcp import secret_custody
+
+        receipts = secret_custody.read_history(account, chat_id, max(1, min(limit, 10000)))
+        known = {int(item["message_id"]) for item in messages}
+        messages.extend(item for item in receipts if int(item["message_id"]) not in known)
+        messages.sort(key=lambda item: item.get("date", item.get("consumer_committed_at", 0)))
+    return messages[-limit:]
 
 
 def forget(account: str, chat_id: int, message_ids) -> int:

@@ -29,6 +29,9 @@ from typing import Dict, List, Tuple
 
 from telethon_secret_chat import (
     PALETTE,
+    BoundedSecretChatManager,
+    ChatPaused,
+    CustodyLimits,
     FileStorage,
     MediaReference,
     SecretChatManager,
@@ -112,6 +115,8 @@ _starts: Dict[str, asyncio.Task] = {}
 _stops: Dict[int, asyncio.Task] = {}
 _acquisitions: Dict[str, asyncio.Task] = {}
 _recoveries: Dict[int, SecretUpdateRecovery] = {}
+_storages: Dict[int, object] = {}
+_manager_clients: Dict[int, object] = {}
 _START_SECONDS = 60.0
 _CLEANUP_SECONDS = 5.0
 _CLOSE_SECONDS = 30.0
@@ -155,6 +160,11 @@ def _stop_owned(account: str, manager) -> asyncio.Task:
                 logging.ERROR, "secret manager closure failed; ownership retained", error=error
             )
             return
+        from telegram_mcp.secret_archive import unpin
+
+        unpin(manager)
+        _storages.pop(id(manager), None)
+        _manager_clients.pop(id(manager), None)
         if _by_account.get(account) is manager:
             _by_account.pop(account, None)
             _verified_against.pop(account, None)
@@ -330,21 +340,36 @@ async def _start_manager(account: str, client):
             await _bind_store(account, client)
             _check_current(account, client)
             storage = _storage_for(account)
-            # Library defaults must not bypass the owner's explicit archive approval.
-            if storage.load_setting("auto_save_secret_chats") is None:
-                storage.save_setting("auto_save_secret_chats", {"folder": None, "on": False})
-            manager = SecretChatManager(client, storage)
+            from telegram_mcp import secret_archive, secret_backend_config
+
+            from telegram_mcp.secret_control import _archive_stops
+
+            if account in _archive_stops:
+                secret_archive.disable(storage)
+            archive = await secret_archive.prepare(storage, account)
+            policy = secret_backend_config.load(storage)
+            manager = (
+                BoundedSecretChatManager(client, storage, limits=CustodyLimits(**policy["limits"]))
+                if policy["mode"] == "bounded"
+                else SecretChatManager(client, storage)
+            )
             # Reserve before start(): it can subscribe and then raise/cancel.
             _by_account[account] = manager
+            _storages[id(manager)] = storage
+            _manager_clients[id(manager)] = client
             _verified_against.pop(account, None)
             for event, handler in (
                 ("ChatRequested", _accept_incoming(manager, account)),
                 ("MessageReceived", _remember(account)),
-                ("ChatClosed", _closed(account)),
+                ("ChatClosed", _closed(account, manager)),
                 ("SendFailed", _withdrawn(account)),
-                ("ServiceActionReceived", _service_action(account)),
+                ("ServiceActionReceived", _service_action(account, manager)),
             ):
                 manager.on(event, _guard_event(account, client, manager, handler))
+            if account in _archive_stops:
+                secret_archive.disable(storage)
+            elif archive["on"]:
+                secret_archive.pin(manager, archive["folder"])
             await manager.start()
             _check_current(account, client)
             _verified_against[account] = client
@@ -374,6 +399,12 @@ async def _start_manager(account: str, client):
 
 
 async def secret_manager(account: str) -> SecretChatManager:
+    from telegram_mcp.secret_control import manager
+
+    return await manager(account)
+
+
+async def _manager(account: str) -> SecretChatManager:
     """Return one fully started manager for the current client generation.
 
     Startup is single-flight and owned independently of its waiters. The final
@@ -395,6 +426,7 @@ async def secret_manager(account: str) -> SecretChatManager:
         task = _starts.get(account)
         if task is None:
             task = asyncio.create_task(_start_manager(account, client))
+            task.secret_client = client
             _starts[account] = task
 
             def finished(done):
@@ -494,10 +526,12 @@ def _remember(account: str):
     return _handler
 
 
-def _closed(account: str):
-    """Drop closed-chat keys, and honor a peer's history-deleted event."""
+def _closed(account: str, manager=None):
+    """Drop normal closed-chat keys; bounded custody is preserved."""
 
     async def _handler(event):
+        if isinstance(manager, BoundedSecretChatManager):
+            return
         if getattr(event, "history_deleted", False):
             erase_local(account, event.chat_id)
             return
@@ -542,10 +576,12 @@ def erase_local(account: str, chat_id: int, message_ids=None) -> dict:
     return result
 
 
-def _service_action(account: str):
-    """The library clears its memory; the application must clear its own files."""
+def _service_action(account: str, manager=None):
+    """Honor normal erasure actions without discarding bounded consumer custody."""
 
     async def handler(event):
+        if isinstance(manager, BoundedSecretChatManager):
+            return
         action = event.action
         if isinstance(action, secret_tl.DecryptedMessageActionDeleteMessages):
             erase_local(account, event.chat_id, action.random_ids)
@@ -582,7 +618,11 @@ def media_source(manager, account: str, chat_id: int, message_id: int):
             return message, int(getattr(message, "ttl", 0) or 0)
     stored = secret_media_refs.load(account, chat_id, message_id)
     if stored is None:
-        return None, 0
+        if not isinstance(manager, BoundedSecretChatManager):
+            return None, 0
+        from telegram_mcp.secret_custody import receipt_media_source
+
+        return receipt_media_source(account, chat_id, message_id)
     return MediaReference.from_dict(stored["reference"]), int(stored.get("ttl") or 0)
 
 
@@ -607,6 +647,12 @@ async def close_all(budget: float = _CLOSE_SECONDS) -> List[Tuple[str, BaseExcep
     """
     global _closing
     _closing = True
+    from telegram_mcp import secret_activation
+
+    await secret_activation.stop()
+    from telegram_mcp.secret_control import stop_operations
+
+    await stop_operations()
     pending = set()
     for task in list(_starts.values()):
         if not task.done():
