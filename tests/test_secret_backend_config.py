@@ -57,7 +57,6 @@ async def test_bounded_manager_selected_on_same_client_and_store(tmp_path, monke
         secret_backend as backend,
         secret_backend_config as policy,
         secret_archive,
-        connection,
     )
     from test_secret_backend import _Client, _wire
 

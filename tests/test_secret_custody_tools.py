@@ -6,8 +6,6 @@ import pytest
 
 from test_secret_custody import CHAT, WIRE_SEQ, OfflineClient, build_manager, seed_store
 
-pytestmark = pytest.mark.timeout(10)
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

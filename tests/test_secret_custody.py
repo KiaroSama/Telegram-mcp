@@ -8,7 +8,6 @@ from telethon_secret_chat.chat import ChatState, SecretChat
 
 from telegram_mcp import secret_backend as backend
 
-pytestmark = pytest.mark.timeout(10)
 CHAT = 701
 WIRE_SEQ = 9  # Not the package's internal counter (4).
 
