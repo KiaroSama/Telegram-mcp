@@ -21,6 +21,23 @@ wrong, not stale: the server registered 142 at that commit. It is corrected here
 rather than quietly overwritten, because the whole point of this file is that its
 numbers can be re-derived.
 
+## Upstream review: 2026-10-11
+
+Reviewed chigwell through `0910170285526d289420acb413b2f741ff2ae0bb`, 61 commits
+since the previous marker. Selected ports preserve this server's bounds and approvals.
+
+| Upstream change | Disposition |
+|---|---|
+| Forum-scoped history and participant paging | Ported server-side thread fetching and streaming page/lookahead; JSON metadata preserved. |
+| Invitation reporting and single-member admin status | Ported real refusal/addition evidence and a read-only member role/rights lookup; unknown membership stays unconfirmed. |
+| Pin notification option and tool exclusions | Ported silent default/approval detail and strict discovery exclusions; authorization is unchanged. |
+| Native protocol negotiation, owner-only roots, reconnect refusal, polls and installed emoji previews | Already covered; no duplicate tools or MCP 1.x transport monkeypatch. |
+| Folder snapshots/private patches, expected-identity checks, document inspection and emoji search/featured | Reviewed and deferred from this bounded release; require their own validation/design. |
+| Provider/local transcription subsystem | Deferred: new dependencies and private-audio destination choices are not a small compatibility port. |
+
+Source and tests: [exact upstream comparison](https://github.com/chigwell/telegram-mcp/compare/fa96092...0910170285526d289420acb413b2f741ff2ae0bb).
+Upstream green checks do not establish this fork's runtime or CI result.
+
 ## Why "100% of Telegram" is the wrong target
 
 824 request classes is the whole protocol, including `langpack`, `smsjobs`,

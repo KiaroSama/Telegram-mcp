@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "telegram-mcp": {
+      "command": "C:/path/to/Telegram-mcp/.venv/Scripts/telegram-mcp.exe",
+      "args": [
+        "bridge"
+      ]
+    }
+  }
+}

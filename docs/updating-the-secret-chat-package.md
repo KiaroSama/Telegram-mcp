@@ -38,7 +38,16 @@ requires the exact repository and Git commit to match the manifest and resolved 
 The version number alone is insufficient: newer commits may retain the same version.
 An archived package or stale installed commit fails rather than shadowing the pinned one.
 
-## Why no source change should be needed
+## Preserve application policy when defaults change
+
+A package update can change behavior without removing an API. File-backed managers now
+implicitly enable plaintext auto-save when no preference exists. This application keeps
+auto-save opt-in: under the existing store lease, it persists explicit OFF before startup
+only when the preference is absent. Existing ON/OFF settings and destinations are kept.
+Preference failure prevents update subscription; enabling still requires the existing
+approval-gated tool and an owner-only destination inside allowed roots.
+
+## Why API adaptation stays localized
 
 Two properties, both enforced by tests rather than by convention:
 

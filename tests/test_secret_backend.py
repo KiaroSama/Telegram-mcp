@@ -79,6 +79,112 @@ def _wire(monkeypatch, backend, client, owners=None):
 
 
 @pytest.mark.asyncio
+async def test_new_file_store_has_an_explicit_disabled_archive_preference(
+    backend, monkeypatch, tmp_path
+):
+    from telethon_secret_chat import FileStorage
+
+    client = _Client()
+    _wire(monkeypatch, backend, client, tmp_path)
+    path = tmp_path / "account-state"
+    monkeypatch.setattr(backend, "_storage_for", lambda _account: FileStorage(path))
+    try:
+        manager = await backend.secret_manager("acct")
+        assert manager.auto_save_secret_chats is None
+        assert FileStorage(path).load_setting("auto_save_secret_chats") == {
+            "folder": None,
+            "on": False,
+        }
+        assert not (tmp_path / "saved-secret-chats").exists()
+    finally:
+        await backend.close_all()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_archive_choice_and_destination_survive_backend_restart(
+    backend, monkeypatch, tmp_path, enabled
+):
+    from telethon_secret_chat import FileStorage
+
+    client = _Client()
+    _wire(monkeypatch, backend, client, tmp_path)
+    path = tmp_path / "state"
+    setting = {"folder": str(tmp_path / "chosen"), "on": enabled}
+    FileStorage(path).save_setting("auto_save_secret_chats", setting)
+    monkeypatch.setattr(backend, "_storage_for", lambda _account: FileStorage(path))
+    try:
+        first = await backend.secret_manager("acct")
+        assert first.auto_save_secret_chats == (setting["folder"] if enabled else None)
+        await backend.close_all()
+        backend._closing = False
+        second = await backend.secret_manager("acct")
+        assert second is not first
+        assert second.auto_save_secret_chats == (setting["folder"] if enabled else None)
+        assert FileStorage(path).load_setting("auto_save_secret_chats") == setting
+    finally:
+        await backend.close_all()
+
+
+@pytest.mark.asyncio
+async def test_archive_preference_failure_installs_no_subscription(backend, monkeypatch, tmp_path):
+    from telethon_secret_chat import FileStorage
+
+    client = _Client()
+    _wire(monkeypatch, backend, client, tmp_path)
+    storage = FileStorage(tmp_path / "state")
+
+    def fail(*_args):
+        raise OSError("synthetic preference write failure")
+
+    monkeypatch.setattr(storage, "save_setting", fail)
+    monkeypatch.setattr(backend, "_storage_for", lambda _account: storage)
+    with pytest.raises(OSError, match="preference"):
+        await backend.secret_manager("acct")
+    assert not client.handlers
+    assert "acct" not in backend._by_account
+    assert "acct" not in backend._store_locks
+
+
+@pytest.mark.asyncio
+async def test_unreadable_archive_preference_installs_no_subscription(
+    backend, monkeypatch, tmp_path
+):
+    from telethon_secret_chat import FileStorage
+
+    client = _Client()
+    _wire(monkeypatch, backend, client, tmp_path)
+    storage = FileStorage(tmp_path / "state")
+
+    def fail(*_args):
+        raise OSError("synthetic preference read failure")
+
+    monkeypatch.setattr(storage, "load_setting", fail)
+    monkeypatch.setattr(backend, "_storage_for", lambda _account: storage)
+    with pytest.raises(OSError, match="preference"):
+        await backend.secret_manager("acct")
+    assert not client.handlers
+    assert "acct" not in backend._by_account
+    assert "acct" not in backend._store_locks
+
+
+def test_account_file_stores_keep_archive_preferences_separate(backend, monkeypatch, tmp_path):
+    monkeypatch.setattr(backend, "state_dir", lambda: tmp_path)
+    first = backend._storage_for("first")
+    second = backend._storage_for("second")
+    first.save_setting("auto_save_secret_chats", {"folder": "first-folder", "on": False})
+    second.save_setting("auto_save_secret_chats", {"folder": "second-folder", "on": False})
+    assert (
+        backend._storage_for("first").load_setting("auto_save_secret_chats")["folder"]
+        == "first-folder"
+    )
+    assert (
+        backend._storage_for("second").load_setting("auto_save_secret_chats")["folder"]
+        == "second-folder"
+    )
+
+
+@pytest.mark.asyncio
 async def test_secret_manager_returns_a_started_manager_bound_to_the_account_client(
     backend, monkeypatch
 ):

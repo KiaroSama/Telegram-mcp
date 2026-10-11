@@ -56,7 +56,7 @@ COPY pyproject.toml uv.lock ./
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir uv==0.12.8 \
+    && pip install --no-cache-dir uv==0.13.0 \
     && uv sync --locked --no-dev --no-install-project \
     && apt-get purge -y git && apt-get autoremove -y
 

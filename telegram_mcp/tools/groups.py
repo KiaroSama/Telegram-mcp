@@ -538,15 +538,42 @@ def _missing_reason(missing) -> str:
     )
 
 
-def _invite_report(title: str, requested: int, missing) -> str:
-    """Invited N of M, naming who was left out and why; nobody added is a failure."""
-    added = requested - len(missing)
-    if not missing:
-        return f"Successfully invited {added} users to {title}"
-    left_out = "; ".join(f"{m.user_id}: {_missing_reason(m)}" for m in missing)
-    if added <= 0:
-        return f"Error: Nobody was added to {title}. Not added: {left_out}."
-    return f"Invited {added} of {requested} users to {title}. Not added: {left_out}."
+def _observed_additions(result, entity) -> set:
+    """Only this group's add-user events prove new membership, never broadcasts."""
+    if isinstance(entity, Channel) and not entity.megagroup:
+        return set()
+    added = set()
+    for update in getattr(getattr(result, "updates", None), "updates", ()) or ():
+        message = getattr(update, "message", None)
+        peer = getattr(message, "peer_id", None)
+        peer_id = getattr(peer, "channel_id" if isinstance(entity, Channel) else "chat_id", None)
+        action = getattr(message, "action", None)
+        if peer_id == entity.id and isinstance(action, types.MessageActionChatAddUser):
+            added.update(action.users)
+    return added
+
+
+def _invite_report(title, requested, added, missing, already=0, failures=()) -> str:
+    unknown = requested - added - len(missing) - already - len(failures)
+    if added:
+        msg = (
+            f"Invited {added} of {requested} users to {title}"
+            if missing or failures
+            else f"Successfully invited {added} users to {title}"
+        )
+    elif unknown:
+        msg = f"Invite request acknowledged for {unknown} users to {title}"
+    else:
+        msg = f"Error: Nobody was added to {title}"
+    if unknown:
+        msg += f" ({unknown} membership change is unconfirmed; may already be participants)"
+    if already:
+        msg += f" ({already} already a participant)"
+    if missing:
+        msg += ". Not added: " + "; ".join(f"{m.user_id}: {_missing_reason(m)}" for m in missing)
+    if failures:
+        msg += f" (failed: {'; '.join(failures)})"
+    return msg
 
 
 @mcp.tool(
@@ -580,7 +607,8 @@ async def invite_to_group(
         for user_id in user_ids:
             try:
                 user = await resolve_entity(user_id, cl)
-                users_to_add.append(user)
+                if all(existing.id != user.id for existing in users_to_add):
+                    users_to_add.append(user)
             except ValueError as e:
                 return f"Error: User with ID {user_id} could not be found. {e}"
 
@@ -591,11 +619,12 @@ async def invite_to_group(
                     functions.channels.InviteToChannelRequest(channel=entity, users=users_to_add)
                 )
 
-                # Layer 229 answers messages.InvitedUsers: who was NOT added, and why,
-                # is in missing_invitees. Counting `.users` reported "0 invited" as a
-                # success when privacy refused everyone (live, 2026-09-29).
                 missing = list(getattr(result, "missing_invitees", None) or [])
-                return _invite_report(sanitize_name(entity.title), len(users_to_add), missing)
+                eligible = {u.id for u in users_to_add} - {m.user_id for m in missing}
+                added = len(_observed_additions(result, entity) & eligible)
+                return _invite_report(
+                    sanitize_name(entity.title), len(users_to_add), added, missing
+                )
             else:
                 # Basic group (telethon Chat): channels.InviteToChannel cannot be used
                 # (it casts to InputChannel and fails). Add each user individually via
@@ -603,14 +632,18 @@ async def invite_to_group(
                 invited_count = 0
                 already = 0
                 failures = []
+                missing = []
                 for user in users_to_add:
                     try:
-                        await cl(
+                        result = await cl(
                             functions.messages.AddChatUserRequest(
                                 chat_id=entity.id, user_id=user, fwd_limit=100
                             )
                         )
-                        invited_count += 1
+                        refused = list(getattr(result, "missing_invitees", None) or [])
+                        missing.extend(refused)
+                        if not refused and user.id in _observed_additions(result, entity):
+                            invited_count += 1
                     except telethon.errors.rpcerrorlist.UserAlreadyParticipantError:
                         already += 1
                     except (
@@ -619,16 +652,14 @@ async def invite_to_group(
                     ) as ue:
                         failures.append(f"{getattr(user, 'id', user)}: {type(ue).__name__}")
 
-                msg = (
-                    f"Successfully invited {invited_count} users to {sanitize_name(entity.title)}"
+                return _invite_report(
+                    sanitize_name(entity.title),
+                    len(users_to_add),
+                    invited_count,
+                    missing,
+                    already,
+                    failures,
                 )
-                if invited_count == 0 and failures:
-                    msg = f"Error: Nobody was added to {sanitize_name(entity.title)}"
-                if already:
-                    msg += f" ({already} already a participant)"
-                if failures:
-                    msg += f" (failed: {'; '.join(failures)})"
-                return msg
         except telethon.errors.rpcerrorlist.UserNotMutualContactError:
             return "Error: Cannot invite users who are not mutual contacts. Please ensure the users are in your contacts and have added you back."
         except telethon.errors.rpcerrorlist.UserPrivacyRestrictedError:
