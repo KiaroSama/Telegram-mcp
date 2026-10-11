@@ -359,14 +359,14 @@ Every other write tool stays unregistered:
 TELEGRAM_EXPOSED_TOOLS=read-only+send_message,reply_to_message,send_file
 ```
 
-An unknown name in the allowlist aborts startup, so a typo cannot silently
-degrade into a narrower surface that looks like it worked.
+Append `-tool,tool` to exclude names; exclusions win over inclusions.
+Unknown names or malformed lists abort startup before pruning.
 
 This is an MCP tool-surface restriction, not a Telegram session sandbox or
 reduced Telegram account permission. The Telegram session string still has its
 normal authority inside the server process; read-only mode only prevents
 non-read-only tools from being registered and exposed through MCP. Accepted
-values are `all` (the default), `read-only`, and `read-only+<tool>,<tool>`.
+values are `all` (default) or `read-only`, optionally `+tool,tool` then `-tool,tool`.
 
 Run the server locally:
 
