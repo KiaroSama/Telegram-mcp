@@ -23,7 +23,10 @@ allowed beside a literal name.
 ## What an operator has to type today
 
 Three realistic postures, and the number of tool names each needs spelled out by
-hand:
+hand at the measured 2026-08-30 snapshot. Since 2026-10-11, literal exclusions
+are also supported: `all-tool,tool` or `read-only+tool,tool-tool,tool`.
+Exclusions win; unknown or malformed names still abort before pruning. This
+narrows discovery, not account authorization; group tokens remain unimplemented.
 
 | Posture | Value | Names |
 |---|---|---|
