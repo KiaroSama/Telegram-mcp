@@ -125,6 +125,15 @@ class _PipeOutput:
             ]
             self.set_state.restype = wintypes.BOOL
             self.handle = msvcrt.get_osfhandle(fd)
+            self.write_file = kernel.WriteFile
+            self.write_file.argtypes = [
+                wintypes.HANDLE,
+                wintypes.LPCVOID,
+                wintypes.DWORD,
+                wintypes.LPDWORD,
+                wintypes.LPVOID,
+            ]
+            self.write_file.restype = wintypes.BOOL
             previous = wintypes.DWORD()
             if not get_state(self.handle, ctypes.byref(previous), None, None, None, None, 0):
                 raise StdioError("Bridge stdout pipe mode could not be inspected.")
@@ -149,10 +158,24 @@ class _PipeOutput:
             while offset < len(data):
                 if self.stopped:
                     raise anyio.ClosedResourceError
-                try:
-                    written = os.write(self.fd, data[offset : offset + 65536])
-                except BlockingIOError:
-                    written = 0
+                chunk = data[offset : offset + 65536]
+                if os.name == "nt":
+                    import ctypes
+                    from ctypes import wintypes
+
+                    count = wintypes.DWORD()
+                    # CRT write() raises ENOSPC for full PIPE_NOWAIT pipes on
+                    # Python 3.11. Native WriteFile reports partial/zero progress.
+                    if not self.write_file(
+                        self.handle, chunk, len(chunk), ctypes.byref(count), None
+                    ):
+                        raise StdioError("Bridge stdout pipe write failed.")
+                    written = count.value
+                else:
+                    try:
+                        written = os.write(self.fd, chunk)
+                    except BlockingIOError:
+                        written = 0
                 if written:
                     offset += written
                 elif os.name == "nt":
