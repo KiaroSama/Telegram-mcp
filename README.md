@@ -522,14 +522,14 @@ claude mcp add --transport http telegram http://127.0.0.1:8765/mcp
 codex mcp add telegram --url http://127.0.0.1:8765/mcp
 ```
 
-For stdio-only clients, bridge with [mcp-remote](https://www.npmjs.com/package/mcp-remote):
+For Claude Desktop, use the installed bridge: no manual launcher or Node download.
 
 ```json
 {
   "mcpServers": {
     "telegram-mcp": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "http://127.0.0.1:8765/mcp"]
+      "command": "C:\\path\\to\\Telegram-mcp\\.venv\\Scripts\\telegram-mcp.exe",
+      "args": ["bridge"]
     }
   }
 }

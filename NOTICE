@@ -15,6 +15,12 @@ retained in accordance with Section 4 of that licence, which continues to apply
 to those portions regardless of the licence on the combined work. They have been
 substantially modified and extended.
 
+The 2026-10-11 adaptation reviewed chigwell/telegram-mcp commit
+0910170285526d289420acb413b2f741ff2ae0bb: forum history, bounded participant
+paging, invitation outcome reporting, member status, pin notifications and tool
+exclusions. These adaptations retain this project's validation, output and
+approval contracts rather than replacing them with the upstream implementations.
+
 Apache 2.0 is one-way compatible with GPLv3. The Apache Software Foundation
 states it directly: "Apache 2 software can therefore be included in GPLv3
 projects, because the GPLv3 license accepts our software into GPLv3 works."

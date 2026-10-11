@@ -19,6 +19,7 @@ close it — is state manipulation of that attachment.
 
 from types import SimpleNamespace
 
+from telegram_mcp.approval_details import register
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 
@@ -187,14 +188,16 @@ async def press_inline_button(
 )
 @with_account(readonly=False)
 @validate_id("chat_id")
-async def pin_message(chat_id: Union[int, str], message_id: int, account: str = None) -> str:
-    """
-    Pin a message in a chat.
-    """
+async def pin_message(
+    chat_id: Union[int, str], message_id: int, account: str = None, notify: bool = False
+) -> str:
+    """Pin a message; notify=False is silent, True notifies the chat's members."""
     try:
+        if type(notify) is not bool:
+            return "Error: notify must be a boolean. Nothing was pinned."
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
-        await cl.pin_message(entity, message_id)
+        await cl.pin_message(entity, message_id, notify=notify)
         return f"Message {message_id} pinned in chat {chat_id}."
     except Exception as e:
         return log_and_format_error("pin_message", e, chat_id=chat_id, message_id=message_id)
@@ -518,6 +521,14 @@ async def get_message_reactions(
         return log_and_format_error(
             "get_message_reactions", e, chat_id=chat_id, message_id=message_id
         )
+
+
+register(
+    "pin_message",
+    lambda arguments: (
+        "Notifications: on" if arguments.get("notify", False) else "Notifications: off (silent)"
+    ),
+)
 
 
 __all__ = [
