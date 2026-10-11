@@ -228,6 +228,62 @@ def test_get_exposed_tools_mode_rejects_empty_allowlist():
     assert "at least one tool" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "mode,remaining,removed",
+    [
+        ("all-write_tool", {"read_tool", "send_tool"}, ["write_tool"]),
+        ("read-only-read_tool", set(), ["read_tool", "write_tool", "send_tool"]),
+        ("read-only+write_tool,send_tool-write_tool", {"read_tool", "send_tool"}, ["write_tool"]),
+    ],
+)
+def test_exposure_exclusions_win_inclusions(mode, remaining, removed):
+    server = _synthetic_mcp_with_two_writes()
+    assert runtime._apply_exposed_tools_mode(server, mode) == removed
+    assert _tool_names(server) == remaining
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "all-",
+        "all-read_tool,",
+        "read-only+send_tool,,write_tool",
+        "read-only++send_tool",
+        "read-only-send_tool+write_tool",
+        "all--read_tool",
+    ],
+)
+def test_exposure_malformed_lists_fail_before_pruning(mode):
+    server = _synthetic_mcp_with_two_writes()
+    with pytest.raises(SystemExit):
+        runtime._apply_exposed_tools_mode(server, mode)
+    assert _tool_names(server) == {"read_tool", "write_tool", "send_tool"}
+
+
+def test_exposure_unknown_exclusions_fail_before_pruning():
+    server = _synthetic_mcp_with_two_writes()
+    with pytest.raises(SystemExit, match="typo_tool"):
+        runtime._apply_exposed_tools_mode(server, "all-typo_tool")
+    assert _tool_names(server) == {"read_tool", "write_tool", "send_tool"}
+
+
+def test_exposure_mcp2_alias_and_two_value_helper_remain_compatible():
+    assert runtime._is_read_only(ToolAnnotations(readOnlyHint=True))
+    assert runtime._is_read_only(SimpleNamespace(readOnlyHint=True))
+    assert not runtime._is_read_only(None)
+    assert runtime._split_exposed_tools_mode("read-only+send_tool-write_tool") == (
+        "read-only",
+        ["send_tool"],
+    )
+
+
+def test_exposure_normalizes_both_lists():
+    assert (
+        runtime._get_exposed_tools_mode(" Read-Only+ send_tool , write_tool - write_tool ")
+        == "read-only+send_tool,write_tool-write_tool"
+    )
+
+
 class _ResolvingClient:
     def __init__(self, method_name, failures):
         self.method_name = method_name

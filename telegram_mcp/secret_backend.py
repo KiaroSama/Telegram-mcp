@@ -329,7 +329,11 @@ async def _start_manager(account: str, client):
             _check_current(account, client)
             await _bind_store(account, client)
             _check_current(account, client)
-            manager = SecretChatManager(client, _storage_for(account))
+            storage = _storage_for(account)
+            # Library defaults must not bypass the owner's explicit archive approval.
+            if storage.load_setting("auto_save_secret_chats") is None:
+                storage.save_setting("auto_save_secret_chats", {"folder": None, "on": False})
+            manager = SecretChatManager(client, storage)
             # Reserve before start(): it can subscribe and then raise/cancel.
             _by_account[account] = manager
             _verified_against.pop(account, None)

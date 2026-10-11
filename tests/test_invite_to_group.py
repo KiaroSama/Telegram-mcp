@@ -19,10 +19,30 @@ class FakeInviteClient:
     """Records every raw request; optionally raises per-user errors for
     AddChatUserRequest to simulate already-participant / privacy failures."""
 
-    def __init__(self, add_user_errors=None, missing=()):
+    def __init__(self, add_user_errors=None, missing=(), added=(41,), broadcast=False):
         self.requests = []
         self.add_user_errors = add_user_errors or {}
-        self.missing = list(missing)  # MissingInvitee objects Telegram names
+        self.missing = list(missing)
+        self.added = added
+        self.broadcast = broadcast
+
+    def result(self, request, missing):
+        updates = []
+        ids = [request.user_id.id] if hasattr(request, "user_id") else list(self.added)
+        ids = [uid for uid in ids if uid in self.added]
+        if ids and not self.broadcast:
+            peer = (
+                types.PeerChat(request.chat_id)
+                if hasattr(request, "chat_id")
+                else types.PeerChannel(request.channel.id)
+            )
+            message = types.MessageService(
+                id=1, peer_id=peer, date=None, action=types.MessageActionChatAddUser(ids)
+            )
+            updates = [types.UpdateNewMessage(message=message, pts=1, pts_count=1)]
+        return types.messages.InvitedUsers(
+            updates=types.Updates(updates, [], [], 0, 0), missing_invitees=missing
+        )
 
     async def __call__(self, request):
         self.requests.append(request)
@@ -30,14 +50,12 @@ class FakeInviteClient:
             err = self.add_user_errors.get(request.user_id.id)
             if err is not None:
                 raise err
-            return types.messages.InvitedUsers(
-                updates=types.Updates([], [], [], 0, 0), missing_invitees=[]
+            return self.result(
+                request, [m for m in self.missing if m.user_id == request.user_id.id]
             )
         if isinstance(request, functions.channels.InviteToChannelRequest):
             # Layer 229: who was NOT added comes back in missing_invitees, with the reason.
-            return types.messages.InvitedUsers(
-                updates=types.Updates([], [], [], 0, 0), missing_invitees=self.missing
-            )
+            return self.result(request, self.missing)
         raise AssertionError(f"unexpected request: {request!r}")
 
 
@@ -72,7 +90,7 @@ async def test_basic_group_invites_via_add_chat_user(monkeypatch):
     assert [r.user_id.id for r in client.requests] == [41, 42, 43]
     assert all(r.chat_id == 555 and r.fwd_limit == 100 for r in client.requests)
 
-    assert "Successfully invited 1 users to Basic Group" in result
+    assert "Invited 1 of 3 users to Basic Group" in result
     assert "1 already a participant" in result
     assert "43: UserPrivacyRestrictedError" in result
 
@@ -81,14 +99,16 @@ async def test_basic_group_invites_via_add_chat_user(monkeypatch):
 async def test_channel_still_uses_invite_to_channel(monkeypatch):
     channel = types.Channel(id=777, title="Announcements", photo=None, date=None)
     u1, u2 = SimpleNamespace(id=41), SimpleNamespace(id=42)
-    client = FakeInviteClient()
+    client = FakeInviteClient(broadcast=True)
     _patch(monkeypatch, client, {777: channel, 41: u1, 42: u2})
 
     result = await groups.invite_to_group(group_id=777, user_ids=[41, 42], account=None)
 
     assert len(client.requests) == 1
     assert isinstance(client.requests[0], functions.channels.InviteToChannelRequest)
-    assert "Successfully invited 2 users to Announcements" in result
+    assert "acknowledged for 2 users" in result
+    assert "membership change is unconfirmed" in result
+    assert "Successfully invited" not in result
 
 
 @pytest.mark.asyncio
@@ -108,7 +128,7 @@ async def test_nobody_added_is_a_failure_that_names_the_reason(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_partial_invite_names_who_was_left_out_and_why(monkeypatch):
-    channel = types.Channel(id=777, title="Announcements", photo=None, date=None)
+    channel = types.Channel(id=777, title="Announcements", photo=None, date=None, megagroup=True)
     client = FakeInviteClient(
         missing=[types.MissingInvitee(user_id=42, premium_would_allow_invite=True)]
     )
@@ -120,3 +140,32 @@ async def test_a_partial_invite_names_who_was_left_out_and_why(monkeypatch):
 
     assert "Invited 1 of 2 users to Announcements" in result
     assert "42" in result and "Premium" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("megagroup", [False, True])
+async def test_missing_invitees_do_not_become_basic_group_success(monkeypatch, megagroup):
+    group = (
+        types.Channel(id=777, title="Group", photo=None, date=None, megagroup=True)
+        if megagroup
+        else SimpleNamespace(id=777, title="Group")
+    )
+    client = FakeInviteClient(
+        missing=[types.MissingInvitee(user_id=42, premium_required_for_pm=True)], added=()
+    )
+    _patch(monkeypatch, client, {777: group, 42: SimpleNamespace(id=42)})
+    result = await groups.invite_to_group(777, [42], account=None)
+    assert result.startswith("Error: Nobody was added")
+    assert "42" in result and "Premium" in result and "invite link" in result
+    assert "Successfully invited" not in result
+
+
+@pytest.mark.asyncio
+async def test_group_empty_updates_are_unknown_not_already_present(monkeypatch):
+    group = types.Channel(id=777, title="Group", photo=None, date=None, megagroup=True)
+    client = FakeInviteClient(added=())
+    _patch(monkeypatch, client, {777: group, 42: SimpleNamespace(id=42)})
+    result = await groups.invite_to_group(777, [42], account=None)
+    assert "membership change is unconfirmed" in result
+    assert "already a participant" not in result
+    assert "Successfully invited" not in result

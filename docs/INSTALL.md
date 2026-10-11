@@ -122,6 +122,48 @@ codex mcp add telegram --url http://127.0.0.1:8765/mcp               # Codex
 Claude Desktop and Cursor take a JSON entry; see
 [MCP Client Configuration](../README.md#mcp-client-configuration).
 
+### Claude Desktop: automatic shared-service bridge
+
+Use the installed executable with `args: ["bridge"]`. Replace the example path with
+this checkout's absolute path; merge the entry into the existing `mcpServers` object,
+keeping other connectors. No Telegram credential belongs in the client configuration.
+
+```json
+{
+  "mcpServers": {
+    "telegram-mcp": {
+      "command": "C:\\path\\to\\Telegram-mcp\\.venv\\Scripts\\telegram-mcp.exe",
+      "args": ["bridge"]
+    }
+  }
+}
+```
+
+Install the locked environment once before using the bridge, while no server uses that
+virtual environment. Desktop starts the connector itself; **do not open the launcher**.
+The bridge verifies and reuses the shared loopback server, or starts the existing
+launcher hidden and noninteractive. It never installs or synchronizes packages at
+startup and never takes over an existing server. `.env` supplies `MCP_HOST`/`MCP_PORT`
+(default `127.0.0.1:8765`); remote hosts and unknown listeners are refused.
+
+Closing a connector closes only its MCP session: the shared Telegram process remains
+available for other clients and incoming events. Existing account leases protect
+startup races with a supervisor. All approval, named-account and file-root rules still
+apply; the bridge forwards client capabilities and approval callbacks without granting
+anything itself. Redirects and unknown mutation outcomes are not retried.
+
+Windows requires PowerShell for listener verification and the existing launcher. Linux
+requires `/proc` and `ss`; unsupported ownership verification fails closed. This mode
+requires the source checkout and its installed environment, not the unrelated PyPI
+package. After saving the JSON, fully quit and reopen Claude Desktop.
+
+Each connector writes private fixed-stage diagnostics to the state directory's `logs/`
+as `bridge_YYYY-MM-DD_HH-mm-ss_UTC.log`, with UTC level/component entries. No protocol
+frames, message bodies or credentials are logged; initialization failure falls back to
+stderr. Logs are not automatically pruned. HTTP/SSE and raw stdin frames are capped at
+32 MiB; the pipe adapter keeps cancellation independent of blocking I/O. Share reviewed,
+sanitized diagnostics. Unknown readiness/ownership errors leave the running service alone.
+
 ### Gemini CLI
 
 The repository includes a native Gemini CLI extension. Attach it to the **existing**
