@@ -50,8 +50,8 @@ class Recorder:
         return True
 
     # Tools that go through Telethon's friendly methods rather than raw TL.
-    async def pin_message(self, entity, message_id):
-        self.calls.append(("pin_message", entity, message_id))
+    async def pin_message(self, entity, message_id, notify=False):
+        self.calls.append(("pin_message", entity, message_id, notify))
 
     async def unpin_message(self, entity, message_id):
         self.calls.append(("unpin_message", entity, message_id))
@@ -219,7 +219,7 @@ async def test_pin_and_unpin_pass_the_resolved_entity(wire_client):
     await state_mod.unpin_message(RAW_CHAT_ID, 99)
 
     assert client.calls == [
-        ("pin_message", RESOLVED, 99),
+        ("pin_message", RESOLVED, 99, False),
         ("unpin_message", RESOLVED, 99),
     ]
 

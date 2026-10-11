@@ -70,15 +70,19 @@ async def get_participants(
         cl = get_client(account)
         await ensure_connected(cl)
 
-        # iter_participants takes no `offset`, and its `limit` is not honoured
-        # for basic groups. Fetch through the page, then slice it out.
+        # No iterator offset; discard the prefix. Basic groups ignore limit, so
+        # stop explicitly on the one extra member that proves another page.
         participants = []
-        async for participant in cl.iter_participants(chat_id, limit=offset + page_size):
+        skip = offset
+        has_more = False
+        async for participant in cl.iter_participants(chat_id, limit=offset + page_size + 1):
+            if skip:
+                skip -= 1
+                continue
+            if len(participants) == page_size:
+                has_more = True
+                break
             participants.append(participant)
-        participants = participants[offset : offset + page_size]
-
-        if not participants:
-            return format_tool_result([])
 
         records = []
         for p in participants:
@@ -99,7 +103,8 @@ async def get_participants(
         # end of it: the old trailing prose made the answer unparseable for any
         # caller that reached for json.loads.
         return format_tool_result(
-            records, page_metadata(bound, int(page), offset, len(participants))
+            records,
+            dict(page_metadata(bound, int(page), offset, len(participants)), has_more=has_more),
         )
     except Exception as e:
         return log_and_format_error(

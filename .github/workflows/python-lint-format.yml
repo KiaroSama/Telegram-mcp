@@ -14,6 +14,7 @@ jobs:
   lint-and-format:
     name: Check Linting & Formatting
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Check out repository code
@@ -24,11 +25,11 @@ jobs:
       # one is pre-commit's own mechanism and only `pre-commit autoupdate` moves
       # it, so it has to be kept in step by hand.
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           # The resolver itself is a dependency of every result below. Pinned so
           # a uv release cannot change what CI resolved without a commit saying so.
-          version: "0.12.8"
+          version: "0.13.0"
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 

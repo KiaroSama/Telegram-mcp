@@ -7,6 +7,7 @@ on the server object and on nothing Telegram; `runtime` re-exports every name he
 """
 
 import os
+import re
 from typing import Optional
 
 from mcp.types import Annotations
@@ -100,12 +101,39 @@ _EXPOSED_TOOLS_MODES = {"all", "read-only"}
 _EXPOSED_TOOLS_ALLOW_SEPARATOR = "+"
 
 
+def _exposed_tools_parts(mode: str) -> tuple[str, list[str], list[str]]:
+    """Strict base[+inclusions][-exclusions]; the hyphen in read-only is not a list."""
+    match = re.fullmatch(r"(all|read-only)\s*(?:\+([^+-]*))?(?:-([^+-]*))?", mode)
+    if not match:
+        raise SystemExit(
+            "Invalid TELEGRAM_EXPOSED_TOOLS. Expected all or read-only, "
+            "optionally +tool,tool then -tool,tool."
+        )
+    base, raw_allow, raw_exclude = match.groups()
+    lists = []
+    for raw in (raw_allow, raw_exclude):
+        if raw is None:
+            lists.append([])
+            continue
+        names = [name.strip() for name in raw.split(",")]
+        if not any(names):
+            raise SystemExit(
+                "Invalid TELEGRAM_EXPOSED_TOOLS: each list must name at least one tool."
+            )
+        if any(not re.fullmatch(r"[a-z_][a-z0-9_]*", name) for name in names):
+            raise SystemExit("Invalid TELEGRAM_EXPOSED_TOOLS: malformed tool list.")
+        lists.append(names)
+    if raw_allow is not None and base != "read-only":
+        raise SystemExit(
+            "Invalid TELEGRAM_EXPOSED_TOOLS: +allowlist is only valid with read-only."
+        )
+    return base, lists[0], lists[1]
+
+
 def _split_exposed_tools_mode(mode: str) -> tuple[str, list[str]]:
-    """Split a normalised exposure mode into its base mode and write allowlist."""
-    base, separator, raw_allowlist = mode.partition(_EXPOSED_TOOLS_ALLOW_SEPARATOR)
-    if not separator:
-        return base, []
-    return base, [name.strip() for name in raw_allowlist.split(",") if name.strip()]
+    """Preserve runtime's historical two-value helper contract."""
+    base, allowlist, _ = _exposed_tools_parts(mode)
+    return base, allowlist
 
 
 def _get_exposed_tools_mode(value: Optional[str] = None) -> str:
@@ -113,31 +141,18 @@ def _get_exposed_tools_mode(value: Optional[str] = None) -> str:
 
     ``TELEGRAM_EXPOSED_TOOLS=read-only`` keeps only tools annotated with
     ``readOnlyHint=True``. ``read-only+send_message,reply_to_message`` keeps
-    those plus the named write tools. The default is ``all`` for backward
-    compatibility.
+    those plus the named write tools. Append ``-tool,tool`` to exclude names;
+    exclusions win over inclusions. This is visibility, not authorization.
+    The default is ``all`` for backward compatibility.
     """
     raw_value = os.getenv("TELEGRAM_EXPOSED_TOOLS", "all") if value is None else value
     mode = raw_value.strip().lower()
-    base_mode, allowlist = _split_exposed_tools_mode(mode)
-    if base_mode not in _EXPOSED_TOOLS_MODES:
-        accepted = ", ".join(sorted(_EXPOSED_TOOLS_MODES))
-        raise SystemExit(
-            f"Invalid TELEGRAM_EXPOSED_TOOLS '{raw_value}'. Expected one of: {accepted}."
-        )
-    if _EXPOSED_TOOLS_ALLOW_SEPARATOR not in mode:
-        return base_mode
-    if base_mode != "read-only":
-        raise SystemExit(
-            f"Invalid TELEGRAM_EXPOSED_TOOLS '{raw_value}'. The "
-            f"'{_EXPOSED_TOOLS_ALLOW_SEPARATOR}tool,tool' allowlist is only valid "
-            "with read-only."
-        )
-    if not allowlist:
-        raise SystemExit(
-            f"Invalid TELEGRAM_EXPOSED_TOOLS '{raw_value}'. The "
-            f"'{_EXPOSED_TOOLS_ALLOW_SEPARATOR}' allowlist must name at least one tool."
-        )
-    return f"{base_mode}{_EXPOSED_TOOLS_ALLOW_SEPARATOR}{','.join(allowlist)}"
+    base_mode, allowlist, exclusions = _exposed_tools_parts(mode)
+    return (
+        base_mode
+        + ("+" + ",".join(allowlist) if allowlist else "")
+        + ("-" + ",".join(exclusions) if exclusions else "")
+    )
 
 
 def _is_read_only(annotations) -> bool:
@@ -166,26 +181,25 @@ def _apply_exposed_tools_mode(server=None, mode: Optional[str] = None) -> list[s
     """Prune registered MCP tools according to the configured exposure mode."""
     server = _server(server)
     selected_mode = _get_exposed_tools_mode() if mode is None else _get_exposed_tools_mode(mode)
-    base_mode, allowlist = _split_exposed_tools_mode(selected_mode)
-    if base_mode == "all":
-        return []
-
+    base_mode, allowlist, exclusions = _exposed_tools_parts(selected_mode)
     registered = {tool.name for tool in server._tool_manager.list_tools()}
-    unknown = sorted(set(allowlist) - registered)
+    unknown = sorted((set(allowlist) | set(exclusions)) - registered)
     if unknown:
         # Fail loudly: a typo must not silently degrade into a narrower allowlist
         # that looks like it worked.
         raise SystemExit(
-            f"Invalid TELEGRAM_EXPOSED_TOOLS allowlist: unknown tool(s) {', '.join(unknown)}."
+            f"Invalid TELEGRAM_EXPOSED_TOOLS lists: unknown tool(s) {', '.join(unknown)}."
         )
 
-    allowed = set(allowlist)
+    allowed, excluded = set(allowlist), set(exclusions)
     removed: list[str] = []
     for tool in list(server._tool_manager.list_tools()):
-        if tool.name in allowed:
-            continue
-        annotations = getattr(tool, "annotations", None)
-        if not _is_read_only(annotations):
+        keep = (
+            base_mode == "all"
+            or tool.name in allowed
+            or _is_read_only(getattr(tool, "annotations", None))
+        )
+        if tool.name in excluded or not keep:
             server._tool_manager.remove_tool(tool.name)
             removed.append(tool.name)
     return removed
