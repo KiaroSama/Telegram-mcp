@@ -51,7 +51,7 @@ def test_every_registered_write_tool_is_named_in_exactly_one_set():
         if tool.name in fallback:
             assert tool.annotations.read_only_hint is False
             assert tool.annotations.destructive_hint is True
-            assert policy.categorize(tool.name, False, True) == policy.Category.GATED
+            assert policy.categorize(tool.name, False, True) == "gated"
     assert fallback <= {tool.name for tool in _registered()}
     unnamed = [
         t.name
