@@ -62,6 +62,9 @@ from telegram_mcp.settings import state_dir
 # letting either import it directly would turn "an upstream change is a one-file
 # edit" into "grep and hope".
 __all__ = [
+    "BoundedSecretChatManager",
+    "ChatPaused",
+    "CustodyLimits",
     "ChatClosed",
     "ChatNotReady",
     "LayerUnsupported",

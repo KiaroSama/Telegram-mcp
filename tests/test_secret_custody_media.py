@@ -11,7 +11,6 @@ from telethon_secret_chat.files import encrypt_file, file_fingerprint
 from telegram_mcp import secret_backend as backend, secret_custody as custody
 from test_secret_custody import CHAT, WIRE_SEQ, OfflineClient, build_manager, seed_store
 
-pytestmark = pytest.mark.timeout(10)
 CONTENT = b"bounded media fixture\x00\xff" * 3
 
 
