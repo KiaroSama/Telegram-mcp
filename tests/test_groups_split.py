@@ -37,6 +37,7 @@ EXPECTED_TOOLS = {
     "get_admins",
     "get_banned_users",
     "get_invite_link",
+    "get_member_admin_status",
     "get_participants",
     "get_recent_actions",
     "import_chat_invite",

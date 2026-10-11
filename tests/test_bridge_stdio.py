@@ -5,6 +5,9 @@ from pathlib import Path
 import subprocess
 import sys
 
+import anyio
+import pytest
+
 _CODE = """
 import sys
 from contextlib import asynccontextmanager
@@ -98,3 +101,28 @@ assert mode() == before
     assert result.returncode == 0, result.stderr.decode("utf-8")
     assert result.stdout == payload
     assert result.stderr == b""
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows CRT ENOSPC compatibility")
+def test_nonblocking_pipe_write_does_not_depend_on_crt_errno_mapping(monkeypatch):
+    import errno
+    from telegram_mcp.bridge_stdio import _PipeOutput
+
+    read_fd, write_fd = os.pipe()
+    writer = _PipeOutput(write_fd)
+    try:
+
+        def old_crt_write(*_args):
+            raise OSError(errno.ENOSPC, "Synthetic CPython 3.11 full pipe")
+
+        monkeypatch.setattr(os, "write", old_crt_write)
+
+        async def write():
+            await writer.write("known-output")
+
+        anyio.run(write)
+        assert os.read(read_fd, 100) == b"known-output"
+    finally:
+        writer.restore()
+        os.close(read_fd)
+        os.close(write_fd)
