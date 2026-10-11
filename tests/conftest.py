@@ -63,8 +63,11 @@ def _secret_backend_not_shutting_down():
     Autouse and here rather than in each suite, because the leak is a property
     of the module rather than of any one test file.
     """
-    from telegram_mcp import admission, secret_backend
+    from telegram_mcp import admission, secret_backend, secret_control
 
+    secret_control._locks.clear()
+    secret_control._operations.clear()
+    secret_control._archive_stops.clear()
     secret_backend._closing = False
     # The same shape one module along: `admission.release_all()` closes the door
     # so a slow acquire cannot publish after shutdown, and every suite's cleanup

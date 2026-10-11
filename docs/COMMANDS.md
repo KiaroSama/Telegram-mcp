@@ -712,7 +712,7 @@ Every tool this server exposes: **356**, grouped by the module that defines it.
 | `configure_secret_backend` | Select normal or bounded for an empty eligible account, after owner approval. | `- D I -` | **asks the owner** |
 | `get_secret_backend_status` | Report observed mode, budgets and independent plaintext archive policy. | `R - I -` | runs |
 | `get_secret_pause_status` | Read payload-free pause reason, usage and continuation eligibility; never resume. | `R - I -` | runs |
-| `list_secret_deliveries` | Poll a bounded page (limit1-100, offset0-4096), with stable wire seq_no. | `R - I -` | runs |
+| `list_secret_deliveries` | Poll a bounded page (limit 1-100, max 100; offset 0-4096), with stable wire seq_no. | `R - I -` | runs |
 | `pause_secret_chat` | Persist a local bounded pause without erasing keys or queues or remote discard. | `- D I -` | **asks the owner** |
 | `receive_secret_media` | Return exact capped decoded media as base64, without a content file or ack. | `- D I O` | **asks the owner** |
 | `resume_secret_chat` | Explicitly resume intact bounded custody; missed required ingress refuses. | `- D I O` | **asks the owner** |

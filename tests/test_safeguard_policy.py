@@ -33,11 +33,30 @@ def test_the_explicit_sets_do_not_overlap():
 
 
 def test_every_registered_write_tool_is_named_in_exactly_one_set():
-    """A write tool the table forgets would fall to the safety net silently; naming every
-    one keeps the decision a deliberate one."""
+    """Writes are explicitly classified or deliberately use the destructive safety net.
+
+    Bounded tools cannot mutate the protected kernel table. Each must prove the
+    existing fallback still asks the owner, rather than weakening the inventory.
+    """
     named = policy.GATED | policy.SEEN_SIGNAL | policy.SEND | policy.FREE_WRITES
+    fallback = {
+        "acknowledge_secret_delivery",
+        "check_secret_custody",
+        "configure_secret_backend",
+        "pause_secret_chat",
+        "receive_secret_media",
+        "resume_secret_chat",
+    }
+    for tool in _registered():
+        if tool.name in fallback:
+            assert tool.annotations.read_only_hint is False
+            assert tool.annotations.destructive_hint is True
+            assert policy.categorize(tool.name, False, True) == policy.Category.GATED
+    assert fallback <= {tool.name for tool in _registered()}
     unnamed = [
-        t.name for t in _registered() if not t.annotations.read_only_hint and t.name not in named
+        t.name
+        for t in _registered()
+        if not t.annotations.read_only_hint and t.name not in named | fallback
     ]
     assert not unnamed, f"write tools with no safeguard category: {', '.join(sorted(unnamed))}"
 

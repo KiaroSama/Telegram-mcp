@@ -39,6 +39,7 @@ from typing import Any, NamedTuple, Optional
 LIMITS: dict[str, int] = {
     # Messages: the heaviest records here, each with text, media and sender.
     "list_messages": 200,
+    "list_secret_deliveries": 100,
     "get_history": 200,
     "get_messages": 200,
     "search_messages": 200,

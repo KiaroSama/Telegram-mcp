@@ -263,7 +263,7 @@ async def list_secret_deliveries(
     offset: StrictInt = 0,
     account: str = None,
 ) -> str:
-    """Poll a bounded page (limit1-100, offset0-4096), with stable wire seq_no.
+    """Poll a bounded page (limit 1-100, max 100; offset 0-4096), with stable wire seq_no.
 
     Reading, callbacks and receipt never ack or mark read. Pagination is over
     current pending obligations, not an immutable snapshot across concurrent ack.
