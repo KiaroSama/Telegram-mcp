@@ -63,8 +63,11 @@ def _secret_backend_not_shutting_down():
     Autouse and here rather than in each suite, because the leak is a property
     of the module rather than of any one test file.
     """
-    from telegram_mcp import admission, secret_backend
+    from telegram_mcp import admission, secret_backend, secret_control
 
+    secret_control._locks.clear()
+    secret_control._operations.clear()
+    secret_control._archive_stops.clear()
     secret_backend._closing = False
     # The same shape one module along: `admission.release_all()` closes the door
     # so a slow acquire cannot publish after shutdown, and every suite's cleanup
@@ -191,6 +194,26 @@ def backend(monkeypatch, tmp_path):
         return manager
 
     monkeypatch.setattr(secret_backend, "secret_manager", _manager)
+    from telethon_secret_chat import MemoryStorage
+    from telegram_mcp import secret_control
+
+    monkeypatch.setattr(secret_backend, "_manager", _manager)
+    monkeypatch.setattr(secret_backend, "_by_account", {"acct": manager})
+    monkeypatch.setattr(secret_backend, "_storages", {id(manager): MemoryStorage()})
+    monkeypatch.setattr(secret_backend, "_starts", {})
+    monkeypatch.setattr(secret_backend, "_storage_for", lambda account: MemoryStorage())
+    monkeypatch.setattr(secret_backend, "_store_locks", {})
+    monkeypatch.setattr(secret_backend, "_check_current", lambda *args: None)
+    monkeypatch.setattr(secret_backend, "_telethon_client", lambda account: object())
+
+    async def no_op(*args):
+        pass
+
+    monkeypatch.setattr(secret_backend, "_claim_store", no_op)
+    monkeypatch.setattr(secret_backend, "_bind_store", no_op)
+    monkeypatch.setattr(secret_control, "_locks", {})
+    monkeypatch.setattr(secret_control, "_operations", {})
+    monkeypatch.setattr(secret_control, "_archive_stops", set())
     for module in (
         "telegram_mcp.tools.secret_chats",
         "telegram_mcp.tools.secret_messaging",

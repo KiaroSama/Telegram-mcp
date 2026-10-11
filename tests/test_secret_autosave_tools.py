@@ -36,6 +36,11 @@ def allowed(monkeypatch, tmp_path):
         return tmp_path / folder, None
 
     monkeypatch.setattr(mod.file_roots, "resolve_allowed_folder", resolve)
+
+    async def roots(*args):
+        return [tmp_path]
+
+    monkeypatch.setattr(mod.file_roots, "_get_effective_allowed_roots", roots)
     return tmp_path
 
 

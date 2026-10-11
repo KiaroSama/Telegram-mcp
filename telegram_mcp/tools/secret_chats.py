@@ -162,6 +162,14 @@ async def secret_chat_status(account: str = None, chat_id: Optional[int] = None)
     # The folder every secret chat is saved into (start_secret_auto_save), or None.
     record["auto_save"] = getattr(manager, "auto_save_secret_chats", None)
     record["capabilities"] = CAPABILITIES
+    record["backend_mode"] = "bounded" if hasattr(manager, "pause_status") else "normal"
+    if record["backend_mode"] == "bounded":
+        record["bounded_limitations"] = {
+            "close": "local preserving nonresumable stop; no peer erasure",
+            "delete_or_forget_chat": "refused; custody is preserved",
+            "polling": "does not acknowledge delivery or send a read receipt",
+            "archive": "independent plaintext saving; not capped by custody limits",
+        }
     if chat_id is not None:
         try:
             record["key_picture"] = _key_picture(label, manager.status(to_secret_id(chat_id)))
@@ -363,7 +371,12 @@ async def close_secret_chat(secret_chat_id: int, account: str = None) -> str:
             {
                 "closed": True,
                 "secret_chat_id": to_secret_id(secret_chat_id),
-                "note": "The key is gone on both sides; this chat cannot be reopened.",
+                "note": (
+                    "Bounded mode stopped locally and cannot resume; keys, history and custody "
+                    "were retained. No peer erasure was requested."
+                    if hasattr(manager, "pause_status")
+                    else "The key is gone on both sides; this chat cannot be reopened."
+                ),
             }
         )
     except ValueError as e:

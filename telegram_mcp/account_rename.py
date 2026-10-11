@@ -22,7 +22,7 @@ from telegram_mcp.owner_only import restrict_to_owner_strict
 
 __all__ = ["RenameRefused", "main", "rename"]
 
-_SIDECARS = ("{}", "{}.owner.json", "{}-history.json", "{}-media.json")
+_SIDECARS = ("{}", "{}.owner.json", "{}-history.json", "{}-media.json", "{}-consumer.json")
 _ALIAS_SEPARATOR = "\n"  # alias_store._ACCOUNT_SEPARATOR
 
 
