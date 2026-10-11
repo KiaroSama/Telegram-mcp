@@ -79,7 +79,7 @@ def _wire(monkeypatch, backend, client, owners=None):
 
 
 @pytest.mark.asyncio
-async def test_new_file_store_has_an_explicit_disabled_archive_preference(
+async def test_new_file_store_has_an_explicit_enabled_archive_preference(
     backend, monkeypatch, tmp_path
 ):
     from telethon_secret_chat import FileStorage
@@ -90,10 +90,10 @@ async def test_new_file_store_has_an_explicit_disabled_archive_preference(
     monkeypatch.setattr(backend, "_storage_for", lambda _account: FileStorage(path))
     try:
         manager = await backend.secret_manager("acct")
-        assert manager.auto_save_secret_chats is None
+        assert manager.auto_save_secret_chats is not None
         assert FileStorage(path).load_setting("auto_save_secret_chats") == {
-            "folder": None,
-            "on": False,
+            "folder": manager.auto_save_secret_chats,
+            "on": True,
         }
         assert not (tmp_path / "saved-secret-chats").exists()
     finally:
@@ -111,7 +111,21 @@ async def test_archive_choice_and_destination_survive_backend_restart(
     _wire(monkeypatch, backend, client, tmp_path)
     path = tmp_path / "state"
     setting = {"folder": str(tmp_path / "chosen"), "on": enabled}
-    FileStorage(path).save_setting("auto_save_secret_chats", setting)
+    from telegram_mcp import secret_archive
+    from telegram_mcp.owner_only import restrict_to_owner_strict
+
+    chosen = tmp_path / "chosen"
+    chosen.mkdir()
+    assert restrict_to_owner_strict(chosen)
+
+    async def destination(*_args):
+        return chosen
+
+    monkeypatch.setattr(secret_archive, "private_destination", destination)
+    storage = FileStorage(path)
+    with storage.transaction():
+        storage.save_setting("auto_save_secret_chats", setting)
+        storage.save_setting(secret_archive.MARKER, {"version": 1})
     monkeypatch.setattr(backend, "_storage_for", lambda _account: FileStorage(path))
     try:
         first = await backend.secret_manager("acct")

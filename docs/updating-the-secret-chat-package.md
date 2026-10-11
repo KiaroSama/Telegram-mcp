@@ -40,12 +40,50 @@ An archived package or stale installed commit fails rather than shadowing the pi
 
 ## Preserve application policy when defaults change
 
-A package update can change behavior without removing an API. File-backed managers now
-implicitly enable plaintext auto-save when no preference exists. This application keeps
-auto-save opt-in: under the existing store lease, it persists explicit OFF before startup
-only when the preference is absent. Existing ON/OFF settings and destinations are kept.
-Preference failure prevents update subscription; enabling still requires the existing
-approval-gated tool and an owner-only destination inside allowed roots.
+The owner-selected application default is now plaintext auto-save **ON** for current
+and new accounts. A one-time policy migration under the store lease preserves a safe
+chosen destination, otherwise uses `files/downloads/secret-chats/<account>`. Destination
+validation and verified owner-only access precede startup or recovery writes; preference
+and migration marker commit atomically. Failed validation/commit prevents activation.
+
+After that migration, explicit `stop_secret_auto_save` persists OFF across restarts,
+including a cold stop without first starting the saver. Existing saved copies remain.
+Authorized accounts activate their manager on startup/admission, without a secret-tool call.
+Saving can retain self-destructing content and is not encrypted at rest.
+
+## Optional bounded integration
+
+The pinned `735e8523047c2ddb6610e904a579c096292dc69a` adds `BoundedSecretChatManager`.
+Normal mode remains default. `configure_secret_backend` permits approved selection only
+for an actually empty account store; occupied/corrupt state refuses without migration.
+One manager rides the existing client: parallel normal/bounded subscriptions are unsafe.
+
+Supply explicit `records`, `bytes`, `age_seconds`; optional defaults are `chats=64`,
+`frame_bytes=262144`, `operation_seconds=15`, `tasks=8`. Hard ceilings are 4096 records,
+64 MiB serialized custody, 30 days, 64 chats, 1 MiB frame, 60 seconds and 64 tasks.
+These are protocol-custody budgets, not total RAM, client queues or archive-disk quotas.
+
+Pause/check/status preserve records; explicit resume refuses missed required ingress.
+Pending deliveries expose stable wire sequence identities and never acknowledge or read.
+Explicit acknowledgment commits a private consumer result/media reference before separate
+local settlement. It sends no read receipt and makes no exactly-once guarantee.
+Capped RAM media receipt creates no content file itself; independent ON archive can still
+save that media. Bounded close is a nonresumable preserving local stop, not peer erasure;
+chat deletion/forget refuse. Protocol custody may contain plaintext and file keys.
+Telethon transport acknowledgment can precede consumer custody: lossless replay is not
+promised. Actual-package synthetic fixtures are not live cipher interoperability proof.
+
+Committed consumer copies remain accessible to existing history/search/media tools even
+when notification callbacks were dropped. Callback-missed copies use explicitly labeled
+consumer-commit time for ordering, not an invented wire-arrival date; an ordered read
+receipt is refused when arrival dates are unavailable. Consumer copies are independent
+retained plaintext and are not evicted by upstream custody quotas.
+
+Directory/privacy checks reject existing links before activation and harden inherited
+archive subdirectories on restart. Windows retains the archive root handle while saving.
+The library writes descendants by pathname: concurrent modification by another process
+running as the same owner is outside this protection; this is not a sandbox against that
+identity. Keep archive directories under the owner's exclusive control.
 
 ## Why API adaptation stays localized
 

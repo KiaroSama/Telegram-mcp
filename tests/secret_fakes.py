@@ -56,6 +56,9 @@ class FakeManager:
         self.next_id = 700_000
 
     # --- lifecycle ---------------------------------------------------------
+    async def stop(self):
+        self.auto_save_secret_chats = None
+
     async def create(self, user):
         chat = FakeChat(910_000, peer=getattr(user, "id", user), state="requested")
         self._chats[chat.id] = chat

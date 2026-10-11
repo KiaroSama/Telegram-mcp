@@ -164,6 +164,33 @@ stderr. Logs are not automatically pruned. HTTP/SSE and raw stdin frames are cap
 32 MiB; the pipe adapter keeps cancellation independent of blocking I/O. Share reviewed,
 sanitized diagnostics. Unknown readiness/ownership errors leave the running service alone.
 
+### Secret-chat saving and optional bounded mode
+
+Secret saving defaults **ON** once for existing and new accounts, activated after account
+startup/admission. A safe chosen destination is retained; otherwise each account saves in
+`files/downloads/secret-chats/<account>`. Directories must be verified owner-only before
+saving. This retains plaintext, including disappearing content. `stop_secret_auto_save`
+keeps later explicit OFF across restarts and does not remove saved copies.
+
+Normal backend remains default. For an account with no stored secret conversations,
+`configure_secret_backend` can select bounded mode with explicit `records`, `bytes` and
+`age_seconds` budgets after owner approval. Existing chats/keys/history are never migrated.
+Occupied, unreadable or incompatible custody refuses selection. Do not run a second manager
+or Telegram client for the same account.
+
+Use `get_secret_backend_status`, `get_secret_pause_status`, `check_secret_custody`,
+`pause_secret_chat` and `resume_secret_chat` for preserving controls. `list_secret_deliveries`
+polls stable wire sequence IDs without settling them. `acknowledge_secret_delivery` first
+commits a private consumer copy/media reference, then settles that one local obligation;
+no read receipt or exactly-once promise. `receive_secret_media` returns capped decoded bytes
+in RAM without creating a content file itself, but independently enabled archive can save.
+
+Bounded close is local/nonresumable and preserves custody; chat deletion/forget refuse.
+Custody can hold plaintext/file keys and is not encrypted at rest. Limits do not cap total
+RAM, client queues or archive disk; missed required ingress can prevent continuation.
+See [the package integration guide](updating-the-secret-chat-package.md#optional-bounded-integration)
+for exact defaults, ceilings and verification limits.
+
 ### Gemini CLI
 
 The repository includes a native Gemini CLI extension. Attach it to the **existing**
