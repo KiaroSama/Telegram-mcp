@@ -73,6 +73,18 @@ chat deletion/forget refuse. Protocol custody may contain plaintext and file key
 Telethon transport acknowledgment can precede consumer custody: lossless replay is not
 promised. Actual-package synthetic fixtures are not live cipher interoperability proof.
 
+Committed consumer copies remain accessible to existing history/search/media tools even
+when notification callbacks were dropped. Callback-missed copies use explicitly labeled
+consumer-commit time for ordering, not an invented wire-arrival date; an ordered read
+receipt is refused when arrival dates are unavailable. Consumer copies are independent
+retained plaintext and are not evicted by upstream custody quotas.
+
+Directory/privacy checks reject existing links before activation and harden inherited
+archive subdirectories on restart. Windows retains the archive root handle while saving.
+The library writes descendants by pathname: concurrent modification by another process
+running as the same owner is outside this protection; this is not a sandbox against that
+identity. Keep archive directories under the owner's exclusive control.
+
 ## Why API adaptation stays localized
 
 Two properties, both enforced by tests rather than by convention:
