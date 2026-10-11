@@ -254,6 +254,12 @@ async def test_invalid_session_does_not_stop_healthy_accounts(monkeypatch):
 
     monkeypatch.setattr(retirement, "retire", lambda client: close())
     monkeypatch.setattr(admission, "forget", lambda label, closing, client: cleanup.append(label))
+    from telegram_mcp import secret_activation
+
+    async def archive_start(active):
+        assert list(active) == ["healthy"]
+
+    monkeypatch.setattr(secret_activation, "start", archive_start)
     await account_startup.start_accounts(accounts, connect, lambda text: None)
     assert list(accounts) == ["healthy"]
     assert failed is not accounts["healthy"]

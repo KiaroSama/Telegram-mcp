@@ -11,7 +11,6 @@ Every tool here waits for the owner's approval in the safeguard (owner, 2026-09-
 from typing import Optional
 
 from telegram_mcp import export_dialog, export_jobs, file_roots
-from telegram_mcp.owner_only import restrict_to_owner_strict
 from telegram_mcp.secret_backend import erase_local, secret_manager
 from telegram_mcp.secret_common import account_label, describe_refusal, to_secret_id
 from telegram_mcp.tdexport.secret_saved import export_saved_chat
@@ -67,13 +66,9 @@ async def start_secret_auto_save(folder: str, account: str = None, ctx: Context 
         )
         if error:
             return error
-        path.mkdir(parents=True, exist_ok=True)
-        owner_only = restrict_to_owner_strict(path)
-        manager = await secret_manager(_account_label(account))
-        await manager.start_auto_save_secret_chats(path)
-        return format_tool_result(
-            {"auto_save": True, "folder": str(path), "owner_only": owner_only}
-        )
+        from telegram_mcp.secret_control import start_archive
+
+        return format_tool_result(await start_archive(_account_label(account), str(path), ctx))
     except Exception as e:
         return _refused("start_secret_auto_save", e, folder=folder)
 
@@ -94,8 +89,9 @@ async def stop_secret_auto_save(account: str = None) -> str:
     `delete_saved_secret_messages` removes one chat's copy.
     """
     try:
-        manager = await secret_manager(_account_label(account))
-        await manager.stop_auto_save_secret_chats()
+        from telegram_mcp.secret_control import stop_archive
+
+        await stop_archive(_account_label(account))
         return format_tool_result(
             {
                 "auto_save": False,
@@ -281,7 +277,8 @@ async def export_secret_chat(
         if not records:
             return (
                 f"Nothing was auto-saved for secret chat {secret_chat_id}. Only what "
-                "`start_secret_auto_save` kept can be exported."
+                "the independent plaintext archive kept can be exported; bounded consumer "
+                "receipts are available through read_secret_messages, not this archive exporter."
             )
         try:
             peer_id: Union[int, str] = manager.status(secret_id).peer_user_id
