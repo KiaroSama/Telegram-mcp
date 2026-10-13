@@ -152,7 +152,8 @@ startup races with a supervisor. All approval, named-account and file-root rules
 apply; the bridge forwards client capabilities and approval callbacks without granting
 anything itself. Redirects and unknown mutation outcomes are not retried.
 
-Windows requires PowerShell for listener verification and the existing launcher. Linux
+Windows verifies the exact launcher and environment anywhere in the ancestry chain;
+a keepalive supervisor does not replace that proof. PowerShell is required. Linux
 requires `/proc` and `ss`; unsupported ownership verification fails closed. This mode
 requires the source checkout and its installed environment, not the unrelated PyPI
 package. After saving the JSON, fully quit and reopen Claude Desktop.
