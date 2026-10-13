@@ -265,3 +265,62 @@ def test_the_packages_public_surface_still_carries_what_the_seam_imports():
         "SendPending",
     ):
         assert name in package.__all__, f"{name} left the package's public surface"
+
+
+def test_new_strong_surface_is_available_but_requires_explicit_preparation():
+    from telethon_secret_chat import (
+        BoundedSecretChatManager,
+        DurableIngress,
+        EncryptedIngressStorage,
+        IngressLimits,
+        StrongSecretChatManager,
+    )
+
+    assert issubclass(StrongSecretChatManager, BoundedSecretChatManager)
+    assert list(inspect.signature(EncryptedIngressStorage).parameters) == [
+        "path",
+        "key",
+        "binding",
+        "max_bytes",
+    ]
+    manager = inspect.signature(StrongSecretChatManager).parameters
+    assert list(manager) == ["client", "ingress", "limits", "admission"]
+    assert manager["limits"].default is inspect.Parameter.empty
+    assert inspect.signature(DurableIngress.prepare).parameters["baseline"].default is None
+    for operation in ("prepare", "checkpoint", "pending_batches", "stop"):
+        assert callable(getattr(DurableIngress, operation))
+    assert callable(StrongSecretChatManager.drain_ingress)
+    limits = IngressLimits(records=8, bytes=8388608, age_seconds=3600)
+    assert (limits.batch_bytes, limits.operation_seconds) == (1048576, 15)
+    with pytest.raises(ValueError):
+        IngressLimits(records=True, bytes=8388608, age_seconds=3600)
+
+
+@pytest.mark.parametrize("forgery", ["version", "receipt"])
+def test_seam_uses_real_source_provenance_verifier(monkeypatch, forgery):
+    from telethon_secret_chat import ingress_provenance, IngressRefused
+    from telegram_mcp import secret_backend, secret_ingress_status
+
+    class Forged:
+        version = "1.45.0" if forgery == "version" else ingress_provenance.VERSION
+
+        def read_text(self, name):
+            assert name == "kiaro-provenance.json"
+            return json.dumps(
+                {
+                    "sha256": ingress_provenance.UPSTREAM,
+                    "extension_api": 1,
+                    "module_hashes": {},
+                }
+            )
+
+    monkeypatch.setattr(
+        ingress_provenance.importlib.metadata, "distribution", lambda name: Forged()
+    )
+    assert secret_backend.verify_ingress_prerequisite is ingress_provenance.verify_prerequisite
+    with pytest.raises(IngressRefused):
+        secret_backend.verify_ingress_prerequisite()
+    status = secret_ingress_status.readiness()
+    assert status["library_available"] is True
+    assert status["prerequisite_verified"] is False
+    assert status["activation_ready"] is False

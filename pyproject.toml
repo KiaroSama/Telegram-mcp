@@ -54,7 +54,7 @@ dependencies = [
     # then `uv lock --upgrade-package kiaro-telethon-secret-chat`.
     # `telegram_mcp/secret_backend.py` is the only module that imports it and a
     # contract test pins what it relies on.
-    "kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@735e8523047c2ddb6610e904a579c096292dc69a",
+    "kiaro-telethon-secret-chat @ git+https://github.com/KiaroSama/Telethon-Secret-Chat.git@d87bf037b90060383c7b704d8a06ebb98c621c6f",
 ]
 
 [project.optional-dependencies]
@@ -226,6 +226,7 @@ source = [
     "telegram_mcp.secret_backend",
     "telegram_mcp.secret_backend_config",
     "telegram_mcp.secret_control",
+    "telegram_mcp.secret_ingress_status",
     "telegram_mcp.secret_custody",
     "telegram_mcp.secret_common",
     "telegram_mcp.secret_compose",
