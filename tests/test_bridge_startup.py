@@ -233,3 +233,35 @@ def test_launch_uses_hidden_existing_launcher_without_sync(tmp_path, monkeypatch
     assert options["stdin"] == mod.subprocess.DEVNULL
     assert options["stdout"] == mod.subprocess.DEVNULL
     assert options["cwd"] == tmp_path
+
+
+@pytest.mark.skipif(mod.os.name != "nt", reason="Windows command-line ownership contract")
+@pytest.mark.parametrize("proof", ["both", "environment_only", "launcher_only", "neither"])
+def test_supervisor_ancestors_preserve_only_proven_checkout_ownership(
+    tmp_path, monkeypatch, proof
+):
+    root = tmp_path / "checkout with spaces"
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    tee = state / "telegram-mcp/run/tee-123.py"
+    target = root / "main.py"
+    environment = root / ".venv/Scripts/python.exe"
+
+    def process(executable, *arguments):
+        return {
+            "path": str(executable),
+            "command": mod.subprocess.list2cmdline([str(executable), *map(str, arguments)]),
+        }
+
+    chain = [process(mod.sys.executable, tee, "synthetic.log", "1024", target)]
+    if proof in ("both", "environment_only"):
+        chain.append(process(environment, tee, "synthetic.log", "1024", target))
+    if proof in ("both", "launcher_only"):
+        chain.append(process("pwsh.exe", "-File", root / "start-mcp.ps1"))
+    chain.extend(
+        [
+            process("pwsh.exe", "-File", state / "telegram-mcp/run/keepalive.ps1"),
+            process(environment, root / "unrelated.py", "x", "y", target),
+        ]
+    )
+    assert mod._verified_windows_chain(root, chain) is (proof == "both")
