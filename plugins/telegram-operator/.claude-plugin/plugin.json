@@ -1,0 +1,10 @@
+{
+  "name": "telegram-operator",
+  "version": "1.0.0",
+  "description": "Authorized Telegram reconstruction, migration, backup, access review and formatting workflows.",
+  "author": {"name": "KiaroSama"},
+  "homepage": "https://github.com/KiaroSama/Telegram-mcp",
+  "repository": "https://github.com/KiaroSama/Telegram-mcp",
+  "license": "GPL-3.0-or-later",
+  "skills": "./skills/"
+}
