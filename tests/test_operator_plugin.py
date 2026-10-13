@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = ROOT / "plugins" / "telegram-operator"
+PLUGIN = ROOT
 NAMES = {
     "telegram-bot-reconstruction",
     "telegram-chat-migration",
@@ -47,7 +47,11 @@ def test_package_flavors_preserve_skills_and_refuse_extra_files(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     source = tmp_path / "source with spaces"
-    shutil.copytree(PLUGIN, source)
+    source.mkdir()
+    for name in module.FILES:
+        target = source / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(PLUGIN / name, target)
     archives = {}
     for client in ("portable", "antigravity"):
         output = tmp_path / f"{client}.zip"
@@ -64,7 +68,13 @@ def test_package_flavors_preserve_skills_and_refuse_extra_files(tmp_path):
     assert len(skill_paths) == 10
     assert all(archives["portable"][n] == archives["antigravity"][n] for n in skill_paths)
     assert "telegram-operator/LICENSE" in archives["portable"]
-    (source / ".env").write_text("SYNTHETIC=not-a-secret\n", encoding="utf-8")
+    assert "telegram-operator/.codex-plugin/plugin.json" in archives["portable"]
+    assert "telegram-operator/.cursor-plugin/plugin.json" in archives["portable"]
+    assert not any("-plugin/" in name for name in archives["antigravity"])
+    assert not any(
+        "telegram_mcp/" in name or name.endswith(".env") for name in archives["portable"]
+    )
+    (source / "skills" / ".env").write_text("SYNTHETIC=not-a-secret\n", encoding="utf-8")
     refused = tmp_path / "refused.zip"
     with pytest.raises(ValueError, match="Unexpected"):
         module.build(source, refused, "portable", ROOT)
@@ -93,7 +103,7 @@ def test_official_descriptor_shapes_and_synthetic_eval_coverage():
     marketplace = json.loads(
         (PLUGIN / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
     )
-    assert claude["version"] == portable["version"] == "1.1.0"
+    assert claude["version"] == portable["version"] == "1.2.0"
     assert marketplace["metadata"]["version"] == portable["version"]
     assert len(marketplace["plugins"]) == 1
     assert marketplace["plugins"][0]["name"] == portable["name"]
@@ -128,3 +138,188 @@ def test_reconstruction_routes_existing_companions():
         for name in NAMES - {"telegram-bot-reconstruction"}
     }
     assert all(target.is_file() and target.is_relative_to(PLUGIN.resolve()) for target in targets)
+
+
+def test_repository_root_descriptors_resolve_single_canonical_payload():
+    assert not (ROOT / "plugins/telegram-operator/skills").exists()
+    for folder in (".claude-plugin", ".codex-plugin", ".cursor-plugin"):
+        value = json.loads((ROOT / folder / "plugin.json").read_text(encoding="utf-8"))
+        assert value["name"] == "telegram-operator"
+        assert value["version"] == "1.2.0"
+        assert value["skills"] == "./skills/"
+        assert {p.name for p in (ROOT / value["skills"]).iterdir()} == NAMES
+        assert not {"mcpServers", "hooks"} & value.keys()
+    market = json.loads((ROOT / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
+    assert market["plugins"][0]["source"] == "./"
+
+
+def test_explicit_installer_copies_complete_skills_and_refuses_collision(tmp_path):
+    import importlib.util
+    import pytest
+
+    spec = importlib.util.spec_from_file_location(
+        "install_operator", ROOT / "scripts/install_operator_skills.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    destination = tmp_path / "project with spaces" / ".hermes/skills"
+    module.install(ROOT, destination)
+    assert {p.name for p in destination.iterdir()} == NAMES
+    for name in NAMES:
+        assert (destination / name / "SKILL.md").read_bytes() == (
+            ROOT / "skills" / name / "SKILL.md"
+        ).read_bytes()
+    with pytest.raises(FileExistsError):
+        module.install(ROOT, destination)
+    assert {p.name for p in destination.iterdir()} == NAMES
+
+
+def test_installer_failure_rolls_back_only_owned_content(tmp_path, monkeypatch):
+    import importlib.util
+    import pytest
+
+    spec = importlib.util.spec_from_file_location(
+        "install_operator", ROOT / "scripts/install_operator_skills.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    destination = tmp_path / "skills"
+    destination.mkdir()
+    keep = destination / "owner.txt"
+    keep.write_text("preserve", encoding="utf-8")
+    original = Path.open
+    calls = 0
+
+    def failing(path, mode="r", *args, **kwargs):
+        nonlocal calls
+        if mode == "xb" and path.is_relative_to(destination):
+            calls += 1
+            if calls == 2:
+                raise OSError("synthetic copy failure")
+        return original(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing)
+    with pytest.raises(OSError, match="synthetic"):
+        module.install(ROOT, destination)
+    assert list(destination.iterdir()) == [keep]
+    assert keep.read_text(encoding="utf-8") == "preserve"
+
+
+def test_eight_installer_routes_and_link_refusal(tmp_path):
+    import importlib.util
+    import pytest
+
+    spec = importlib.util.spec_from_file_location(
+        "install_operator", ROOT / "scripts/install_operator_skills.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.CLIENT_DIRS == {
+        "claude": ".claude/skills",
+        "codex": ".agents/skills",
+        "cursor": ".cursor/skills",
+        "kiro": ".kiro/skills",
+        "cline": ".cline/skills",
+        "hermes": ".hermes/skills",
+        "opencode": ".opencode/skills",
+        "antigravity": ".agents/skills",
+    }
+    linked = tmp_path / "link"
+    target = tmp_path / "target"
+    target.mkdir()
+    try:
+        linked.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("OS does not permit creating symlink fixture")
+    with pytest.raises(ValueError, match="Linked"):
+        module.install(ROOT, linked / "skills")
+    assert not list(target.iterdir())
+
+
+def test_installer_dot_segments_cannot_write_inside_canonical_source(tmp_path):
+    import importlib.util
+    import pytest
+    import shutil
+
+    spec = importlib.util.spec_from_file_location(
+        "install_operator", ROOT / "scripts/install_operator_skills.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    repository = tmp_path / "repository"
+    from scripts.package_operator_plugin import FILES
+
+    for name in FILES:
+        target = repository / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
+    with pytest.raises(ValueError, match="canonical"):
+        module.install(repository, repository / "docs/../skills/extra")
+    assert not (repository / "skills/extra").exists()
+
+
+def test_installer_cli_uses_own_packager_and_explicit_project(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    env = dict(os.environ, XDG_STATE_HOME=str(tmp_path / "private-state"))
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/install_operator_skills.py"),
+        "--client",
+        "opencode",
+        "--project",
+        str(tmp_path / "workspace"),
+    ]
+    result = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Installed five skills" in result.stdout
+    assert {p.name for p in (tmp_path / "workspace/.opencode/skills").iterdir()} == NAMES
+    refused = subprocess.run(
+        command,
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=15,
+    )
+    assert refused.returncode == 1
+    assert "not overwritten" in refused.stderr
+    logs = list(
+        (tmp_path / "private-state/telegram-mcp/logs").glob("install-operator-skills_*.log")
+    )
+    assert len(logs) == 2
+    assert any("[ERROR]" in p.read_text(encoding="utf-8") for p in logs)
+
+
+def test_outputs_cannot_poison_canonical_payload(tmp_path):
+    import importlib.util
+    import pytest
+    from scripts.package_operator_plugin import build
+
+    spec = importlib.util.spec_from_file_location(
+        "install_operator", ROOT / "scripts/install_operator_skills.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    with pytest.raises(ValueError, match="canonical"):
+        module.install(ROOT, ROOT / ".codex-plugin/copied-skills")
+    with pytest.raises(ValueError, match="canonical"):
+        build(
+            ROOT,
+            ROOT / "skills/telegram-bot-reconstruction/references/operator.zip",
+            "portable",
+            ROOT,
+        )
+    assert not (ROOT / ".codex-plugin/copied-skills").exists()
+    assert not (ROOT / "skills/telegram-bot-reconstruction/references/operator.zip").exists()
