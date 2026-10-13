@@ -121,14 +121,14 @@ def _verified_windows_chain(root: Path, chain: list[dict]) -> bool:
         words = _windows_argv(parent.get("command") or "")
         executable = Path(parent.get("path") or "")
         if executable == environment and len(words) >= 5:
-            has_environment = (
+            has_environment = has_environment or (
                 Path(words[1]).resolve() == script and Path(words[4]).resolve() == root / "main.py"
             )
         if executable.name.lower() in ("pwsh.exe", "powershell.exe"):
             lowered = [word.lower() for word in words]
             if "-file" in lowered:
                 index = lowered.index("-file") + 1
-                has_launcher = (
+                has_launcher = has_launcher or (
                     index < len(words) and Path(words[index]).resolve() == root / "start-mcp.ps1"
                 )
     return has_environment and has_launcher
