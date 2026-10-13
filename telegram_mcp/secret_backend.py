@@ -50,11 +50,20 @@ from telethon_secret_chat.errors import (
 )
 from telethon_secret_chat.schema import secret_tl
 
+import telethon_secret_chat as _secret_package
+
 from telegram_mcp import secret_history, secret_media_refs
 from telegram_mcp.owner_only import restrict_to_owner_strict
 from telegram_mcp.safe_log import log_event
 from telegram_mcp.secret_updates import SecretUpdateRecovery
 from telegram_mcp.settings import state_dir
+
+StrongSecretChatManager = getattr(_secret_package, "StrongSecretChatManager", None)
+try:
+    from telethon_secret_chat import ingress_provenance as _ingress_provenance
+except ImportError:
+    _ingress_provenance = None
+verify_ingress_prerequisite = getattr(_ingress_provenance, "verify_prerequisite", None)
 
 # Re-exported, because this module is the ONLY one allowed to import the package
 # and a test enforces that. Two callers need pieces of it - `secret_common` to tell
@@ -63,6 +72,8 @@ from telegram_mcp.settings import state_dir
 # edit" into "grep and hope".
 __all__ = [
     "BoundedSecretChatManager",
+    "StrongSecretChatManager",
+    "verify_ingress_prerequisite",
     "ChatPaused",
     "CustodyLimits",
     "ChatClosed",

@@ -154,7 +154,10 @@ async def backend_status(account):
     live = await manager(account)
     policy = secret_backend_config.load(backend._storages[id(live)])
     bounded = isinstance(live, backend.BoundedSecretChatManager)
+    from telegram_mcp.secret_ingress_status import readiness
+
     return {
+        "strong_ingress": await asyncio.to_thread(readiness),
         "mode": policy["mode"],
         "limits": policy["limits"],
         "archive": {

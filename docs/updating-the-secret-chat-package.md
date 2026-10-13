@@ -53,7 +53,7 @@ Saving can retain self-destructing content and is not encrypted at rest.
 
 ## Optional bounded integration
 
-The pinned `735e8523047c2ddb6610e904a579c096292dc69a` adds `BoundedSecretChatManager`.
+The earlier `735e8523047c2ddb6610e904a579c096292dc69a` introduced `BoundedSecretChatManager`.
 Normal mode remains default. `configure_secret_backend` permits approved selection only
 for an actually empty account store; occupied/corrupt state refuses without migration.
 One manager rides the existing client: parallel normal/bounded subscriptions are unsafe.
@@ -84,6 +84,48 @@ archive subdirectories on restart. Windows retains the archive root handle while
 The library writes descendants by pathname: concurrent modification by another process
 running as the same owner is outside this protection; this is not a sandbox against that
 identity. Keep archive directories under the owner's exclusive control.
+
+## Strong ingress: available upstream, not activated here
+
+The current pin `d87bf037b90060383c7b704d8a06ebb98c621c6f` adds opt-in
+`StrongSecretChatManager`, `DurableIngress`, `EncryptedIngressStorage` and
+`IngressLimits`. Existing normal/bounded selection and archive preferences do not change.
+`get_secret_backend_status` adds `strong_ingress` diagnostics: library availability,
+verified transport prerequisite, integration/activation state and fixed blockers. Availability
+or a verified prerequisite does **not** mean an integrated or active mode. This server still
+accepts only `normal` and `bounded`; strong configuration is refused before account mutation.
+
+Actual activation remains blocked, not implemented by the diagnostic:
+
+- Exact normally installed `telethon==1.45.0+kiaro.ingress1` is required. Upstream verifies
+  its provenance receipt, imported paths and five source hashes, not just a version label.
+  Official Telethon remains selected here. The upstream `[strong]` extra supplies
+  `cryptography==50.0.2`, **not** the patched transport; ordinary syncing can replace a
+  manually installed patched wheel. Never edit installed files or monkeypatch the transport.
+- `ingress.prepare` must precede connection on the already owned authorization. Fresh
+  storage needs a verified continuity baseline; a new StringSession's empty counters are
+  not that proof. Reopening instead retains the same caller-owned 32-byte key, account/auth/DC
+  binding and stable store generation. Do not put these values into MCP arguments or output.
+- Strong forces package plaintext auto-save **OFF** and refuses starting it. Selecting it
+  therefore cannot preserve the owner's current ON default; existing archives stay untouched.
+  Independent application history/consumer copies would still be plaintext, not encrypted
+  merely because upstream custody is encrypted.
+- Required aggregate ingress budgets are records/bytes/age, separate from per-chat custody.
+  Defaults are batch bytes 1048576 and operation seconds 15; ceilings are 4096 records,
+  64 MiB aggregate bytes, 4 MiB batch, 30 days and 60 seconds. Full/expired/failed ingress can
+  block **all same-account RPCs**, including ordinary cloud operations.
+- Existing GetState recovery cannot run with strong ingress. Stop permanently fences the
+  coordinator; safe recovery needs confirmed retirement/disconnection/store close and a
+  reconstructed generation, not clearing private stopped fields or retrying the same client.
+
+The added diagnostic constructs no encrypted store, fetches no baseline and generates no key.
+The existing backend-status call retains its prior lazy manager startup when needed. They never
+return raw exception text, bindings or retained envelopes. Neither this upgrade nor upstream
+synthetic tests prove live strong-mode interoperability, lossless historical recovery,
+anti-rollback, physical erasure, total-process RAM quotas or exactly-once external sends.
+
+Sources: [strong contract](https://github.com/KiaroSama/Telethon-Secret-Chat/blob/d87bf037b90060383c7b704d8a06ebb98c621c6f/docs/strong-ingress.md)
+and [transport prerequisite](https://github.com/KiaroSama/Telethon-Secret-Chat/blob/d87bf037b90060383c7b704d8a06ebb98c621c6f/prerequisites/telethon/README.md).
 
 ## Why API adaptation stays localized
 

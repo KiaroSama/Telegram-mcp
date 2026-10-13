@@ -615,7 +615,7 @@ Default archive is ON once for existing/new accounts, with later explicit OFF re
 Normal remains default; optional bounded mode is empty-account-only with no migration.
 Its additional configuration/status, pause/check/resume, pending-delivery, durable local
 acknowledgment and capped RAM receipt tools are documented in
-[the integration guide](updating-the-secret-chat-package.md#optional-bounded-integration).
+[the integration guide](updating-the-secret-chat-package.md#optional-bounded-integration); strong ingress is diagnostic-only, not activated.
 Bounded close preserves custody locally; deletion/forget refuse. Quotas do not bound the
 independent plaintext archive or total process RAM, and polling never sends a read receipt.
 
