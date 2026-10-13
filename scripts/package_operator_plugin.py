@@ -17,13 +17,16 @@ SKILLS = {
 }
 FILES = {
     "plugin.json",
-    "README.md",
+    "docs/operator-plugin.md",
+    ".codex-plugin/plugin.json",
+    ".cursor-plugin/plugin.json",
     ".claude-plugin/plugin.json",
     ".claude-plugin/marketplace.json",
 }
 for name, reference in SKILLS.items():
     FILES.update({f"skills/{name}/SKILL.md", f"skills/{name}/references/{reference}"})
 MAX_FILE_BYTES = 1_000_000
+PAYLOAD_TREES = {"skills", ".claude-plugin", ".codex-plugin", ".cursor-plugin"}
 
 
 def _plain(path):
@@ -34,6 +37,38 @@ def _plain(path):
         raise ValueError("Only regular package paths are allowed.")
 
 
+def read_payload(source):
+    """Read only declared guidance; inspect each owned payload tree completely."""
+    source = Path(source)
+    for path in (source, *source.parents):
+        _plain(path)
+    allowed_dirs = set()
+    for name in FILES:
+        allowed_dirs.update(p.as_posix() for p in Path(name).parents)
+    for folder in PAYLOAD_TREES:
+        base = source / folder
+        _plain(base)
+        for path in base.rglob("*"):
+            _plain(path)
+            name = path.relative_to(source).as_posix()
+            if path.is_dir() and name not in allowed_dirs:
+                raise ValueError("Unexpected package directory.")
+            if path.is_file() and name not in FILES:
+                raise ValueError("Unexpected package file.")
+    payload = {}
+    for name in sorted(FILES):
+        path = source / name
+        _plain(path.parent)
+        _plain(path)
+        if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
+            raise ValueError("Invalid package file.")
+        data = path.read_bytes()
+        data.decode("utf-8")
+        payload[name] = data
+    payload["README.md"] = payload.pop("docs/operator-plugin.md")
+    return payload
+
+
 def build(source, output, client, repository):
     """Create a new ZIP after inspecting the entire explicit payload."""
     if client not in {"portable", "antigravity"}:
@@ -41,30 +76,7 @@ def build(source, output, client, repository):
     source, output, repository = Path(source), Path(output), Path(repository)
     for path in (source, *source.parents):
         _plain(path)
-    dirs = {"."}
-    for name in FILES:
-        dirs.update(p.as_posix() for p in Path(name).parents)
-    found = set()
-    for path in source.rglob("*"):
-        _plain(path)
-        name = path.relative_to(source).as_posix()
-        if path.is_dir():
-            if name not in dirs:
-                raise ValueError("Unexpected package directory.")
-        elif name not in FILES:
-            raise ValueError("Unexpected package file.")
-        else:
-            found.add(name)
-    if found != FILES:
-        raise ValueError("Required package files are missing.")
-    payload = {}
-    for name in sorted(FILES):
-        path = source / name
-        if path.stat().st_size > MAX_FILE_BYTES:
-            raise ValueError("Package file exceeds byte limit.")
-        data = path.read_bytes()
-        data.decode("utf-8")
-        payload[name] = data
+    payload = read_payload(source)
     manifest = json.loads(payload["plugin.json"])
     if manifest.get("name") != "telegram-operator":
         raise ValueError("Unexpected plugin identity.")
@@ -75,7 +87,11 @@ def build(source, output, client, repository):
             )
             + "\n"
         ).encode("utf-8")
-        payload = {k: v for k, v in payload.items() if not k.startswith(".claude-plugin/")}
+        payload = {
+            k: v
+            for k, v in payload.items()
+            if not k.startswith((".claude-plugin/", ".codex-plugin/", ".cursor-plugin/"))
+        }
     for name in ("LICENSE", "NOTICE"):
         path = repository / name
         _plain(path)
@@ -88,6 +104,8 @@ def build(source, output, client, repository):
     for path in (output.parent, *output.parent.parents):
         if path.exists() or path.is_symlink():
             _plain(path)
+    if any(output.resolve().is_relative_to(source.resolve() / tree) for tree in PAYLOAD_TREES):
+        raise ValueError("Output cannot change the canonical payload source.")
     output.parent.mkdir(parents=True, exist_ok=True)
     created = False
     try:
@@ -117,7 +135,7 @@ def main():
 
     with run_log("package-operator-plugin") as event:
         try:
-            build(repository / "plugins/telegram-operator", args.output, args.client, repository)
+            build(repository, args.output, args.client, repository)
         except (OSError, ValueError, UnicodeError, KeyError):
             event("ERROR", "Package creation refused or failed")
             print(
