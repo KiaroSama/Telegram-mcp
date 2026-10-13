@@ -53,7 +53,7 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
 
 ## Contents
 
-- [Getting started](#getting-started)
+- [Getting started](#getting-started) · [Operator plugin](docs/operator-plugin.md)
   - [Requirements](#requirements)
   - [Quick Start](#quick-start)
   - [MCP Client Configuration](#mcp-client-configuration)
