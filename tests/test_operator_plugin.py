@@ -26,7 +26,7 @@ def test_five_portable_skills_and_local_resources():
         assert 1 <= len(description) <= 1024
         assert "allowed-tools" not in front
         assert len(text.splitlines()) < 500
-        links = re.findall(r"\]\((references/[^)]+)\)", text)
+        links = re.findall(r"\]\(((?:references/|\.\./)[^)]+)\)", text)
         assert links
         for link in links:
             target = path.parent / link
@@ -90,7 +90,14 @@ def test_official_descriptor_shapes_and_synthetic_eval_coverage():
     claude = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text(encoding="utf-8"))
     assert claude["skills"] == "./skills/"
     assert claude["name"] == portable["name"]
-    assert claude["version"] == portable["version"]
+    marketplace = json.loads(
+        (PLUGIN / ".claude-plugin/marketplace.json").read_text(encoding="utf-8")
+    )
+    assert claude["version"] == portable["version"] == "1.1.0"
+    assert marketplace["metadata"]["version"] == portable["version"]
+    assert len(marketplace["plugins"]) == 1
+    assert marketplace["plugins"][0]["name"] == portable["name"]
+    assert marketplace["plugins"][0]["version"] == portable["version"]
     for manifest in (portable, claude):
         assert "mcpServers" not in manifest
         assert "hooks" not in manifest
@@ -99,3 +106,25 @@ def test_official_descriptor_shapes_and_synthetic_eval_coverage():
     )["evals"]
     assert {case["skill"] for case in cases} == NAMES
     assert all(case["prompt"] and case["assertions"] for case in cases)
+    assert len({case["id"] for case in cases}) == len(cases)
+    delta = {case["scenario"]: case for case in cases if "scenario" in case}
+    assert set(delta) == {
+        "management-selfbot-authority",
+        "keyboard-kind-near-miss",
+        "downloader-ambiguous-backend",
+        "entity-visual-typography",
+    }
+    assert all(case["expected_output"] and len(case["assertions"]) >= 5 for case in delta.values())
+
+
+def test_reconstruction_routes_existing_companions():
+    """Resolve the instructions a reader reaches, not model effectiveness."""
+    path = PLUGIN / "skills/telegram-bot-reconstruction/SKILL.md"
+    text = path.read_text(encoding="utf-8")
+    links = re.findall(r"\]\((\.\./[^)]+/SKILL\.md)\)", text)
+    targets = {(path.parent / link).resolve() for link in links}
+    assert targets == {
+        (PLUGIN / "skills" / name / "SKILL.md").resolve()
+        for name in NAMES - {"telegram-bot-reconstruction"}
+    }
+    assert all(target.is_file() and target.is_relative_to(PLUGIN.resolve()) for target in targets)
