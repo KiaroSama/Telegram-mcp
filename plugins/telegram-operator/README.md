@@ -1,4 +1,5 @@
 # Telegram Operator
+Version1.1.0 expands reconstruction guidance; the five workflows and client formats remain unchanged.
 Five original workflows for the existing Telegram-mcp server:
 - telegram-bot-reconstruction: observable bot/Mini App -> independent build -> parity tests.
 - telegram-chat-migration: one-time migration or explicitly selected resumable sync.
@@ -10,6 +11,18 @@ Instructions are not a second server, bot framework or running sync daemon.
 Installation does not register MCP, authenticate, start services, change permissions
 or authorize target mutations. Executions establish account/target/action scope.
 No hidden-source recovery or literal historical/account clone is promised.
+
+## Reconstruction coverage
+The bot workflow captures exact text/entities/links, glass-button rows/kinds/styles/
+icons, commands and state/effect/error paths. Management and user-account automation
+(selfbot) cases use a role/action/readback matrix; destructive cases are fixture-only
+until explicitly approved on disposable owned targets. No session/device cloning.
+Downloader queue/download/transcode/auth/cache/rate-limit mechanisms are hypotheses
+with alternatives and counterevidence, not claimed recovered internals. Existing
+formatting, access-audit, migration and backup workflows supply the companion steps.
+Ordinary message fonts are supported entities, not arbitrary font/color/CSS; Mini App
+CSS is separate. Custom emoji require viewed renders, string IDs and contextual
+native checks. Declared primary/success/danger styles do not prove native glass pixels.
 
 ## Claude Code
 From the parent checkout, validate without installing:

@@ -19,14 +19,33 @@ For untouched authorized copies prefer copy_message, preserving entities/media
 server-side. Content-protection refusal stops copying; no retyping/download bypass.
 Confirm topic/schedule/attribution requirements; counts are not readback.
 
+## Preserve supported typography and links
+Ordinary messages use Telegram entities: bold, italic, underline, strikethrough,
+spoiler, quotes, code/pre and supported link/mention/date forms. Use only kinds the
+actual send route supports; inspect incoming additional fields rather than assuming
+Bot API and MTProto names match. A requested "font" may mean one of these styles;
+arbitrary font family/size/color and CSS are not ordinary-message entity controls.
+Do not substitute stylized Unicode letters: that changes exact text/search/RTL.
+Keep link label and actual URL separate; preserve mentions, pre language, spoiler/
+quote nesting, whitespace and joiners. Opening a URL is a separate action.
+Mini App typography is CSS in its own WebView, verified there, never evidence that
+an ordinary Telegram message can use the same font. Record native client/version,
+theme and text-size context before claiming visual equality.
+
 ## Choose custom emoji by looking
 64-bit document IDs cross JSON as strings, never numbers. Fallback glyphs are not
-pictures. Render get_custom_emoji candidates; compare shape/color/motion using
-multiple visible frames, not a transparent first frame. Ranking/shared glyph does
+pictures. Use get_custom_emoji with string IDs and count>1 for animated candidates; actually
+view the returned images and rendering metadata. inspect_custom_emoji identifies
+entities/documents, not their appearance. Compare shape/color/motion using multiple
+visible frames, not a transparent first frame. Record which frames were actually
+viewed; unavailable renderer/frames means visual equivalence remains untested. Ranking/shared glyph does
 not prove equivalence. Resolve pack membership live; missing local mapping means
-unknown, not not-owned. Use authorized assets and actual entitlements.
+unknown, not not-owned. Use authorized assets and actual entitlements. Keep the
+exact alt emoji span required by the document; fallback alone proves no appearance.
+For glass-button icons use the inspected style.icon_document_id (string), not a glyph in the label.
 Text-color emoji inherit surrounding color: context-neutral render proves shape,
-not on-screen color. Screen capture counts only with verified chat/message
+not on-screen color; get_telegram_frames is the contextual native view where
+available and authorized. Screen capture counts only with verified chat/message
 correlation, never an arbitrary open Telegram window.
 
 ## Compose without damaging other entities

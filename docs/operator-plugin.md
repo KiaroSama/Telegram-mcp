@@ -16,6 +16,21 @@ are execution guidance, not a prebuilt clone of an unspecified bot. Hidden logic
 original IDs/dates/authorship, private APIs and unobserved paths are not recoverable
 merely by browsing. Content-protection and authorization boundaries remain intact.
 
+## Exactness and safe execution
+Reconstruction distinguishes stored text/entities/button declarations, actual viewed
+native appearance and behavior/effects. Command cases preserve the chat's exact
+ready-to-send form, actor/role and side-effect readback. Menu discovery is not command
+execution approval; write/destructive management or selfbot cases need explicitly
+approved disposable targets. User-account automation is distinct from a Bot API bot,
+not permission to export sessions, clone devices, pay or bypass safeguards.
+Glass-button color uses supported primary/success/danger or app default; native glass
+render depends on client/theme. Ordinary text typography is supported entities, not
+arbitrary font family/color or CSS; Mini App CSS is separate. Premiumemoji selection
+requires viewed visible frames and contextual native render, not inspected metadata.
+Downloader queues, extraction/download, transcoding, authentication, caching and
+rate limits have evidence/alternative/counterevidence ledgers; unavailable mechanisms
+remain UNKNOWN. The existing four companion workflows are linked, not duplicated.
+
 ## Formats and evidence
 | Surface | Package | Evidence |
 |---|---|---|
@@ -36,6 +51,11 @@ Offline tests in tests/test_operator_plugin.py cover discoverability/resources,
 identical payload across flavors, explicit package inventory and overwrite refusal.
 Workflow evaluation fixtures in tests/fixtures/operator-plugin/evals.json are
 synthetic and non-sensitive; they do not assert live target parity or native loading.
+R004 cases6-9 cover management/selfbot authority, equal-label/stale styled buttons,
+ambiguous downloader internals and exact RTL/non-BMP entities/links/visual typography.
+Expected artifacts and action-safety assertions support later agent evaluation;
+structural fixture/resource checks are not a behavioral benchmark. These new cases
+have not completed authenticated native-model evaluation or a with/without baseline.
 Native eval fixtures are under tests/fixtures/operator-plugin/native-evals. The
 actual guarded eval was partial/auth_failed before completing its first case; no
 behavioral pass or baseline delta is claimed. No credentials were copied to repair
