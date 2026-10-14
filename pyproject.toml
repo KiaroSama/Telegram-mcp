@@ -173,6 +173,7 @@ source = [
     "telegram_mcp.bridge",
     "telegram_mcp.bridge_process",
     "telegram_mcp.bridge_startup",
+    "telegram_mcp.service_supervisor",
     "telegram_mcp.bridge_stdio",
     "telegram_mcp.cli",
     "telegram_mcp.approval_details",

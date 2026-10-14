@@ -11,6 +11,18 @@ def main() -> None:
     except UnsafeInstallationError as error:
         raise SystemExit(str(error)) from None
 
+    if len(sys.argv) > 1 and sys.argv[1] == "supervise":
+        if len(sys.argv) != 2:
+            raise SystemExit("Usage: telegram-mcp supervise")
+        try:
+            from telegram_mcp.service_supervisor import run
+
+            raise SystemExit(run())
+        except KeyboardInterrupt:
+            return
+        except Exception:
+            raise SystemExit("Service supervision failed; inspect its private log.") from None
+
     if len(sys.argv) > 1 and sys.argv[1] == "bridge":
         if len(sys.argv) != 2:
             raise SystemExit("Usage: telegram-mcp bridge")
@@ -32,3 +44,7 @@ def main() -> None:
     from main import main as server_main
 
     server_main()
+
+
+if __name__ == "__main__":
+    main()
