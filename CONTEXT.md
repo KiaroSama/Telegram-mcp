@@ -45,6 +45,20 @@ A lease whose client's connection never confirmed it closed. Kept for the life o
 the process and reported by name, because the socket may still be open.
 _Avoid_: stale lease, orphaned lock, leaked lease
 
+**Supervisor owner**:
+The exclusive recovery authority for one shared service. It may retire only the
+service generation it owns, never a separately launched service.
+_Avoid_: keepalive, process-name killer
+
+**Service generation**:
+One shared server launch and all of its owned descendants. Distinct from the
+individual account's client generation; launcher exit does not prove its end.
+_Avoid_: listener, root process
+
+**Confirmed retirement**:
+Positive observation that the complete owned service generation has exited.
+_Avoid_: kill requested, restart attempted
+
 ### What a tool may touch
 
 **Allowed root**:
