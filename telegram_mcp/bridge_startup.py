@@ -23,6 +23,7 @@ from telegram_mcp.singleton import SessionLock, SessionLockError
 START_SECONDS = 210.0
 POLL_SECONDS = 0.25
 _verified_services: dict[str, tuple[Path, int, tuple]] = {}
+_unconfirmed_starts: list[tuple] = []
 
 
 def verify_service(url: str) -> None:
@@ -139,18 +140,25 @@ def _windows_identity(root: Path, port: int):
     if shell is None:
         raise BridgeStartupError("PowerShell is required to verify listener ownership.")
     # EncodedCommand requires UTF-16LE; no text file uses this encoding.
-    script = """
+    script = r"""
 $ErrorActionPreference="Stop"
 $root=$env:TELEGRAM_BRIDGE_CHECK_ROOT
-$rows=@(Get-NetTCPConnection -State Listen -LocalPort PORT -ErrorAction SilentlyContinue)
-$ids=@($rows | Select-Object -ExpandProperty OwningProcess -Unique)
+$ids=@(netstat.exe -ano -p TCP | ForEach-Object {
+    $words=$_.Trim() -split '\s+'
+    if($words.Count -eq 5 -and $words[0] -eq 'TCP' -and
+        $words[1] -match ':PORT$' -and $words[3] -eq 'LISTENING'){
+        [int]$words[4]
+    }
+} | Select-Object -Unique)
 if($ids.Count -ne 1){ throw "Listener identity ambiguous" }
-$p=Get-CimInstance Win32_Process -Filter ("ProcessId="+$ids[0])
+$processes=@(Get-CimInstance Win32_Process)
+$byId=@{}; foreach($process in $processes){$byId[[int]$process.ProcessId]=$process}
+$p=$byId[[int]$ids[0]]
 $chain=@(); $count=0
 while($p -and $count -lt 8){
     $chain+=@{pid=$p.ProcessId; parent=$p.ParentProcessId; path=$p.ExecutablePath;
         created=$p.CreationDate.ToUniversalTime().ToString("o"); command=$p.CommandLine}
-    $parent=Get-CimInstance Win32_Process -Filter ("ProcessId="+$p.ParentProcessId) -ErrorAction SilentlyContinue
+    $parent=$byId[[int]$p.ParentProcessId]
     if($parent -and $parent.CreationDate -gt $p.CreationDate){break}
     $p=$parent; $count++
 }
@@ -271,14 +279,35 @@ def launch(root: Path, port: int):
         options["start_new_session"] = True
     try:
         return launch_owned(args, **options)
-    except (OSError, ProcessOwnershipError):
+    except ProcessOwnershipError as error:
+        if error.owned is not None:
+            raise
         raise BridgeStartupError("The shared service could not be started.") from None
+    except OSError:
+        raise BridgeStartupError("The shared service could not be started.") from None
+
+
+def launch_supervisor(root: Path, port: int):
+    python = root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not python.is_file():
+        raise BridgeStartupError("Install the locked environment before starting supervision.")
+    env = dict(os.environ, MCP_HOST="127.0.0.1", MCP_PORT=str(port), PYTHONUTF8="1")
+    try:
+        return launch_owned(
+            [str(python), "-m", "telegram_mcp.cli", "supervise"], cwd=root, env=env
+        )
+    except ProcessOwnershipError as error:
+        if error.owned is not None:
+            raise
+        raise BridgeStartupError("The shared service supervisor could not be started.") from None
+    except OSError:
+        raise BridgeStartupError("The shared service supervisor could not be started.") from None
 
 
 def _settle_failed_start(child) -> None:
     """Reap only this connector's owned tree, even after its launcher exited."""
     try:
-        child.cleanup(timeout=5)
+        child.cleanup_supervisor(timeout=30)
     except (OSError, ProcessOwnershipError, subprocess.SubprocessError):
         raise BridgeStartupError(
             "Failed startup cleanup is unconfirmed; inspect the private service log."
@@ -316,13 +345,13 @@ def ensure_service(*, root: Path | None = None, url: str | None = None) -> str:
     try:
         lease.acquire(grace_seconds=START_SECONDS, poll_interval=POLL_SECONDS)
         identity = listener_identity(root, port)
-        child = None if identity else launch(root, port)
+        child = None if identity else launch_supervisor(root, port)
         deadline = time.monotonic() + START_SECONDS
         while time.monotonic() < deadline:
             identity = listener_identity(root, port)
             if identity is not None and ready(url) and listener_identity(root, port) == identity:
                 if child is not None:
-                    if child.owns(identity[0]):
+                    if child.owns_descendant(identity[0]):
                         child.detach()
                     else:
                         _settle_failed_start(child)
@@ -334,7 +363,9 @@ def ensure_service(*, root: Path | None = None, url: str | None = None) -> str:
         raise BridgeStartupError(
             "Shared service readiness timed out; no replacement was attempted."
         )
-    except ProcessOwnershipError:
+    except ProcessOwnershipError as error:
+        if error.owned is not None:
+            child = error.owned
         raise BridgeStartupError(
             "Shared service process ownership could not be released safely."
         ) from None
@@ -346,5 +377,8 @@ def ensure_service(*, root: Path | None = None, url: str | None = None) -> str:
         try:
             if child is not None and not published:
                 _settle_failed_start(child)
-        finally:
+        except BaseException:
+            _unconfirmed_starts.append((lease, child))
+            raise
+        else:
             lease.release()

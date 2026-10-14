@@ -141,8 +141,9 @@ keeping other connectors. No Telegram credential belongs in the client configura
 
 Install the locked environment once before using the bridge, while no server uses that
 virtual environment. Desktop starts the connector itself; **do not open the launcher**.
-The bridge verifies and reuses the shared loopback server, or starts the existing
-launcher hidden and noninteractive. It never installs or synchronizes packages at
+The bridge verifies and reuses the shared loopback server, or starts an elected
+supervisor that owns the existing hidden, noninteractive launcher. See
+[automatic service recovery](service-supervision.md). It never synchronizes packages at
 startup and never takes over an existing server. `.env` supplies `MCP_HOST`/`MCP_PORT`
 (default `127.0.0.1:8765`); remote hosts and unknown listeners are refused.
 
