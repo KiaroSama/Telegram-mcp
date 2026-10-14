@@ -140,18 +140,25 @@ def _windows_identity(root: Path, port: int):
     if shell is None:
         raise BridgeStartupError("PowerShell is required to verify listener ownership.")
     # EncodedCommand requires UTF-16LE; no text file uses this encoding.
-    script = """
+    script = r"""
 $ErrorActionPreference="Stop"
 $root=$env:TELEGRAM_BRIDGE_CHECK_ROOT
-$rows=@(Get-NetTCPConnection -State Listen -LocalPort PORT -ErrorAction SilentlyContinue)
-$ids=@($rows | Select-Object -ExpandProperty OwningProcess -Unique)
+$ids=@(netstat.exe -ano -p TCP | ForEach-Object {
+    $words=$_.Trim() -split '\s+'
+    if($words.Count -eq 5 -and $words[0] -eq 'TCP' -and
+        $words[1] -match ':PORT$' -and $words[3] -eq 'LISTENING'){
+        [int]$words[4]
+    }
+} | Select-Object -Unique)
 if($ids.Count -ne 1){ throw "Listener identity ambiguous" }
-$p=Get-CimInstance Win32_Process -Filter ("ProcessId="+$ids[0])
+$processes=@(Get-CimInstance Win32_Process)
+$byId=@{}; foreach($process in $processes){$byId[[int]$process.ProcessId]=$process}
+$p=$byId[[int]$ids[0]]
 $chain=@(); $count=0
 while($p -and $count -lt 8){
     $chain+=@{pid=$p.ProcessId; parent=$p.ParentProcessId; path=$p.ExecutablePath;
         created=$p.CreationDate.ToUniversalTime().ToString("o"); command=$p.CommandLine}
-    $parent=Get-CimInstance Win32_Process -Filter ("ProcessId="+$p.ParentProcessId) -ErrorAction SilentlyContinue
+    $parent=$byId[[int]$p.ParentProcessId]
     if($parent -and $parent.CreationDate -gt $p.CreationDate){break}
     $p=$parent; $count++
 }
