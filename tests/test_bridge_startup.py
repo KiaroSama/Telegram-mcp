@@ -3,6 +3,20 @@ import pytest
 from telegram_mcp import bridge_startup as mod
 
 
+def test_cold_bootstrap_launches_supervisor_not_an_authenticated_server(tmp_path, monkeypatch):
+    python = tmp_path / ".venv" / ("Scripts/python.exe" if mod.os.name == "nt" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"synthetic")
+    calls = []
+    monkeypatch.setattr(mod, "launch_owned", lambda args, **kw: calls.append((args, kw)))
+    mod.launch_supervisor(tmp_path, 18765)
+    args, options = calls[0]
+    assert args == [str(python), "-m", "telegram_mcp.cli", "supervise"]
+    assert options["cwd"] == tmp_path
+    assert options["env"]["MCP_PORT"] == "18765"
+    assert options["env"]["MCP_HOST"] == "127.0.0.1"
+
+
 def test_only_loopback_transport_configuration_is_accepted(tmp_path, monkeypatch):
     monkeypatch.delenv("MCP_HOST", raising=False)
     monkeypatch.delenv("MCP_PORT", raising=False)
@@ -49,7 +63,7 @@ def test_cold_start_is_elected_once_and_attaches_to_winner(tmp_path, monkeypatch
         def poll(self):
             return None
 
-        def owns(self, pid):
+        def owns_descendant(self, pid):
             assert pid == 12
             return True
 
@@ -57,7 +71,7 @@ def test_cold_start_is_elected_once_and_attaches_to_winner(tmp_path, monkeypatch
             calls.append("detach")
 
     monkeypatch.setattr(mod, "SessionLock", Lease)
-    monkeypatch.setattr(mod, "launch", lambda *_a: calls.append("launch") or Child())
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *_a: calls.append("launch") or Child())
     assert mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
     assert calls == ["acquire", "launch", "detach", "release"]
 
@@ -79,21 +93,47 @@ def test_independent_winner_cleans_losing_launcher_without_detaching(tmp_path, m
             calls.append("release")
 
     class Child:
-        def owns(self, pid):
+        def owns_descendant(self, pid):
             assert pid == 24
             return False
 
-        def cleanup(self, timeout):
-            assert timeout == 5
+        def cleanup_supervisor(self, timeout):
+            assert timeout == 30
             calls.append("cleanup")
 
         def detach(self):
             pytest.fail("must not publish the losing tree")
 
     monkeypatch.setattr(mod, "SessionLock", Lease)
-    monkeypatch.setattr(mod, "launch", lambda *_a: Child())
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *_a: Child())
     url = "http://127.0.0.1:18765/mcp"
     assert mod.ensure_service(root=tmp_path, url=url) == url
+    assert calls == ["cleanup", "release"]
+
+
+def test_failed_bootstrap_launch_transfers_cleanup_boundary(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(mod, "listener_identity", lambda *_a: None)
+
+    class Lease:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def acquire(self, **_kw):
+            pass
+
+        def release(self):
+            calls.append("release")
+
+    child = type("Child", (), {"cleanup_supervisor": lambda self, **kw: calls.append("cleanup")})()
+
+    def launch(*_a):
+        raise mod.ProcessOwnershipError("unconfirmed bootstrap", owned=child)
+
+    monkeypatch.setattr(mod, "SessionLock", Lease)
+    monkeypatch.setattr(mod, "launch_supervisor", launch)
+    with pytest.raises(mod.BridgeStartupError, match="ownership"):
+        mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
     assert calls == ["cleanup", "release"]
 
 
@@ -111,7 +151,7 @@ def test_changed_listener_identity_is_refused(tmp_path, monkeypatch):
     identities = iter([(12, "old"), (12, "new")])
     monkeypatch.setattr(mod, "listener_identity", lambda *_a: next(identities))
     monkeypatch.setattr(mod, "ready", lambda _url: True)
-    monkeypatch.setattr(mod, "launch", lambda *_a: pytest.fail("must not replace"))
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *_a: pytest.fail("must not replace"))
     with pytest.raises(mod.BridgeStartupError, match="not ready"):
         mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
 
@@ -133,7 +173,7 @@ def test_failed_cold_readiness_settles_only_its_owned_launcher(tmp_path, monkeyp
 
     child = object()
     monkeypatch.setattr(mod, "SessionLock", Lease)
-    monkeypatch.setattr(mod, "launch", lambda *_a: child)
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *_a: child)
     monkeypatch.setattr(mod, "_settle_failed_start", lambda process: closed.append(process))
     with pytest.raises(mod.BridgeStartupError, match="timed out"):
         mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
@@ -141,7 +181,7 @@ def test_failed_cold_readiness_settles_only_its_owned_launcher(tmp_path, monkeyp
 
 
 @pytest.mark.parametrize("interrupted", [False, True])
-def test_startup_cleanup_failure_still_releases_election(tmp_path, monkeypatch, interrupted):
+def test_startup_cleanup_failure_retains_election(tmp_path, monkeypatch, interrupted):
     calls = []
     monkeypatch.setattr(mod, "START_SECONDS", 0)
 
@@ -156,7 +196,7 @@ def test_startup_cleanup_failure_still_releases_election(tmp_path, monkeypatch, 
             calls.append("release")
 
     class Child:
-        def cleanup(self, timeout):
+        def cleanup_supervisor(self, timeout):
             calls.append("cleanup")
             raise mod.ProcessOwnershipError("synthetic cleanup failure")
 
@@ -167,18 +207,20 @@ def test_startup_cleanup_failure_still_releases_election(tmp_path, monkeypatch, 
 
     monkeypatch.setattr(mod, "listener_identity", identity)
     monkeypatch.setattr(mod, "SessionLock", Lease)
-    monkeypatch.setattr(mod, "launch", lambda *_a: calls.append("launch") or Child())
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *_a: calls.append("launch") or Child())
     if interrupted:
         monkeypatch.setattr(mod, "START_SECONDS", 1)
     with pytest.raises(mod.BridgeStartupError, match="cleanup is unconfirmed"):
         mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
-    assert calls == ["launch", "cleanup", "release"]
+    assert calls == ["launch", "cleanup"]
+    assert mod._unconfirmed_starts[-1][1].__class__ is Child
+    mod._unconfirmed_starts.pop()
 
 
 def test_verified_running_service_is_reused(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "listener_identity", lambda root, port: (12, "creation"))
     monkeypatch.setattr(mod, "ready", lambda url: True)
-    monkeypatch.setattr(mod, "launch", lambda *a: pytest.fail("must not launch"))
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *a: pytest.fail("must not launch"))
     assert (
         mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
         == "http://127.0.0.1:18765/mcp"
@@ -190,7 +232,7 @@ def test_unknown_occupant_is_never_replaced(tmp_path, monkeypatch):
         raise mod.BridgeStartupError("Unknown listener ownership")
 
     monkeypatch.setattr(mod, "listener_identity", unknown)
-    monkeypatch.setattr(mod, "launch", lambda *a: pytest.fail("must not launch"))
+    monkeypatch.setattr(mod, "launch_supervisor", lambda *a: pytest.fail("must not launch"))
     with pytest.raises(mod.BridgeStartupError, match="ownership"):
         mod.ensure_service(root=tmp_path, url="http://127.0.0.1:18765/mcp")
 

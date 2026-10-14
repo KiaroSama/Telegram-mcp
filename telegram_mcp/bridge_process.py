@@ -12,7 +12,11 @@ from telegram_mcp.visual.bounded_process import _contain, _resume, _win32
 
 
 class ProcessOwnershipError(RuntimeError):
-    """Controlled ownership failure; command/environment values are not reported."""
+    """Controlled failure carrying an unretired launch boundary when necessary."""
+
+    def __init__(self, message, *, owned=None):
+        super().__init__(message)
+        self.owned = owned
 
 
 def _active_windows(job):
@@ -173,6 +177,38 @@ class OwnedProcess:
         finally:
             kernel.CloseHandle(handle)
 
+    def owns_descendant(self, pid: int) -> bool:
+        """Verify publication through a live bootstrap, including nested Linux groups."""
+        if os.name == "nt":
+            return self.owns(pid)
+        if self.released or self.process.poll() is not None:
+            return False
+        try:
+            for _ in range(16):
+                if pid == self.pid:
+                    return self.process.poll() is None
+                stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+                fields = stat[stat.rfind(")") + 2 :].split()
+                pid = int(fields[1])
+                if pid <= 1:
+                    return False
+            return False
+        except (OSError, ValueError, IndexError):
+            raise ProcessOwnershipError("Supervisor ancestry cannot be verified.") from None
+
+    def cleanup_supervisor(self, timeout=30.0):
+        """Let a Linux supervisor retire its separate generation before root cleanup."""
+        if os.name != "nt" and not self.released:
+            if self.process.poll() is None:
+                os.kill(self.pid, signal.SIGTERM)
+            try:
+                result = self.process.wait(timeout=timeout)
+                if result not in (0, 75):
+                    raise ProcessOwnershipError("Supervisor retirement is unconfirmed.")
+            except subprocess.TimeoutExpired:
+                raise ProcessOwnershipError("Supervisor retirement is unconfirmed.") from None
+        self.cleanup(timeout=timeout)
+
     def _release(self):
         if self.job is not None:
             _ctypes, kernel, _limits, _thread = _win32()
@@ -226,6 +262,13 @@ class OwnedProcess:
                         kernel.WaitForSingleObject(handle, 0) != 0 for handle in held
                     )
 
+            elif os.name == "nt":
+                # Failed assignment leaves a suspended root with no descendants.
+                self.process.kill()
+
+                def active():
+                    return self.process.poll() is None
+
             else:
                 try:
                     os.killpg(self.pid, signal.SIGKILL)
@@ -249,7 +292,10 @@ class OwnedProcess:
             if held:
                 for handle in held:
                     kernel.CloseHandle(handle)
-            self._release()
+        # A timeout or failed native query retains the containment boundary.
+        # Its owner can retry confirmation; releasing it would make that retry
+        # a misleading no-op and permit an overlapping generation.
+        self._release()
 
 
 def launch_owned(args, **options) -> OwnedProcess:
@@ -282,12 +328,17 @@ def launch_owned(args, **options) -> OwnedProcess:
             if not _resume(process):
                 raise ProcessOwnershipError("Owned startup process could not be resumed.")
         except Exception:
-            # A child not yet resumed cannot have spawned descendants.
-            if owned.job is None:
-                process.kill()
-                process.wait(timeout=5)
-                owned._release()
-            else:
-                owned.cleanup()
+            try:
+                # A child not yet resumed cannot have spawned descendants.
+                if owned.job is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                    owned._release()
+                else:
+                    owned.cleanup()
+            except Exception:
+                raise ProcessOwnershipError(
+                    "Owned startup cleanup is unconfirmed.", owned=owned
+                ) from None
             raise ProcessOwnershipError("Owned startup containment or resume failed.") from None
     return owned
