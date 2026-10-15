@@ -75,7 +75,8 @@ def test_grace_threshold_reset_and_shutdown(tmp_path, monkeypatch, probes, retir
         identities[0] += 1
         return None if identities[0] == 1 else (12, "birth")
 
-    def probe(_url):
+    def probe(_url, *, timeout):
+        assert timeout == 10
         assert stop.now >= 3
         return next(health)
 

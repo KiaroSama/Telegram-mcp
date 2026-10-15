@@ -227,11 +227,11 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def ready(url: str) -> bool:
+def ready(url: str, *, timeout: float = 2) -> bool:
     try:
         opener = build_opener(ProxyHandler({}), _NoRedirect())
         try:
-            with opener.open(Request(url, method="OPTIONS"), timeout=2) as response:
+            with opener.open(Request(url, method="OPTIONS"), timeout=timeout) as response:
                 return response.status in (200, 204, 400, 405)
         except HTTPError as error:
             return error.code in (400, 405)
