@@ -22,7 +22,7 @@ closes only its transport session, not the elected supervisor or shared service.
   Job Object before resuming, and retains that job across the entire generation.
   Ordinary descendants cannot break out. Launcher exit alone is not tree exit.
 - Startup grace is300seconds. Afterwards a bounded OPTIONS probe runs about once per
-  minute; three consecutive misses trigger retirement. Each HTTP probe has a2second
+  minute; three consecutive misses trigger retirement. Each supervisor HTTP probe has a10second
   timeout; ownership inspection adds up to10seconds on Windows /5seconds on Linux.
   A successful probe resets misses. This proves responsive HTTP, not Telegram connectivity.
 - Cleanup requests termination of the complete owned generation and waits up to30seconds
