@@ -75,7 +75,7 @@ def watch(root, url, event, stop):
                         healthy = (
                             identity is not None
                             and child.owns(identity[0])
-                            and ready(url)
+                            and ready(url, timeout=10)
                             and listener_identity(root, port) == identity
                         )
                     except (BridgeStartupError, ProcessOwnershipError, OSError):
