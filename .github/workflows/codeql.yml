@@ -14,14 +14,6 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  schedule:
-    # A dependency-free scanner still gets new queries. Weekly, off-peak, so a
-    # rule added upstream reaches this repository without waiting for a push.
-    - cron: "27 5 * * 1"
   workflow_dispatch:
 
 permissions:

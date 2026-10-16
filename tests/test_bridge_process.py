@@ -11,6 +11,18 @@ import pytest
 from telegram_mcp import bridge_process
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows native TCP owner table")
+def test_native_listener_lookup_matches_real_bound_socket():
+    import socket
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        assert bridge_process.windows_listener_pid(port) == os.getpid()
+    assert bridge_process.windows_listener_pid(port) is None
+
+
 def _wait_file(path, timeout=3):
     deadline = time.monotonic() + timeout
     while True:
