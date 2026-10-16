@@ -19,6 +19,53 @@ class ProcessOwnershipError(RuntimeError):
         self.owned = owned
 
 
+def windows_listener_pid(port):
+    """Read IPv4 listener ownership directly, without spawning CIM/PowerShell."""
+    import ctypes
+    from ctypes import wintypes
+    import socket
+
+    class Row(ctypes.Structure):
+        _fields_ = [
+            (name, wintypes.DWORD)
+            for name in ("state", "address", "port", "remote_address", "remote_port", "pid")
+        ]
+
+    query = ctypes.WinDLL("iphlpapi", use_last_error=True).GetExtendedTcpTable
+    query.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD),
+        wintypes.BOOL,
+        wintypes.ULONG,
+        ctypes.c_int,
+        wintypes.ULONG,
+    ]
+    query.restype = wintypes.DWORD
+    size = wintypes.DWORD()
+    for _ in range(4):
+        if size.value > 4 * 1024 * 1024:
+            break
+        buffer = ctypes.create_string_buffer(max(4, size.value))
+        size.value = len(buffer)
+        result = query(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0)
+        if result == 122:
+            continue
+        if result:
+            break
+        count = wintypes.DWORD.from_buffer(buffer).value
+        if 4 + count * ctypes.sizeof(Row) > len(buffer):
+            break
+        pids = set()
+        for index in range(count):
+            row = Row.from_buffer(buffer, 4 + index * ctypes.sizeof(Row))
+            if socket.ntohs(row.port & 0xFFFF) == port and row.address in (0, 0x0100007F):
+                pids.add(int(row.pid))
+        if len(pids) > 1:
+            raise ProcessOwnershipError("Listener ownership is ambiguous.")
+        return next(iter(pids), None)
+    raise ProcessOwnershipError("Native listener ownership could not be inspected.")
+
+
 def _active_windows(job):
     ctypes, kernel, _limits, _thread = _win32()
     from ctypes import wintypes

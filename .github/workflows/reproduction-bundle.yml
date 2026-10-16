@@ -4,9 +4,6 @@ name: Locked Reproduction Bundle
 # itself in a pull request, without running on every application change.
 on:
   workflow_dispatch:
-  pull_request:
-    paths:
-      - '.github/workflows/reproduction-bundle.yml'
 
 permissions:
   contents: read

@@ -45,6 +45,8 @@ dependencies = [
     "python-json-logger>=4.2.0",
     "qrcode>=8.2",
     "telethon>=1.45.0",
+    # Avoid pure-Python AES-IGE starving the shared HTTP event loop on Windows.
+    "cryptg>=0.6.0",
     # MTProto 2.0 end-to-end encryption, which Telethon never implemented. Pinned
     # BY GIT to this owner's repository. Its distribution is
     # `kiaro-telethon-secret-chat` since 0.1.0: the bare name `telethon-secret-chat`
