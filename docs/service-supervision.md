@@ -23,7 +23,9 @@ closes only its transport session, not the elected supervisor or shared service.
   Ordinary descendants cannot break out. Launcher exit alone is not tree exit.
 - Startup grace is300seconds. Afterwards a bounded OPTIONS probe runs about once per
   minute; three consecutive misses trigger retirement. Each supervisor HTTP probe has a10second
-  timeout; ownership inspection adds up to10seconds on Windows /5seconds on Linux.
+  timeout. Windows monitoring reads the native TCP owner table and verifies the retained
+  Job Object membership before and after the probe; it does not spawn PowerShell/CIM.
+  Cold/warm bridge attachment retains its separate strict checkout identity checks.
   A successful probe resets misses. This proves responsive HTTP, not Telegram connectivity.
 - Cleanup requests termination of the complete owned generation and waits up to30seconds
   per attempt for positive exit evidence. Unconfirmed cleanup retains its boundary and
@@ -50,6 +52,15 @@ Stop and confirm the old owner and all its descendants are gone before replacing
 wrapper or syncing packages. Back up the existing wrapper/task definition locally first.
 Do not run the old taskkill loop alongside the new supervisor. Manual launcher takeover
 remains separate: the supervisor never kills that separately owned replacement.
+
+## Repeated disconnections despite recovery
+
+The locked runtime includes `cryptg`, Telethon's native AES-IGE backend. Without a
+usable native backend, Telethon falls back to pure-Python decryption on the same
+event loop as HTTP; large incoming batches can delay probes and connector requests.
+Install the complete locked environment while the owned service is stopped, then
+restart it. Do not delete session locks or open a second authenticated client.
+A successful restart alone does not establish that this bottleneck is resolved.
 
 ## Logs and limits
 
