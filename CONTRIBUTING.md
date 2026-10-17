@@ -25,6 +25,13 @@ without exiting, and a wedged child outlives the pytest process that started it 
 run either sits there or reports success over a live orphan. The guarded runner bounds both
 clocks and is not done until everything the suite spawned is gone.
 
+## CI dispatch
+
+Verification workflows start manually through GitHub Actions (`workflow_dispatch`),
+not on pushes, pull requests or schedules. Dispatch the final completed branch once;
+verify the exact commit SHA and all required jobs before merging. The test matrix,
+coverage and artifact checks are unchanged.
+
 ## Commands
 
 ```bash
