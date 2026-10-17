@@ -81,6 +81,7 @@ def test_grace_threshold_reset_and_shutdown(tmp_path, monkeypatch, probes, retir
         return next(health)
 
     monkeypatch.setattr(mod, "listener_identity", identity)
+    monkeypatch.setattr(mod, "windows_listener_pid", lambda _port: 12)
     monkeypatch.setattr(mod, "ready", probe)
     monkeypatch.setattr(mod, "launch", lambda *_a: launched.append(stop.now) or child)
     mod.watch(tmp_path, "http://127.0.0.1:18765/mcp", lambda *_a: None, stop)

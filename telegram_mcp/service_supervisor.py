@@ -8,7 +8,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from telegram_mcp.bridge_process import ProcessOwnershipError
+from telegram_mcp.bridge_process import ProcessOwnershipError, windows_listener_pid
 from telegram_mcp.bridge_startup import (
     BridgeStartupError,
     checkout,
@@ -71,15 +71,30 @@ def watch(root, url, event, stop):
                 now = time.monotonic()
                 if now >= probe_at:
                     try:
-                        identity = listener_identity(root, port)
-                        healthy = (
-                            identity is not None
-                            and child.owns(identity[0])
-                            and ready(url, timeout=10)
-                            and listener_identity(root, port) == identity
+                        identity = (
+                            (windows_listener_pid(port),)
+                            if os.name == "nt"
+                            else listener_identity(root, port)
                         )
+                        reason = "listener_missing"
+                        healthy = False
+                        if identity is not None and identity[0] is not None:
+                            reason = "outside_owned_generation"
+                            if child.owns(identity[0]):
+                                reason = "http_unresponsive"
+                                if ready(url, timeout=10):
+                                    reason = "listener_changed"
+                                    current = (
+                                        (windows_listener_pid(port),)
+                                        if os.name == "nt"
+                                        else listener_identity(root, port)
+                                    )
+                                    healthy = current == identity and child.owns(current[0])
+                        if not healthy:
+                            event("WARNING", f"Health probe reason={reason}")
                     except (BridgeStartupError, ProcessOwnershipError, OSError):
                         healthy = False
+                        event("WARNING", "Health probe reason=ownership_inspection_failed")
                     misses = 0 if healthy else misses + 1
                     event("INFO" if healthy else "WARNING", f"Health probe misses={misses}")
                     if misses >= FAIL_LIMIT:

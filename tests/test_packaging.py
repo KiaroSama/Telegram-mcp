@@ -135,6 +135,25 @@ def built_wheel(tmp_path_factory) -> Path:
     return wheels[0]
 
 
+def test_telegram_crypto_uses_native_backend_with_matching_ige_bytes():
+    from telethon.crypto import aes
+
+    assert any(dep.startswith("cryptg>=") for dep in _pyproject()["project"]["dependencies"])
+    assert aes.cryptg is not None, "Pure-Python AES can starve the shared MCP event loop"
+    plaintext = bytes(range(64))
+    key, iv = bytes(range(32)), bytes(range(32, 64))
+    encrypted = aes.AES.encrypt_ige(plaintext, key, iv)
+    assert aes.AES.decrypt_ige(encrypted, key, iv) == plaintext
+    native = aes.cryptg
+    try:
+        # Independent existing pure-Python implementation verifies wire parity.
+        aes.cryptg = None
+        expected = aes.AES.encrypt_ige(plaintext, key, iv)
+        assert expected == encrypted
+    finally:
+        aes.cryptg = native
+
+
 def test_every_source_subpackage_is_declared_for_packaging():
     expected = _source_packages()
     assert f"{PACKAGE}.visual" in expected, "source walk found no subpackages to check"
