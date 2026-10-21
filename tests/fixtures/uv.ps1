@@ -19,6 +19,17 @@ if ($Arguments.Count -ge 4 -and
     exit $pytestExit
 }
 
+if ($env:UV_NO_SYNC -ne '1' -or
+    $env:UV_PROJECT_ENVIRONMENT -ne (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '.venv') -or
+    $env:UV_PYTHON -ne (Join-Path $env:UV_PROJECT_ENVIRONMENT 'Scripts\python.exe')) {
+    throw 'Launcher must use the installed environment without synchronization.'
+}
+if ($Arguments.Count -eq 2 -and $Arguments[0] -eq 'run' -and $Arguments[1] -eq 'main.py') {
+    [Console]::Out.WriteLine('fake-normal-output')
+    [Console]::Error.WriteLine('fake-error-output')
+    exit 0
+}
+
 # `uv run python <wrapper.py> <log path> <max bytes> <main.py> [server args...]`.
 #
 # A FILE, never `-c`. Handing multi-line Python containing double quotes to a

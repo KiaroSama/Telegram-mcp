@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import json
 import os
 from pathlib import Path
 import re
@@ -136,53 +134,19 @@ def _verified_windows_chain(root: Path, chain: list[dict]) -> bool:
 
 
 def _windows_identity(root: Path, port: int):
-    shell = shutil.which("pwsh") or shutil.which("powershell")
-    if shell is None:
-        raise BridgeStartupError("PowerShell is required to verify listener ownership.")
-    # EncodedCommand requires UTF-16LE; no text file uses this encoding.
-    script = r"""
-$ErrorActionPreference="Stop"
-$root=$env:TELEGRAM_BRIDGE_CHECK_ROOT
-$ids=@(netstat.exe -ano -p TCP | ForEach-Object {
-    $words=$_.Trim() -split '\s+'
-    if($words.Count -eq 5 -and $words[0] -eq 'TCP' -and
-        $words[1] -match ':PORT$' -and $words[3] -eq 'LISTENING'){
-        [int]$words[4]
-    }
-} | Select-Object -Unique)
-if($ids.Count -ne 1){ throw "Listener identity ambiguous" }
-$processes=@(Get-CimInstance Win32_Process)
-$byId=@{}; foreach($process in $processes){$byId[[int]$process.ProcessId]=$process}
-$p=$byId[[int]$ids[0]]
-$chain=@(); $count=0
-while($p -and $count -lt 8){
-    $chain+=@{pid=$p.ProcessId; parent=$p.ParentProcessId; path=$p.ExecutablePath;
-        created=$p.CreationDate.ToUniversalTime().ToString("o"); command=$p.CommandLine}
-    $parent=$byId[[int]$p.ParentProcessId]
-    if($parent -and $parent.CreationDate -gt $p.CreationDate){break}
-    $p=$parent; $count++
-}
-ConvertTo-Json -InputObject @($chain) -Compress
-""".replace("PORT", str(port))
-    env = dict(os.environ, TELEGRAM_BRIDGE_CHECK_ROOT=str(root))
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    from telegram_mcp.bridge_process import windows_listener_pid
+    from telegram_mcp.windows_identity import process_chain
+
     try:
-        result = subprocess.run(
-            [shell, "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-            encoding="utf-8",
-            check=True,
-            env=env,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        chain = json.loads(result.stdout)
-        if not _verified_windows_chain(root, chain):
-            raise ValueError("ownership")
-        return int(chain[0]["pid"]), chain[0]["created"]
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pid = windows_listener_pid(port)
+        if pid is None:
+            raise ValueError("listener disappeared")
+        with process_chain(pid) as chain:
+            if not _verified_windows_chain(root, chain) or windows_listener_pid(port) != pid:
+                raise ValueError("ownership changed")
+            identity = pid, chain[0]["created"]
+        return identity
+    except (OSError, ValueError, KeyError, ProcessOwnershipError):
         raise BridgeStartupError("Unknown listener ownership; bridge refuses to attach.") from None
 
 

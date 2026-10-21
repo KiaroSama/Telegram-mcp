@@ -8,6 +8,33 @@ from telegram_mcp import service_supervisor as mod
 from telegram_mcp.bridge_process import ProcessOwnershipError
 
 
+def test_pending_manual_launcher_blocks_replacement_before_listener(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    stop = ClockStop(200)
+    monkeypatch.setattr(mod.time, "monotonic", lambda: stop.now)
+    monkeypatch.setattr(mod, "listener_identity", lambda *_a: None)
+    launches = []
+    attempts = []
+
+    @contextmanager
+    def reservation(_root):
+        attempts.append(stop.now)
+        yield stop.now >= 60
+
+    def launch(*_a):
+        assert stop.now >= 60, "Supervisor raced a pending manual launcher"
+        launches.append(stop.now)
+        stop.stopped = True
+        return SimpleNamespace(cleanup=lambda **_kw: None)
+
+    monkeypatch.setattr(mod, "launch_reservation", reservation, raising=False)
+    monkeypatch.setattr(mod, "launch", launch)
+    mod.watch(tmp_path, "http://127.0.0.1:18765/mcp", lambda *_a: None, stop)
+    assert launches == [60]
+    assert len(attempts) == 2
+
+
 def test_unconfirmed_cleanup_cannot_launch_overlapping_generation(tmp_path, monkeypatch):
     calls = []
     stop = SimpleNamespace(is_set=lambda: False)

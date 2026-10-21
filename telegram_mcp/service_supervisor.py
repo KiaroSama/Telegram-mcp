@@ -17,6 +17,7 @@ from telegram_mcp.bridge_startup import (
     listener_identity,
     ready,
 )
+from telegram_mcp.launch_coordination import launch_reservation
 from telegram_mcp.session_log import run_log
 from telegram_mcp.singleton import SessionLock, SessionLockError
 
@@ -47,20 +48,19 @@ def watch(root, url, event, stop):
     port = urlsplit(url).port
     rapid = 0
     while not stop.is_set():
-        try:
-            occupant = listener_identity(root, port)
-        except BridgeStartupError:
-            event("WARNING", "Listener ownership unknown; no generation launched")
-            stop.wait(PROBE_SECONDS)
-            continue
-        if occupant is not None:
-            event("INFO", "Separately owned listener present; waiting without adoption")
-            stop.wait(PROBE_SECONDS)
-            continue
         child = None
         born = time.monotonic()
         try:
-            child = launch(root, port)
+            with launch_reservation(root) as acquired:
+                if not acquired:
+                    event("INFO", "Manual launcher owns startup; waiting without interference")
+                elif listener_identity(root, port) is not None:
+                    event("INFO", "Separately owned listener present; waiting without adoption")
+                else:
+                    child = launch(root, port)
+            if child is None:
+                stop.wait(PROBE_SECONDS)
+                continue
             event("INFO", "Owned generation started")
             misses = 0
             probe_at = born + GRACE_SECONDS

@@ -37,7 +37,7 @@ dependencies = [
     "anyio>=4.15.1,<5",
     "httpx2>=2.13.1,<3",
     # Image encoding/scaling for the visual capture and media preview tools.
-    "pillow>=11.0",
+    "pillow>=13.0.0",
     "python-dotenv>=1.2.3",
     # UAX #29 grapheme clusters (\X) so truncation never splits a compound
     # character; a hand-rolled scan kept missing categories.
@@ -175,6 +175,8 @@ source = [
     "telegram_mcp.bridge",
     "telegram_mcp.bridge_process",
     "telegram_mcp.bridge_startup",
+    "telegram_mcp.windows_identity",
+    "telegram_mcp.launch_coordination",
     "telegram_mcp.service_supervisor",
     "telegram_mcp.bridge_stdio",
     "telegram_mcp.cli",
