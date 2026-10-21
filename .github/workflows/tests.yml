@@ -265,15 +265,28 @@ jobs:
       - name: Check out repository code
         uses: actions/checkout@v7
 
-      # test_launchers.ps1 exercises the launcher's Python tee wrapper, and falls
-      # back to `python` on PATH when .venv is absent - which it is, on a runner.
+      # Launcher fixtures use fake uv, but still exercise the real installed
+      # interpreter prerequisite; never relax production startup for a CI host.
       - name: Set up Python
         uses: actions/setup-python@v7
         with:
           python-version: '3.11'
 
+      - name: Install uv for launcher integration
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Prepare locked launcher integration environment
+        run: uv sync --locked --all-extras --group dev --python 3.11
+
       - name: Run every PowerShell suite
         shell: pwsh
+        env:
+          TELEGRAM_API_ID: '12345'
+          TELEGRAM_API_HASH: 'synthetic-ci-api-hash'
         run: |
           $ErrorActionPreference = 'Stop'
           $suites = @(Get-ChildItem -Path tests -Filter 'test_*.ps1' -File | Sort-Object Name)
