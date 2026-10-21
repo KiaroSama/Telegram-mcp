@@ -175,6 +175,8 @@ source = [
     "telegram_mcp.bridge",
     "telegram_mcp.bridge_process",
     "telegram_mcp.bridge_startup",
+    "telegram_mcp.windows_identity",
+    "telegram_mcp.launch_coordination",
     "telegram_mcp.service_supervisor",
     "telegram_mcp.bridge_stdio",
     "telegram_mcp.cli",

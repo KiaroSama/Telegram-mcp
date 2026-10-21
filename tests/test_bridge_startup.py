@@ -17,6 +17,105 @@ def test_cold_bootstrap_launches_supervisor_not_an_authenticated_server(tmp_path
     assert options["env"]["MCP_HOST"] == "127.0.0.1"
 
 
+@pytest.mark.skipif(mod.os.name != "nt", reason="Windows native identity")
+def test_native_identity_does_not_spawn_powershell(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import socket
+
+    # The real listener lives in a child whose actual script proves this checkout.
+    with socket.socket() as reservation:
+        reservation.bind(("127.0.0.1", 0))
+        port = reservation.getsockname()[1]
+    script = tmp_path / "main.py"
+    script.write_text(
+        "import socket,sys; s=socket.socket(); s.bind(('127.0.0.1',int(sys.argv[1])));"
+        "s.listen(); print('ready',flush=True); sys.stdin.read()",
+        encoding="utf-8",
+    )
+    child = subprocess.Popen(
+        [sys.executable, str(script), str(port)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        import time
+
+        deadline = time.monotonic() + 20
+        while not mod._port_open(port):
+            assert child.poll() is None and time.monotonic() < deadline
+            time.sleep(0.01)
+        monkeypatch.setattr(
+            mod.subprocess, "run", lambda *_a, **_k: pytest.fail("PowerShell ownership subprocess")
+        )
+        first = mod.listener_identity(tmp_path, port)
+        from telegram_mcp.windows_identity import process_chain
+
+        with process_chain(first[0]) as chain:
+            assert child.pid in {row["pid"] for row in chain}
+        assert mod.listener_identity(tmp_path, port) == first
+        with pytest.raises(mod.BridgeStartupError, match="ownership"):
+            mod.listener_identity(tmp_path / "foreign", port)
+    finally:
+        child.stdin.close()
+        try:
+            child.wait(timeout=5)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)
+            child.stdout.close()
+
+
+@pytest.mark.skipif(mod.os.name != "nt", reason="Windows named launch reservation")
+def test_manual_reservation_is_presence_not_exclusive_lifetime(tmp_path):
+    import ctypes
+    from ctypes import wintypes
+    from telegram_mcp.launch_coordination import launch_reservation, reservation_name
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel.CreateMutexW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    name = reservation_name(tmp_path)
+    first = kernel.CreateMutexW(None, False, name)
+    second = None
+    assert first
+    try:
+        # Two manual launchers can hold intent while the newer one retires the old.
+        second = kernel.CreateMutexW(None, False, name)
+        assert second
+        with launch_reservation(tmp_path) as acquired:
+            assert not acquired
+        kernel.CloseHandle(first)
+        first = None
+        with launch_reservation(tmp_path) as acquired:
+            assert not acquired
+    finally:
+        for handle in (first, second):
+            if handle:
+                kernel.CloseHandle(handle)
+    with launch_reservation(tmp_path) as acquired:
+        assert acquired
+        # Creation and initial ownership must be atomic. Another thread's manual
+        # opener cannot enter the gate before automatic process creation finishes.
+        kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel.WaitForSingleObject.restype = wintypes.DWORD
+        import concurrent.futures
+
+        def contender():
+            handle = kernel.CreateMutexW(None, False, name)
+            try:
+                return kernel.WaitForSingleObject(handle, 0)
+            finally:
+                kernel.CloseHandle(handle)
+
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            assert pool.submit(contender).result(timeout=3) == 258
+
+
 def test_only_loopback_transport_configuration_is_accepted(tmp_path, monkeypatch):
     monkeypatch.delenv("MCP_HOST", raising=False)
     monkeypatch.delenv("MCP_PORT", raising=False)
