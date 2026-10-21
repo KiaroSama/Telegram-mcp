@@ -284,6 +284,9 @@ jobs:
 
       - name: Run every PowerShell suite
         shell: pwsh
+        env:
+          TELEGRAM_API_ID: '12345'
+          TELEGRAM_API_HASH: 'synthetic-ci-api-hash'
         run: |
           $ErrorActionPreference = 'Stop'
           $suites = @(Get-ChildItem -Path tests -Filter 'test_*.ps1' -File | Sort-Object Name)
