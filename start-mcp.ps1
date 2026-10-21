@@ -18,6 +18,8 @@ Set-StrictMode -Version Latest
 
 $exitCode = 1
 $logPath = $null
+$launchMutex = $null
+$launchMutexHeld = $false
 
 # Kept in step with telegram_mcp.runner.EXIT_SESSION_HELD, which tests/test_second_instance.py
 # pins from the other side. Any other non-zero code is an ordinary failure.
@@ -318,6 +320,22 @@ try {
     # launcher always ends with THIS copy serving - instead of waiting 20 seconds on
     # the session lock and exiting, which read as a crash every time.
     if (Test-OpenedByPerson) {
+        # Same reservation as the supervisor: hold across takeover AND startup,
+        # including the interval before the replacement has opened its port.
+        $canonical = $PSScriptRoot.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)) }
+        finally { $sha.Dispose() }
+        $key = ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant().Substring(0, 24)
+        $launchMutex = [Threading.Mutex]::new($false, "Local\telegram-mcp-launch-$key")
+        try { $launchMutexHeld = $launchMutex.WaitOne(30000) }
+        catch [Threading.AbandonedMutexException] { $launchMutexHeld = $true }
+        if (-not $launchMutexHeld) { throw 'Another launcher owns startup; no process was stopped.' }
+        # Keep the named object alive as manual intent, without holding its mutex:
+        # another person may still take over this manual run. Automatic starters
+        # refuse any existing reservation object, including this unowned one.
+        $launchMutex.ReleaseMutex()
+        $launchMutexHeld = $false
         $takeover = Stop-OtherInstances -Root $PSScriptRoot
         $notes = @()
         if ($takeover.Stopped.Count) {
@@ -325,8 +343,7 @@ try {
             'so this one can start. Clients connected to it reconnect to this one.'
         }
         if ($takeover.Survived.Count) {
-            $notes += "WARNING: a running copy did not stop (pid $($takeover.Survived -join ', ')); " +
-            'starting anyway - the Telegram session lock decides which one connects.'
+            throw 'The previous service did not stop; replacement was refused.'
         }
         foreach ($note in $notes) {
             $line = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] $note"
@@ -337,6 +354,15 @@ try {
         }
     }
 
+    # Startup consumes the installed environment; it never modifies a live venv.
+    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        throw 'The project environment is missing. Install the locked environment before starting.'
+    }
+    $env:UV_NO_SYNC = '1'
+    $env:UV_PROJECT_ENVIRONMENT = Join-Path $PSScriptRoot '.venv'
+    $env:UV_PYTHON = $python
+    $env:PYTHONUTF8 = '1'
     Push-Location -LiteralPath $PSScriptRoot
     try {
         if ($logPath) {
@@ -659,6 +685,10 @@ catch {
     }
 }
 finally {
+    if ($launchMutex) {
+        if ($launchMutexHeld) { $launchMutex.ReleaseMutex() }
+        $launchMutex.Dispose()
+    }
     $stopMessage = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] Stopped with exit code $exitCode."
     [Console]::Error.WriteLine($stopMessage)
     if ($logPath) {

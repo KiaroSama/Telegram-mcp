@@ -25,7 +25,9 @@ closes only its transport session, not the elected supervisor or shared service.
   minute; three consecutive misses trigger retirement. Each supervisor HTTP probe has a10second
   timeout. Windows monitoring reads the native TCP owner table and verifies the retained
   Job Object membership before and after the probe; it does not spawn PowerShell/CIM.
-  Cold/warm bridge attachment retains its separate strict checkout identity checks.
+  Cold/warm bridge attachment uses native process handles, creation times, executable
+  paths and parsed command lines for its separate strict checkout identity checks,
+  without spawning PowerShell/WMI. Unknown or changed identities still refuse attachment.
   A successful probe resets misses. This proves responsive HTTP, not Telegram connectivity.
 - Cleanup requests termination of the complete owned generation and waits up to30seconds
   per attempt for positive exit evidence. Unconfirmed cleanup retains its boundary and
@@ -52,6 +54,15 @@ Stop and confirm the old owner and all its descendants are gone before replacing
 wrapper or syncing packages. Back up the existing wrapper/task definition locally first.
 Do not run the old taskkill loop alongside the new supervisor. Manual launcher takeover
 remains separate: the supervisor never kills that separately owned replacement.
+A person-opened Windows launcher keeps a checkout-specific named OS reservation alive
+from before takeover until exit. Automatic creation refuses an existing reservation
+around its listener check and launch, including before the manual server binds.
+The manual process releases mutex ownership but retains its handle, allowing a later
+manual launch to take over; the OS removes the reservation after its last handle closes.
+No marker or session lock is deleted.
+A failed takeover refuses replacement. Manual and automatic starts consume the existing
+pinned environment without synchronizing it; install/update packages explicitly while
+all owned consumers are stopped.
 
 ## Repeated disconnections despite recovery
 
