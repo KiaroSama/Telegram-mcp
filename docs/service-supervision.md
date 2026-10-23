@@ -21,6 +21,10 @@ closes only its transport session, not the elected supervisor or shared service.
 - Windows starts the existing launcher hidden/suspended, assigns a fresh noninherited
   Job Object before resuming, and retains that job across the entire generation.
   Ordinary descendants cannot break out. Launcher exit alone is not tree exit.
+  Owned launches explicitly use Normal CPU priority instead of inheriting a scheduled
+  task's BelowNormal background class. The elected Windows supervisor also sets and
+  verifies its own Normal class before monitoring. No High/Realtime priority, task
+  credentials, task settings or unrelated process priorities are changed.
 - Startup grace is300seconds. Afterwards a bounded OPTIONS probe runs about once per
   minute; three consecutive misses trigger retirement. Each supervisor HTTP probe has a10second
   timeout. Windows monitoring reads the native TCP owner table and verifies the retained

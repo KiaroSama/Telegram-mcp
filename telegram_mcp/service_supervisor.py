@@ -121,6 +121,25 @@ def watch(root, url, event, stop):
         stop.wait(delay)
 
 
+def _normal_priority():
+    """Do not inherit Task Scheduler's background class for an interactive service."""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.SetPriorityClass.restype = wintypes.BOOL
+    kernel.GetPriorityClass.argtypes = [wintypes.HANDLE]
+    kernel.GetPriorityClass.restype = wintypes.DWORD
+    process = kernel.GetCurrentProcess()
+    if not kernel.SetPriorityClass(process, 0x20) or kernel.GetPriorityClass(process) != 0x20:
+        raise OSError("Normal supervisor scheduling could not be verified.")
+
+
 def run():
     root = checkout()
     url = endpoint_for(root)
@@ -139,6 +158,8 @@ def run():
             event("INFO", "Another supervisor owns this checkout and endpoint")
             return 75
         try:
+            _normal_priority()
+            event("INFO", "Supervisor scheduling ready")
             for number in (signal.SIGINT, signal.SIGTERM):
                 handlers[number] = signal.signal(number, lambda *_a: stop.set())
             event("INFO", "Supervisor elected")
