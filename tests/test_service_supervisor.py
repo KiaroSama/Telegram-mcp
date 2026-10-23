@@ -1,11 +1,62 @@
 """Lifetime supervision uses fixed clocks; native descendants are tested separately."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
 from telegram_mcp import service_supervisor as mod
 from telegram_mcp.bridge_process import ProcessOwnershipError
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows scheduling inheritance")
+def test_supervisor_normalizes_scheduled_background_priority():
+    import subprocess
+    import sys
+
+    code = """
+import ctypes
+from ctypes import wintypes as w
+from telegram_mcp import service_supervisor as mod
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+k.GetCurrentProcess.restype = w.HANDLE
+k.SetPriorityClass.argtypes = [w.HANDLE, w.DWORD]
+k.GetPriorityClass.argtypes = [w.HANDLE]
+k.GetPriorityClass.restype = w.DWORD
+assert k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)
+mod._normal_priority()
+assert k.GetPriorityClass(k.GetCurrentProcess()) == 32
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=15,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows scheduling API")
+@pytest.mark.parametrize("set_result,readback", [(False, 32), (True, 0x4000)])
+def test_priority_failure_is_not_reported_as_ready(monkeypatch, set_result, readback):
+    import ctypes
+
+    class Function:
+        def __init__(self, result):
+            self.result = result
+
+        def __call__(self, *_args):
+            return self.result
+
+    kernel = SimpleNamespace(
+        GetCurrentProcess=Function(1),
+        SetPriorityClass=Function(set_result),
+        GetPriorityClass=Function(readback),
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_kw: kernel)
+    with pytest.raises(OSError, match="could not be verified"):
+        mod._normal_priority()
 
 
 def test_pending_manual_launcher_blocks_replacement_before_listener(tmp_path, monkeypatch):
@@ -178,11 +229,12 @@ def test_lifetime_election_duplicate_and_private_logs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod, "SessionLock", Lease)
     monkeypatch.setattr(mod.signal, "signal", lambda *_a: None)
+    monkeypatch.setattr(mod, "_normal_priority", lambda: calls.append("priority"))
     monkeypatch.setattr(mod, "watch", lambda *_a: calls.append("watch"))
     assert mod.run() == 0
     assert mod.run() == 75
     assert keys[0] == keys[1]
-    assert calls == ["watch", "release"]
+    assert calls == ["priority", "watch", "release"]
     logs = list((tmp_path / "state with spaces/telegram-mcp/logs").glob("supervise_*.log"))
     assert len(logs) == 2
     text = "".join(p.read_text(encoding="utf-8") for p in logs)

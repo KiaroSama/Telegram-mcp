@@ -354,7 +354,10 @@ def launch_owned(args, **options) -> OwnedProcess:
     options.setdefault("stderr", subprocess.DEVNULL)
     if os.name == "nt":
         options["creationflags"] = (
-            options.get("creationflags", 0) | 4 | subprocess.CREATE_NO_WINDOW
+            options.get("creationflags", 0)
+            | 4
+            | subprocess.CREATE_NO_WINDOW
+            | subprocess.NORMAL_PRIORITY_CLASS
         )
     else:
         if not Path("/proc").is_dir():

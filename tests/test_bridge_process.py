@@ -23,6 +23,40 @@ def test_native_listener_lookup_matches_real_bound_socket():
     assert bridge_process.windows_listener_pid(port) is None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows scheduling inheritance")
+def test_owned_launch_does_not_inherit_background_priority():
+    code = """
+import ctypes, subprocess, sys
+from ctypes import wintypes as w
+from telegram_mcp.bridge_process import launch_owned
+k = ctypes.WinDLL('kernel32', use_last_error=True)
+k.GetCurrentProcess.restype = w.HANDLE
+k.SetPriorityClass.argtypes = [w.HANDLE, w.DWORD]
+k.GetPriorityClass.argtypes = [w.HANDLE]
+k.GetPriorityClass.restype = w.DWORD
+assert k.SetPriorityClass(k.GetCurrentProcess(), 0x4000)
+child = launch_owned([sys.executable, '-c',
+    'import ctypes; from ctypes import wintypes as w; '
+    'k=ctypes.WinDLL("kernel32"); k.GetCurrentProcess.restype=w.HANDLE; '
+    'k.GetPriorityClass.argtypes=[w.HANDLE]; '
+    'print(k.GetPriorityClass(k.GetCurrentProcess()), flush=True)'],
+    stdout=subprocess.PIPE)
+try:
+    assert child.process.wait(timeout=10) == 0
+    assert child.process.stdout.read().strip() == b'32', 'Inherited background priority'
+finally:
+    child.cleanup(timeout=5)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        encoding="utf-8",
+        timeout=20,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def _wait_file(path, timeout=3):
     deadline = time.monotonic() + timeout
     while True:
