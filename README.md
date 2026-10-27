@@ -1253,6 +1253,13 @@ below is read-only; the Actions row is not, and each entry there has a real effe
 | Visual (Windows) | `list_telegram_windows`, `get_telegram_screen`, `get_telegram_region`, `get_telegram_frames` |
 | Actions | `click_button`, `schedule_message`, `edit_scheduled_message`, `cancel_scheduled_message`, `send_disappearing_media`, `save_disappearing_media` |
 
+Stars gift service messages retain their `action` name. Deep single/batch inspection also
+returns validated `action_details`: `stars`, integer smallest-unit `amount`/`currency`, optional
+`crypto_currency`/`crypto_amount`, and the receiver-visible `transaction_id`. Missing or malformed
+fields are omitted, never inferred; compact listings stay unchanged. This reads the existing
+message without another Telegram request and does not establish a supplier purchase correlation
+by itself.
+
 The scheduled queue is a separate history with its own message IDs, so the inherited
 `send_scheduled_message` could queue something an agent then had no way to see, correct or stop.
 `schedule_message` adds Telegram's recurring period — `repeat="daily"` or `"weekly"`, which the
