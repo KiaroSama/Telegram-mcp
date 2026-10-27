@@ -218,3 +218,57 @@ def test_a_message_level_effect_is_reported_separately_from_the_sticker_one():
 
 def test_no_message_effect_key_without_one():
     assert "message_effect" not in _deep(_plain_message())
+
+
+def test_stars_service_receipt_survives_deep_inspection_without_disclosing_other_actions():
+    from telethon.tl.types import MessageActionGiftStars
+
+    fields = dict(
+        currency="USD",
+        amount=75,
+        stars=50,
+        crypto_currency="TON",
+        crypto_amount=620000000,
+        transaction_id="synthetic-receipt_123",
+    )
+    msg = _plain_message(action=MessageActionGiftStars(**fields))
+    from telegram_mcp.tools.messages import message_to_dict
+
+    compact = message_to_dict(msg)
+    assert compact["action"] == "MessageActionGiftStars"
+    assert "action_details" not in compact
+    data = _deep(msg)
+    assert data["action"] == compact["action"]
+    assert data["action_details"] == fields
+
+    required = dict(currency="USD", amount=0, stars=0)
+    assert (
+        _deep(_plain_message(action=MessageActionGiftStars(**required)))["action_details"]
+        == required
+    )
+    for key, invalid in (
+        ("stars", True),
+        ("stars", -1),
+        ("stars", 2**63),
+        ("amount", "75"),
+        ("crypto_amount", 1.0),
+        ("currency", "usd"),
+        ("currency", "USΔ"),
+        ("crypto_currency", "ton"),
+        ("crypto_currency", "T" * 17),
+        ("transaction_id", "unsafe\nreference"),
+        ("transaction_id", "‮abc"),
+        ("transaction_id", "x" * 513),
+        ("transaction_id", ""),
+    ):
+        action = MessageActionGiftStars(**{**fields, key: invalid})
+        assert _deep(_plain_message(action=action))["action_details"] == {
+            name: value for name, value in fields.items() if name != key
+        }, key
+    boundary = {**fields, "stars": 2**63 - 1, "transaction_id": "x" * 512}
+    assert (
+        _deep(_plain_message(action=MessageActionGiftStars(**boundary)))["action_details"]
+        == boundary
+    )
+    for action in (None, SimpleNamespace(stars=50, transaction_id="private")):
+        assert "action_details" not in _deep(_plain_message(action=action))

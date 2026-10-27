@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from telegram_mcp.service_receipts import stars_receipt_details
+
 from telegram_mcp.sanitize import full_name as _full_name
 from telegram_mcp.sanitize import sanitize_name
 from telegram_mcp.permalinks import channel_link_id, message_permalink  # noqa: F401  (re-exported)
@@ -604,6 +606,9 @@ def deep_message_dict(
         link_domain: Domain for permalinks.
     """
     data = dict(base)
+    receipt = stars_receipt_details(getattr(msg, "action", None))
+    if receipt:
+        data["action_details"] = receipt
 
     raw = getattr(msg, "message", "") or ""
     cleaned = fidelity_text(raw)
