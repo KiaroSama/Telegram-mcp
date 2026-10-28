@@ -179,6 +179,27 @@ def test_installed_outermost_exactly_once():
     assert server.middleware[1:] == ["safeguard", "budget"]
 
 
+@pytest.mark.parametrize("failure", [False, True, "exception"])
+def test_stars_receipt_content_is_not_retained_in_command_log(recorder, tmp_path, failure):
+    private = "synthetic-financial-reference-and-payment-link"
+    payload = json.dumps({"status": "unavailable" if failure else "observed", "id": private})
+    answer = RuntimeError(private) if failure == "exception" else _result(payload, failure)
+    ctx = _ctx(name="get_stars_receipt", arguments={"message_id": 176, "account": "fixture"})
+    if failure == "exception":
+        with pytest.raises(RuntimeError):
+            _run(recorder, ctx, answer)
+    else:
+        assert _run(recorder, ctx, answer) is answer
+    raw = next(tmp_path.iterdir()).read_text(encoding="utf-8")
+    assert private not in raw and "financial receipt content omitted" in raw
+    (record,) = _records(tmp_path)
+    assert record["tool"] == "get_stars_receipt"
+    assert record["arguments"] == {"message_id": 176, "account": "fixture"}
+    assert record["outcome"] == (
+        "exception" if failure == "exception" else "error" if failure else "ok"
+    )
+
+
 def test_the_server_records_calls_outside_the_safeguard():
     import telegram_mcp.tools  # noqa: F401 - installs the chain
     from telegram_mcp.runtime import mcp
