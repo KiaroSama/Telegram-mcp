@@ -144,17 +144,29 @@ class CommandLog:
             "account": arguments.get("account") if isinstance(arguments, dict) else None,
             "arguments": _redact(arguments),
         }
+        private_receipt = params.get("name") == "get_stars_receipt"
         started = time.perf_counter()
         try:
             result = await call_next(ctx)
         except BaseException as error:
             record["outcome"] = "exception"
-            record["error"] = _redact(f"{type(error).__name__}: {error}")
+            record["error"] = (
+                "[financial receipt content omitted]"
+                if private_receipt
+                else _redact(f"{type(error).__name__}: {error}")
+            )
             raise
         else:
             is_error, text = _result_text(result)
             text = _redact(text)
-            if is_error:
+            if private_receipt:
+                try:
+                    unavailable = json.loads(text).get("status") == "unavailable"
+                except (ValueError, AttributeError):
+                    unavailable = True
+                record["outcome"] = "error" if is_error or unavailable else "ok"
+                record["result"] = "[financial receipt content omitted]"
+            elif is_error:
                 record["outcome"] = next(
                     (o for prefix, o in _OUTCOME_PREFIXES if text.startswith(prefix)), "error"
                 )
