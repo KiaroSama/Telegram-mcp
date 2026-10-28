@@ -1260,6 +1260,15 @@ fields are omitted, never inferred; compact listings stay unchanged. This reads 
 message without another Telegram request and does not establish a supplier purchase correlation
 by itself.
 
+`get_stars_receipt(message_id=176, account="your-account")` separately reads one gift receipt
+from that account's Telegram service chat (`777000`) and looks up only its exact transaction
+in the same account's Stars ledger. It uses the existing client, never purchases, refunds,
+marks messages read or follows links. Validated amounts/status flags and an optional HTTPS
+`transaction_url` are observations, not a universal supplier-delivery guarantee. Missing,
+conflicting or malformed records return `unavailable`. Opaque financial references are derived
+internally, not accepted as arguments; this tool's result/error contents are omitted from
+command logs while call metadata and timing remain recorded.
+
 The scheduled queue is a separate history with its own message IDs, so the inherited
 `send_scheduled_message` could queue something an agent then had no way to see, correct or stop.
 `schedule_message` adds Telegram's recurring period — `repeat="daily"` or `"weekly"`, which the
