@@ -31,7 +31,7 @@ jobs:
         run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.0"
           enable-cache: true
@@ -91,7 +91,7 @@ jobs:
       # two platforms. Keyed on uv.lock, so a dependency change still gets a cold
       # resolve rather than a stale environment.
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           # The resolver itself is a dependency of every result below. Pinned so
           # a uv release cannot change what CI resolved without a commit saying so.
@@ -189,7 +189,7 @@ jobs:
         run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           # The resolver itself is a dependency of every result below. Pinned so
           # a uv release cannot change what CI resolved without a commit saying so.
@@ -273,7 +273,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install uv for launcher integration
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.0"
           enable-cache: true
@@ -334,7 +334,7 @@ jobs:
         run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.0"
           enable-cache: true
@@ -436,7 +436,7 @@ jobs:
           python-version: '3.13'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.0
+        uses: astral-sh/setup-uv@v10.3.2
         with:
           # The resolver itself is a dependency of every result below. Pinned so
           # a uv release cannot change what CI resolved without a commit saying so.
