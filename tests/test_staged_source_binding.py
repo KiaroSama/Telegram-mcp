@@ -198,7 +198,9 @@ def test_cleanup_after_a_refused_install_leaves_the_stranger_alone(tmp_path):
 
 def test_the_download_path_passes_the_identity_it_verified():
     """The binding is only worth anything where the real caller uses it."""
-    source = Path("telegram_mcp/tools/media.py").read_text(encoding="utf-8")
+    source = Path("telegram_mcp/download_transfer.py").read_text(encoding="utf-8")
+    caller = Path("telegram_mcp/tools/media.py").read_text(encoding="utf-8")
+    assert "await save_media(cl, msg, out_path, cap, ctx, _open_verified_directory)" in caller
 
     assert "staged = fetched.identity" in source
     assert "expect_source=staged" in source

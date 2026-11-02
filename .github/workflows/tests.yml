@@ -360,7 +360,7 @@ jobs:
           grep -c '^telethon @ git+' locked-production.txt
           grep -v -E '^(kiaro-telethon-secret-chat|telethon) @ git+' locked-production.txt > audited.txt
           # Audit the source pin's declared release; pip-audit cannot hash VCS URLs.
-          printf '\ntelethon==1.45.0\n' >> audited.txt
+          printf '\ntelethon==1.45.0 --hash=sha256:339e24c83aedc9f12cbe389264627edc49779e4289c535aa90aafc4ce62f7972\n' >> audited.txt
           mv audited.txt locked-production.txt
 
       # Pinned, like every other tool here: an auditor that changes underneath
