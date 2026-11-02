@@ -19,9 +19,38 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
+  status_begin:
+    name: CI status pending
+    uses: ./.github/workflows/ci-status.yml
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    with:
+      phase: begin
+      workflow: codeql.yml
+
+  status_finish:
+    name: CI status final
+    if: always()
+    needs: [status_begin, analyze]
+    uses: ./.github/workflows/ci-status.yml
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    with:
+      phase: finish
+      workflow: codeql.yml
+
   analyze:
     name: Analyse Python
+    needs: status_begin
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

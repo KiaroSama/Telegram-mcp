@@ -12,7 +12,7 @@ tools is [COMMANDS.md](COMMANDS.md).
 
 ### 1. What you need
 
-- Python 3.11 or newer, and `git` on PATH (pinned dependencies are built from their repositories).
+- Python 3.11–3.15 (the tested range), and `git` on PATH (pinned dependencies are built from their repositories).
 - [uv](https://docs.astral.sh/uv/) (recommended).
 - An API id and hash from [my.telegram.org/apps](https://my.telegram.org/apps).
 - An MCP client: Claude Code, Claude Desktop, Codex, Cursor, or any other.

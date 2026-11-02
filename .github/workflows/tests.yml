@@ -6,7 +6,35 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
+  status_begin:
+    name: CI status pending
+    uses: ./.github/workflows/ci-status.yml
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    with:
+      phase: begin
+      workflow: tests.yml
+
+  status_finish:
+    name: CI status final
+    if: always()
+    needs: [status_begin, lock, test, lottie, launchers, audit, case_counts, coverage]
+    uses: ./.github/workflows/ci-status.yml
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    with:
+      phase: finish
+      workflow: tests.yml
+
   # Before anything resolves: is uv.lock still a lockfile FOR this pyproject?
   # Docker builds with `--frozen`, which installs whatever the lock says even
   # when the manifest has moved on - so a stale lock used to build and test
@@ -14,6 +42,7 @@ jobs:
   # opposite question, and it is the one that catches drift.
   lock:
     name: Lockfile Matches The Manifest
+    needs: status_begin
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -47,13 +76,14 @@ jobs:
 
   test:
     name: Pytest With Coverage
+    needs: status_begin
     runs-on: ubuntu-latest
     # A hung decoder would otherwise hold a runner for GitHub's 6-hour default.
     # The guarded runner below bounds the run itself; this bounds the job around it.
     timeout-minutes: 20
 
-    # The floor and the ceiling. pyproject declares >=3.11 and classifies up to
-    # 3.14; running the ends is what turns that claim into evidence.
+    # The supported floor and ceiling are exercised, including the container's
+    # Python 3.15 runtime; no older supported interpreter is dropped.
     #
     # 3.14 was added only after the suite was actually run on it, not on the
     # strength of the version being released: the resolve, every import, all 181
@@ -65,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.11', '3.12', '3.13', '3.14']
+        python-version: ['3.11', '3.12', '3.13', '3.14', '3.15']
 
     steps:
       - name: Check out repository code
@@ -163,6 +193,7 @@ jobs:
   # exactly where an rlottie wheel failing to build would go unnoticed otherwise.
   lottie:
     name: Pytest With Lottie Renderer (${{ matrix.os }})
+    needs: status_begin
     runs-on: ${{ matrix.os }}
     # The native rlottie decoder is exactly the kind of child that wedges
     # without exiting, so this job needs the ceiling more than the others.
@@ -258,6 +289,7 @@ jobs:
   # added here is picked up, and one whose subject is deleted fails loudly.
   launchers:
     name: PowerShell Launcher Tests
+    needs: status_begin
     runs-on: windows-latest
     timeout-minutes: 10
 
@@ -316,6 +348,7 @@ jobs:
   # worth knowing and is not a vulnerability in what ships.
   audit:
     name: Locked Dependencies Have No Known Advisory
+    needs: status_begin
     runs-on: ubuntu-latest
     timeout-minutes: 10
 

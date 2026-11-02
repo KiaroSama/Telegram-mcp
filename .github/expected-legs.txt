@@ -19,5 +19,6 @@ py3.11 3.11 Linux
 py3.12 3.12 Linux
 py3.13 3.13 Linux
 py3.14 3.14 Linux
+py3.15 3.15 Linux
 lottie-ubuntu-latest 3.11 Linux
 lottie-windows-latest 3.11 Windows

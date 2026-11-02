@@ -1,0 +1,24 @@
+{
+  "tests.yml": [
+    "Lockfile Matches The Manifest",
+    "Pytest With Coverage (3.11)",
+    "Pytest With Coverage (3.12)",
+    "Pytest With Coverage (3.13)",
+    "Pytest With Coverage (3.14)",
+    "Pytest With Coverage (3.15)",
+    "Pytest With Lottie Renderer (ubuntu-latest)",
+    "Pytest With Lottie Renderer (windows-latest)",
+    "PowerShell Launcher Tests",
+    "Locked Dependencies Have No Known Advisory",
+    "Every Leg Collected The Same Cases",
+    "Combined Coverage Gate"
+  ],
+  "python-lint-format.yml": ["Check Linting & Formatting"],
+  "secret-scan.yml": ["Refuse a credential or a private path"],
+  "codeql.yml": ["Analyse Python"],
+  "docker-build.yml": [
+    "Build Docker Image",
+    "State Survives A Container Replacement",
+    "Build & Validate Docker Compose"
+  ]
+}
