@@ -273,8 +273,10 @@ def test_the_build_backend_is_new_enough_to_understand_the_license_expression():
     requires = _pyproject()["build-system"]["requires"]
     setuptools_pin = next(r for r in requires if r.startswith("setuptools"))
 
-    floor = int(setuptools_pin.split(">=")[1].split(",")[0].strip())
-    assert floor >= 77, f"{setuptools_pin} predates SPDX `license` support"
+    from packaging.version import Version
+
+    floor = Version(setuptools_pin.split(">=")[1].split(",")[0].strip())
+    assert floor >= Version("77"), f"{setuptools_pin} predates SPDX `license` support"
 
 
 def _declared_for_coverage() -> set:

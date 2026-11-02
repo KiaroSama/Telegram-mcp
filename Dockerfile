@@ -1,15 +1,6 @@
-# A Debian base, and the reason changed on 2026-09-21.
-#
-# It was a REQUIREMENT while a native dependency shipped manylinux wheels with no
-# musllinux wheel and no source distribution: on Alpine the build failed at
-# `uv sync` with "doesn't have a source distribution or wheel for the current
-# platform", several minutes in. That dependency is gone with TDLib, and every
-# remaining one is pure Python, so nothing here needs glibc any more.
-#
-# It stays `-slim` because a move to Alpine is an untested change with no measured
-# benefit, not because it is still forced. What IS still required is `git`, for the
-# encryption package's VCS pin - see the layer below, and
-# tests/test_container_build.py, which asserts it.
+# Keep the established Debian slim runtime. Python 3.15 has no cryptg 0.6
+# wheel yet, so its native extension is built with Debian's Rust/C toolchain.
+# Build prerequisites are removed in the same layer; cryptg stays installed.
 FROM python:3.15-slim
 
 # Set the working directory in the container
@@ -54,11 +45,11 @@ COPY pyproject.toml uv.lock ./
 # removed again in the same layer so the image does not carry a build tool it never
 # runs.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
+    && apt-get install -y --no-install-recommends git gcc libc6-dev cargo rustc \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv==0.13.0 \
     && uv sync --locked --no-dev --no-install-project \
-    && apt-get purge -y git && apt-get autoremove -y
+    && apt-get purge -y git gcc libc6-dev cargo rustc && apt-get autoremove -y
 
 # uv puts the environment in /app/.venv, so putting it first on PATH is what makes
 # the bare `python` in CMD below the interpreter holding the locked dependencies.
