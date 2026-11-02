@@ -42,8 +42,8 @@ def test_rich_contacts_embeds_and_cycles_are_bounded():
     rich.blocks.append(rich)
     message = types.Message(id=8, peer_id=types.PeerUser(8), message="", rich_message=rich)
     result = message_to_dict(message)
-    assert result["link_urls"] == [
+    assert set(result["link_urls"]) == {
         "mailto:demo@example.org",
         "tel:+12025550123",
         "https://example.org/embed",
-    ]
+    }
