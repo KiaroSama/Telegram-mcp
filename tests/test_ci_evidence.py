@@ -139,6 +139,7 @@ def test_the_manifest_names_a_platform_for_every_leg():
         "py3.12",
         "py3.13",
         "py3.14",
+        "py3.15",
         "lottie-ubuntu-latest",
         "lottie-windows-latest",
     }
