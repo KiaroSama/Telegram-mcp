@@ -179,6 +179,11 @@ async def inspect_message(
             return f"Message {message_id} was not found in chat {chat_id}."
 
         data = deep_message_dict(msg, message_to_dict(msg), chat=entity, link_domain=LINK_DOMAIN)
+        quote = data.get("reply_quote")
+        if quote:
+            from telegram_mcp.safeguard import note_records
+
+            note_records(account, chat_id, [{"text": quote.get("text", ""), "is_outgoing": False}])
         images = []
 
         if include_thumbnail and (describe_media(msg) or {}).get("has_thumbnail"):

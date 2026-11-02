@@ -15,7 +15,6 @@ import inspect
 
 from telegram_mcp.file_roots import safe_suffix, target_path
 from telegram_mcp.tools import ephemeral as ephemeral_mod
-from telegram_mcp.tools import media as media_mod
 
 # Well formed by shape — a dot and a few ASCII letters, exactly like ".jpg" —
 # and executed or followed by the shell.
@@ -53,7 +52,9 @@ def test_download_media_routes_the_sender_suffix_through_the_guard():
     """The acceptance case. Driving the whole tool needs a configured root and a
     staging directory; the guarantee that matters is which function decides the
     final name, and that is readable directly."""
-    source = inspect.getsource(media_mod)
+    from telegram_mcp import download_transfer
+
+    source = inspect.getsource(download_transfer)
 
     assert (
         "with_suffix(produced.suffix)" not in source

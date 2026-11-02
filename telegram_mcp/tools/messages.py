@@ -32,48 +32,17 @@ from telegram_mcp.entities import build_send_entities
 import random
 
 from telethon import utils as telethon_utils
-from telethon.tl.types import InputReplyToMessage
 
 from telegram_mcp.forum import topic_reply_to, topic_reply_to_request
 from telegram_mcp.sent import sent_message_ids
 
-# Verified against the live server, not inferred from the field name: 86400 and
-# 604800 are accepted (they fail only on the Premium gate), while 5 is rejected
-# with SCHEDULE_REPEAT_PERIOD_INVALID.
-REPEAT_PERIODS = {"daily": 86400, "weekly": 604800}
-
-_PREMIUM_NOTE = (
-    "Telegram gates the recurring-message period behind Premium: the period value itself is "
-    "accepted, but a non-Premium account gets PREMIUM_ACCOUNT_REQUIRED. Schedule it without "
-    "repeat, or use a Premium account."
+from telegram_mcp.message_schedule import (  # noqa: F401 (compatibility exports)
+    REPEAT_PERIODS,
+    _PREMIUM_NOTE,
+    _repeat_seconds,
+    _as_utc,
 )
-
-
-def _repeat_seconds(repeat: Optional[str]) -> Union[int, None, str]:
-    """The period for a repeat name, ``None`` for no repeat, or an error string."""
-    if repeat is None or str(repeat).lower() in ("", "none", "off"):
-        return None
-    period = REPEAT_PERIODS.get(str(repeat).lower())
-    if period is None:
-        return (
-            f"repeat must be one of {', '.join(REPEAT_PERIODS)} (or omitted) - got {repeat!r}. "
-            "Telegram validates the period against a fixed set and rejects anything else with "
-            "SCHEDULE_REPEAT_PERIOD_INVALID."
-        )
-    return period
-
-
-def _as_utc(value: Union[str, int]) -> datetime:
-    """A schedule time from an ISO-8601 string or a Unix timestamp, as UTC.
-
-    Lives here rather than beside the scheduling tools because two modules need
-    it and this one is the base the siblings import from; the reverse direction
-    is what the module docstring above forbids.
-    """
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(int(value), tz=timezone.utc)
-    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
+from telegram_mcp import rich_quote_send, rich_quotes
 
 
 async def _send_rich(
@@ -133,50 +102,7 @@ async def resolve_send_as(cl, send_as):
     return await resolve_entity(send_as, cl)
 
 
-async def _send_text(
-    cl, entity, text, parse_mode, built_entities, effect_id, reply_target, send_as=None
-):
-    """Send plain/parsed text, routed by what the reply target needs.
-
-    Telethon's friendly `send_message` puts `reply_to` through
-    `utils.get_message_id`, which takes an int or a Message and raises
-    `TypeError: Invalid message type` on anything else. So an `InputReplyToMessage`
-    -- the only way to say "reply to message M *inside topic T*", and the only
-    way to quote a span -- cannot go through it at all. Those cases go as a raw
-    `SendMessageRequest`, which is what the field was designed for.
-
-    A bare id still takes the friendly path: it returns a `Message`, handles
-    parse modes server-side, and is the overwhelmingly common case.
-    """
-    if not isinstance(reply_target, InputReplyToMessage):
-        return await cl.send_message(
-            entity,
-            text,
-            parse_mode=parse_mode,
-            formatting_entities=built_entities,
-            message_effect_id=effect_id,
-            reply_to=reply_target,
-            **({"send_as": send_as} if send_as is not None else {}),
-        )
-
-    # The raw request has no parse_mode: it takes entities only. Parsing here is
-    # what the friendly method would have done a moment later anyway.
-    if parse_mode and not built_entities:
-        parser = telethon_utils.sanitize_parse_mode(parse_mode)
-        if parser:
-            text, built_entities = parser.parse(text)
-
-    return await cl(
-        functions.messages.SendMessageRequest(
-            peer=entity,
-            message=text,
-            random_id=random.randint(0, 2**62),
-            reply_to=reply_target,
-            entities=built_entities or None,
-            effect=effect_id,
-            send_as=send_as,
-        )
-    )
+from telegram_mcp.rich_quote_send import send_text as _send_text  # noqa: E402,F401
 
 
 async def _edit_rich(
@@ -603,6 +529,9 @@ async def reply_to_message(
     quote_offset: Optional[int] = None,
     send_as: Optional[Union[int, str]] = None,
     account: str = None,
+    quote_block_index: Optional[int] = None,
+    quote_row: Optional[int] = None,
+    quote_column: Optional[int] = None,
 ) -> str:
     """
     Reply to a specific message in a chat, including one inside a forum topic.
@@ -626,6 +555,9 @@ async def reply_to_message(
             the partial quote `inspect_message` reports as `reply_quote.text`.
             Must be an exact substring of the replied-to message; Telegram
             rejects a fragment it cannot find.
+        quote_block_index: Rich article block, zero-based, from read_rich_message.quote_sources.
+        quote_row: Table row, zero-based; supply together with quote_column.
+        quote_column: Table cell index, zero-based. Rich quotes preserve source formatting.
         quote_offset: Where that span starts, as `reply_quote.offset` reports it
             (a UTF-16 code-unit index into the replied-to message, not into
             `text`). Needed when the fragment appears more than once; omit and
@@ -648,15 +580,31 @@ async def reply_to_message(
 
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
+        coordinates = (quote_block_index, quote_row, quote_column)
+        if any(value is not None for value in coordinates) and not quote_text:
+            return "Quote coordinates require quote_text. Nothing was sent."
+        if quote_text and parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
+            return "A rich reply body cannot be combined with a quote. Nothing was sent."
         if parse_mode and parse_mode.lower() in RICH_PARSE_MODES:
             return await _send_rich(cl, entity, text, parse_mode.lower(), topic_id, message_id)
-        # A quote needs the TL type even without a topic: it carries fields a bare
-        # message id has nowhere to put.
-        target = (
-            topic_reply_to_request(topic_id, message_id, quote_text, quote_offset)
-            if quote_text
-            else topic_reply_to(topic_id, message_id)
-        )
+        target = None
+        if quote_text and any(value is not None for value in coordinates):
+            peer = await cl.get_input_entity(entity)
+            target = await rich_quote_send.reply_target(
+                cl,
+                peer,
+                message_id,
+                quote_text,
+                quote_offset,
+                *coordinates,
+                topic_id,
+            )
+        if target is None:
+            target = (
+                topic_reply_to_request(topic_id, message_id, quote_text, quote_offset)
+                if quote_text
+                else topic_reply_to(topic_id, message_id)
+            )
         sent = await _send_text(
             cl,
             entity,
@@ -675,6 +623,8 @@ async def reply_to_message(
             [{"message_id": ids[0], "chat_id": str(chat_id)}],
             {"sent": True, "replied_to": message_id, "detail": note},
         )
+    except rich_quotes.QuoteError as error:
+        return f"Quote refused: {error} Nothing was sent."
     except Exception as e:
         return log_and_format_error(
             "reply_to_message", e, chat_id=chat_id, message_id=message_id, text=text

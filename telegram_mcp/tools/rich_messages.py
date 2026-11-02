@@ -31,7 +31,7 @@ from telegram_mcp.runtime import _account_for_client
 
 from telethon import errors
 
-from telegram_mcp import rich_blocks
+from telegram_mcp import rich_blocks, rich_quotes
 
 __all__ = ["download_rich_media", "read_rich_message"]
 
@@ -142,6 +142,7 @@ async def read_rich_message(chat_id: Union[int, str], message_id: int, account: 
                 "is_rtl": rendered["rtl"],
                 "block_count": rendered["block_count"],
                 "blocks": rendered["blocks"],
+                "quote_sources": rich_quotes.quote_sources(rich),
             }
         )
     except ValueError as e:

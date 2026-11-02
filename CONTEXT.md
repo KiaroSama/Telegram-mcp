@@ -138,6 +138,16 @@ therefore not evidence that a message is empty, and reading one is always two ac
 then fetch.
 _Avoid_: rich text, formatted message, table message
 
+**Rich quote**:
+Selected formatted fragments from an article or table, carried as a reply's quote rather
+than as the reply's own body. Distinct from an ordinary message's text quote.
+_Avoid_: blockquote, copied cell
+
+**Story preview**:
+An image or sampled video frames of a story the named account can access, without
+registering a view. Fetching its content is not a seen signal.
+_Avoid_: watched story, read story
+
 **Checklist**:
 A message listing tasks. Its sender, and anyone else it allows, adds tasks and marks them
 done or undone; each completion records who did it and when.

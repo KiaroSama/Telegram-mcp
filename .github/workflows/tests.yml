@@ -349,14 +349,18 @@ jobs:
       # line. `kiaro-telethon-secret-chat` is the owner's package, pinned by git to its
       # repository (it is not on PyPI), so the pin is not negotiable here.
       #
-      # Dropping it from the audited file costs nothing real: advisories are published
-      # against index releases, and this package has none to match against. It is the
-      # owner's own code and its own repository's CI is where it is scanned. Every
-      # third-party dependency still goes through pip-audit untouched.
-      - name: Set aside the git-pinned requirement pip-audit cannot hash
+      # The owner's package has no index release; its own repository scans its source.
+      # Telethon's official development pin still declares 1.45.0: audit that release
+      # for published advisories. This does not audit the development source delta,
+      # which needs source review and the compatibility tests in the suite.
+      # All other third-party requirements are audited unchanged.
+      - name: Translate git pins for release advisory matching
         run: |
           grep -c '^kiaro-telethon-secret-chat @ git+' locked-production.txt
-          grep -v '^kiaro-telethon-secret-chat @ git+' locked-production.txt > audited.txt
+          grep -c '^telethon @ git+' locked-production.txt
+          grep -v -E '^(kiaro-telethon-secret-chat|telethon) @ git+' locked-production.txt > audited.txt
+          # Audit the source pin's declared release; pip-audit cannot hash VCS URLs.
+          printf '\ntelethon==1.45.0\n' >> audited.txt
           mv audited.txt locked-production.txt
 
       # Pinned, like every other tool here: an auditor that changes underneath
