@@ -244,7 +244,7 @@ def group_sends(kinds, headers=None, names=None):
     return planned
 
 
-async def caption_flags(entities, caption: str, account=None) -> dict:
+async def caption_flags(entities, caption: str, account=None, parse_mode=None) -> dict:
     """The keyword that makes a caption carry its own formatting, or nothing.
 
     `send_file` was the only sending path in this server with no entity
@@ -260,6 +260,16 @@ async def caption_flags(entities, caption: str, account=None) -> dict:
     Returns ``{}`` when no entities were asked for: an absent argument must not
     change the call every existing caller already makes.
     """
+    if parse_mode is not None:
+        if parse_mode not in ("plain", "md", "markdown", "html"):
+            raise MediaKindError(
+                "parse_mode must be plain, md, markdown or html. Nothing was sent."
+            )
+        if entities:
+            raise MediaKindError(
+                "Choose caption_entities or parse_mode, not both. Nothing was sent."
+            )
+        return {"parse_mode": None if parse_mode == "plain" else parse_mode}
     if not entities:
         return {}
     from telegram_mcp.entities import build_send_entities

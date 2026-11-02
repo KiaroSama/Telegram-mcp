@@ -55,6 +55,8 @@ class Client:
         self.sent = []
         self._messages = messages if messages is not None else []
         self._answer = answer
+        self._self_id = 999
+        self._mb_entity_cache = {}
 
     async def get_messages(self, entity, **kwargs):
         self.asked.append((entity, kwargs))
@@ -62,6 +64,20 @@ class Client:
 
     async def __call__(self, request):
         self.sent.append(request)
+        if isinstance(request, functions.messages.SearchGlobalRequest):
+            offset = request.offset_id
+            selected = self._messages[offset : offset + request.limit]
+            return types.messages.MessagesSlice(
+                count=len(self._messages),
+                topics=[],
+                messages=[
+                    types.Message(id=m.id, peer_id=types.PeerUser(77), message=m.message)
+                    for m in selected
+                ],
+                users=[types.User(id=77, access_hash=88, first_name="Fixture")],
+                chats=[],
+                next_rate=0,
+            )
         return self._answer
 
 
@@ -236,8 +252,9 @@ async def test_page_two_is_not_page_one_again(wire_client):
 
     assert [r["id"] for r in first["results"]] == [1, 2, 3]
     assert [r["id"] for r in second["results"]] == [4, 5, 6]
-    # Page 2 must actually ask for enough records to have a page 2 in it.
-    assert client.asked[-1][1]["limit"] == 6
+    # Page 2 walks the native peer/rate/id offset instead of a dead add_offset.
+    assert client.sent[-1].offset_id == 3
+    assert client.sent[-1].limit == 3
 
 
 @pytest.mark.asyncio
@@ -258,9 +275,9 @@ async def test_a_global_media_search_needs_no_query(wire_client):
 
     await read_mod.search_global(media_type="links")
 
-    _entity, kwargs = client.asked[-1]
-    assert isinstance(kwargs["filter"], types.InputMessagesFilterUrl)
-    assert kwargs["search"] is None
+    request = client.sent[-1]
+    assert isinstance(request.filter, types.InputMessagesFilterUrl)
+    assert request.q == ""
 
 
 @pytest.mark.asyncio

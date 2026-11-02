@@ -124,6 +124,46 @@ async def test_message_photos_are_keyed_by_message_id_not_photo_id():
 
 
 @pytest.mark.asyncio
+async def test_message_identifier_is_fetched_directly_and_preview_is_not_a_photo():
+    from telethon import types
+
+    class Client:
+        async def get_messages(self, entity, **kwargs):
+            assert kwargs == {"ids": 9001}, "An explicit message id must not scan recent history"
+            return types.Message(
+                id=9001,
+                peer_id=types.PeerUser(7),
+                message="link",
+                media=types.MessageMediaWebPage(types.WebPageEmpty(id=1)),
+            )
+
+    result = await find_photo_reference(
+        Client(), types.InputPeerUser(7, 8), MESSAGE_SOURCE, 9001, 10
+    )
+    assert result is None
+
+    class PhotoClient:
+        async def get_messages(self, entity, **kwargs):
+            assert kwargs == {"ids": 9001}
+            return types.Message(
+                id=9001,
+                peer_id=types.PeerUser(7),
+                message="caption",
+                media=types.MessageMediaPhoto(
+                    types.Photo(
+                        id=1, access_hash=2, file_reference=b"", date=None, sizes=[], dc_id=1
+                    )
+                ),
+            )
+
+    result = await find_photo_reference(
+        PhotoClient(), types.InputPeerUser(7, 8), MESSAGE_SOURCE, 9001, 10
+    )
+    assert result.identifier == 9001 and result.photo.id == 1
+    assert result.caption == "caption"
+
+
+@pytest.mark.asyncio
 async def test_no_identifier_means_the_current_avatar():
     entity = SimpleNamespace(id=9, photo=SimpleNamespace(photo_id=302))
     client = _Client(

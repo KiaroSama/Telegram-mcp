@@ -59,6 +59,23 @@ _Avoid_: listener, root process
 Positive observation that the complete owned service generation has exited.
 _Avoid_: kill requested, restart attempted
 
+**Search continuation**:
+An opaque position in one named account's global search, bound to that client
+generation, query and media filter. Its rate, peer and message id travel together:
+a message id alone is local to a chat, not an ordering across every chat.
+_Avoid_: page number, global message id
+
+**Rights patch**:
+An explicit change to named admin permissions. Every unspecified installed-schema
+right and an omitted title are retained. Different from replacement, which sets
+exactly the named permissions; neither operation is a Telegram compare-and-set.
+_Avoid_: promotion, replacement, race-free update
+
+**Folder invitation preview**:
+A read of the chats a shared-folder link offers, never consent to add the folder
+or join any chat. Already-added and missing peers remain distinct.
+_Avoid_: import, join, membership grant
+
 ### What a tool may touch
 
 **Allowed root**:

@@ -120,6 +120,10 @@ async def _edit_rich(
                 rich_message=make_rich_input(parse_mode, text, rich_rtl),
             )
         )
+    except telethon.errors.MessageNotModifiedError:
+        return json.dumps(
+            {"sent": False, "rich": True, "edited_message_id": message_id, "not_modified": True}
+        )
     except telethon.errors.RPCError as e:
         if is_premium_rpc_error(e):
             return premium_required_result("edit_message")
@@ -500,6 +504,8 @@ async def edit_message(
             extra = {"parse_mode": None, "formatting_entities": built_entities}
         await cl.edit_message(entity, message_id, new_text, **extra)
         return f"Message {message_id} edited."
+    except telethon.errors.MessageNotModifiedError:
+        return f"Message {message_id} not modified: text and formatting are unchanged."
     except Exception as e:
         return log_and_format_error(
             "edit_message", e, chat_id=chat_id, message_id=message_id, new_text=new_text

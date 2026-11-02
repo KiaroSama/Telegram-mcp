@@ -16,7 +16,7 @@ The approval the owner sees lists the rights about to be granted (`approval_deta
 from typing import NamedTuple
 
 from telegram_mcp import admin_rights_sets as sets
-from telegram_mcp import approval_details, preflight
+from telegram_mcp import approval_details, preflight, admin_patch
 from telegram_mcp.runtime import *
 from telegram_mcp.tools.admin_rights import _declined_note, _rights_telegram_declined
 from telegram_mcp.tools.communities import _community
@@ -131,7 +131,7 @@ _REFUSALS = (
 )
 
 
-async def _grant(tool, kind, chat_ref, user_ref, given, account, rank, exact):
+async def _grant(tool, kind, chat_ref, user_ref, given, account, rank, exact, mode="replace"):
     family = tool.rsplit("_", 1)[0]
     try:
         cl = get_client(account)
@@ -142,7 +142,17 @@ async def _grant(tool, kind, chat_ref, user_ref, given, account, rank, exact):
         refusal = sets.validate(kind, given, target.is_forum)
         if refusal:
             return f"Error: {refusal}"
-        rights = sets.effective_rights(kind, given, target.is_forum, exact)
+        if mode not in ("replace", "patch"):
+            return "Error: mode must be replace or patch. Nothing was changed."
+        if mode == "patch":
+            rights, rank, unchanged = await admin_patch.prepare(
+                cl, target.chat, target.user, given, rank
+            )
+            if unchanged:
+                return "Admin rights and title unchanged. Nothing was changed."
+        else:
+            rank = rank or ""
+            rights = sets.effective_rights(kind, given, target.is_forum, exact)
         if not any(rights.values()):
             return (
                 "Error: no right was named, so nothing would be granted. Name at least one "
@@ -177,6 +187,8 @@ async def _grant(tool, kind, chat_ref, user_ref, given, account, rank, exact):
                 "The read-back may lag behind the request; exact application is not confirmed."
             )
         return answer + note
+    except admin_patch.PatchError as error:
+        return f"Error: {error} Nothing was changed."
     except Exception as e:
         for error_type, text in _REFUSALS:
             if isinstance(e, error_type):
@@ -345,7 +357,7 @@ async def promote_admin_community(
 async def edit_admin_rights_group(
     group_id: Union[int, str],
     user_id: Union[int, str],
-    rank: str = "",
+    rank: Optional[str] = None,
     change_info: Optional[bool] = None,
     manage_welcome_messages: Optional[bool] = None,
     delete_messages: Optional[bool] = None,
@@ -361,8 +373,11 @@ async def edit_admin_rights_group(
     anonymous: Optional[bool] = None,
     add_admins: Optional[bool] = None,
     account: str = None,
+    mode: str = "replace",
 ) -> str:
     """
+    mode='patch' changes only named rights and preserves unspecified rights/title.
+    mode='replace' (default) retains the existing exact-replacement behavior.
     Set a GROUP admin's rights to exactly the ones you name true; every other right ends
     up off. Name at least one right (demote_admin removes admin status). For a channel use
     edit_admin_rights_channel, for a community edit_admin_rights_community.
@@ -389,7 +404,7 @@ async def edit_admin_rights_group(
     """
     given = _named("group", locals())
     return await _grant(
-        "edit_admin_rights_group", "group", group_id, user_id, given, account, rank, True
+        "edit_admin_rights_group", "group", group_id, user_id, given, account, rank, True, mode
     )
 
 
@@ -399,7 +414,7 @@ async def edit_admin_rights_group(
 async def edit_admin_rights_channel(
     channel_id: Union[int, str],
     user_id: Union[int, str],
-    rank: str = "",
+    rank: Optional[str] = None,
     change_info: Optional[bool] = None,
     manage_welcome_messages: Optional[bool] = None,
     post_messages: Optional[bool] = None,
@@ -414,8 +429,11 @@ async def edit_admin_rights_channel(
     add_admins: Optional[bool] = None,
     ban_users: Optional[bool] = None,
     account: str = None,
+    mode: str = "replace",
 ) -> str:
     """
+    mode='patch' changes only named rights and preserves unspecified rights/title.
+    mode='replace' (default) retains the existing exact-replacement behavior.
     Set a CHANNEL admin's rights to exactly the ones you name true; every other right ends
     up off. Name at least one right (demote_admin removes admin status). For a group use
     edit_admin_rights_group, for a community edit_admin_rights_community.
@@ -440,7 +458,15 @@ async def edit_admin_rights_channel(
     """
     given = _named("channel", locals())
     return await _grant(
-        "edit_admin_rights_channel", "channel", channel_id, user_id, given, account, rank, True
+        "edit_admin_rights_channel",
+        "channel",
+        channel_id,
+        user_id,
+        given,
+        account,
+        rank,
+        True,
+        mode,
     )
 
 
@@ -450,14 +476,17 @@ async def edit_admin_rights_channel(
 async def edit_admin_rights_community(
     community: Union[int, str],
     user_id: Union[int, str],
-    rank: str = "",
+    rank: Optional[str] = None,
     change_info: Optional[bool] = None,
     manage_linked_peers: Optional[bool] = None,
     ban_users: Optional[bool] = None,
     add_admins: Optional[bool] = None,
     account: str = None,
+    mode: str = "replace",
 ) -> str:
     """
+    mode='patch' changes only named rights and preserves unspecified rights/title.
+    mode='replace' (default) retains the existing exact-replacement behavior.
     Set a COMMUNITY admin's rights to exactly the ones you name true; every other right
     ends up off. Name at least one right (demote_admin removes admin status). For a group
     use edit_admin_rights_group, for a channel edit_admin_rights_channel.
@@ -475,7 +504,15 @@ async def edit_admin_rights_community(
     """
     given = _named("community", locals())
     return await _grant(
-        "edit_admin_rights_community", "community", community, user_id, given, account, rank, True
+        "edit_admin_rights_community",
+        "community",
+        community,
+        user_id,
+        given,
+        account,
+        rank,
+        True,
+        mode,
     )
 
 
@@ -483,6 +520,19 @@ def _approval_detail(family: str, kind: str, exact: bool):
     """The approval's extra line: the rights this call would grant, in Desktop's words."""
 
     async def detail(arguments: dict) -> str:
+        if exact and arguments.get("mode") == "patch":
+            changes = (
+                ", ".join(
+                    f"{name}={'on' if arguments[name] else 'off'}"
+                    for name in sets.fields(kind, True)
+                    if isinstance(arguments.get(name), bool)
+                )
+                or "no permission changes"
+            )
+            title = (
+                "title unchanged" if arguments.get("rank") is None else "title explicitly replaced"
+            )
+            return f"permissions patch: {changes}; {title}. Unspecified rights retained."
         given = {
             n: arguments[n] for n in sets.fields(kind, True) if isinstance(arguments.get(n), bool)
         }
@@ -515,6 +565,8 @@ _RIGHT_NAMES = frozenset(n for k in sets.KINDS for n in sets.fields(k, True))
 def _not_boolean(arguments: dict) -> Optional[str]:
     """Review H1: a right sent as "true" or 1 is coerced to True when the tool runs, but the
     approval line counts only real booleans - refuse it before the owner is asked."""
+    if arguments.get("mode", "replace") not in ("replace", "patch"):
+        return "mode must be replace or patch."
     bad = sorted(
         n
         for n in _RIGHT_NAMES

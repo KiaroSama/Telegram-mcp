@@ -32,7 +32,7 @@ RESULT_HEAD = 1000
 RETENTION_DAYS = 30
 _PREFIX = "agent-commands_"
 _REDACTED = "[REDACTED]"
-_SECRET_NAMES = ("password", "token", "secret", "session", "api_hash", "phone_code")
+_SECRET_NAMES = ("password", "token", "secret", "session", "api_hash", "phone_code", "cursor")
 _OUTCOME_PREFIXES = (
     ("SAFEGUARD:", "refused_by_safeguard"),
     ("PREFLIGHT:", "refused_before_approval"),
@@ -159,6 +159,11 @@ class CommandLog:
         else:
             is_error, text = _result_text(result)
             text = _redact(text)
+            if params.get("name") == "search_global":
+                try:
+                    text = json.dumps(_redact(json.loads(text)), ensure_ascii=False)
+                except (ValueError, TypeError):
+                    pass
             if private_receipt:
                 try:
                     unavailable = json.loads(text).get("status") == "unavailable"

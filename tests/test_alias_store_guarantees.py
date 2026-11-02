@@ -38,6 +38,16 @@ def _isolated_store(tmp_path, monkeypatch):
     _reset_alias_cache()
 
 
+def test_overridden_store_creates_missing_parents(_isolated_store, monkeypatch):
+    nested = _isolated_store.parent / "nested" / "private" / "aliases.json"
+    monkeypatch.setenv(alias_mod._ALIASES_ENV, str(nested))
+    alias_mod.update_aliases(
+        lambda rows: rows.update({("acct", "demo"): {"id": 7, "account": "acct"}})
+    )
+    assert nested.is_file()
+    assert alias_mod.load_aliases()[("acct", "demo")]["id"] == 7
+
+
 def test_a_write_that_cannot_be_made_private_is_refused(_isolated_store, monkeypatch):
     save_aliases({("acct", "mum"): {"id": 1, "name": "Mum", "account": "acct"}})
     before = _isolated_store.read_text(encoding="utf-8")

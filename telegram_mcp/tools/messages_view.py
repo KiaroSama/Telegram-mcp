@@ -19,7 +19,8 @@ keeps resolving.
 """
 
 from telegram_mcp.button_view import button_styles
-from telegram_mcp.safeguard import note_rendered
+from telegram_mcp.safeguard import note_rendered, note_records
+from telegram_mcp.runtime import _account_for_client
 from telegram_mcp.runtime import *
 
 from telegram_mcp.forum import reply_target_of
@@ -135,14 +136,18 @@ def _inline_button_texts(msg):
     return out
 
 
-def _link_urls(msg):
+def _link_urls(msg, rich_links=None):
     """Explicit URLs from entities (links hidden behind text), [] if none.
 
     These are the URLs a message hides behind its visible text, so they are read
     precisely when the visible text cannot be trusted. Bounded as a machine value
     rather than as prose; one that cleans away to nothing is dropped.
     """
-    out = []
+    from telegram_mcp.rich_metadata import describe
+
+    out = list(
+        describe(getattr(msg, "rich_message", None))[0] if rich_links is None else rich_links
+    )
     try:
         for e in getattr(msg, "entities", None) or []:
             u = display_name(getattr(e, "url", None), max_length=MAX_MACHINE_VALUE)
@@ -150,6 +155,13 @@ def _link_urls(msg):
                 out.append(u)
     except Exception:
         pass
+    out = list(dict.fromkeys(out))
+    if out and (not getattr(msg, "out", False) or getattr(msg, "fwd_from", None)):
+        note_records(
+            _account_for_client(getattr(msg, "_client", None)),
+            getattr(msg, "chat_id", None),
+            [{"text": " ".join(out)}],
+        )
     return out
 
 
@@ -208,6 +220,11 @@ def message_to_dict(msg) -> dict:
     media_label = get_media_label(msg)
     if media_label:
         d["media"] = media_label
+    from telegram_mcp.rich_metadata import describe
+
+    rich_links, rich_media = describe(getattr(msg, "rich_message", None))
+    if rich_media:
+        d["rich_media"] = rich_media
 
     grouped_id = getattr(msg, "grouped_id", None)
     if grouped_id:
@@ -321,7 +338,7 @@ def message_to_dict(msg) -> dict:
         if styles:
             d["button_styles"] = styles
 
-    urls = _link_urls(msg)
+    urls = _link_urls(msg, rich_links)
     if urls:
         d["link_urls"] = urls
 

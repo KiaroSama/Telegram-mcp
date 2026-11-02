@@ -46,6 +46,7 @@ def test_every_registered_write_tool_is_named_in_exactly_one_set():
         "pause_secret_chat",
         "receive_secret_media",
         "resume_secret_chat",
+        "send_typing",
     }
     for tool in _registered():
         if tool.name in fallback:
