@@ -931,6 +931,8 @@ exact commit. A skipped, cancelled, missing or failed job is never reported gree
 The reporter uses the current run attempt; after cancelling a workflow, rerun **all
 jobs** to obtain fresh complete evidence. Original Actions checks remain available.
 The runtime matrix covers Python 3.11–3.15; the container uses Python 3.15 slim.
+The image builds `cryptg` with temporary Rust/C prerequisites when no wheel exists,
+then removes those build tools before the final runtime layer.
 
 The implementation is split into a small compatibility entrypoint and modular package code.
 `settings.py` is deliberately the lowest layer - everything above needs some of it and none

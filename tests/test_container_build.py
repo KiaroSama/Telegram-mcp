@@ -197,6 +197,12 @@ def test_the_image_puts_sessions_outside_the_application_directory():
     )
 
 
+def test_the_slim_image_can_build_native_cryptg_without_shipping_build_tools():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    assert "git gcc libc6-dev cargo rustc" in dockerfile
+    assert "apt-get purge -y git gcc libc6-dev cargo rustc" in dockerfile
+
+
 def test_the_base_image_can_actually_install_the_dependencies():
     """A dependency pinned by git needs git, and says so only in CI.
 
