@@ -10,7 +10,7 @@
 # benefit, not because it is still forced. What IS still required is `git`, for the
 # encryption package's VCS pin - see the layer below, and
 # tests/test_container_build.py, which asserts it.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 # Set the working directory in the container
 WORKDIR /app
