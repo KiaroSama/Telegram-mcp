@@ -166,6 +166,11 @@ def get_reply_quote(msg) -> Optional[dict]:
     reply = getattr(msg, "reply_to", None)
     if reply is None:
         return None
+    from telegram_mcp.rich_quotes import describe_rich_quote
+
+    rich = describe_rich_quote(msg)
+    if rich is not None:
+        return rich
     quote_text = getattr(reply, "quote_text", None)
     if not quote_text:
         return None

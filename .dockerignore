@@ -12,6 +12,10 @@ logs/
 build/
 dist/
 .ai/
+.specify/
+specs/
+CLAUDE.md
+AGENTS.md
 plans/
 graphify-out/
 htmlcov/

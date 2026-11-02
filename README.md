@@ -80,7 +80,7 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
 
 ## What It Can Do
 
-The server registers **345 MCP tools**. That count is measured, not estimated — see
+The server registers **358 MCP tools**. That count is measured, not estimated — see
 [docs/api-coverage.md](docs/api-coverage.md), which also records what Telegram has that this
 server deliberately does not. The tools group into these areas:
 
@@ -1327,7 +1327,7 @@ had a tool. Grouped by what an agent can actually do with it.
 | Area | Read | Write |
 |---|---|---|
 | **Polls** | `get_poll_results`, `get_poll_voters` | `vote_in_poll` (`create_poll` already existed) |
-| **Stories** | `list_peer_stories`, `get_stories` | `react_to_story`, `post_story` |
+| **Stories** | `list_peer_stories` (active or `pinned=true`), `get_stories`, `preview_story` (photo/video frames, no view registered) | `download_media(story_id=...)`, `react_to_story`, `post_story` |
 | **Saved Messages** | `list_saved_dialogs`, `get_saved_history`, `list_saved_tags` | `name_saved_tag` |
 | **Quick replies** | `list_quick_replies` | `send_quick_reply` |
 | **Sticker sets** | `inspect_sticker_set`, `suggest_sticker_set_name` | `add_sticker_to_set`, `remove_sticker_from_set`, `move_sticker_in_set` |
@@ -1336,6 +1336,22 @@ had a tool. Grouped by what an agent can actually do with it.
 | **Channel identity** | `check_channel_username` | `set_channel_username` |
 | **Channel analytics** | `get_channel_statistics`, `get_similar_channels` | — |
 | **Translation** | `translate` | — |
+
+### Story media and article quotes
+
+`preview_story(chat_id, story_id, account=...)` returns a photo or sampled video frames
+without registering a view. `download_media(chat_id, story_id=..., account=...)` saves the
+original through the same allowed-root, byte-limit and no-overwrite guards as message
+media. Supply exactly one of `message_id` and `story_id`. Deleted, inaccessible
+and live stories are refused. A profile-pinned story may remain accessible after expiry.
+
+For article/table quotes, `read_rich_message` returns `quote_sources` with plain text and
+zero-based block/row/column coordinates. Pass `quote_text`, `quote_block_index`, `quote_row`
+and `quote_column` to `reply_to_message`; the actual formatted source fragment travels in
+the reply header, not as a lookalike blockquote. `inspect_message.reply_quote` reports rich
+fragments and formatting. Ambiguous selections refuse rather than guessing. This requires
+the exact official Telethon source revision pinned in `pyproject.toml` (layer232); the
+published1.45.0 release only supports layer229. No extra Telegram login is created.
 
 Five of these carry a caveat that is part of the feature rather than a footnote:
 

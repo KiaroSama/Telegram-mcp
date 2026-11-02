@@ -6,7 +6,8 @@ from telegram_mcp import media_album, media_send, ogg_tags, video_dims
 from telegram_mcp.paging import LIMITS, bounded
 from telegram_mcp.runtime import *
 from telegram_mcp.forum import topic_reply_to
-from telegram_mcp.handles import NAME_ATTEMPTS
+from telegram_mcp.download_transfer import save_media, DownloadTooLarge as _DownloadTooLarge
+from telegram_mcp.story_media import fetch_story_media
 from telegram_mcp.sent import sent_message_ids
 
 # What one download_media call may write before it is stopped. Telegram files run
@@ -30,10 +31,6 @@ def _sent_result(sent, chat_id, note: str) -> str:
         [{"message_id": ident, "chat_id": str(chat_id)} for ident in ids],
         {"sent": True, "detail": note},
     )
-
-
-class _DownloadTooLarge(Exception):
-    """Raised out of the progress callback to stop an over-cap stream mid-flight."""
 
 
 def _peek_tail(handle) -> bytes:
@@ -335,11 +332,12 @@ async def send_album(
 @validate_id("chat_id")
 async def download_media(
     chat_id: Union[int, str],
-    message_id: int,
+    message_id: Optional[int] = None,
     file_path: Optional[str] = None,
     max_bytes: Optional[int] = None,
     ctx: Optional[Context] = None,
     account: str = None,
+    story_id: Optional[int] = None,
 ) -> str:
     """
     Download media from a message in a chat.
@@ -353,7 +351,9 @@ async def download_media(
 
     Args:
         chat_id: The chat ID or username.
-        message_id: The message ID containing the media.
+        message_id: The message ID containing media. Omit when using story_id.
+        story_id: Download this accessible story instead of a message; exactly one ID
+            is required. Does not register a view. Inaccessible/deleted/live stories refuse.
         file_path: Optional absolute or relative path under allowed roots.
             If omitted, saves into `<first_root>/downloads/`.
         max_bytes: Ceiling for this download, in bytes. Defaults to 200 MB.
@@ -376,9 +376,14 @@ async def download_media(
             if cap <= 0:
                 return f"max_bytes must be a positive number of bytes, not {cap}."
 
+        if (message_id is None) == (story_id is None):
+            return "Give exactly one of message_id or story_id. Nothing was downloaded."
         cl = get_client(account)
         entity = await resolve_entity(chat_id, cl)
-        msg = await cl.get_messages(entity, ids=message_id)
+        if story_id is not None:
+            msg = await fetch_story_media(cl, entity, story_id)
+        else:
+            msg = await cl.get_messages(entity, ids=message_id)
         if not msg or not msg.media:
             return "No media found in the specified message."
 
@@ -389,7 +394,8 @@ async def download_media(
                 f"{cap}-byte limit. Raise max_bytes to fetch it anyway."
             )
 
-        default_name = f"telegram_{chat_id}_{message_id}_{int(time.time())}"
+        source_id = f"story_{story_id}" if story_id is not None else str(message_id)
+        default_name = f"telegram_{chat_id}_{source_id}_{int(time.time())}"
         out_path, path_error = await _resolve_writable_file_path(
             raw_path=file_path,
             default_filename=default_name,
@@ -399,119 +405,7 @@ async def download_media(
         if path_error:
             return path_error
 
-        # The destination directory is OPENED before a single byte is fetched,
-        # and every step after this -- staging, size check, install, cleanup --
-        # goes through that handle. Re-resolving the name at each step is what
-        # let a directory swapped mid-transfer redirect the finished file.
-        async with _open_verified_directory(
-            path=out_path.parent, ctx=ctx, tool_name="download_media"
-        ) as (parent, dir_error):
-            if dir_error:
-                return dir_error
-
-            # The transfer gets a directory of its own, created through the held
-            # parent. mkdir is the reservation -- it fails on a name that exists
-            # -- and the result is opened straight away, so nothing downstream
-            # resolves the name again.
-            _staging_name, staging = parent.make_private_subdirectory(".download-")
-
-            try:
-                # Telethon picks the extension from the content, so it is handed
-                # a STEM: passing ticket.jpg for a PDF would write a PDF called
-                # ticket.jpg.
-                temp_stem = Path(staging.path) / "part"
-
-                def _stop_at_cap(received, _total):
-                    if received > cap:
-                        raise _DownloadTooLarge(
-                            f"Download aborted: the stream passed the {cap}-byte limit "
-                            "(max_bytes). Nothing was kept."
-                        )
-
-                downloaded = await cl.download_media(
-                    msg, file=str(temp_stem), progress_callback=_stop_at_cap
-                )
-                if not downloaded:
-                    return f"Download failed for message {message_id}."
-
-                produced = Path(downloaded)
-                if produced.parent.resolve(strict=False) != Path(staging.path).resolve(
-                    strict=False
-                ):
-                    return (
-                        "Download refused: the transfer wrote outside the directory "
-                        "this call created for it."
-                    )
-
-                # Opened through the staging handle and measured with fstat: the
-                # size that decides the refusal is the size of the object being
-                # installed, not of whatever answers to its name a moment later.
-                with open_verified_file(staging, produced.name) as fetched:
-                    if fetched.size > cap:
-                        return (
-                            f"Download refused: the file turned out to be larger than the "
-                            f"{cap}-byte limit (max_bytes). Nothing was kept."
-                        )
-                    # Which object passed, not just that one did. Telethon wrote
-                    # this file through a PATHNAME, so between the check above and
-                    # the install below the name can be given to something else -
-                    # and the install would publish that instead.
-                    staged = fetched.identity
-                # The bytes reach storage before the name that promises them does.
-                staging.sync_child(produced.name)
-
-                # The suffix comes from the SENDER's mime type, and this file
-                # lands in a directory the operator opened for downloads. The
-                # bytes were always untrusted; the extension is what decides
-                # whether opening the result runs it. save_disappearing_media
-                # has had this guard since it was written; this path did not.
-                safe = safe_suffix(produced.suffix)
-                final = out_path.with_suffix(safe)
-                final_name = parent.reserve_free_name(final.stem, final.suffix)
-                if final_name is None:
-                    return (
-                        f"Download refused: {NAME_ATTEMPTS} names near "
-                        f"{out_path.name} are already taken. Pass file_path to choose one."
-                    )
-
-                # Replace over the reserved placeholder, both ends bound to a held
-                # directory: this can neither clobber a file that appeared in the
-                # meantime nor publish into a directory that took over the name.
-                try:
-                    parent.install(staging, produced.name, final_name, expect_source=staged)
-                except BaseException:
-                    # The reservation is a real, empty file. Leaving it behind
-                    # wearing the name the caller was about to be given is the
-                    # defect this whole path exists to avoid. `discard` rather
-                    # than `unlink`: if the install refused because that name
-                    # stopped being this call's placeholder, removing it is the
-                    # same mistake again, and the original failure is the one
-                    # worth reporting.
-                    parent.discard(final_name)
-                    raise
-                parent.sync()
-                return f"Media downloaded to {Path(parent.path) / final_name}."
-            finally:
-                # Every exit -- success, refusal, exception, or the CancelledError
-                # that is a BaseException and never reaches the handler below --
-                # takes the whole transfer directory with it, through the handle
-                # this call opened rather than through its name. A tree rather
-                # than a name because Telethon chooses the extension, so on a
-                # failure the only thing known about the partial file is which
-                # directory it is in.
-                try:
-                    staging.remove_tree()
-                    # Through its own handle, not by the name it was given: a
-                    # name can have changed hands, and this is a removal.
-                    staging.remove_self()
-                except (OSError, UnsafeTarget) as cleanup_error:
-                    log_event(
-                        logging.WARNING,
-                        "could not remove the download directory",
-                        error=cleanup_error,
-                    )
-                finally:
-                    staging.close()
+        return await save_media(cl, msg, out_path, cap, ctx, _open_verified_directory)
     except _DownloadTooLarge as e:
         # The caller's own limit, not a fault: say which one and how to raise it,
         # rather than burying it in a generic error code.

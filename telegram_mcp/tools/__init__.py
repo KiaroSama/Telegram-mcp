@@ -57,6 +57,7 @@ from telegram_mcp.tools.quick_replies import *
 from telegram_mcp.tools.custom_emoji_edit import *
 from telegram_mcp.tools.polls import *
 from telegram_mcp.tools.stories import *
+from telegram_mcp.tools.story_preview import *
 from telegram_mcp.tools.channel_admin import *
 from telegram_mcp.tools.saved import *
 from telegram_mcp.tools.stickers import *

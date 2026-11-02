@@ -44,7 +44,8 @@ dependencies = [
     "regex>=2026.9.10",
     "python-json-logger>=4.2.0",
     "qrcode>=8.2",
-    "telethon>=1.45.0",
+    # Article quote replies require layer232; stable1.45 only announces229.
+    "telethon @ git+https://codeberg.org/Lonami/Telethon.git@8dcbd6bf4405325c6535d2069adafcaa5b01aaa2",
     # Avoid pure-Python AES-IGE starving the shared HTTP event loop on Windows.
     "cryptg>=0.6.0",
     # MTProto 2.0 end-to-end encryption, which Telethon never implemented. Pinned
@@ -224,6 +225,12 @@ source = [
     "telegram_mcp.reconnect",
     "telegram_mcp.retirement",
     "telegram_mcp.rich_blocks",
+    "telegram_mcp.rich_quote_send",
+    "telegram_mcp.rich_quotes",
+    "telegram_mcp.reply_quote_view",
+    "telegram_mcp.story_media",
+    "telegram_mcp.download_transfer",
+    "telegram_mcp.message_schedule",
     "telegram_mcp.runner",
     "telegram_mcp.runtime",
     "telegram_mcp.sanitize",

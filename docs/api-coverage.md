@@ -1,6 +1,17 @@
 # API coverage: what this server exposes, and what Telegram has
 
-Measured, not estimated. Snapshot: **Telethon 1.45.0, TL layer 229, 2026-09-19.**
+Current tool inventory: **358 MCP tools, 2026-11-02** (registered inventory in
+[COMMANDS.md](COMMANDS.md)). Story photo/video preview and original download now use
+`preview_story` and `download_media(story_id=...)` without sending a view/read signal.
+`read_rich_message` exposes table-cell quote coordinates; `reply_to_message` sends
+native formatted rich quotes, and inspection reads them back.
+
+These rich quotes require the official Telethon development source pinned in
+`pyproject.toml`/`uv.lock` at `8dcbd6bf4405325c6535d2069adafcaa5b01aaa2`, TL layer 232.
+Its declared package version is still 1.45.0; it is not a new stable release.
+
+The protocol/namespace counts below are a **historical snapshot: Telethon 1.45.0,
+TL layer 229, 2026-09-19**, not a fresh layer-232 coverage measurement.
 
 Reproduce the tool count by `await mcp.list_tools()` after importing
 `telegram_mcp.tools`, not by grepping for `@mcp.tool` — the two agreed here, but only

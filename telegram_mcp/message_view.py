@@ -263,55 +263,7 @@ def _describe_thumbnails(media_owner) -> list[dict[str, Any]]:
     return described
 
 
-def describe_reply_quote(msg) -> Optional[dict[str, Any]]:
-    """The fragment a partial-quote reply selected, character-for-character.
-
-    Telegram lets a reply target a span of the replied-to message rather than the
-    whole of it. Upstream returns that span through the generic sanitizer, which
-    deletes the ZWNJ out of a Persian quote — so the caller receives something the
-    sender never wrote, presented as an exact quotation. This keeps it intact.
-    """
-    reply = getattr(msg, "reply_to", None)
-    if reply is None:
-        return None
-    quote_text = getattr(reply, "quote_text", None)
-    if not quote_text:
-        return None
-
-    # Both facts are computed, never inferred from the result: a quote that
-    # genuinely ends in an ellipsis looks exactly like a truncated one.
-    filtered, _offsets = fidelity_text(_normalize_breaks(quote_text))
-    filtered_out = filtered != quote_text
-    text, truncated = _bounded(filtered, 4096)
-    modified = filtered_out or truncated
-
-    quote: dict[str, Any] = {"text": text}
-    if modified:
-        quote["modified"] = True
-        quote["filtered"] = filtered_out
-        quote["truncated"] = truncated
-        reasons = []
-        if filtered_out:
-            reasons.append("unsafe invisible characters were removed or line breaks normalised")
-        if truncated:
-            reasons.append("the text was truncated to fit")
-        quote["note"] = (
-            "Quoted fragment, NOT character-for-character exact: "
-            + " and ".join(reasons)
-            + ". 'offset' is Telegram's UTF-16 code-unit offset of the ORIGINAL fragment inside "
-            "the replied-to message, so it indexes that message, not this field."
-        )
-    else:
-        quote["note"] = (
-            "Quoted fragment, unchanged from what Telegram reported. 'offset' is Telegram's "
-            "UTF-16 code-unit offset of this fragment inside the ORIGINAL replied-to message, "
-            "not inside this message's text."
-        )
-
-    offset = getattr(reply, "quote_offset", None)
-    if offset is not None:
-        quote["offset"] = offset
-    return quote
+from telegram_mcp.reply_quote_view import describe_reply_quote  # noqa: E402,F401
 
 
 def _fidelity_forward(msg, forwarded: dict[str, Any]) -> dict[str, Any]:
