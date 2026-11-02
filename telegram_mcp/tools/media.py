@@ -94,6 +94,7 @@ async def send_file(
     send_as: Optional[Union[int, str]] = None,
     ctx: Optional[Context] = None,
     account: str = None,
+    parse_mode: Optional[str] = None,
 ) -> str:
     """
     Send a file to a chat, in any of the eight shapes Telegram gives one.
@@ -102,6 +103,9 @@ async def send_file(
         file_path: Absolute or relative path to the file under allowed roots.
             Pass a list of 2-10 paths to send them as one Telegram media group.
         caption: Optional caption for the file or media group.
+        parse_mode: Optional plain, md/markdown or html caption formatting.
+            Omitted preserves the existing parser; plain sends literal text.
+            Cannot be combined with caption_entities. Rich modes are not supported.
         caption_entities: Formatting for the caption, in the shape
             `inspect_message` returns. This is the ONLY way to put a premium
             emoji in a caption - `parse_mode` has no syntax for one - and it
@@ -147,8 +151,12 @@ async def send_file(
                 send_as=send_as,
                 ctx=ctx,
                 account=account,
+                parse_mode=parse_mode,
             )
 
+        caption_options = await media_send.caption_flags(
+            caption_entities, caption, account, parse_mode
+        )
         cl = get_client(account)
         async with _open_verified_source(raw_path=file_path, ctx=ctx, tool_name="send_file") as (
             source,
@@ -174,7 +182,7 @@ async def send_file(
                 # call every existing caller makes, and an unused feature that
                 # alters the call is not unused.
                 **({"send_as": posting_as} if posting_as is not None else {}),
-                **await media_send.caption_flags(caption_entities, caption, account),
+                **caption_options,
                 **media_send.flags_for(
                     sending_as, head, source.path.name, _peek_tail(source.handle)
                 ),
@@ -208,6 +216,7 @@ async def _send_album(
     send_as: Optional[Union[int, str]] = None,
     ctx: Optional[Context] = None,
     account: str = None,
+    parse_mode: Optional[str] = None,
 ) -> str:
     if not 2 <= len(file_paths) <= 10:
         return "Albums must contain between 2 and 10 files."
@@ -222,6 +231,9 @@ async def _send_album(
             "at all to choose from each file. Nothing was sent."
         )
 
+    caption_options = await media_send.caption_flags(
+        caption_entities, caption, account, parse_mode
+    )
     cl = get_client(account)
     # Every member stays open for the whole upload: an album authorised one
     # name at a time and then re-read by Telethon is the same defect N times.
@@ -259,7 +271,7 @@ async def _send_album(
             headers=headers,
             names=names,
             caption=caption,
-            caption_flags=await media_send.caption_flags(caption_entities, caption, account),
+            caption_flags=caption_options,
             reply_to=topic_reply_to(topic_id),
             posting_as=posting_as,
         )
@@ -284,6 +296,8 @@ async def send_album(
     topic_id: Optional[int] = None,
     ctx: Optional[Context] = None,
     account: str = None,
+    parse_mode: Optional[str] = None,
+    caption_entities: Optional[List[dict]] = None,
 ) -> str:
     """
     Send multiple photos/videos as one Telegram media group (album).
@@ -292,6 +306,9 @@ async def send_album(
         chat_id: The chat ID or username.
         file_paths: 2-10 absolute or relative file paths under allowed roots.
         caption: Optional caption for the album. Telegram displays it on the first item.
+        parse_mode: Optional plain, md/markdown or html; omitted preserves defaults.
+        caption_entities: UTF-16 spans into the exact caption, including custom emoji.
+            Choose this or parse_mode, never both.
         topic_id: Optional forum topic ID (from list_topics). Sends into that topic
             in a forum-enabled community/supergroup. Also works as reply_to for a message.
     """
@@ -302,6 +319,8 @@ async def send_album(
             chat_id=chat_id,
             file_paths=file_paths,
             caption=caption,
+            caption_entities=caption_entities,
+            parse_mode=parse_mode,
             topic_id=topic_id,
             ctx=ctx,
             account=account,
@@ -355,7 +374,8 @@ async def download_media(
         story_id: Download this accessible story instead of a message; exactly one ID
             is required. Does not register a view. Inaccessible/deleted/live stories refuse.
         file_path: Optional absolute or relative path under allowed roots.
-            If omitted, saves into `<first_root>/downloads/`.
+            If omitted, saves into the project's private `files/downloads/`.
+            Configured roots grant access, not a change to this default destination.
         max_bytes: Ceiling for this download, in bytes. Defaults to 200 MB.
             Telegram advertises the size up front, so an oversized file is
             refused before anything is fetched; a stream that outgrows the cap

@@ -64,6 +64,17 @@ def test_a_call_is_recorded_with_everything_useful(recorder, tmp_path):
     assert record["time"].endswith("Z") and isinstance(record["duration_ms"], int)
 
 
+def test_search_cursor_is_omitted_from_arguments_and_result(recorder, tmp_path):
+    _run(
+        recorder,
+        _ctx(name="search_global", arguments={"cursor": "private-position"}),
+        _result(json.dumps({"results": [], "next_cursor": "private-position"})),
+    )
+    (record,) = _records(tmp_path)
+    assert record["arguments"]["cursor"] == "[REDACTED]"
+    assert "private-position" not in record["result"]
+
+
 def test_one_file_per_run_named_in_utc(recorder, tmp_path):
     _run(recorder, _ctx(), _result("a"))
     _run(recorder, _ctx(), _result("b"))

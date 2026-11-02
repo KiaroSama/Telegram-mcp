@@ -278,8 +278,7 @@ def _stored_row(key: Union[AliasKey, str], value: Any) -> tuple:
 def save_aliases(aliases: Dict[Any, Any]) -> None:
     """Atomically persist aliases 0600 — the file maps nicknames to real people."""
     path = aliases_file_path()
-    if not os.getenv(_ALIASES_ENV):
-        path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         try:
             existing = json.loads(path.read_text(encoding="utf-8"))
@@ -447,8 +446,7 @@ def update_aliases(mutate):
     lose one of the two writes — including a delete silently coming back.
     """
     path = aliases_file_path()
-    if not os.getenv(_ALIASES_ENV):
-        path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     with _alias_lock(path):
         aliases = load_aliases(strict=True)
         # Under the lock, before the caller sees the map: a mutate() that keys by

@@ -1,6 +1,6 @@
 # API coverage: what this server exposes, and what Telegram has
 
-Current tool inventory: **358 MCP tools, 2026-11-02** (registered inventory in
+Current tool inventory: **361 MCP tools, 2026-11-03** (registered inventory in
 [COMMANDS.md](COMMANDS.md)). Story photo/video preview and original download now use
 `preview_story` and `download_media(story_id=...)` without sending a view/read signal.
 `read_rich_message` exposes table-cell quote coordinates; `reply_to_message` sends
@@ -31,6 +31,27 @@ The tool count was **148** in the previous revision of this document. That numbe
 wrong, not stale: the server registered 142 at that commit. It is corrected here
 rather than quietly overwritten, because the whole point of this file is that its
 numbers can be re-derived.
+
+## Upstream review: 2026-11-02
+
+Reviewed all 79 non-merge changes from `0910170` through
+`0246df8c3c99818d68f50e8591b2d3dda8363f81` (v3.3.4), merged main only.
+Histories are unrelated: these are capability adaptations, not a history merge.
+
+| Upstream change | Local disposition |
+|---|---|
+| Native global cursor | `search_global(cursor=...)` preserves rate/peer/id, query/filter/account generation, low IDs and explicit exhaustion/budget state. Legacy pages retain their depth bound. |
+| Incremental admin permissions | `mode="patch"` on the three existing type-specific editors preserves unspecified schema rights and omitted title. Default replacement remains unchanged; no-op/demotion/self guards and read-back retained. |
+| Folder preview and topic icons | `get_chatlist_invite` never joins; `list_forum_topic_icons` returns the default document IDs and fallback glyphs without installing anything. |
+| Bounded typing and unchanged edits | `send_typing` always asks the owner via the conservative fallback, refreshes for at most 45 seconds and attempts bounded cleanup. Ordinary/rich unchanged edits report a no-op. |
+| Rich destinations and captions | Shared link extraction includes rich nested URLs/contact/embed targets; compact records expose media pointers. Existing `read_rich_message`/`download_rich_media` remain the rich route. Optional plain/md/html caption parsing works for single files and albums; explicit entity spans remain the premium-emoji route. |
+| Alias and photo corrections | Configured alias-store parents are created before locking/atomic saving. An explicit message-photo ID is fetched directly and web previews are refused. |
+| Already covered | UTF-8 sessions, normalized labels, serialized reconnect, readable errors, explicit privacy replacement, chat-owned deletion checks, default sender, media kinds/dimensions, native keyboards, sendable GIF handles and forum metadata. Private download defaults already prevent nested Downloads. |
+| Not applicable | MCP 1.x transport patch, upstream-only custom-emoji replacement parser, unread-export tool, mixed-root separator parser and formatting-only changes. No downgrade or duplicate API. |
+| Deferred | Independent bridge-event cursor API, reconnect-failure replay, basic-group roster parity, provider-backed document/transcription subsystem and broad dependency refresh need their own contracts and verification. Existing counterparts are not claimed equivalent where they differ. |
+
+Source: [exact upstream comparison](https://github.com/chigwell/telegram-mcp/compare/0910170285526d289420acb413b2f741ff2ae0bb...0246df8c3c99818d68f50e8591b2d3dda8363f81).
+Apache notices are retained in [NOTICE](../NOTICE). Upstream CI is not this fork's proof.
 
 ## Upstream review: 2026-10-11
 

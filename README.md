@@ -80,9 +80,18 @@ answered* and *the answer is true* — and that gap is where an agent quietly ge
 
 ## What It Can Do
 
-The server registers **358 MCP tools**. That count is measured, not estimated — see
+The server registers **361 MCP tools**. That count is measured, not estimated — see
 [docs/api-coverage.md](docs/api-coverage.md), which also records what Telegram has that this
 server deliberately does not. The tools group into these areas:
+
+Recent upstream-compatible additions include `search_global(cursor=...)`,
+`get_chatlist_invite` (preview only), `list_forum_topic_icons` and bounded
+`send_typing` (owner approval required). The three type-specific admin editors
+accept `mode="patch"` to retain unnamed rights and an omitted title; default
+replacement behavior is unchanged. `send_file` and `send_album` accept optional
+`parse_mode="plain"`, `"md"` or `"html"` for captions, mutually exclusive with
+`caption_entities`. An unchanged edit is reported as a no-op, not a generic error.
+
 
 - **Accounts:** list configured accounts and route tool calls by account label.
 - **Chats and groups:** list chats, inspect metadata, create groups/channels, join or leave chats, invite users, manage admins, bans, member permissions and exceptions as Telegram Desktop's Permissions screen shows them (`set_group_permissions`, `set_member_exception`), slow mode, recent actions with Desktop's filters (`get_recent_actions`), topics, invite links, common chats, read receipts, and message links.

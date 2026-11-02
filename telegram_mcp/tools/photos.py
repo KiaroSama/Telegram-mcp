@@ -132,7 +132,8 @@ async def open_photo(
         source: `avatars` (default) or `messages`; must match how the id was listed.
         max_dimension: Longest edge of the returned image.
         max_bytes: Transfer ceiling for the download.
-        search_depth: How far back to look for the id (1-100).
+        search_depth: How far back to look for an avatar id (1-100).
+            An explicit message-source id is fetched directly, without a history scan.
     """
     try:
         depth = bounded(search_depth, LIMITS["list_photos"])
@@ -144,6 +145,10 @@ async def open_photo(
         if reference is None:
             if photo_id is None:
                 return ["This peer has no photo to open."]
+            if source.strip().lower() == "messages":
+                return [
+                    f"Message {photo_id} is missing or carries no attached photo. Web previews are not message photos."
+                ]
             return [
                 f"No photo with id {photo_id} in this peer's '{source}' photos within the "
                 f"newest {depth.value}. Use list_photos to see what is there, and check the "

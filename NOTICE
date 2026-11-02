@@ -21,6 +21,15 @@ paging, invitation outcome reporting, member status, pin notifications and tool
 exclusions. These adaptations retain this project's validation, output and
 approval contracts rather than replacing them with the upstream implementations.
 
+The 2026-11-02 adaptation reviewed chigwell/telegram-mcp through commit
+0246df8c3c99818d68f50e8591b2d3dda8363f81: native global-search cursors,
+incremental admin-rights patches, folder-invite previews, default topic icons,
+bounded typing, unchanged-edit outcomes, rich-post destinations, caption
+formatting, configured alias-store parents and direct message-photo lookup.
+These adaptations retain this project's account, approval, fidelity, filesystem
+and transfer contracts. The upstream Apache-2.0 attribution applies to adapted
+portions and does not replace this program's GPL-3.0-or-later licence.
+
 Apache 2.0 is one-way compatible with GPLv3. The Apache Software Foundation
 states it directly: "Apache 2 software can therefore be included in GPLv3
 projects, because the GPLv3 license accepts our software into GPLv3 works."
