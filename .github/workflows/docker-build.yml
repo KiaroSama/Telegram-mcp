@@ -6,9 +6,39 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
+  status_begin:
+    name: CI status pending
+    uses: ./.github/workflows/ci-status.yml
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    with:
+      phase: begin
+      workflow: docker-build.yml
+
+  status_finish:
+    name: CI status final
+    if: always()
+    needs: [status_begin, docker_build, docker_persistence, docker_compose]
+    uses: ./.github/workflows/ci-status.yml
+    permissions:
+      contents: read
+      actions: read
+      statuses: write
+    with:
+      phase: finish
+      workflow: docker-build.yml
+
   docker_build:
     name: Build Docker Image
+    needs: status_begin
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -36,6 +66,7 @@ jobs:
   # same bytes are still there through a container the volume outlived.
   docker_persistence:
     name: State Survives A Container Replacement
+    timeout-minutes: 20
     runs-on: ubuntu-latest
     needs: docker_build
     env:
@@ -108,6 +139,7 @@ jobs:
 
   docker_compose:
     name: Build & Validate Docker Compose
+    timeout-minutes: 5
     runs-on: ubuntu-latest
     needs: docker_build
     steps:

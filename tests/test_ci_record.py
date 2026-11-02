@@ -379,13 +379,13 @@ def _full_set(directory):
         _leg(directory, label, python=f"{want}.9")
 
 
-def test_the_six_expected_legs_pass(tmp_path):
+def test_the_seven_expected_legs_pass(tmp_path):
     _full_set(tmp_path)
 
     lines, failed = ci_record.compare_legs(tmp_path, LEGS)
 
     assert not failed, lines
-    assert "6 leg(s)" in " ".join(lines)
+    assert "7 leg(s)" in " ".join(lines)
 
 
 def test_two_of_six_legs_is_not_a_run_that_passed(tmp_path):

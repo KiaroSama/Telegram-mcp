@@ -6,7 +6,7 @@
 [![CodeQL](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/codeql.yml/badge.svg)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/codeql.yml)
 [![Licence: GPL-3.0-or-later](https://img.shields.io/badge/licence-GPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 [![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-informational?style=flat-square)](pyproject.toml)
-[![Python 3.11 | 3.12 | 3.13 | 3.14](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue?style=flat-square)](.github/workflows/tests.yml)
+[![Python 3.11–3.15](https://img.shields.io/badge/python-3.11%E2%80%933.15-blue?style=flat-square)](.github/workflows/tests.yml)
 [![Platform: Linux | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-lightgrey?style=flat-square)](.github/workflows/tests.yml)
 ![MCP Badge](https://badge.mcpx.dev)
 [![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
@@ -924,6 +924,13 @@ setups.
 For multiple accounts, pass variables such as `TELEGRAM_SESSION_STRING_WORK` and `TELEGRAM_SESSION_STRING_PERSONAL`.
 
 ## Development
+
+CI is started manually. Each validation workflow first marks its individual job
+contexts pending, then publishes their observed results and job links beside the
+exact commit. A skipped, cancelled, missing or failed job is never reported green.
+The reporter uses the current run attempt; after cancelling a workflow, rerun **all
+jobs** to obtain fresh complete evidence. Original Actions checks remain available.
+The runtime matrix covers Python 3.11–3.15; the container uses Python 3.15 slim.
 
 The implementation is split into a small compatibility entrypoint and modular package code.
 `settings.py` is deliberately the lowest layer - everything above needs some of it and none
