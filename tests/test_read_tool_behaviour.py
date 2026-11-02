@@ -546,7 +546,7 @@ async def test_search_global_reports_an_empty_page_as_empty(monkeypatch):
 
     assert "No messages found" in result
     assert client.calls, "search_global never queried anything"
-    assert client.calls[-1][1]["search"] == "nothing matches this"
+    assert client.calls[-1].q == "nothing matches this"
 
 
 @pytest.mark.asyncio

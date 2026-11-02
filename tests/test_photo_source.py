@@ -150,7 +150,7 @@ async def test_message_identifier_is_fetched_directly_and_preview_is_not_a_photo
                 peer_id=types.PeerUser(7),
                 message="caption",
                 media=types.MessageMediaPhoto(
-                    types.Photo(
+                    photo=types.Photo(
                         id=1, access_hash=2, file_reference=b"", date=None, sizes=[], dc_id=1
                     )
                 ),
