@@ -1252,11 +1252,11 @@ wheels = [
 
 [[package]]
 name = "python-socks"
-version = "3.2.0"
+version = "3.2.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5c/c8/1309971a28d94df88d90e308b2eaef09e209402606446dd9d88d75cc2158/python_socks-3.2.0.tar.gz", hash = "sha256:b1a0e372f33182f657d935c3171fa03623b6a65734323746d0de9f296bc537ea", size = 38773, upload-time = "2026-10-27T14:57:11.953Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/5d/57f4f34cba6cd33dabc557096225487bfd977f8831d789b2b81a885f9ed3/python_socks-3.2.1.tar.gz", hash = "sha256:d21618ae6c6734d357be83263b3791666d12af59480ace8f48f2b5fcc8edc987", size = 39934, upload-time = "2026-10-31T11:56:08.117Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/6e/c42bb2ed04ddb141dcba433662d21a92323ba25c2662f8b99f0a0de4a30a/python_socks-3.2.0-py3-none-any.whl", hash = "sha256:4cb349f43043eeeb12d10919cb992a7ce8671c2c5a836a47cb0c29d8def11d24", size = 49571, upload-time = "2026-10-27T14:57:10.422Z" },
+    { url = "https://files.pythonhosted.org/packages/18/a6/175dbba852d77cf184dd6095a23dd0fe654898be74fb9dc6bfa16e89088f/python_socks-3.2.1-py3-none-any.whl", hash = "sha256:db2c37d4f7aeebfbba91d2d7670718b2d516061b34296fa8498c6f671e87c504", size = 49553, upload-time = "2026-10-31T11:56:06.54Z" },
 ]
 
 [[package]]
@@ -1800,7 +1800,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "python-json-logger", specifier = ">=4.2.0" },
-    { name = "python-socks", marker = "extra == 'proxy'", specifier = ">=3.2.0" },
+    { name = "python-socks", marker = "extra == 'proxy'", specifier = ">=3.2.1" },
     { name = "qrcode", specifier = ">=8.2" },
     { name = "regex", specifier = ">=2026.9.10" },
     { name = "rlottie-python", marker = "extra == 'lottie'", specifier = ">=1.3.8" },
