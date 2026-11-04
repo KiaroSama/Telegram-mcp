@@ -28,15 +28,15 @@ wheels = [
 
 [[package]]
 name = "anyio"
-version = "4.15.1"
+version = "4.16.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
     { name = "typing-extensions", marker = "python_full_version < '3.15'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a9/d2/f4d173e22df740bc37b1db102b386ba719b66e95b0f0d751f556b387e6d2/anyio-4.15.1.tar.gz", hash = "sha256:9f28306018cbd6d329e64a36d58256edff76dd996fe423bc957326e578b82a94", size = 276966, upload-time = "2026-09-05T10:42:39.44Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/a1/98/7e457a3b014976887a050561955c0b76e1e7e2d6e27b78ecef2ef80518f2/anyio-4.16.0.tar.gz", hash = "sha256:59bb03251907983d1603d27c3087ddb1e93299ea2163adcdba37899a4fb12ffb", size = 310971, upload-time = "2026-11-01T11:20:07.282Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl", hash = "sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101", size = 132079, upload-time = "2026-09-05T10:42:37.923Z" },
+    { url = "https://files.pythonhosted.org/packages/a9/16/7757fb84c819accc7d7e9af5291b261e4abb8627ee040f99e7d35ef2457a/anyio-4.16.0-py3-none-any.whl", hash = "sha256:c66ae634e0b8228396b801741beb3294326d4b6102f7bba4041c0dfb58c29026", size = 134521, upload-time = "2026-11-01T11:20:05.59Z" },
 ]
 
 [[package]]
@@ -1252,11 +1252,11 @@ wheels = [
 
 [[package]]
 name = "python-socks"
-version = "3.2.0"
+version = "3.2.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5c/c8/1309971a28d94df88d90e308b2eaef09e209402606446dd9d88d75cc2158/python_socks-3.2.0.tar.gz", hash = "sha256:b1a0e372f33182f657d935c3171fa03623b6a65734323746d0de9f296bc537ea", size = 38773, upload-time = "2026-10-27T14:57:11.953Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/5d/57f4f34cba6cd33dabc557096225487bfd977f8831d789b2b81a885f9ed3/python_socks-3.2.1.tar.gz", hash = "sha256:d21618ae6c6734d357be83263b3791666d12af59480ace8f48f2b5fcc8edc987", size = 39934, upload-time = "2026-10-31T11:56:08.117Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/6e/c42bb2ed04ddb141dcba433662d21a92323ba25c2662f8b99f0a0de4a30a/python_socks-3.2.0-py3-none-any.whl", hash = "sha256:4cb349f43043eeeb12d10919cb992a7ce8671c2c5a836a47cb0c29d8def11d24", size = 49571, upload-time = "2026-10-27T14:57:10.422Z" },
+    { url = "https://files.pythonhosted.org/packages/18/a6/175dbba852d77cf184dd6095a23dd0fe654898be74fb9dc6bfa16e89088f/python_socks-3.2.1-py3-none-any.whl", hash = "sha256:db2c37d4f7aeebfbba91d2d7670718b2d516061b34296fa8498c6f671e87c504", size = 49553, upload-time = "2026-10-31T11:56:06.54Z" },
 ]
 
 [[package]]
@@ -1791,7 +1791,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anyio", specifier = ">=4.15.1,<5" },
+    { name = "anyio", specifier = ">=4.16.0,<5" },
     { name = "cryptg", specifier = ">=0.6.0" },
     { name = "httpx2", specifier = ">=2.16.0,<3" },
     { name = "imagecodecs", marker = "sys_platform == 'win32' and extra == 'thumbs'", specifier = ">=2026.3.6" },
@@ -1800,7 +1800,7 @@ requires-dist = [
     { name = "pillow", specifier = ">=13.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
     { name = "python-json-logger", specifier = ">=4.2.0" },
-    { name = "python-socks", marker = "extra == 'proxy'", specifier = ">=3.2.0" },
+    { name = "python-socks", marker = "extra == 'proxy'", specifier = ">=3.2.1" },
     { name = "qrcode", specifier = ">=8.2" },
     { name = "regex", specifier = ">=2026.9.10" },
     { name = "rlottie-python", marker = "extra == 'lottie'", specifier = ">=1.3.8" },
