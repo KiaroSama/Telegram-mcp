@@ -123,7 +123,7 @@ jobs:
                   # Use the pinned built-in rules, without repository-controlled suppression files.
                   config_path = temporary / "scanner.toml"
                   config_path.write_text("[extend]\nuseDefault = true\n", encoding="utf-8")
-                  log_options = "--full-history --diff-filter=tuxdb --no-ext-diff --no-textconv -m"
+                  log_options = "--full-history --diff-filter=uxdb --no-ext-diff --no-textconv -m"
                   scope = "All fetched branches and tags, including full history and merge diffs"
                   if event_name == "pull_request":
                       with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as event_file:
@@ -144,7 +144,7 @@ jobs:
                       str(binary), "git", str(git_directory),
                       "--config", str(config_path), "--gitleaks-ignore-path", str(temporary),
                       "--ignore-gitleaks-allow", "--redact=100", "--no-banner", "--no-color",
-                      "--log-level=error", "--exit-code=2", "--timeout=900",
+                      "--log-level=error", "--exit-code=2",
                       "--report-format=json", "--report-path", str(report_path),
                       "--log-opts=" + log_options,
                   ]
