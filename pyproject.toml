@@ -35,20 +35,20 @@ classifiers = [
 requires-python = ">=3.11"
 dependencies = [
     "mcp[cli]>=2.3.0,<3",
-    "anyio>=4.15.1,<5",
+    "anyio>=4.16.0,<5",
     "httpx2>=2.16.0,<3",
     # Image encoding/scaling for the visual capture and media preview tools.
     "pillow>=13.0.0",
     "python-dotenv>=1.2.3",
     # UAX #29 grapheme clusters (\X) so truncation never splits a compound
     # character; a hand-rolled scan kept missing categories.
-    "regex>=2026.9.10",
+    "regex>=2026.11.9",
     "python-json-logger>=4.2.0",
     "qrcode>=8.2",
     # Article quote replies require layer232; stable1.45 only announces229.
     "telethon @ git+https://codeberg.org/Lonami/Telethon.git@8dcbd6bf4405325c6535d2069adafcaa5b01aaa2",
     # Avoid pure-Python AES-IGE starving the shared HTTP event loop on Windows.
-    "cryptg>=0.6.0",
+    "cryptg>=0.6.1",
     # MTProto 2.0 end-to-end encryption, which Telethon never implemented. Pinned
     # BY GIT to this owner's repository. Its distribution is
     # `kiaro-telethon-secret-chat` since 0.1.0: the bare name `telethon-secret-chat`
@@ -64,7 +64,7 @@ dependencies = [
 [project.optional-dependencies]
 # Required only when TELEGRAM_PROXY_TYPE is set to socks5/socks4/http.
 proxy = [
-    "python-socks>=3.2.0",
+    "python-socks>=3.2.1",
 ]
 # Renders .tgs (gzipped Lottie) animated stickers and custom emoji into frames.
 # Optional because it ships a native rlottie build; without it those media fall
