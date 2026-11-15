@@ -231,6 +231,7 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<
         return Ok(metadata(&data, info));
     }
     let loc = location(&data, info, asset)?;
+    let mut refreshed = None;
     let bytes = match crate::tools::messaging::media::download_bytes(api, loc, max as u64).await {
         Ok(bytes) => bytes,
         Err(error)
@@ -247,12 +248,14 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<
                 .as_array()
                 .and_then(|v| v.iter().find(|e| id(&e["id"]).ok() == Some(effect)))
                 .ok_or_else(|| anyhow::anyhow!("Effect was removed during reference refresh"))?;
-            crate::tools::messaging::media::download_bytes(
+            let bytes = crate::tools::messaging::media::download_bytes(
                 api,
                 location(&fresh, e, asset)?,
                 max as u64,
             )
-            .await?
+            .await?;
+            refreshed = Some(metadata(&fresh, e));
+            bytes
         }
         Err(error) => return Err(error),
     };
@@ -262,7 +265,11 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<
         dimension,
     )
     .await?;
-    rendered["effect"] = metadata(&data, info);
+    rendered["effect"] = refreshed.unwrap_or_else(|| metadata(&data, info));
     rendered["asset"] = json!(asset);
     Ok(rendered)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/advanced_effects.rs"]
+mod tests;

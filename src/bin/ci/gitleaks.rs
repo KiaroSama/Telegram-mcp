@@ -108,30 +108,7 @@ fn scan_with(full_history: bool) -> Result<()> {
         process::digest(&archive)? == CHECKSUM,
         "The scanner download checksum does not match the pinned release"
     );
-    let listing = process::text(
-        Command::new("tar")
-            .arg("-tvzf")
-            .arg(&archive)
-            .arg("gitleaks"),
-        15,
-    )?;
-    ensure!(
-        listing.starts_with('-') && listing.lines().count() == 1,
-        "The verified archive member is not a regular executable file"
-    );
-    let extracted = process::capture(
-        Command::new("tar")
-            .arg("-xOzf")
-            .arg(&archive)
-            .arg("gitleaks"),
-        15,
-    )?;
-    ensure!(
-        extracted.status.success() && !extracted.stdout.is_empty(),
-        "The verified scanner could not be extracted"
-    );
-    let binary = temporary.0.join("gitleaks");
-    fs::write(&binary, extracted.stdout)?;
+    let binary = unpack_verified_scanner(&archive, &temporary.0)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -227,6 +204,42 @@ fn scan_with(full_history: bool) -> Result<()> {
         "The actual Git-history child did not confirm success"
     );
     report_result(output, &report, scan_scope)
+}
+
+fn unpack_verified_scanner(archive: &Path, destination: &Path) -> Result<PathBuf> {
+    let listing = process::text(
+        Command::new("tar")
+            .arg("-tvzf")
+            .arg(archive)
+            .arg("gitleaks"),
+        15,
+    )?;
+    ensure!(
+        listing.starts_with('-') && listing.lines().count() == 1,
+        "The verified archive member is not a regular executable file"
+    );
+    // The checksum-pinned executable is larger than the diagnostics budget.
+    // Stream its archive member to a private file, never through captured stdout.
+    process::text(
+        Command::new("tar")
+            .arg("-xzf")
+            .arg(archive)
+            .arg("--directory")
+            .arg(destination)
+            .args(["--no-same-owner", "--no-same-permissions", "--", "gitleaks"]),
+        15,
+    )?;
+    let binary = destination.join("gitleaks");
+    let metadata =
+        fs::symlink_metadata(&binary).context("The verified scanner was not extracted")?;
+    ensure!(
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.len() > 0
+            && metadata.len() <= 100_000_000,
+        "The verified scanner executable is invalid"
+    );
+    Ok(binary)
 }
 
 fn tracked_tree(destination: &Path) -> Result<()> {

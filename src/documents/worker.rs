@@ -138,7 +138,11 @@ fn reject_unsupported_forms(document: &lopdf::Document, page: lopdf::ObjectId) -
     }
     Ok(())
 }
-pub(super) async fn extract(bytes: &[u8]) -> Result<Value> {
+pub(super) async fn extract(executable: &std::path::Path, bytes: &[u8]) -> Result<Value> {
+    ensure!(
+        bytes.len() as u64 <= MAX_DOCUMENT_BYTES,
+        "Document exceeds its byte budget"
+    );
     let semaphore = WORKERS.get_or_init(|| tokio::sync::Semaphore::new(2));
     let _permit = tokio::time::timeout(std::time::Duration::from_secs(5), semaphore.acquire())
         .await
@@ -151,7 +155,6 @@ pub(super) async fn extract(bytes: &[u8]) -> Result<Value> {
         request.len() <= MAX_REQUEST,
         "Document worker request exceeds its byte budget"
     );
-    let executable = std::env::current_exe()?;
     let mut command = tokio::process::Command::new(executable);
     command.env_clear();
     for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"] {
@@ -202,6 +205,21 @@ pub(super) async fn extract(bytes: &[u8]) -> Result<Value> {
         ensure!(
             result["ok"] == true,
             "PDF text extraction failed; malformed, encrypted or unsupported PDF"
+        );
+        let text = result["text"]
+            .as_str()
+            .context("Document worker returned invalid text")?;
+        ensure!(
+            text.len() <= MAX_TEXT_BYTES,
+            "Document worker text exceeds its byte budget"
+        );
+        ensure!(
+            result["truncated"].is_boolean(),
+            "Document worker returned an invalid truncation flag"
+        );
+        ensure!(
+            result["reason"].is_null() || result["reason"] == "no_text_layer",
+            "Document worker returned an invalid text-layer reason"
         );
         Ok::<_, anyhow::Error>(result)
     };

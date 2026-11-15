@@ -91,11 +91,38 @@ jobs:
           name: telegram-mcp-${{ matrix.target }}
           path: dist/${{ matrix.target }}/
           if-no-files-found: error
+      - name: Install actual native media tools for behavioral fixtures
+        uses: ./.github/actions/media-tools
+      - name: Select a canonical coverage directory and per-process profiles
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Logical processors: $([Environment]::ProcessorCount)"
+          $defaultProfileEnvironment = & cargo llvm-cov show-env --export-prefix
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the default profiler environment.' }
+          $defaultProfileEnvironment | Where-Object { $_ -match '^(export )?LLVM_PROFILE_FILE=' } | ForEach-Object { Write-Host "Default profiler: $_" }
+          $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
+          "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run all native tests with coverage instrumentation
         run: cargo llvm-cov nextest --locked --all-features --profile ci --no-report
+      - name: Require actual profiling evidence before recording cases
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles before case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Native tests produced no profile files; coverage cannot be claimed.' }
       - name: Record the cases this operating system actually ran
         if: always()
         run: cargo run --locked --bin ci -- record ${{ matrix.label }} target/nextest/ci/junit.xml cases/${{ matrix.label }}.json
+      - name: Verify profiling evidence survived the case recorder
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles after case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Native profile files disappeared; coverage cannot be claimed.' }
       - name: Export this operating system's actual coverage
         if: always()
         run: cargo llvm-cov report --lcov --output-path coverage-${{ matrix.label }}.info
@@ -167,16 +194,56 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $runtime = Join-Path $env:GITHUB_WORKSPACE '.ci-rlottie-runtime'
-          cmake -S .ci-rlottie -B .ci-rlottie-build -DBUILD_SHARED_LIBS=ON -DLOTTIE_MODULE=OFF -DLOTTIE_THREAD=OFF -DLOTTIE_CACHE=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_EXPORT_NO_PACKAGE_REGISTRY=ON -DCMAKE_EXPORT_PACKAGE_REGISTRY=OFF -DCMAKE_BUILD_TYPE=Release "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$runtime" "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$runtime" "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=$runtime" "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$runtime"
+          $cmakeArguments = @(
+            '-S', '.ci-rlottie', '-B', '.ci-rlottie-build',
+            '-DBUILD_SHARED_LIBS=ON', '-DLOTTIE_MODULE=OFF',
+            '-DLOTTIE_THREAD=OFF', '-DLOTTIE_CACHE=OFF',
+            '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
+            '-DCMAKE_EXPORT_NO_PACKAGE_REGISTRY=ON',
+            '-DCMAKE_EXPORT_PACKAGE_REGISTRY=OFF',
+            '-DCMAKE_BUILD_TYPE=Release',
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$runtime",
+            "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$runtime",
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=$runtime",
+            "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$runtime"
+          )
+          & cmake @cmakeArguments
           if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
           cmake --build .ci-rlottie-build --target rlottie --config Release --parallel 2
           if ($LASTEXITCODE -ne 0) { throw 'Native renderer build failed.' }
           if (-not (Test-Path $env:TELEGRAM_RLOTTIE_LIBRARY -PathType Leaf)) { throw 'The native renderer library is missing.' }
+      - name: Install actual native media tools for behavioral fixtures
+        uses: ./.github/actions/media-tools
+      - name: Select a canonical coverage directory and per-process profiles
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Logical processors: $([Environment]::ProcessorCount)"
+          $defaultProfileEnvironment = & cargo llvm-cov show-env --export-prefix
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the default profiler environment.' }
+          $defaultProfileEnvironment | Where-Object { $_ -match '^(export )?LLVM_PROFILE_FILE=' } | ForEach-Object { Write-Host "Default profiler: $_" }
+          $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
+          "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run the whole native suite with rendering required
         run: cargo llvm-cov nextest --locked --all-features --profile ci --no-report
+      - name: Require actual profiling evidence before recording cases
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles before case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Renderer tests produced no profile files; coverage cannot be claimed.' }
       - name: Record real renderer-leg cases
         if: always()
         run: cargo run --locked --bin ci -- record renderer-${{ matrix.label }} target/nextest/ci/junit.xml cases/renderer-${{ matrix.label }}.json
+      - name: Verify profiling evidence survived the case recorder
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles after case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Renderer profile files disappeared; coverage cannot be claimed.' }
       - name: Export native-renderer coverage
         if: always()
         run: cargo llvm-cov report --lcov --output-path coverage-renderer-${{ matrix.label }}.info

@@ -129,7 +129,9 @@ async fn run(cli: Cli) -> Result<()> {
         Command::StatePath => {
             println!("{}", telegram_mcp::state::State::global()?.root().display())
         }
-        Command::Accounts { .. } => println!("{}", telegram_mcp::backend::accounts_snapshot()?),
+        Command::Accounts { .. } => {
+            println!("{}", telegram_mcp::backend::public_configuration_json()?)
+        }
         Command::Login {
             account,
             env_file,

@@ -369,3 +369,109 @@ async fn server_folder_refusal_is_not_reported_as_success() {
         "Original"
     );
 }
+
+#[tokio::test]
+async fn snapshot_rejects_unknown_folder_types_and_unidentifiable_peer_references() {
+    for mutation in 0..2 {
+        let p = Planner::new();
+        if mutation == 0 {
+            p.filters.lock().unwrap()["filters"][1]["_"] = json!("futureDialogFilter");
+        } else {
+            p.filters.lock().unwrap()["filters"][1]["include_peers"] =
+                json!([{"_":"inputPeerEmpty"}]);
+        }
+        assert!(call(&p, "get_folder_snapshot", json!({})).await.is_err());
+        assert!(p.writes().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn folder_revision_ignores_membership_order_but_preserves_pinned_order() {
+    let p = Planner::new();
+    p.filters.lock().unwrap()["filters"][1]["include_peers"] = json!([
+        {"_":"inputPeerUser","user_id":"2","access_hash":"202"},
+        {"_":"inputPeerUser","user_id":"9","access_hash":"999"}]);
+    p.filters.lock().unwrap()["filters"][1]["pinned_peers"] = json!([
+        {"_":"inputPeerUser","user_id":"1","access_hash":"101"},
+        {"_":"inputPeerUser","user_id":"8","access_hash":"888"}]);
+    let before = call(&p, "get_folder_snapshot", json!({})).await.unwrap();
+    p.filters.lock().unwrap()["filters"][1]["include_peers"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let reordered = call(&p, "get_folder_snapshot", json!({})).await.unwrap();
+    assert_eq!(
+        before["folders"][1]["revision"],
+        reordered["folders"][1]["revision"]
+    );
+    p.filters.lock().unwrap()["filters"][1]["pinned_peers"]
+        .as_array_mut()
+        .unwrap()
+        .reverse();
+    let repinned = call(&p, "get_folder_snapshot", json!({})).await.unwrap();
+    assert_ne!(
+        before["folders"][1]["revision"],
+        repinned["folders"][1]["revision"]
+    );
+}
+
+#[tokio::test]
+async fn adding_saved_messages_to_a_folder_resolves_the_account_identity_before_writing() {
+    let p = Planner::new();
+    let output = call(
+        &p,
+        "update_folder",
+        json!({"folder_id":2,"patch":{"include_chat_ids":[99]}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output["changed"], true);
+    assert_eq!(
+        p.writes()[0]["filter"]["include_peers"],
+        json!([{"_":"inputPeerSelf"}])
+    );
+    let snapshot = call(&p, "get_folder_snapshot", json!({})).await.unwrap();
+    assert_eq!(
+        snapshot["folders"][1]["definition"]["include_chat_ids"],
+        json!(["99"])
+    );
+}
+
+#[tokio::test]
+async fn folder_pinned_limit_is_checked_independently_from_the_included_peer_limit() {
+    let mut p = Planner::new();
+    p.config["config"]["value"][2]["value"]["value"] = json!(100.0);
+    let error = call(
+        &p,
+        "update_folder",
+        json!({"folder_id":2,"patch":{"pinned_chat_ids":[1,4,5]}}),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("Pinned peer count"));
+    assert!(p.writes().is_empty());
+}
+
+#[tokio::test]
+async fn invalid_folder_entity_shapes_and_revision_types_are_refused_before_rpc() {
+    for input in [
+        json!({"folder_id":2,"patch":{"emoticon":true}}),
+        json!({"folder_id":2,"patch":{"include_chat_ids":[0]}}),
+        json!({"folder_id":2,"patch":{},"expected_revision":false}),
+        json!({"folder_id":2,"patch":{"title_entities":[{"_":"inputPeerSelf"}]}}),
+        json!({"folder_id":2,"patch":{"title_entities":[{"_":"messageEntityBold","offset":0,"length":-1}]}}),
+        json!({"folder_id":2,"patch":{"title_entities":[{"_":"messageEntityBold","offset":0,"length":1,"unexpected":{}}]}}),
+    ] {
+        let p = Planner::new();
+        assert!(call(&p, "update_folder", input).await.is_err());
+        assert!(p.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn entity_only_folder_patch_uses_existing_title_for_utf16_validation() {
+    let p = Planner::new();
+    call(&p,"update_folder",json!({"folder_id":2,"patch":{"title_entities":[{"_":"messageEntityBold","offset":0,"length":8}]}})).await.unwrap();
+    assert_eq!(p.writes()[0]["filter"]["title"]["text"], "Original");
+    assert_eq!(p.writes()[0]["filter"]["title"]["entities"][0]["length"], 8);
+}

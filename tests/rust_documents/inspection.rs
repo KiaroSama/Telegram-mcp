@@ -6,14 +6,14 @@ use serde_json::{Value, json};
 use std::{io::Cursor, sync::Mutex};
 use telegram_mcp::{backend::Telegram, documents, tl::Schema};
 
-struct Attachment {
-    message: Value,
-    bytes: Vec<u8>,
-    calls: Mutex<Vec<String>>,
-    downloaded: Mutex<Vec<(Value, u64)>>,
+pub(super) struct Attachment {
+    pub(super) message: Value,
+    pub(super) bytes: Vec<u8>,
+    pub(super) calls: Mutex<Vec<String>>,
+    pub(super) downloaded: Mutex<Vec<(Value, u64)>>,
 }
 impl Attachment {
-    fn text(name: &str, mime: &str, bytes: Vec<u8>) -> Self {
+    pub(super) fn text(name: &str, mime: &str, bytes: Vec<u8>) -> Self {
         Self {
             message: json!({"_":"message","id":4,"media":{"_":"messageMediaDocument","document":{"_":"document","id":"30","access_hash":"31","file_reference":[1,2,3],"mime_type":mime,"size":bytes.len(),"attributes":[{"_":"documentAttributeFilename","file_name":name}]}}}),
             bytes,

@@ -8,6 +8,10 @@ use telegram_mcp::{
     state::State,
 };
 
+#[cfg(windows)]
+#[path = "common/windows_acl.rs"]
+mod windows_acl;
+
 struct Fixture {
     _temporary: tempfile::TempDir,
     state: Arc<State>,
@@ -221,26 +225,25 @@ fn unreadable_custody_metadata_refuses_without_changing_permissions() {
     }
     #[cfg(windows)]
     {
-        let identity = format!(
-            "{}\\{}",
-            std::env::var("USERDOMAIN").unwrap(),
-            std::env::var("USERNAME").unwrap()
+        // The deny includes READ_CONTROL: restoring by reopening the path
+        // would itself be denied. Keep the original handle until restoration.
+        let mut denied = windows_acl::ReadDenied::new(&directory).unwrap();
+        let before = denied.current_acl().unwrap();
+        assert_eq!(
+            std::fs::read_dir(&directory).unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
         );
-        let denied = format!("{identity}:(RX)");
-        let apply = std::process::Command::new("icacls.exe")
-            .arg(&directory)
-            .args(["/deny", &denied])
-            .output()
-            .unwrap();
-        assert!(apply.status.success());
         let result = check_deferred_custody(&f.state, "work");
-        let restore = std::process::Command::new("icacls.exe")
-            .arg(&directory)
-            .args(["/remove:d", &identity])
-            .output()
-            .unwrap();
-        assert!(restore.status.success());
+        let after = denied.current_acl().unwrap();
+        let access = std::fs::read_dir(&directory);
+        denied.restore().unwrap();
+        assert_eq!(before, after, "Custody inspection changed its DACL");
+        assert_eq!(
+            access.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
         assert!(result.is_err());
+        assert_eq!(denied.current_acl().unwrap(), denied.original_acl());
     }
     assert_eq!(
         std::fs::read(directory.join("work")).unwrap(),

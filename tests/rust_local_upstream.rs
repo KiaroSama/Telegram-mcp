@@ -413,3 +413,61 @@ async fn unresolved_group_addressing_preserves_only_an_explicit_boolean_unknown_
         assert!(state.record_message_event(unknown.clone()).is_err());
     }
 }
+
+#[tokio::test]
+async fn concurrent_unread_exports_lease_the_destination_without_locking_its_data_bytes() {
+    use std::sync::Arc;
+    struct PausingApi {
+        api: Api,
+        entered: tokio::sync::Notify,
+        resume: tokio::sync::Notify,
+    }
+    #[async_trait]
+    impl Telegram for PausingApi {
+        async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
+            if method == "messages.getPeerDialogs" {
+                self.entered.notify_one();
+                self.resume.notified().await;
+            }
+            self.api.invoke(method, params).await
+        }
+        async fn resolve_peer(&self, value: &Value) -> Result<Value> {
+            self.api.resolve_peer(value).await
+        }
+    }
+    let (dir, state) = fixture();
+    let output = dir.path().join("allowed/unread.json");
+    let api = Arc::new(PausingApi {
+        api: Api::default(),
+        entered: Default::default(),
+        resume: Default::default(),
+    });
+    api.api.dialog(0, 9, 9);
+    let first_api = api.clone();
+    let first_state = state.clone();
+    let args = json!({"chat_ids":[42],"output_path":output,"account":"work"});
+    let first_args = args.clone();
+    let first = tokio::spawn(async move {
+        export_unread_with_state(first_api.as_ref(), &first_state, &first_args).await
+    });
+    tokio::time::timeout(Duration::from_secs(3), api.entered.notified())
+        .await
+        .unwrap();
+    let competing = Api::default();
+    assert!(
+        export_unread_with_state(&competing, &state, &args)
+            .await
+            .is_err()
+    );
+    assert!(competing.calls().is_empty());
+    assert!(!output.exists());
+    api.resume.notify_one();
+    assert_eq!(first.await.unwrap().unwrap()["complete"], true);
+    let saved: Value = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    assert_eq!(saved["account"], "work");
+    let resumed = export_unread_with_state(&competing, &state, &args)
+        .await
+        .unwrap();
+    assert_eq!(resumed["complete"], true);
+    assert!(competing.calls().is_empty());
+}

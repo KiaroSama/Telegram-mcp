@@ -43,6 +43,8 @@ The executable is `target/release/telegram-mcp` on Linux/macOS and
 `target/release/telegram-mcp.exe` on Windows. CI builds and uploads native release
 artifacts for Linux x86-64, macOS ARM64 and Windows x86-64 on every push and PR.
 Artifacts identify the actual commit, compiler and `Cargo.lock` digest in `build.json`.
+They include all three native CLIs and their SHA-256 values. Follow
+[artifact permission and media-tool setup](docs/INSTALL.md) after extraction.
 No package is published to crates.io by this repository.
 
 Copy `.env.example` to a private `.env` and replace the invalid example API credentials
@@ -127,7 +129,7 @@ For a shared HTTP service, set a fresh private `TELEGRAM_HTTP_TOKEN` in `.env`, 
 `docker compose up --build -d`. Compose publishes only `127.0.0.1:8765` and persists
 all state in the `telegram-state` volume. Keep that volume when replacing containers;
 removing it is account-state deletion. The runtime is non-root and contains the native
-binary, certificates and system runtime libraries.
+server binary, native FFmpeg/FFprobe, certificates and system runtime libraries.
 
 ## Development and verification
 

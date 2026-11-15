@@ -35,6 +35,7 @@ the review date. Historical byte-oracle versions remain distinct from current so
 | [Qt qtbase](https://github.com/qt/qtbase/tree/v6.12.0) | v6.12.0, `025bdad181de241e81bf853c8a2d7bf3d19261a9` | 2026-09-26 | Current JPEG allocation and ICC validation changes; Qt 5.15.19 remains the historical oracle |
 | [mozjpeg](https://github.com/mozilla/mozjpeg/tree/v4.1.5) | v4.1.5, `6c9f0897afa1c2738d7222a0a9ab49e8b536a267`; master `08265790774cd0714832c9e675522acbe5581437` | 2023-10-12; 2025-06-23 | Latest stable tag and build changes; native Rust encoder does not claim mozjpeg bitstream parity |
 | [Samsung/rlottie](https://github.com/Samsung/rlottie/commit/ea06d2f29ba01b8d06c00a838d107f5e484ae59b) | `ea06d2f29ba01b8d06c00a838d107f5e484ae59b` | 2026-09-30 | Allocation/stride guards and pinned external shared library for real animated-sticker rendering |
+| [FFmpeg Windows builds](https://ffmpeg.org/download.html) | Gyan 9.0.2 essentials ZIP, SHA-256 `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba` | 2026-09-20 | Actual native FFmpeg/FFprobe test dependency; official download guidance links this build provider |
 
 The grammers GitHub mirror is stale relative to Codeberg; the live Codeberg source was
 read directly. Search excerpts that still named 0.10.0 were not used as version proof.
@@ -120,11 +121,12 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A source-stable local Linux run passed all 1,494 tests with actual rlottie rendering
-required and measured **80.39% all-production / 82.78% reviewed-core** coverage. This
-single-platform result is below the core floor; it is not a successful six-leg CI
-coverage result. Raw LLVM JSON region totals can count repeated instantiations and are
-not substituted for the unique physical-line metric. The 85% gate remains enforced.
+identical code. A source-stable local Linux run passed all **1,569 tests**, with zero skipped and actual
+rlottie rendering required. Unique physical-line coverage measured **85.43% reviewed
+core (14,225/16,652)** and **83.55% all production (20,242/24,226)**. The local core result
+meets the unchanged floor. It remains single-platform evidence; the combined six-leg
+CI gate requires actual reports from Linux, macOS and Windows. Raw LLVM JSON region
+totals can count repeated instantiations and are not substituted for this metric.
 
 
 ## Deliberate limits and migration cautions

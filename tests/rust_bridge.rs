@@ -206,7 +206,6 @@ async fn refused(fixture: &Fixture) -> std::process::Output {
 
 #[tokio::test]
 async fn bridge_refuses_an_unknown_listener_without_sending_credentials_or_replacing_it() {
-    use tokio::io::AsyncReadExt;
     let fixture = Fixture::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     fixture.env_file(&format!(
@@ -215,15 +214,11 @@ async fn bridge_refuses_an_unknown_listener_without_sending_credentials_or_repla
     ));
     let output = refused(&fixture).await;
     assert!(String::from_utf8_lossy(&output.stderr).contains("unverified listener"));
-    let (mut probe, _) = tokio::time::timeout(DEADLINE, listener.accept())
-        .await
-        .unwrap()
-        .unwrap();
-    let mut bytes = Vec::new();
-    probe.read_to_end(&mut bytes).await.unwrap();
     assert!(
-        bytes.is_empty(),
-        "An unknown listener must receive no bearer credential or MCP request"
+        tokio::time::timeout(Duration::from_millis(200), listener.accept())
+            .await
+            .is_err(),
+        "An unknown listener must receive no connection, bearer credential or MCP request"
     );
     assert!(!fixture.state.join("http-service.json").exists());
     fixture.assert_no_telegram_sessions();
@@ -234,7 +229,11 @@ async fn bridge_failed_start_releases_owned_leases_and_never_opens_telegram_auth
     let fixture = Fixture::new();
     fixture.env_file(&format!("MCP_PORT={}\nTELEGRAM_HTTP_TOKEN=short\n", port()));
     let output = refused(&fixture).await;
-    assert!(String::from_utf8_lossy(&output.stderr).contains("startup failed"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("startup failed"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     for name in ["bridge-start.lock", "http-service.lock"] {
         let path = fixture.state.join(name);
         if path.exists() {

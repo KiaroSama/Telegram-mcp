@@ -29,7 +29,7 @@ fn valid_export_settings_keep_media_choices_local_dates_fractional_budget_and_un
     assert!(parsed.includes_date(parsed.from));
     assert!(parsed.includes_date(parsed.until - 1));
     assert!(!parsed.includes_date(parsed.until));
-    assert!(parsed.path.starts_with(&destination));
+    assert!(parsed.path.starts_with(destination.canonicalize().unwrap()));
     assert!(!parsed.path.exists());
     std::fs::create_dir(&parsed.path).unwrap();
     let occupied = parsed.path.with_file_name(format!(

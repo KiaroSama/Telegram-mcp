@@ -38,4 +38,4 @@ if ($script:called.Count) { throw 'Cancel invoked login.' }
 function Get-SessionHealth { param($Key); return [pscustomobject] @{ status = 'unknown'; repairable = $true } }
 Test-AccountSessions
 if ($script:called.Count) { throw 'Unknown health invoked login.' }
-Write-Host 'ok  exact-key repair, busy/healthy/unknown exclusion and cancellation'
+Write-Host 'Account health checks passed.'

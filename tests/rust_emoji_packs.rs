@@ -199,7 +199,9 @@ async fn refresh_uses_changed_thumbnail_not_a_stale_fingerprint() {
     let before = stored["1"].clone();
     let path = temp.path().join(".thumbs/1.webp");
     thumb(&path, [0, 0, 255, 255], 16);
-    std::fs::File::open(&path)
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
         .unwrap()
         .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(1))
         .unwrap();

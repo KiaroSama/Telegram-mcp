@@ -41,7 +41,7 @@ try {
     $original = @(
         '# a comment that must survive'
         'TELEGRAM_API_ID=12345'
-        'TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef'
+        ('TELEGRAM_API_HASH=' + ('0' * 32))
         ''
         'TELEGRAM_SESSION_STRING=1AAAAAoriginal'
         'TELEGRAM_SESSION_STRING_WORK=1AAAAAwork'
@@ -433,6 +433,8 @@ finally {
 # question is whether `0` unwinds one level and `exit` unwinds all of them.
 $e2e = Join-Path ([IO.Path]::GetTempPath()) ("tg-accounts-e2e-" + [guid]::NewGuid())
 [void] (New-Item -ItemType Directory -Path $e2e)
+$savedStateDirectory = $env:TELEGRAM_STATE_DIR
+$env:TELEGRAM_STATE_DIR = Join-Path $e2e 'private-state'
 try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'Manage-Accounts.ps1') -Destination $e2e
     Copy-Item -LiteralPath (Join-Path $projectRoot 'account-manager') -Destination $e2e -Recurse
@@ -467,7 +469,8 @@ try {
     # the account, which is the exact thing Principle I forbids.
 
     $source = Get-LauncherSource -Root $projectRoot
-    $generator = [IO.File]::ReadAllText((Join-Path $projectRoot 'session_string_generator.py'))
+    $generator = ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/backend.rs'))) +
+        ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/account_manager/login.rs')))
 
     foreach ($dead in @('Invoke-SecretChatLogin', 'Get-SecretChatStates', 'Get-SecretChatSummary')) {
         if ($source -match [regex]::Escape($dead)) {
@@ -481,6 +484,9 @@ try {
     }
     if (($source -match 'tdlib') -or ($generator -match 'tdlib')) {
         throw 'A TDLib reference survives in the account path.'
+    }
+    if ($generator -notmatch 'request_login_code' -or $generator -notmatch 'transaction\.commit\(id\)') {
+        throw 'Native login must verify one authorization before committing its staged session.'
     }
     Write-Host 'ok  adding an account asks for one code and finishes there'
 
@@ -657,7 +663,11 @@ try {
     # The native process and the retained launcher must agree on private state.
     $native = Get-NativeBinary -Root $projectRoot
     $nativeState = (& $native state-path | Select-Object -Last 1).Trim()
-    if ($LASTEXITCODE -ne 0 -or $nativeState -ne (Get-StateDirectory)) {
+    # Rust's canonical Windows paths use the verbatim prefix; PowerShell can
+    # name the same directory through the ordinary DOS/UNC spelling.
+    $nativeState = $nativeState -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
+    $launcherState = [IO.Path]::GetFullPath((Get-StateDirectory))
+    if ($LASTEXITCODE -ne 0 -or $nativeState -ne $launcherState) {
         throw 'Native Rust and PowerShell disagree on their private state directory.'
     }
     Write-Host 'ok  PowerShell and native Rust resolve the same state directory'
@@ -705,6 +715,7 @@ try {
 
 }
 finally {
+    $env:TELEGRAM_STATE_DIR = $savedStateDirectory
     Remove-Item -LiteralPath $e2e -Recurse -Force -ErrorAction SilentlyContinue
 }
 

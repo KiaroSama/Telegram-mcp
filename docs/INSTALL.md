@@ -24,10 +24,25 @@ native executable files. Do not infer that all checks passed
 merely because the build artifact exists: builds intentionally run before behavioral
 gates, which can still fail.
 
+Release artifacts contain `telegram-mcp`, `emoji-studio` and `operator-plugin` (with
+`.exe` on Windows). GitHub artifact downloads can reset Unix executable permissions;
+after extracting on Linux/macOS, run `chmod +x telegram-mcp emoji-studio operator-plugin`
+in the extracted directory.
+
 The application does not require Python, uv or a virtual environment. The retained
 Windows PowerShell launchers require PowerShell 7 and invoke the compiled binary.
 Optional native rendering uses a separate rlottie shared library; see
 [visual access](visual-structured-access.md).
+
+Install native **FFmpeg and FFprobe** on `PATH` for video/animation decoding and
+audio/video metadata. Linux distributions provide the `ffmpeg` package; macOS users can
+install Homebrew's `ffmpeg`. Windows builds are linked from
+[FFmpeg's official download page](https://ffmpeg.org/download.html). CI verifies the
+Gyan 9.0.2 Windows archive against its exact SHA-256; Linux/macOS jobs install their
+platform packages and log both executable versions. PDF/text and ordinary image
+inspection use the Rust pipeline. Local Whisper transcription additionally needs an
+explicitly configured native `whisper-cli` and local model; no model is downloaded
+automatically.
 
 ## Configure credentials and authorize an account
 
@@ -165,8 +180,9 @@ at an unrelated executable. Their preserved four test suites run on Windows in C
 
 ## Docker
 
-The Docker image builds the locked Rust application, then copies only the compiled
-binary into a non-root Debian runtime. Persistent state resolves under `/data/state`.
+The Docker image builds the locked Rust application, then copies the compiled server
+into a non-root Debian runtime with native FFmpeg/FFprobe. Persistent state resolves
+under `/data/state`.
 
 ```bash
 docker build --tag telegram-mcp:local .

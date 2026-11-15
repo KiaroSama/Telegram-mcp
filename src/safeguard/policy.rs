@@ -116,21 +116,27 @@ pub fn decide(
         return refusal("touches_approval_channel");
     }
     if values.iter().filter_map(|v| v.as_str()).any(|text| {
-        let text = text.replace('\\', "/");
-        if text.to_lowercase().contains("telegram_mcp/safeguard") {
+        if text
+            .replace('\\', "/")
+            .to_lowercase()
+            .contains("telegram_mcp/safeguard")
+        {
             return !facts.protected_paths.is_empty();
         }
-        let path = PathBuf::from(&text);
+        // Preserve native Windows verbatim prefixes. Changing backslashes to
+        // slashes before constructing a path changes the prefix's meaning.
+        let path = PathBuf::from(text);
         let absolute = if path.is_absolute() {
             path
         } else {
             std::env::current_dir().unwrap_or_default().join(path)
         };
-        let resolved = absolute.canonicalize().unwrap_or(absolute);
-        facts
-            .protected_paths
-            .iter()
-            .any(|root| resolved.starts_with(root))
+        let resolved = crate::state::canonical_existing(&absolute).unwrap_or(absolute);
+        facts.protected_paths.iter().any(|root| {
+            resolved.starts_with(
+                crate::state::canonical_existing(root).unwrap_or_else(|_| root.clone()),
+            )
+        })
     }) {
         return refusal("touches_safeguard_files");
     }

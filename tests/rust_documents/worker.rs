@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 use tokio::{io::AsyncWriteExt, process::Command};
 
-fn pdf(text: Option<&str>) -> Vec<u8> {
+pub(super) fn pdf(text: Option<&str>) -> Vec<u8> {
     let stream = text
         .map(|text| format!("BT /F1 12 Tf 72 720 Td ({text}) Tj ET"))
         .unwrap_or_default();
@@ -17,7 +17,7 @@ fn pdf(text: Option<&str>) -> Vec<u8> {
     pdf_objects(&objects)
 }
 
-fn pdf_objects(objects: &[String]) -> Vec<u8> {
+pub(super) fn pdf_objects(objects: &[String]) -> Vec<u8> {
     let mut output = b"%PDF-1.4\n".to_vec();
     let mut offsets = vec![0usize];
     for (index, object) in objects.iter().enumerate() {
@@ -161,12 +161,11 @@ async fn oversized_raw_worker_request_stops_reading_at_its_own_bound() {
     assert!(result.get("text").is_none());
 }
 
-fn stream(data: &str) -> String {
+pub(super) fn stream(data: &str) -> String {
     format!("<< /Length {} >>\nstream\n{data}\nendstream", data.len())
 }
 
-#[tokio::test]
-async fn native_pdf_worker_decodes_real_tounicode_cmap_including_surrogate_pairs() {
+pub(super) fn unicode_pdf() -> Vec<u8> {
     let cmap = "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /SyntheticUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n6 beginbfchar\n<0001> <0633>\n<0002> <0644>\n<0003> <0627>\n<0004> <0645>\n<0005> <D83EDD80>\n<0006> <00660069>\nendbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend";
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".into(),
@@ -177,7 +176,12 @@ async fn native_pdf_worker_decodes_real_tounicode_cmap_including_surrogate_pairs
         "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /SyntheticUnicode /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /DW 1000 >>".into(),
         stream(cmap),
     ];
-    let result = run(request(&pdf_objects(&objects))).await;
+    pdf_objects(&objects)
+}
+
+#[tokio::test]
+async fn native_pdf_worker_decodes_real_tounicode_cmap_including_surrogate_pairs() {
+    let result = run(request(&unicode_pdf())).await;
     assert_eq!(result["ok"], true);
     assert_eq!(result["text"].as_str().unwrap().trim(), "سلام🦀fi");
 }

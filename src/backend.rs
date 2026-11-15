@@ -6,6 +6,7 @@ mod updates;
 use crate::{session::PersistentSession, state::State, tl::Schema};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
+pub use config::public_configuration_json;
 pub use config::{account_labels, generation as account_generation};
 pub use config::{accounts_snapshot, health};
 use grammers_client::{Client, SignInError};

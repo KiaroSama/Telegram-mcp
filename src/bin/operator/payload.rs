@@ -100,7 +100,19 @@ pub fn absolute(path: &Path) -> Result<PathBuf> {
             );
         }
     }
-    Ok(clean)
+    // Canonicalize the existing ancestor even when the destination does not
+    // exist yet. On Windows this gives both paths the same filesystem identity
+    // (including the verbatim prefix), rather than comparing C:\ with \\?\C:\.
+    for ancestor in clean.ancestors() {
+        if ancestor.symlink_metadata().is_ok() {
+            let relative = clean.strip_prefix(ancestor)?;
+            return Ok(ancestor
+                .canonicalize()
+                .context("Cannot resolve a destination ancestor")?
+                .join(relative));
+        }
+    }
+    bail!("Destination has no existing filesystem root")
 }
 
 pub fn checked_source(path: &Path) -> Result<PathBuf> {

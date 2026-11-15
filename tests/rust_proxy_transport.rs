@@ -113,13 +113,18 @@ async fn dropped_route_closes_the_private_gateway() {
         .unwrap();
     let url = url::Url::parse(route.proxy_url.as_ref().unwrap()).unwrap();
     let address = format!("{}:{}", url.host_str().unwrap(), url.port().unwrap());
+    let connected = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(&address))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(connected);
     drop(route);
     tokio::task::yield_now().await;
+    let connection =
+        tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(address)).await;
     assert!(
-        tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(address))
-            .await
-            .unwrap()
-            .is_err()
+        !matches!(connection, Ok(Ok(_))),
+        "Dropping the route must stop accepting TCP connections; a closed Windows loopback port may refuse or time out"
     );
 }
 #[tokio::test]

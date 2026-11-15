@@ -9,11 +9,40 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use serde_json::{Value, json};
+use std::path::PathBuf;
 pub use worker::worker_entry;
 pub const MAX_DOCUMENT_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
 
+/// A trusted host dependency, separate from every MCP argument and environment
+/// variable. Embedders may provide the native executable explicitly; the server
+/// uses its own executable. The subprocess receives only document bytes.
+pub struct PdfWorker {
+    executable: PathBuf,
+}
+impl PdfWorker {
+    pub fn new(executable: impl Into<PathBuf>) -> Self {
+        Self {
+            executable: executable.into(),
+        }
+    }
+    pub fn current() -> Result<Self> {
+        Ok(Self::new(std::env::current_exe()?))
+    }
+    pub async fn extract(&self, bytes: &[u8]) -> Result<Value> {
+        worker::extract(&self.executable, bytes).await
+    }
+}
+
 pub async fn inspect(api: &dyn Telegram, args: &Value) -> Result<Value> {
+    inspect_with_worker(api, args, &PdfWorker::current()?).await
+}
+
+pub async fn inspect_with_worker(
+    api: &dyn Telegram,
+    args: &Value,
+    worker: &PdfWorker,
+) -> Result<Value> {
     let topic = args
         .get("topic_id")
         .filter(|v| !v.is_null())
@@ -95,7 +124,7 @@ pub async fn inspect(api: &dyn Telegram, args: &Value) -> Result<Value> {
             bytes.starts_with(b"%PDF-"),
             "Attachment is not a PDF despite its filename or MIME type"
         );
-        worker::extract(&bytes).await?
+        worker.extract(&bytes).await?
     } else {
         ensure!(
             !image,

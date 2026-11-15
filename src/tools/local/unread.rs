@@ -14,6 +14,35 @@ use std::io::{Read, Write};
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const FORMAT: &str = "telegram-mcp/unread-export-v1";
 
+fn output_lease(state: &State, output: &std::path::Path) -> Result<std::fs::File> {
+    // A stable private sidecar serializes cooperating writers without locking
+    // the data bytes: Windows byte-range locks also prohibit another read handle.
+    let digest = Sha256::digest(output.as_os_str().as_encoded_bytes());
+    let path = state.root().join(format!("unread-export-{digest:x}.lock"));
+    if path
+        .symlink_metadata()
+        .is_ok_and(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())
+    {
+        bail!("Unread export lease is not a regular file");
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x0020_0000);
+    }
+    let lease = options.open(&path)?;
+    crate::state::storage::restrict(&path, false)?;
+    FileExt::try_lock_exclusive(&lease).context("This unread export is already in use")?;
+    Ok(lease)
+}
+
 fn bounded_message_id(value: &Value) -> Result<i64> {
     let id = integer_id(value)?;
     if !(0..=i32::MAX as i64).contains(&id) {
@@ -77,8 +106,8 @@ pub async fn export_unread_with_state(
     if output.is_dir() {
         bail!("The unread export destination must be a file");
     }
+    let _lease = output_lease(state, &output)?;
     let mut previous_bytes = None;
-    let mut _lease = None;
     let mut result = if output.exists() {
         if !resume {
             bail!(
@@ -94,7 +123,6 @@ pub async fn export_unread_with_state(
             options.custom_flags(libc::O_NOFOLLOW);
         }
         let mut file = options.open(source)?;
-        FileExt::try_lock_exclusive(&file).context("This unread export is already in use")?;
         if file.metadata()?.len() > MAX_BYTES as u64 {
             bail!("Existing unread export exceeds its byte budget");
         }
@@ -119,7 +147,6 @@ pub async fn export_unread_with_state(
         }
         validate_previous(&old)?;
         previous_bytes = Some(bytes);
-        _lease = Some(file);
         old
     } else {
         json!({"format":FORMAT,"account":account,"chats":{}})

@@ -46,6 +46,8 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     } else {
         args::text(a, key)?
     };
+    let keep_scheduled_body =
+        name == "edit_scheduled_message" && a.get("message").is_none_or(Value::is_null);
     ensure!(
         name == "edit_scheduled_message" || !message.trim().is_empty(),
         "Message text cannot be empty"
@@ -98,7 +100,10 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             );
         }
         request["rich_message"] = rich;
-    } else if let Some(raw) = a.get("entities").filter(|v| !v.is_null()) {
+    } else if let Some(raw) = a
+        .get("entities")
+        .filter(|v| !v.is_null() && !keep_scheduled_body)
+    {
         ensure!(
             mode.is_empty() || mode == "none",
             "Explicit entities cannot be combined with parse_mode"
@@ -121,6 +126,18 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     );
     let p = args::peer(api, a, "chat_id").await?;
     request["peer"] = p.clone();
+    if name == "edit_scheduled_message" {
+        preserve_scheduled(
+            api,
+            &p,
+            mid.unwrap(),
+            a,
+            &mut request,
+            when,
+            keep_scheduled_body,
+        )
+        .await?;
+    }
     if let Some(files) = a
         .get("rich_files")
         .and_then(Value::as_object)
@@ -281,6 +298,50 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         response => response,
     }
+}
+/// Scheduled ids live in a separate queue from sent message ids. Always bind
+/// an edit to that queue and resend its date, including an overdue stored date.
+async fn preserve_scheduled(
+    api: &dyn Telegram,
+    peer: &Value,
+    mid: i64,
+    args: &Value,
+    request: &mut Value,
+    when: Option<i64>,
+    keep_body: bool,
+) -> Result<()> {
+    let history = api
+        .invoke(
+            "messages.getScheduledHistory",
+            json!({"peer":peer,"hash":"0"}),
+        )
+        .await?;
+    let current=result_messages(&history).into_iter().find(|message|message["id"].as_i64()==Some(mid)).ok_or_else(||anyhow::anyhow!("The message id is not in this chat's scheduled queue; a scheduled id is separate from a sent one"))?;
+    if keep_body {
+        let text = current["message"].as_str().unwrap_or("");
+        ensure!(
+            !text.is_empty() || current.get("media").is_some_and(|media| !media.is_null()),
+            "The queued body is unreadable as plain text/media; cancel it and queue a new copy instead of replacing opaque rich content"
+        );
+        request["message"] = json!(text);
+        request["entities"] = current.get("entities").cloned().unwrap_or(json!([]));
+    }
+    let date = when.or_else(|| current["date"].as_i64()).ok_or_else(|| {
+        anyhow::anyhow!("The scheduled message has no date to preserve; supply when")
+    })?;
+    ensure!(
+        (1..=i32::MAX as i64).contains(&date),
+        "The stored scheduled date is invalid"
+    );
+    request["schedule_date"] = json!(date);
+    if args.get("repeat").is_none_or(Value::is_null)
+        && let Some(period) = current
+            .get("schedule_repeat_period")
+            .filter(|value| !value.is_null())
+    {
+        request["schedule_repeat_period"] = period.clone();
+    }
+    Ok(())
 }
 async fn wanted_peer(api: &dyn Telegram, p: &Value) -> Result<Value> {
     Ok(match p["_"].as_str() {

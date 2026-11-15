@@ -262,16 +262,15 @@ pub(super) async fn ensure_service(state: &State) -> Result<Value> {
     if let Some(record) = live(state, &executable, None).await? {
         return Ok(record);
     }
-    match tokio::time::timeout(
-        Duration::from_millis(500),
-        tokio::net::TcpStream::connect(address),
-    )
-    .await
-    {
-        Ok(Ok(_)) => {
+    // A failed loopback connect can take seconds on Windows. Ask the local
+    // kernel whether this exact listen address is free, without contacting an
+    // unknown listener. The startup lease serializes our own launches, and the
+    // child still performs the authoritative bind after this handle is closed.
+    match std::net::TcpListener::bind(address) {
+        Ok(probe) => drop(probe),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
             bail!("An unverified listener occupies the configured bridge port; it was not replaced")
         }
-        Ok(Err(error)) if error.kind() == std::io::ErrorKind::ConnectionRefused => {}
         _ => bail!(
             "The configured bridge port cannot be verified as available; no service was started"
         ),

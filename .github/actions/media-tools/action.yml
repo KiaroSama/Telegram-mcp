@@ -1,0 +1,52 @@
+name: Native media test tools
+description: Install actual FFmpeg and FFprobe for codec behavioral tests.
+runs:
+  using: composite
+  steps:
+    - name: Install Ubuntu media codecs
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install --yes --no-install-recommends ffmpeg
+    - name: Install macOS media codecs
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! brew list --versions ffmpeg >/dev/null 2>&1; then
+          brew install ffmpeg
+        fi
+    - name: Install the checksum-pinned Windows media codecs
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        # Gyan builds are linked by https://ffmpeg.org/download.html.
+        # Official release asset digest reviewed on 2026-11-15.
+        $version = '9.0.2'
+        $expected = '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
+        $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-$version.zip"
+        $destination = Join-Path $env:RUNNER_TEMP "ffmpeg-$version"
+        $uri = "https://github.com/GyanD/codexffmpeg/releases/download/$version/ffmpeg-$version-essentials_build.zip"
+        Invoke-WebRequest -Uri $uri -OutFile $archive -TimeoutSec 180 -MaximumRetryCount 3
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+          throw 'Native FFmpeg archive checksum mismatch.'
+        }
+        Expand-Archive -LiteralPath $archive -DestinationPath $destination
+        $executables = @(Get-ChildItem -LiteralPath $destination -Recurse -File -Filter ffmpeg.exe)
+        if ($executables.Count -ne 1) { throw 'Native FFmpeg archive layout is invalid.' }
+        $binaryDirectory = $executables[0].Directory.FullName
+        if (-not (Test-Path (Join-Path $binaryDirectory 'ffprobe.exe') -PathType Leaf)) {
+          throw 'The native FFprobe executable is missing.'
+        }
+        $binaryDirectory | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+    - name: Verify actual codec executables
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        & ffmpeg -version
+        if ($LASTEXITCODE -ne 0) { throw 'Native FFmpeg cannot run.' }
+        & ffprobe -version
+        if ($LASTEXITCODE -ne 0) { throw 'Native FFprobe cannot run.' }

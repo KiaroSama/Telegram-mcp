@@ -98,7 +98,13 @@ fn nonexisting_nested_destination_resolves_inside_root() {
         state
             .resolve_file(Path::new("downloads/new/file.json"), FileAccess::Write)
             .unwrap(),
-        dir.path().join("allowed/downloads/new/file.json")
+        dir.path()
+            .join("allowed")
+            .canonicalize()
+            .unwrap()
+            .join("downloads")
+            .join("new")
+            .join("file.json")
     );
 }
 #[test]

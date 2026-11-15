@@ -446,19 +446,25 @@ fn revoking_one_owner_grant_keeps_unrelated_scopes() {
 
 #[test]
 fn owner_grant_never_overrides_protected_state_refusal() {
-    let (_dir, state) = fixture();
+    let (dir, state) = fixture();
     state
         .write_json(
             "always-approvals.json",
             &json!({"grants":[["work","download_media","42"]],"folders":[]}),
         )
         .unwrap();
-    let args = json!({"account":"work","chat_id":42,"destination":state.root().join("approval-grants.json")});
+    let paths = [
+        state.root().join("approval-grants.json"),
+        dir.path().join("private/nested/new-grant.json"),
+    ];
     let guard = Safeguard::new(state);
-    assert!(matches!(
-        guard.check("download_media", &args, false, true).unwrap(),
-        Decision::Refuse { .. }
-    ));
+    for destination in paths {
+        let args = json!({"account":"work","chat_id":42,"destination":destination});
+        assert!(matches!(
+            guard.check("download_media", &args, false, true).unwrap(),
+            Decision::Refuse { .. }
+        ));
+    }
 }
 
 #[test]
