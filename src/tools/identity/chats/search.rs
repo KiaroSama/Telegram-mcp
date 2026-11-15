@@ -108,35 +108,7 @@ pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
 
 pub(super) async fn lookup(api: &dyn Telegram, a: &Value) -> Result<Value> {
     let query = req(a, "query")?;
-    let normalized = if let Some(raw) = query.as_str() {
-        let trimmed = raw.trim();
-        let lower = trimmed.to_ascii_lowercase();
-        let link = [
-            "https://t.me/",
-            "http://t.me/",
-            "t.me/",
-            "https://telegram.me/",
-            "http://telegram.me/",
-            "telegram.me/",
-        ]
-        .iter()
-        .find(|prefix| lower.starts_with(**prefix));
-        if let Some(prefix) = link {
-            let name = trimmed[prefix.len()..]
-                .split(['/', '?'])
-                .next()
-                .unwrap_or("");
-            ensure!(
-                !name.starts_with('+') && name != "joinchat",
-                "This is a private invite link, not a peer username; use import_chat_invite or join_chat_by_link"
-            );
-            json!(name)
-        } else {
-            query.clone()
-        }
-    } else {
-        query.clone()
-    };
+    let normalized = crate::tools::identity::normalize_lookup_query(query)?;
     let mut p = api.resolve_peer(&normalized).await?;
     let detail = full(api, &p).await?;
     if kind(&p) == "inputPeerSelf" {

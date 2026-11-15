@@ -10,7 +10,9 @@ use tempfile::TempDir;
 use zip::ZipArchive;
 
 fn fixture() -> (TempDir, PathBuf) {
-    let root = TempDir::new().unwrap();
+    // macOS's standard temporary path can contain the system /var alias.
+    // The payload contract rejects links, so create the fixture in its physical parent.
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = root.path().join("source with spaces");
     fs::create_dir_all(&source).unwrap();
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"));

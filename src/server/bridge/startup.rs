@@ -146,6 +146,18 @@ async fn live(
     Ok(Some(record))
 }
 
+#[cfg(windows)]
+pub(super) fn prevent_inheritance(handle: std::os::windows::io::RawHandle) -> Result<()> {
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+    // SAFETY: the caller retains ownership; changing inheritance neither closes
+    // the borrowed handle nor changes its access rights or read/write behavior.
+    if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(std::io::Error::last_os_error())
+            .context("Cannot isolate the shared service from client pipes");
+    }
+    Ok(())
+}
+
 struct Launch(Option<Child>);
 impl Launch {
     fn start(executable: &Path, address: SocketAddr, state: &State) -> Result<Self> {
@@ -177,7 +189,22 @@ impl Launch {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
+            use std::os::windows::{io::AsRawHandle, process::CommandExt};
+            use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+            // Command::spawn on stable Rust inherits every inheritable handle,
+            // including the bridge's original client pipes even when the new
+            // child's standard streams are set to NUL. A long-lived daemon
+            // must not retain those endpoints and prevent the client from
+            // observing stdout/stderr EOF after this bridge exits.
+            for handle in [
+                std::io::stdin().as_raw_handle(),
+                std::io::stdout().as_raw_handle(),
+                std::io::stderr().as_raw_handle(),
+            ] {
+                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
+                    prevent_inheritance(handle)?;
+                }
+            }
             command.creation_flags(0x08000000 | 0x00000200);
         }
         Ok(Self(Some(command.spawn().context(
@@ -241,9 +268,9 @@ impl Drop for Launch {
 pub(super) async fn ensure_service(state: &State) -> Result<Value> {
     let address = endpoint()?;
     let executable = std::env::current_exe()?.canonicalize()?;
-    if let Some(record) = live(state, &executable, None).await? {
-        return Ok(record);
-    }
+    // A cooperating launcher holds this lease before its daemon acquires the
+    // HTTP lease and until discovery/health are ready. Wait before inspecting
+    // that intermediate state; unrelated owners still fail strict live checks.
     let start = lease(&state.root().join("bridge-start.lock"), true)?;
     let deadline = tokio::time::Instant::now() + START_LIMIT;
     loop {

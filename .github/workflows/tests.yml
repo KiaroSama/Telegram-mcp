@@ -98,14 +98,25 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host "Logical processors: $([Environment]::ProcessorCount)"
-          $defaultProfileEnvironment = & cargo llvm-cov show-env --export-prefix
+          $coverageEnvironmentArguments = @('llvm-cov', 'show-env', '--export-prefix')
+          if ($IsWindows) { $coverageEnvironmentArguments += '--no-rustc-wrapper' }
+          $defaultProfileEnvironment = & cargo @coverageEnvironmentArguments
           if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the default profiler environment.' }
           $defaultProfileEnvironment | Where-Object { $_ -match '^(export )?LLVM_PROFILE_FILE=' } | ForEach-Object { Write-Host "Default profiler: $_" }
           $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
           "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run all native tests with coverage instrumentation
-        run: cargo llvm-cov nextest --locked --all-features --profile ci --no-report
+        shell: pwsh
+        run: |
+          $coverageArguments = @('llvm-cov', 'nextest', '--locked', '--all-features', '--profile', 'ci', '--no-report')
+          if ($IsWindows) {
+            # llvm-cov0.9.1's wrapper does not expand Cargo1.100 @argfiles.
+            # Official fix: https://github.com/taiki-e/cargo-llvm-cov/pull/533
+            $coverageArguments += '--no-rustc-wrapper'
+          }
+          & cargo @coverageArguments
+          exit $LASTEXITCODE
       - name: Require actual profiling evidence before recording cases
         if: always()
         shell: pwsh
@@ -207,6 +218,11 @@ jobs:
             "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=$runtime",
             "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$runtime"
           )
+          if ($IsMacOS) {
+            # This pinned upstream does not supply the NEON assembly helper
+            # symbols on Apple ARM64. Use its official scalar path.
+            $cmakeArguments += '-DCMAKE_CXX_FLAGS=-U__ARM_NEON__'
+          }
           & cmake @cmakeArguments
           if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
           cmake --build .ci-rlottie-build --target rlottie --config Release --parallel 2
@@ -219,14 +235,25 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host "Logical processors: $([Environment]::ProcessorCount)"
-          $defaultProfileEnvironment = & cargo llvm-cov show-env --export-prefix
+          $coverageEnvironmentArguments = @('llvm-cov', 'show-env', '--export-prefix')
+          if ($IsWindows) { $coverageEnvironmentArguments += '--no-rustc-wrapper' }
+          $defaultProfileEnvironment = & cargo @coverageEnvironmentArguments
           if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the default profiler environment.' }
           $defaultProfileEnvironment | Where-Object { $_ -match '^(export )?LLVM_PROFILE_FILE=' } | ForEach-Object { Write-Host "Default profiler: $_" }
           $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
           "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Run the whole native suite with rendering required
-        run: cargo llvm-cov nextest --locked --all-features --profile ci --no-report
+        shell: pwsh
+        run: |
+          $coverageArguments = @('llvm-cov', 'nextest', '--locked', '--all-features', '--profile', 'ci', '--no-report')
+          if ($IsWindows) {
+            # llvm-cov0.9.1's wrapper does not expand Cargo1.100 @argfiles.
+            # Official fix: https://github.com/taiki-e/cargo-llvm-cov/pull/533
+            $coverageArguments += '--no-rustc-wrapper'
+          }
+          & cargo @coverageArguments
+          exit $LASTEXITCODE
       - name: Require actual profiling evidence before recording cases
         if: always()
         shell: pwsh

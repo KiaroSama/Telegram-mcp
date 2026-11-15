@@ -19,6 +19,25 @@ fn junit_retains_skipped_case_without_claiming_execution() {
     assert_eq!(executed, vec!["native::ran"]);
     assert_eq!((failed, skipped), (0, 1));
 }
+
+#[test]
+fn case_recorder_retains_skipped_evidence_but_refuses_to_report_success() {
+    let root = tempfile::tempdir().unwrap();
+    let report = root.path().join("junit.xml");
+    let destination = root.path().join("record.json");
+    fs::write(&report,r#"<testsuite name="native" tests="2"><testcase name="ran"/><testcase name="skipped"><skipped/></testcase></testsuite>"#).unwrap();
+    let result = record("synthetic-skipped-regression", &report, &destination);
+    let retained: Record = serde_json::from_slice(&fs::read(destination).unwrap()).unwrap();
+    assert_eq!(retained.total, 2);
+    assert_eq!(retained.skipped, 1);
+    assert_eq!(retained.executed, vec!["native::ran"]);
+    assert!(
+        result.is_err(),
+        "A partially skipped run was reported as successful"
+    );
+    assert!(result.unwrap_err().to_string().contains("skipped"));
+    assert!(require_complete_execution(&retained).is_err());
+}
 #[test]
 fn junit_rejects_declared_count_disagreeing_with_cases() {
     assert!(

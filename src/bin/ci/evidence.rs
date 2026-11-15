@@ -76,9 +76,17 @@ pub fn record(label: &str, junit: &Path, destination: &Path) -> Result<()> {
         "### {}\n\nCommit: `{}`\n\n{} native tests, {} failed, {} skipped; {}.\n",
         label, record.commit, record.total, failed, skipped, record.platform
     ))?;
+    require_complete_execution(&record)
+}
+
+fn require_complete_execution(record: &Record) -> Result<()> {
     ensure!(
-        failed == 0,
+        record.failed == 0,
         "Native tests failed; their complete case record was retained"
+    );
+    ensure!(
+        record.skipped == 0 && record.executed == record.cases,
+        "Native tests were skipped or not executed; their complete case record was retained"
     );
     Ok(())
 }
@@ -192,10 +200,7 @@ pub fn compare(directory: &Path) -> Result<()> {
             expected_cases.get(&record.platform) == Some(&record.cases),
             "A native test case was added, lost or renamed without updating its reviewed operating-system inventory"
         );
-        ensure!(
-            record.failed == 0,
-            "One operating-system leg contains failing tests"
-        );
+        require_complete_execution(record)?;
         ensure!(
             record.rustc.split_whitespace().nth(1) == Some("1.100.0"),
             "A CI leg used a different Rust compiler"

@@ -351,3 +351,25 @@ fn production_tracing_events_do_not_log_raw_values_or_format_errors() {
         offenders.join(", ")
     );
 }
+
+#[test]
+fn logging_recovers_after_rotation_replacement_open_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("runtime.log");
+    let mut log = writer(&path, 4);
+    log.write_all(b"old!").unwrap();
+    // This is the exact durable intermediate state after rename succeeded but
+    // opening the replacement failed. The filesystem fault has now cleared.
+    {
+        let mut destination = log.0.lock().unwrap();
+        drop(destination.file.take());
+        std::fs::rename(&path, path.with_extension("log.1")).unwrap();
+    }
+    log.write_all(b"next").unwrap();
+    log.flush().unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), b"next");
+    assert_eq!(
+        std::fs::read(path.with_extension("log.1")).unwrap(),
+        b"old!"
+    );
+}

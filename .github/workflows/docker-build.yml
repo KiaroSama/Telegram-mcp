@@ -92,8 +92,32 @@ jobs:
           persist-credentials: false
       - name: Validate with explicit synthetic configuration
         run: |
+          set -euo pipefail
           cp .env.example .env
+          # Compose validation needs paths, not a running TLS service. These
+          # files deliberately contain no usable certificates or private keys.
+          fixture_dir=$(mktemp -d)
+          trap 'rm -rf "$fixture_dir"' EXIT
+          touch "$fixture_dir/server.pem" "$fixture_dir/server-key.pem"
+          if env -u TELEGRAM_HTTP_TLS_CERT -u TELEGRAM_HTTP_TLS_KEY \
+              docker compose config --quiet 2> "$fixture_dir/missing-tls.log"; then
+            echo "Compose accepted missing mandatory TLS paths" >&2
+            exit 1
+          fi
+          export TELEGRAM_HTTP_TOKEN=synthetic-compose-token-at-least-32-characters
+          export TELEGRAM_HTTP_TLS_CERT="$fixture_dir/server.pem"
+          export TELEGRAM_HTTP_TLS_KEY="$fixture_dir/server-key.pem"
           docker compose config --quiet
+          docker compose config --format json > "$fixture_dir/compose.json"
+          jq -e '
+            .services["telegram-mcp"] as $service
+            | ($service.environment.TELEGRAM_HTTP_TOKEN | length >= 32)
+              and $service.environment.TELEGRAM_HTTP_TLS_CERT == "/run/telegram-tls/server.pem"
+              and $service.environment.TELEGRAM_HTTP_TLS_KEY == "/run/telegram-tls/server-key.pem"
+              and ([ $service.volumes[]
+                     | select(.type == "bind" and (.target | startswith("/run/telegram-tls/"))) ]
+                   | length == 2 and all(.[]; .read_only == true and (.bind.create_host_path // false) == false))
+          ' "$fixture_dir/compose.json"
   status_finish:
     name: CI status final
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)

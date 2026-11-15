@@ -7,6 +7,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::time::Instant;
+mod source;
+pub use source::source_selector;
 
 #[cfg(test)]
 #[path = "../../../tests/unit/local_proxy.rs"]
@@ -254,7 +256,7 @@ async fn dispatch(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
         "add_proxies" => {
             let mut text = args["text"].as_str().unwrap_or("").to_owned();
             if let Some(source) = args.get("source").filter(|source| !source.is_null()) {
-                let peer = api.resolve_peer(source).await?;
+                let peer = api.resolve_peer(&source_selector(source)?).await?;
                 let result=api.invoke("messages.getHistory",json!({"peer":peer,"offset_id":0,"offset_date":0,"add_offset":0,"limit":200,"max_id":0,"min_id":0,"hash":"0"})).await?;
                 collect_proxy_text(&result, &mut text);
             }
@@ -336,13 +338,23 @@ async fn dispatch(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
         "test_proxies" => {
             let ids = string_ids(args.get("ids"))?;
             let store = state.read_json("proxies-v1.json", json!({}))?;
-            let chosen = store
+            let mut chosen = store
                 .as_object()
                 .context("Proxy pool is invalid")?
                 .iter()
                 .filter(|(id, record)| selected(record) && (ids.is_empty() || ids.contains(*id)))
-                .map(|(_, record)| serde_json::from_value::<Proxy>(record["proxy"].clone()))
+                .map(|(id, record)| {
+                    serde_json::from_value::<Proxy>(record["proxy"].clone())
+                        .map(|proxy| (record["probe_sequence"].as_u64().unwrap_or(0), id, proxy))
+                })
                 .collect::<std::result::Result<Vec<_>, _>>()?;
+            // Missing sequence means deferred/never tested. Thereafter use the
+            // least recently tested entries so every repeated batch advances.
+            chosen.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+            let chosen = chosen
+                .into_iter()
+                .map(|(_, _, proxy)| proxy)
+                .collect::<Vec<_>>();
             Ok(json!({"results":probe_many(&state,&chosen).await?}))
         }
         _ => bail!("Unknown proxy tool"),
@@ -411,10 +423,20 @@ async fn probe_many(state: &State, proxies: &[Proxy]) -> Result<Vec<Value>> {
         };
         let healthy = json!(reachable);
         state.update_json("proxies-v1.json", json!({}), |store| {
+            let sequence = store
+                .as_object()
+                .context("Proxy pool is invalid")?
+                .values()
+                .filter_map(|record| record["probe_sequence"].as_u64())
+                .max()
+                .unwrap_or(0)
+                .checked_add(1)
+                .context("Proxy probe sequence exhausted")?;
             if let Some(record) = store.get_mut(&id) {
                 record["healthy"] = healthy.clone();
                 record["last_result"] = json!(result);
                 record["latency_ms"] = json!(elapsed);
+                record["probe_sequence"] = json!(sequence);
             }
             Ok(())
         })?;

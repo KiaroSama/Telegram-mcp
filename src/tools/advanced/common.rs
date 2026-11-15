@@ -98,6 +98,27 @@ pub async fn message(api: &dyn Telegram, p: &Value, msg: i64) -> Result<Value> {
         msg > 0 && msg <= i32::MAX as i64,
         "message_id must be a positive 32-bit integer"
     );
+    let channel_bound = p["_"] == "inputPeerChannel";
+    let expected = if p["_"] == "inputPeerSelf" {
+        let users = api
+            .invoke("users.getUsers", json!({"id":[{"_":"inputUserSelf"}]}))
+            .await?;
+        Some(
+            positive(
+                &users
+                    .as_array()
+                    .and_then(|v| v.first())
+                    .ok_or_else(|| anyhow::anyhow!("Account identity unavailable"))?["id"],
+            )?
+            .to_string(),
+        )
+    } else {
+        crate::server::access::marked_peer(p)
+    };
+    ensure!(
+        expected.is_some(),
+        "The requested chat has no concrete identity"
+    );
     let mut params = json!({"id":[{"_":"inputMessageID","id":msg}]});
     let method = if p["_"] == "inputPeerChannel" {
         params["channel"] = channel(p)?;
@@ -108,7 +129,17 @@ pub async fn message(api: &dyn Telegram, p: &Value, msg: i64) -> Result<Value> {
     let result = api.invoke(method, params).await?;
     result["messages"]
         .as_array()
-        .and_then(|m| m.iter().find(|m| id(&m["id"]).ok() == Some(msg)))
+        .and_then(|m| {
+            m.iter().find(|m| {
+                id(&m["id"]).ok() == Some(msg)
+                    && if channel_bound {
+                        m.get("peer_id")
+                            .is_none_or(|peer| crate::server::access::marked_peer(peer) == expected)
+                    } else {
+                        crate::server::access::marked_peer(&m["peer_id"]) == expected
+                    }
+            })
+        })
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Message not found or inaccessible"))
 }
@@ -130,6 +161,7 @@ pub fn timestamp(v: &Value, key: &str) -> Result<i64> {
         return Ok(dt.timestamp());
     }
     let dt = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
         .map_err(|_| anyhow::anyhow!("{key} must be an ISO 8601 date-time"))?;
     Ok(dt.and_utc().timestamp())
 }

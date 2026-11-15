@@ -127,7 +127,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 .as_bool()
                 .context("disabled must be boolean")?;
             let p = peer(api, a, "chat").await?;
-            update(api, p, json!({"silent":disabled})).await
+            update(api, p, json!({"sound":{"_":if disabled {"notificationSoundNone"} else {"notificationSoundDefault"}}})).await
         }
         "list_saved_sounds" => {
             let mut rows = Vec::new();

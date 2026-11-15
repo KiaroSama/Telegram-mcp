@@ -18,7 +18,18 @@ struct HttpServer {
 }
 impl HttpServer {
     async fn start(fixture: &Fixture) -> Self {
-        let mut command = fixture.command(&["serve", "--http", "127.0.0.1:0"]);
+        Self::start_with(
+            fixture,
+            fixture.command(&["serve", "--http", "127.0.0.1:0"]),
+            false,
+        )
+        .await
+    }
+    async fn start_with(
+        fixture: &Fixture,
+        mut command: tokio::process::Command,
+        tls: bool,
+    ) -> Self {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -58,6 +69,7 @@ impl HttpServer {
         let token = discovery["token"].as_str().unwrap().to_owned();
         assert!(token.len() >= 32);
         let address = url::Url::parse(&url).unwrap();
+        assert_eq!(address.scheme(), if tls { "https" } else { "http" });
         assert_eq!(address.host_str(), Some("127.0.0.1"));
         assert!(address.port().is_some_and(|port| port > 0));
         #[cfg(unix)]
@@ -145,6 +157,209 @@ impl HttpServer {
                 "Graceful HTTP shutdown must invalidate its discovery token"
             );
         }
+        fixture.assert_no_telegram_sessions();
+    }
+}
+
+fn tls_files(fixture: &Fixture) -> (std::path::PathBuf, std::path::PathBuf, Vec<u8>) {
+    let material =
+        rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
+    let cert = fixture.cwd.join("test-server.pem");
+    let key = fixture.cwd.join("test-server-key.pem");
+    let certificate = material.cert.pem().into_bytes();
+    std::fs::write(&cert, &certificate).unwrap();
+    std::fs::write(&key, material.signing_key.serialize_pem()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    (cert, key, certificate)
+}
+
+#[tokio::test]
+async fn nonloopback_tls_uses_real_encryption_certificate_validation_and_existing_authentication() {
+    use rmcp::{
+        ServiceExt,
+        transport::{
+            StreamableHttpClientTransport,
+            streamable_http_client::StreamableHttpClientTransportConfig,
+        },
+    };
+    let fixture = Fixture::new();
+    let (cert, key, pem) = tls_files(&fixture);
+    let mut command = fixture.command(&["serve", "--http", "0.0.0.0:0"]);
+    command
+        .env(
+            "TELEGRAM_HTTP_TOKEN",
+            "synthetic-tls-owner-token-with-more-than-32-characters",
+        )
+        .env("TELEGRAM_HTTP_TLS_CERT", &cert)
+        .env("TELEGRAM_HTTP_TLS_KEY", &key);
+    let server = HttpServer::start_with(&fixture, command, true).await;
+    let trusted = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(DEADLINE)
+        .add_root_certificate(reqwest::Certificate::from_pem(&pem).unwrap())
+        .build()
+        .unwrap();
+    let health = server.health_url();
+    assert_eq!(
+        trusted.get(&health).send().await.unwrap().status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        trusted
+            .get(&health)
+            .bearer_auth("wrong-owner-token")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        trusted
+            .get(&health)
+            .bearer_auth(&server.token)
+            .header("Origin", "https://example.invalid")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::FORBIDDEN
+    );
+    let output: Value = trusted
+        .get(&health)
+        .bearer_auth(&server.token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(output["ready"], true);
+    assert_eq!(output["pid"], server.pid);
+    let transport = StreamableHttpClientTransport::with_client(
+        trusted.clone(),
+        StreamableHttpClientTransportConfig::with_uri(server.url.clone())
+            .auth_header(server.token.clone()),
+    );
+    let remote = tokio::time::timeout(DEADLINE, ().serve(transport))
+        .await
+        .expect("TLS MCP initialization timed out")
+        .unwrap();
+    let exposed = tokio::time::timeout(DEADLINE, remote.list_all_tools())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        exposed
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect::<std::collections::BTreeSet<_>>(),
+        catalogue_names()
+    );
+    remote.cancel().await.unwrap();
+    let bridge = cli(&fixture, &["bridge"], None).await;
+    assert!(
+        !bridge.status.success(),
+        "The HTTP-only native bridge must not downgrade a TLS owner"
+    );
+    assert!(bridge.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&bridge.stderr).contains("loopback HTTP MCP endpoint"));
+    let record: Value =
+        serde_json::from_slice(&std::fs::read(fixture.state.join("http-service.json")).unwrap())
+            .unwrap();
+    assert_eq!(record["pid"], server.pid);
+    assert_eq!(record["url"], server.url);
+    assert!(
+        client()
+            .get(&health)
+            .bearer_auth(&server.token)
+            .send()
+            .await
+            .is_err(),
+        "An untrusted server certificate must be rejected"
+    );
+    let plaintext = health.replacen("https://", "http://", 1);
+    assert!(
+        client()
+            .get(&plaintext)
+            .bearer_auth(&server.token)
+            .send()
+            .await
+            .is_err(),
+        "TLS listener must not accept a cleartext bearer request"
+    );
+    let private_key_header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+    fixture.assert_logs_omit(&[&server.token, &private_key_header]);
+    server.stop(&fixture).await;
+}
+
+#[tokio::test]
+async fn nonloopback_plaintext_and_incomplete_tls_are_refused_before_discovery() {
+    for variant in 0..3 {
+        let fixture = Fixture::new();
+        let (cert, key, _) = tls_files(&fixture);
+        let mut command = fixture.command(&["serve", "--http", "0.0.0.0:0"]);
+        command.env(
+            "TELEGRAM_HTTP_TOKEN",
+            "synthetic-tls-owner-token-with-more-than-32-characters",
+        );
+        if variant == 1 {
+            command.env("TELEGRAM_HTTP_TLS_CERT", cert);
+        } else if variant == 2 {
+            command.env("TELEGRAM_HTTP_TLS_KEY", key);
+        }
+        let output = tokio::time::timeout(DEADLINE, command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(if variant == 0 {
+                "requires TLS"
+            } else {
+                "Configure both"
+            })
+        );
+        assert!(!fixture.state.join("http-service.json").exists());
+        fixture.assert_no_telegram_sessions();
+    }
+}
+
+#[tokio::test]
+async fn malformed_or_mismatched_tls_material_is_rejected_before_binding_a_listener() {
+    for mismatched in [false, true] {
+        let fixture = Fixture::new();
+        let (cert, key, _) = tls_files(&fixture);
+        if mismatched {
+            let other = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+            std::fs::write(&key, other.signing_key.serialize_pem()).unwrap();
+        } else {
+            std::fs::write(&key, "untrusted-private-key-canary-invalid-pem").unwrap();
+        }
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = occupied.local_addr().unwrap().to_string();
+        let mut command = fixture.command(&["serve", "--http", &address]);
+        command
+            .env("TELEGRAM_HTTP_TLS_CERT", cert)
+            .env("TELEGRAM_HTTP_TLS_KEY", key);
+        let output = tokio::time::timeout(DEADLINE, command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("malformed or mismatched"));
+        assert!(!error.contains("untrusted-private-key-canary-invalid-pem"));
+        let private_key_header = ["-----BEGIN ", "PRIVATE KEY-----"].concat();
+        assert!(!error.contains(&private_key_header));
+        assert!(!fixture.state.join("http-service.json").exists());
         fixture.assert_no_telegram_sessions();
     }
 }

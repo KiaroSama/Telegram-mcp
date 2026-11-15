@@ -30,6 +30,11 @@ use std::{
 pub trait Telegram: Send + Sync {
     async fn invoke(&self, method: &str, params: Value) -> Result<Value>;
     async fn resolve_peer(&self, input: &Value) -> Result<Value>;
+    /// Stable identity previously proved for an exact private peer reference.
+    /// Implementations must never derive this authority from caller metadata.
+    fn pinned_identity(&self, _peer: &Value) -> Option<String> {
+        None
+    }
     async fn upload(&self, _path: &Path) -> Result<Value> {
         bail!("Upload is unavailable for this backend")
     }
@@ -119,7 +124,8 @@ impl Native {
         let source = config::source_from(&snapshot, label);
         let state = State::global()?;
         crate::account_manager::recover_rename(&state)?;
-        crate::session::check_deferred_custody(&state, label)?;
+        crate::account_manager::recover_logins(&state)?;
+        crate::session::check_deferred_custody_with_config(&state, label, &snapshot)?;
         let session = Arc::new(PersistentSession::open(Arc::clone(&state), label)?);
         if !state.root().join(format!("{label}.session.json")).exists()
             && let Some((key, value)) = &source
@@ -156,6 +162,9 @@ impl Native {
                 }
             }
         }
+        // Recheck the exact imported authorization before creating a sender;
+        // the selected legacy source could have changed after the first probe.
+        crate::session::check_deferred_custody_with_config(&state, label, &snapshot)?;
         let source =
             source.map(|(key, value)| (key, crate::account_manager::config_digest(&value)));
         session.bind_source(
@@ -327,8 +336,7 @@ impl Native {
             ),
         })?;
         let result = Schema::global().decode_response(method, &params, &bytes.0)?;
-        self.cache_peers(&result).await?;
-        Ok(result)
+        peers::cache_rpc_outcome(self.0.session.as_ref(), result).await
     }
 }
 #[async_trait]

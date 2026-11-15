@@ -137,3 +137,31 @@ async fn denied_argument_cannot_inherit_a_binding_from_another_authorized_target
     );
     assert!(!policy.chats.contains_key("-1000000000007"));
 }
+
+#[test]
+fn exported_contacts_are_filtered_by_the_same_private_identity_policy() {
+    let policy = AccessPolicy::parse(Some("42")).unwrap();
+    let mut value = json!({"results":[{"id":"42","name":"Permitted"},{"id":"99","name":"Outside"}],"untrusted_content":true});
+    policy.filter_for("export_contacts", &mut value).unwrap();
+    assert_eq!(value["results"], json!([{"id":"42","name":"Permitted"}]));
+}
+#[tokio::test]
+async fn public_lookup_links_are_normalized_before_allowlist_resolution() {
+    let policy = AccessPolicy::parse(Some("-1000000000007")).unwrap();
+    policy
+        .scoped(
+            "lookup_peer",
+            &json!({"query":"https://t.me/allowed/123?single"}),
+            &Peers(7),
+        )
+        .await
+        .unwrap();
+    for query in ["https://t.me/+private", "https://t.me/joinchat/private"] {
+        assert!(
+            policy
+                .scoped("lookup_peer", &json!({"query":query}), &Peers(7))
+                .await
+                .is_err()
+        );
+    }
+}

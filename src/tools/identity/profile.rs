@@ -159,7 +159,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 self_user(api).await?["bot"] == true,
                 "Bot command menus can only be managed while signed in as a bot"
             );
-            let mut p = json!({"scope":{"_":"botCommandScopeDefault"},"lang_code":"en"});
+            let mut p = json!({"scope":{"_":"botCommandScopeDefault"},"lang_code":""});
             if name == "set_bot_commands" {
                 p["commands"] = commands.into();
             }

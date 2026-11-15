@@ -52,6 +52,15 @@ jobs:
       - uses: github/codeql-action/analyze@5895b2c9be147bc7f1c75ce72c5cb577febb1907 # v4
         with:
           category: /language:rust-actions
+          output: codeql-results
+          upload: always
+      - name: Retain the actual CodeQL SARIF reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codeql-sarif-${{ github.event_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: codeql-results/*.sarif
+          if-no-files-found: error
   status_finish:
     name: CI status final
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)

@@ -113,11 +113,24 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
         "list_topics"=> {
             let n=a::limit(args,"limit",200,200)?;
             let offset=a::integer(args,"offset_topic",0)?;ensure!(offset>=0,"offset_topic must be nonnegative");
-            let mut params=json!({"peer":p,"offset_date":0,"offset_id":0,"offset_topic":offset,"limit":n});
+            let date=a::integer(args,"offset_date",0)?;let mid=a::integer(args,"offset_id",0)?;
+            ensure!([offset,date,mid].iter().all(|v|(0..=i32::MAX as i64).contains(v)),"Topic cursor fields must fit nonnegative 32-bit integers");
+            let mut params=json!({"peer":p,"offset_date":date,"offset_id":mid,"offset_topic":offset,"limit":n});
             if let Some(q)=args.get("search_query").filter(|v|!v.is_null()) {params["q"]=q.clone();}
             let mut result=api.invoke("messages.getForumTopics",params).await?;
             let topics=result["topics"].as_array().cloned().unwrap_or_default();
-            result["pagination"]=json!({"limit":n,"returned":topics.len(),"has_more":topics.len()>=n as usize,"next_offset_topic":topics.last().map(|v|v["id"].clone())});
+            let last=topics.last();
+            let next_topic=last.and_then(|v|id(&v["id"]).ok());
+            let next_id=last.and_then(|v|id(&v["top_message"]).ok());
+            let next_date=if result["order_by_create_date"]==true{last.and_then(|v|id(&v["date"]).ok())}else{
+                result["messages"].as_array().and_then(|messages|messages.iter().find(|m|id(&m["id"]).ok()==next_id
+                    && crate::server::access::marked_peer(&m["peer_id"])==crate::server::access::marked_peer(&p)))
+                    .and_then(|m|id(&m["date"]).ok())
+            };
+            let cursor=next_topic.zip(next_id).zip(next_date).map(|((topic,id),date)|json!({"offset_topic":topic,"offset_id":id,"offset_date":date}));
+            result["pagination"]=json!({"limit":n,"returned":topics.len(),"has_more":!topics.is_empty()&&result["count"].as_u64().is_none_or(|total|(topics.len()as u64)<total),
+                "next_offset_topic":next_topic,"next_offset_id":next_id,"next_offset_date":next_date,"next_cursor":cursor,
+                "note":"Continue with all three cursor fields. A short page can have more results; a final nonempty page may require one empty confirmation page."});
             Ok(result)
         }
         "enable_forum_topics"|"disable_forum_topics"=> {

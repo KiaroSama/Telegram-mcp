@@ -8,13 +8,27 @@ services:
       - .env
     command: ["serve", "--http", "0.0.0.0:8765"]
     environment:
-      # A non-loopback container bind requires an explicit authentication token.
+      # All non-loopback binds require TLS and an explicit authentication token.
       TELEGRAM_HTTP_TOKEN: ${TELEGRAM_HTTP_TOKEN:?Set a private token of at least 32 characters in .env}
+      TELEGRAM_HTTP_TLS_CERT: /run/telegram-tls/server.pem
+      TELEGRAM_HTTP_TLS_KEY: /run/telegram-tls/server-key.pem
       XDG_STATE_HOME: /data/state
     ports:
       - "127.0.0.1:8765:8765"
     volumes:
       - telegram-state:/data
+      - type: bind
+        source: ${TELEGRAM_HTTP_TLS_CERT:?Set the absolute host certificate path in .env}
+        target: /run/telegram-tls/server.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TELEGRAM_HTTP_TLS_KEY:?Set the absolute host private-key path in .env}
+        target: /run/telegram-tls/server-key.pem
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
     stop_grace_period: 30s
 

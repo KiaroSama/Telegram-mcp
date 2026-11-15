@@ -87,6 +87,8 @@ fn configuration_report(
 }
 fn current_configuration_report() -> Result<PublicConfigurationReport> {
     let root = State::global()?;
+    crate::account_manager::recover_rename(&root)?;
+    crate::account_manager::recover_logins(&root)?;
     let snapshot = crate::account_manager::current_config()?;
     configuration_report(&snapshot, root.root())
 }

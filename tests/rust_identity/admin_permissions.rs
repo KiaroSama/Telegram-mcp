@@ -98,6 +98,7 @@ async fn create_private_channel_does_not_check_username() {
         .unwrap();
     assert_eq!(r["created"], true);
     assert_eq!(r["public"], false);
+    assert_eq!(r["chat_id"], "-1000000000007");
     assert_eq!(m.methods(), ["channels.createChannel"]);
 }
 #[tokio::test]
@@ -162,6 +163,23 @@ async fn username_race_reports_created_channel_to_avoid_duplicate() {
             .as_str()
             .unwrap()
             .contains("Do not create another")
+    );
+    assert_eq!(r["chat_id"], "-1000000000007");
+    m.set_peer(
+        "-1000000000007",
+        json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"70"}),
+    );
+    run(
+        &m,
+        "set_channel_username",
+        json!({"chat_id":r["chat_id"],"username":"ops_room"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(m.sent("channels.createChannel").len(), 1);
+    assert_eq!(
+        m.sent("channels.updateUsername")[1]["channel"]["channel_id"],
+        "7"
     );
 }
 #[tokio::test]

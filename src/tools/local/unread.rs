@@ -13,6 +13,62 @@ use std::io::{Read, Write};
 
 const MAX_BYTES: usize = 32 * 1024 * 1024;
 const FORMAT: &str = "telegram-mcp/unread-export-v1";
+const EXHAUSTED: &str = "history_changed_or_exhausted_before_snapshot";
+
+fn pretty_size<T: serde::Serialize + ?Sized>(value: &T, extra_indent: usize) -> Result<usize> {
+    #[derive(Default)]
+    struct Counter {
+        bytes: usize,
+        newlines: usize,
+    }
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.bytes = self.bytes.saturating_add(bytes.len());
+            self.newlines = self
+                .newlines
+                .saturating_add(bytes.iter().filter(|byte| **byte == b'\n').count());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter::default();
+    serde_json::to_writer_pretty(&mut counter, value)?;
+    Ok(counter
+        .bytes
+        .saturating_add(counter.newlines.saturating_mul(extra_indent)))
+}
+
+fn chat_row(
+    id: &str,
+    expected: i64,
+    top: i64,
+    count: usize,
+    cursor: i64,
+    complete: bool,
+    reason: Option<&str>,
+) -> Value {
+    json!({"chat_id":id,"unread_count_at_export":expected,"snapshot_top_message":top,"messages_exported":count,"messages":[],"next_after_id":cursor,"complete":complete,"incomplete_reason":reason})
+}
+
+async fn authenticated_user(api: &dyn Telegram) -> Result<String> {
+    let response = api
+        .invoke("users.getUsers", json!({"id":[{"_":"inputUserSelf"}]}))
+        .await
+        .context("Cannot verify authenticated Telegram user identity")?;
+    let users = response
+        .as_array()
+        .context("Telegram self identity is invalid")?;
+    if users.len() != 1 || users[0]["_"] != "user" || users[0]["self"] != true {
+        bail!("Telegram self identity is missing or ambiguous");
+    }
+    let id = integer_id(&users[0]["id"]).context("Telegram self identity has no valid user id")?;
+    if id <= 0 {
+        bail!("Telegram self identity has no valid user id");
+    }
+    Ok(id.to_string())
+}
 
 fn output_lease(state: &State, output: &std::path::Path) -> Result<std::fs::File> {
     // A stable private sidecar serializes cooperating writers without locking
@@ -151,15 +207,40 @@ pub async fn export_unread_with_state(
     } else {
         json!({"format":FORMAT,"account":account,"chats":{}})
     };
+    let previous_user = if previous_bytes.is_some() {
+        let id = integer_id(&result["telegram_user_id"])
+            .context("This unread export has no authenticated Telegram user identity; choose a new output path")?;
+        if id <= 0 {
+            bail!("This unread export has no valid authenticated Telegram user identity");
+        }
+        Some(id.to_string())
+    } else {
+        None
+    };
     AccessPolicy::from_environment()?
         .check("export_unread_messages", input, api)
         .await?;
+    let user = authenticated_user(api).await?;
+    if previous_user
+        .as_ref()
+        .is_some_and(|previous| previous != &user)
+    {
+        bail!("This unread export belongs to another Telegram user; existing output was preserved");
+    }
+    result["telegram_user_id"] = user.into();
     let mut exported = 0;
     let mut processed = 0;
     let mut skipped = 0;
-    let mut budget = serde_json::to_vec(&result)?.len();
+    let mut budget = pretty_size(&result, 0)?.saturating_add(1);
+    if budget > MAX_BYTES {
+        bail!(
+            "Existing unread export exceeds its encoded byte budget; existing output was preserved"
+        );
+    }
+    let mut stopped_for_budget = false;
     for raw in chats {
         if exported >= limit || budget >= MAX_BYTES {
+            stopped_for_budget = budget >= MAX_BYTES;
             break;
         }
         let peer = api.resolve_peer(raw).await?;
@@ -203,6 +284,37 @@ pub async fn export_unread_with_state(
         let mut messages = previous["messages"].as_array().cloned().unwrap_or_default();
         let mut complete = expected == 0;
         let mut reason = None;
+        // Measure the actual pretty encoding. A chat row is nested two objects
+        // deep; its messages array is three deep. Count old messages once, then
+        // admit each new record by its exact embedded size instead of repeatedly
+        // serializing a growing multi-megabyte snapshot.
+        let old_row = result["chats"].get(&id).cloned();
+        let metadata = chat_row(
+            &id,
+            expected,
+            snapshot_top,
+            messages.len(),
+            cursor,
+            complete,
+            if complete { None } else { Some(EXHAUSTED) },
+        );
+        result["chats"][&id] = metadata.clone();
+        let outside_row = pretty_size(&result, 0)?.saturating_add(1) - pretty_size(&metadata, 4)?;
+        let mut message_bytes = pretty_size(&messages, 6)? - 2;
+        let candidate = outside_row + pretty_size(&metadata, 4)? + message_bytes;
+        if candidate > MAX_BYTES {
+            if let Some(old) = old_row {
+                result["chats"][&id] = old;
+            } else {
+                result["chats"]
+                    .as_object_mut()
+                    .expect("Validated chats object")
+                    .remove(&id);
+            }
+            stopped_for_budget = true;
+            break;
+        }
+        budget = candidate;
         while !complete && exported < limit && budget < MAX_BYTES {
             if cursor >= i32::MAX as i64 {
                 complete = true;
@@ -222,27 +334,65 @@ pub async fn export_unread_with_state(
             fetched.sort_by_key(|message| integer_id(&message["id"]).unwrap_or(0));
             let mut progressed = false;
             for message in &fetched {
-                let message_id = integer_id(&message["id"])?;
+                let message_id = bounded_message_id(&message["id"])?;
                 if message_id <= cursor || snapshot_top > 0 && message_id > snapshot_top {
                     continue;
                 }
                 if message["_"] == "messageEmpty" || message["out"] == json!(true) {
+                    let done = snapshot_top > 0 && message_id >= snapshot_top;
+                    let metadata = chat_row(
+                        &id,
+                        expected,
+                        snapshot_top,
+                        messages.len(),
+                        message_id,
+                        done,
+                        if done { None } else { Some(EXHAUSTED) },
+                    );
+                    let candidate = outside_row + pretty_size(&metadata, 4)? + message_bytes;
+                    if candidate > MAX_BYTES {
+                        reason = Some("byte_budget");
+                        break;
+                    }
+                    budget = candidate;
                     cursor = message_id;
                     progressed = true;
+                    complete = done;
+                    if complete {
+                        break;
+                    }
                     continue;
                 }
                 let record = message_record(message, &page, &peer, media);
-                let bytes = serde_json::to_vec(&record)?.len();
-                if budget.saturating_add(bytes) > MAX_BYTES {
+                // The first item creates the array's closing indentation. Later
+                // items reuse that line and add only a comma/newline separator.
+                let bytes = pretty_size(std::slice::from_ref(&record), 6)?
+                    - 2
+                    - if messages.is_empty() { 0 } else { 6 };
+                let done = (messages.len() + 1) as i64 >= expected
+                    || snapshot_top > 0 && message_id >= snapshot_top;
+                let metadata = chat_row(
+                    &id,
+                    expected,
+                    snapshot_top,
+                    messages.len() + 1,
+                    message_id,
+                    done,
+                    if done { None } else { Some(EXHAUSTED) },
+                );
+                let candidate = outside_row + pretty_size(&metadata, 4)? + message_bytes + bytes;
+                if candidate > MAX_BYTES {
                     reason = Some("byte_budget");
                     break;
                 }
-                budget += bytes;
+                budget = candidate;
+                message_bytes += bytes;
                 messages.push(record);
                 exported += 1;
                 cursor = message_id;
                 progressed = true;
-                if exported >= limit {
+                complete = done;
+                if complete || exported >= limit {
                     break;
                 }
             }
@@ -253,20 +403,38 @@ pub async fn export_unread_with_state(
             }
             if !progressed || (fetched.len() as i64) < batch {
                 if !complete {
-                    reason = Some("history_changed_or_exhausted_before_snapshot");
+                    reason = Some(EXHAUSTED);
                 }
                 break;
             }
         }
         if !complete && reason.is_none() {
-            reason = Some("message_limit");
+            reason = Some(if budget >= MAX_BYTES {
+                "byte_budget"
+            } else {
+                "message_limit"
+            });
         }
-        let count = messages.len();
-        result["chats"][&id] = json!({"chat_id":id,"unread_count_at_export":expected,"snapshot_top_message":snapshot_top,"messages_exported":count,"messages":messages,"next_after_id":cursor,"complete":complete,"incomplete_reason":reason});
+        let mut row = chat_row(
+            &id,
+            expected,
+            snapshot_top,
+            messages.len(),
+            cursor,
+            complete,
+            reason,
+        );
+        budget = outside_row + pretty_size(&row, 4)? + message_bytes;
+        row["messages"] = messages.into();
+        result["chats"][&id] = row;
         processed += 1;
+        if reason == Some("byte_budget") {
+            stopped_for_budget = true;
+            break;
+        }
     }
     let bytes = serde_json::to_vec_pretty(&result)?;
-    if bytes.len() > MAX_BYTES {
+    if bytes.len().saturating_add(1) > MAX_BYTES {
         bail!("Unread export exceeded its final byte budget; existing output was preserved");
     }
     let parent = output
@@ -301,6 +469,6 @@ pub async fn export_unread_with_state(
         .filter(|chat| chat["complete"] != json!(true))
         .count();
     Ok(
-        json!({"status":"ok","output_path":output,"chats_processed":processed,"chats_skipped":skipped,"messages_exported":exported,"complete":incomplete==0&&processed+skipped==chats.len(),"incomplete_chats":incomplete,"read_markers_sent":false}),
+        json!({"status":"ok","output_path":output,"chats_processed":processed,"chats_skipped":skipped,"messages_exported":exported,"complete":incomplete==0&&processed+skipped==chats.len(),"incomplete_chats":incomplete,"incomplete_reason":if stopped_for_budget {Some("byte_budget")} else {None},"read_markers_sent":false}),
     )
 }

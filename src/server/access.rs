@@ -177,7 +177,7 @@ impl AccessPolicy {
             };
             let literal = value.as_str().map(key).unwrap_or_else(|| value.to_string());
             let resolved = api.resolve_peer(value).await?;
-            let marked = marked_peer(&resolved);
+            let marked = marked_peer(&resolved).or_else(|| api.pinned_identity(&resolved));
             let entry = self
                 .scope_for(&literal, marked.as_deref())
                 .context("Chat is outside TELEGRAM_ALLOWED_CHAT_IDS")?;
@@ -226,7 +226,7 @@ impl AccessPolicy {
                 for value in values {
                     let resolved = api.resolve_peer(value).await?;
                     let literal = value.as_str().map(key).unwrap_or_else(|| value.to_string());
-                    let marked = marked_peer(&resolved);
+                    let marked = marked_peer(&resolved).or_else(|| api.pinned_identity(&resolved));
                     let entry = self.scope_for(&literal, marked.as_deref());
                     if !entry.as_ref().is_some_and(Option::is_none) {
                         bail!("A peer list contains a chat outside its permitted whole-chat scope");
@@ -243,9 +243,15 @@ impl AccessPolicy {
             .or_else(|| args.get("query"))
             .filter(|value| !value.is_null())
         {
+            let normalized = if name == "lookup_peer" {
+                crate::tools::identity::normalize_lookup_query(value)?
+            } else {
+                value.clone()
+            };
+            let value = &normalized;
             let literal = value.as_str().map(key).unwrap_or_else(|| value.to_string());
             let resolved = api.resolve_peer(value).await?;
-            let marked = marked_peer(&resolved);
+            let marked = marked_peer(&resolved).or_else(|| api.pinned_identity(&resolved));
             let entry = self
                 .scope_for(&literal, marked.as_deref())
                 .context("Peer lookup is outside the configured chat scope")?;
@@ -261,6 +267,8 @@ impl AccessPolicy {
                 | "get_folder_snapshot"
                 | "update_folder"
                 | "resolve_phone"
+                | "enable_incoming_feed"
+                | "incoming_feed_status"
         ) {
             bail!("This account-wide operation is unavailable while a chat allowlist is active");
         }
@@ -269,6 +277,7 @@ impl AccessPolicy {
         if matches!(
             name,
             "list_contacts"
+                | "export_contacts"
                 | "search_contacts"
                 | "list_chats"
                 | "search_chats"
@@ -330,7 +339,10 @@ impl AccessPolicy {
         // The event ring filters immutable metadata using both marked peer and
         // username/topic before projecting public fields. Re-filtering that
         // projection would discard valid username-scoped events.
-        if name == "wait_for_events" {
+        if matches!(
+            name,
+            "wait_for_events" | "wait_for_new_message" | "wait_for_settled_message"
+        ) {
             if self.enabled {
                 value["access_filtered"] = json!(true);
             }
@@ -340,6 +352,7 @@ impl AccessPolicy {
             && matches!(
                 name,
                 "list_contacts"
+                    | "export_contacts"
                     | "search_contacts"
                     | "list_chats"
                     | "search_chats"

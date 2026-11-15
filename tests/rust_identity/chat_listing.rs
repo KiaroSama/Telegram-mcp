@@ -54,6 +54,7 @@ async fn archived_chat_list_sets_server_folder_and_post_filters_pins() {
     assert_eq!(m.sent("messages.getDialogs")[0]["folder_id"], 1);
     assert_eq!(r["results"].as_array().unwrap().len(), 1);
     assert_eq!(r["results"][0]["chat_id"], "-1000000000007");
+    assert_eq!(r["results"][0]["id"], r["results"][0]["chat_id"]);
 }
 #[tokio::test]
 async fn about_fetch_is_opt_in_and_user_bio_is_preserved() {
@@ -165,6 +166,24 @@ async fn lookup_peer_accepts_link_with_post_path_and_query() {
     .await
     .unwrap();
     assert_eq!(r["results"][0]["link"], "https://t.me/Ada");
+    assert_eq!(m.resolutions(), [json!("Ada")]);
+}
+
+#[tokio::test]
+async fn dialog_pagination_uses_the_last_peers_message_date_when_channel_ids_collide() {
+    let m = Mock::new();
+    let dialogs = (1..=100).map(|id| json!({"_":"dialog","peer":{"_":"peerChannel","channel_id":id.to_string()},"top_message":42})).collect::<Vec<_>>();
+    let chats = (1..=100).map(|id| json!({"_":"channel","id":id.to_string(),"access_hash":"70","title":"Cursor fixture"})).collect::<Vec<_>>();
+    m.reply("messages.getDialogs",json!({"dialogs":dialogs,"chats":chats,"messages":[{"id":42,"peer_id":{"_":"peerChannel","channel_id":"1"},"date":100},{"id":42,"peer_id":{"_":"peerChannel","channel_id":"100"},"date":200}]}));
+    m.reply("messages.getDialogs", json!({"dialogs":[]}));
+    run(&m, "get_chats", json!({"page":2,"page_size":100}))
+        .await
+        .unwrap();
+    let requests = m.sent("messages.getDialogs");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["offset_peer"]["channel_id"], "100");
+    assert_eq!(requests[1]["offset_id"], 42);
+    assert_eq!(requests[1]["offset_date"], 200);
 }
 #[tokio::test]
 async fn lookup_peer_never_imports_private_invite_link() {

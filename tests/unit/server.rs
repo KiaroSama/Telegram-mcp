@@ -1,5 +1,94 @@
 //! Server boundary tests exercise real validation, policy and domain dispatch.
 use super::*;
+
+#[tokio::test]
+async fn cancelling_tls_server_scope_aborts_the_owned_signal_waiter() {
+    use tokio::io::AsyncReadExt;
+
+    struct Finished(Option<tokio::sync::oneshot::Sender<()>>);
+    impl Drop for Finished {
+        fn drop(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (finished, stopped) = tokio::sync::oneshot::channel();
+    let material = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let tls = axum_server::tls_rustls::RustlsConfig::from_pem(
+        material.cert.pem().into_bytes(),
+        material.signing_key.serialize_pem().into_bytes(),
+    )
+    .await
+    .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let handle = axum_server::Handle::new();
+    let serving = tokio::spawn(
+        axum_server::from_tcp_rustls(listener, tls)
+            .unwrap()
+            .handle(handle.clone())
+            .serve(axum::Router::new().into_make_service()),
+    );
+    let address = tokio::time::timeout(Duration::from_secs(5), handle.listening())
+        .await
+        .unwrap()
+        .unwrap();
+    // This connection remains inside the TLS handshake until cancellation.
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while handle.connection_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let sessions = tokio_util::sync::CancellationToken::new();
+    let signal = super::http::ShutdownSignal::new(
+        tokio::spawn(async move {
+            let _finished = Finished(Some(finished));
+            started.send(()).unwrap();
+            std::future::pending::<()>().await;
+        }),
+        handle.clone(),
+        sessions.clone(),
+    );
+    running.await.unwrap();
+    drop(signal);
+    tokio::time::timeout(Duration::from_secs(5), stopped)
+        .await
+        .expect("Cancelled TLS server retained its signal task")
+        .unwrap();
+    assert!(sessions.is_cancelled());
+    tokio::time::timeout(Duration::from_secs(5), serving)
+        .await
+        .expect("Cancelled TLS server retained its listener")
+        .unwrap()
+        .unwrap();
+    let mut byte = [0];
+    let closed = tokio::time::timeout(Duration::from_secs(5), socket.read(&mut byte))
+        .await
+        .expect("Cancelled TLS handshake retained its socket");
+    assert!(match closed {
+        Ok(0) => true,
+        Err(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+        ),
+        _ => false,
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while handle.connection_count() != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Cancelled TLS server retained a connection task");
+    assert!(tokio::net::TcpStream::connect(address).await.is_err());
+}
 use async_trait::async_trait;
 use std::sync::Mutex as StdMutex;
 use tempfile::TempDir;
@@ -564,3 +653,6 @@ fn all_nullable_defaults_match_declared_argument_types() {
 
 #[path = "server_events.rs"]
 mod event_boundaries;
+
+#[path = "server_review.rs"]
+mod review;

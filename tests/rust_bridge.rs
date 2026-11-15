@@ -187,6 +187,47 @@ async fn concurrent_bridges_publish_one_shared_daemon_and_keep_independent_mcp_s
     daemon.stop(&fixture).await;
 }
 
+#[tokio::test]
+async fn bridge_waits_for_a_pending_launcher_before_reading_incomplete_discovery() {
+    let fixture = Fixture::new();
+    fixture.env_file(&format!("MCP_PORT={}\n", port()));
+    let _state =
+        telegram_mcp::state::State::at(fixture.state.clone(), vec![fixture.files.clone()]).unwrap();
+    let locked = |name: &str| {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(fixture.state.join(name))
+            .unwrap();
+        FileExt::try_lock_exclusive(&file).unwrap();
+        file
+    };
+    let start_owner = locked("bridge-start.lock");
+    let http_owner = locked("http-service.lock");
+    let mut bridge = McpProcess::start(fixture.command(&["bridge"]));
+    let mut initialization = Box::pin(bridge.initialize("2024-11-05"));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(1), &mut initialization)
+            .await
+            .is_err()
+    );
+    // The original owner finishes without publishing. A waiting bridge must
+    // recheck ownership under the released startup lease and launch normally.
+    drop(http_owner);
+    drop(start_owner);
+    tokio::time::timeout(DEADLINE, &mut initialization)
+        .await
+        .unwrap();
+    drop(initialization);
+    let record = discovery(&fixture);
+    let daemon = Daemon::owned(&record);
+    assert!(bridge.finish().await.is_empty());
+    assert_eq!(health(&record).await["pid"], record["pid"]);
+    daemon.stop(&fixture).await;
+}
+
 async fn refused(fixture: &Fixture) -> std::process::Output {
     let child = fixture
         .command(&["bridge"])

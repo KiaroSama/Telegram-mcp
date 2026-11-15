@@ -149,3 +149,43 @@ fn cache_formation_matches_official_grammers_typed_peer_conversions() {
         assert_eq!(peer_infos(&decoded), vec![PeerInfo::from(typed)]);
     }
 }
+
+#[tokio::test]
+async fn successful_rpc_result_is_preserved_when_peer_storage_cannot_commit() {
+    let temp = tempfile::tempdir().unwrap();
+    let files = temp.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let state = Arc::new(State::at(temp.path().join("state"), vec![files]).unwrap());
+    let session = PersistentSession::open(state.clone(), "cache").unwrap();
+    let path = state.root().join("cache.session.json");
+    if path.exists() {
+        std::fs::remove_file(&path).unwrap();
+    }
+    std::fs::create_dir(&path).unwrap();
+    let response = json!({"_":"updates","updates":[{"_":"updateMessageID","id":77,"random_id":"17"}],"users":[{"_":"user","id":"42","access_hash":"77"}],"chats":[],"date":1,"seq":1});
+    let actual = cache_rpc_outcome(&session, response.clone()).await.unwrap();
+    assert_eq!(
+        actual, response,
+        "A successful remote operation cannot become a retryable storage failure"
+    );
+    assert!(
+        session
+            .peer(PeerId::user(42).unwrap())
+            .await
+            .unwrap()
+            .is_none(),
+        "Failed cache snapshots must not publish in-memory authority"
+    );
+    std::fs::remove_dir(&path).unwrap();
+    assert_eq!(
+        cache_rpc_outcome(&session, response.clone()).await.unwrap(),
+        response
+    );
+    assert!(
+        session
+            .peer(PeerId::user(42).unwrap())
+            .await
+            .unwrap()
+            .is_some()
+    );
+}

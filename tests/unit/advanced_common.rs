@@ -34,6 +34,10 @@ impl Telegram for Api {
 #[test]
 fn date_time_arguments_preserve_offsets_and_accept_legacy_utc_without_fraction_loss() {
     assert_eq!(
+        timestamp(&json!({"when":"1970-01-01 00:00:01"}), "when").unwrap(),
+        1
+    );
+    assert_eq!(
         timestamp(&json!({"when":"1970-01-01T03:30:00+03:30"}), "when").unwrap(),
         0
     );
@@ -143,7 +147,7 @@ fn uploaded_attachment_references_preserve_file_bytes_and_reject_empty_media() {
 #[tokio::test]
 async fn message_lookup_checks_identity_and_uses_private_chat_rpc_without_read_receipts() {
     let api = Api::returning(Some(
-        json!({"messages":[{"id":5,"message":"wrong"},{"id":7,"message":"selected"}]}),
+        json!({"messages":[{"id":5,"message":"wrong","peer_id":{"_":"peerUser","user_id":"42"}},{"id":7,"message":"selected","peer_id":{"_":"peerUser","user_id":"42"}}]}),
     ));
     let peer = json!({"_":"inputPeerUser","user_id":"42","access_hash":"99"});
     let selected = message(&api, &peer, 7).await.unwrap();

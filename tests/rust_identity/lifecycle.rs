@@ -119,9 +119,93 @@ async fn sound_toggle_preserves_mute_and_story_sound() {
     .unwrap();
     let s = &m.sent("account.updateNotifySettings")[0]["settings"];
     assert_eq!(s["mute_until"], 2000000000_i64);
-    assert_eq!(s["silent"], true);
-    assert_eq!(s["sound"]["_"], "notificationSoundDefault");
+    assert_eq!(s["silent"], false);
+    assert_eq!(s["sound"]["_"], "notificationSoundNone");
     assert_eq!(s["stories_sound"]["_"], "notificationSoundNone");
+}
+
+#[tokio::test]
+async fn basic_group_invitation_reports_missing_invitees_as_failures_per_user() {
+    let m = Mock::new();
+    m.set_peer(
+        "10",
+        json!({"_":"inputPeerUser","user_id":"10","access_hash":"100"}),
+    );
+    m.reply("messages.addChatUser",json!({"_":"messages.invitedUsers","missing_invitees":[{"_":"missingInvitee","user_id":"8","premium_would_allow_invite":true}]}));
+    m.reply("messages.addChatUser",json!({"_":"messages.invitedUsers","missing_invitees":[{"_":"missingInvitee","user_id":"8"}]}));
+    let result = run(
+        &m,
+        "invite_to_group",
+        json!({"group_id":9,"user_ids":[8,10]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["results"][0]["success"], false);
+    assert_eq!(
+        result["results"][0]["missing_invitee"]["premium_would_allow_invite"],
+        true
+    );
+    assert!(
+        result["results"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("privacy")
+    );
+    assert_eq!(result["results"][1]["success"], true);
+}
+
+#[tokio::test]
+async fn ambiguous_removal_transport_failure_still_clears_ban_and_never_claims_known_success() {
+    for name in ["kick_user", "remove_user"] {
+        let m = Mock::new();
+        m.fail_with(
+            "channels.editBanned",
+            "Telegram transport failed; operation outcome may be unknown and was not retried",
+        );
+        let result = run(&m, name, json!({"chat_id":7,"user_id":8}))
+            .await
+            .unwrap();
+        assert!(result["kicked"].is_null());
+        assert!(result["ban_lifted"].is_null());
+        assert_eq!(result["cleanup_accepted"], true);
+        assert_eq!(m.sent("channels.editBanned").len(), 2);
+        assert!(
+            m.sent("channels.editBanned")[1]["banned_rights"]
+                .get("view_messages")
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn known_rpc_refusal_does_not_issue_an_unrelated_unban() {
+    let m = Mock::new();
+    m.fail_with(
+        "channels.editBanned",
+        "Telegram RPC 400 CHAT_ADMIN_REQUIRED",
+    );
+    assert!(
+        run(&m, "kick_user", json!({"chat_id":7,"user_id":8}))
+            .await
+            .is_err()
+    );
+    assert_eq!(m.sent("channels.editBanned").len(), 1);
+}
+
+#[tokio::test]
+async fn a_lost_cleanup_response_never_claims_the_member_is_still_banned() {
+    let m = Mock::new();
+    m.reply("channels.editBanned", json!(true));
+    m.fail_with(
+        "channels.editBanned",
+        "Telegram transport failed; operation outcome may be unknown and was not retried",
+    );
+    let result = run(&m, "kick_user", json!({"chat_id":7,"user_id":8}))
+        .await
+        .unwrap();
+    assert_eq!(result["kicked"], true);
+    assert!(result["ban_lifted"].is_null());
+    assert_eq!(m.sent("channels.editBanned").len(), 2);
 }
 #[tokio::test]
 async fn mute_zero_duration_means_forever_without_erasing_tone() {

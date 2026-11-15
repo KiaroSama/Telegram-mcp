@@ -54,7 +54,17 @@ async fn story_privacy_is_required_before_upload() {
 #[tokio::test]
 async fn posted_story_uses_explicit_privacy_and_period() {
     let m = Mock::new();
-    run(&m,"post_story",json!({"file_path":"/synthetic/photo.jpg","privacy":"contacts","hours":12,"pin_to_profile":true})).await.unwrap();
+    let state = telegram_mcp::state::State::global().unwrap();
+    let temp = tempfile::tempdir_in(&state.file_roots()[0]).unwrap();
+    let photo = temp.path().join("photo.jpg");
+    std::fs::write(&photo, b"synthetic uploaded photo bytes").unwrap();
+    run(
+        &m,
+        "post_story",
+        json!({"file_path":photo,"privacy":"contacts","hours":12,"pin_to_profile":true}),
+    )
+    .await
+    .unwrap();
     let p = m.request("stories.sendStory");
     assert_eq!(
         p["privacy_rules"],

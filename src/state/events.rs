@@ -39,6 +39,11 @@ struct Burst {
     last: Instant,
 }
 
+struct EventVisibility<F> {
+    permitted: F,
+    include_global_drop_count: bool,
+}
+
 #[derive(Default)]
 pub struct EventJournal {
     bursts: BTreeMap<(String, String), Burst>,
@@ -94,6 +99,15 @@ impl EventJournal {
 impl State {
     /// Called only by the authenticated update stream after incoming/private filtering.
     pub fn record_incoming(self: &Arc<Self>, event: IncomingEvent) -> Result<()> {
+        let autostart_generation = self.journal_incoming(event)?;
+        self.changed.notify_waiters();
+        if let Some(generation) = autostart_generation {
+            self.enable_incoming_feed_at_generation(6000, Some(generation))?;
+        }
+        Ok(())
+    }
+
+    fn journal_incoming(&self, event: IncomingEvent) -> Result<Option<u64>> {
         if event.account.is_empty() || event.chat_id.is_empty() || event.message_id.is_empty() {
             bail!("An incoming event needs an account, chat and message id");
         }
@@ -142,15 +156,10 @@ impl State {
                 first: now,
                 last: now,
             });
-        drop(journal);
-        self.changed.notify_waiters();
-        if self
+        let autostart = self
             .feed_autostart
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-        {
-            self.enable_incoming_feed(6000)?;
-        }
-        Ok(())
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        Ok(autostart.then_some(journal.generation))
     }
 
     pub async fn wait_incoming(
@@ -161,6 +170,57 @@ impl State {
         settle: Option<Duration>,
         limit: usize,
     ) -> Result<Value> {
+        self.wait_incoming_view(
+            account,
+            chat,
+            timeout,
+            settle,
+            limit,
+            EventVisibility {
+                permitted: |_: &IncomingEvent| true,
+                include_global_drop_count: true,
+            },
+        )
+        .await
+    }
+
+    /// Apply the caller's access policy before selecting or consuming a burst.
+    /// Historical global drop counters cannot be attributed safely and are omitted.
+    pub async fn wait_incoming_permitted(
+        &self,
+        account: Option<&str>,
+        chat: Option<&str>,
+        timeout: Duration,
+        settle: Option<Duration>,
+        limit: usize,
+        permitted: impl Fn(&IncomingEvent) -> bool + Send + Sync,
+    ) -> Result<Value> {
+        self.wait_incoming_view(
+            account,
+            chat,
+            timeout,
+            settle,
+            limit,
+            EventVisibility {
+                permitted,
+                include_global_drop_count: false,
+            },
+        )
+        .await
+    }
+
+    async fn wait_incoming_view<F>(
+        &self,
+        account: Option<&str>,
+        chat: Option<&str>,
+        timeout: Duration,
+        settle: Option<Duration>,
+        limit: usize,
+        visibility: EventVisibility<F>,
+    ) -> Result<Value>
+    where
+        F: Fn(&IncomingEvent) -> bool + Send + Sync,
+    {
         if timeout > Duration::from_secs(50) || timeout.is_zero() {
             bail!("The wait timeout must be between 0 and 50 seconds");
         }
@@ -182,6 +242,7 @@ impl State {
                     account.is_none_or(|a| key.0 == a.to_lowercase())
                         && chat.is_none_or(|c| key.1 == c)
                         && !(chat.is_none() && burst.event.bot)
+                        && (visibility.permitted)(&burst.event)
                 };
                 if let Some(settle) = settle {
                     let found = journal
@@ -210,9 +271,11 @@ impl State {
                         .map(|(_, burst)| EventJournal::summary(burst))
                         .collect();
                     if !pending.is_empty() {
-                        return Ok(
-                            json!({"event":true,"total":pending.len(),"has_more":pending.len()>limit,"pending_chats":pending.into_iter().take(limit).collect::<Vec<_>>(),"dropped_total":journal.dropped}),
-                        );
+                        let mut result = json!({"event":true,"total":pending.len(),"has_more":pending.len()>limit,"pending_chats":pending.into_iter().take(limit).collect::<Vec<_>>()});
+                        if visibility.include_global_drop_count {
+                            result["dropped_total"] = json!(journal.dropped);
+                        }
+                        return Ok(result);
                     }
                     None
                 }
@@ -241,12 +304,12 @@ impl State {
     }
 
     pub fn disable_incoming_feed(&self) -> Result<Value> {
-        self.feed_autostart
-            .store(false, std::sync::atomic::Ordering::Relaxed);
         let mut journal = self
             .events
             .lock()
             .map_err(|_| anyhow::anyhow!("Event journal lock is unavailable"))?;
+        self.feed_autostart
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         journal.feed_enabled = false;
         journal.generation = journal.generation.wrapping_add(1);
         drop(journal);
@@ -255,17 +318,30 @@ impl State {
     }
 
     pub fn enable_incoming_feed(self: &Arc<Self>, settle_ms: u64) -> Result<Value> {
+        self.enable_incoming_feed_at_generation(settle_ms, None)
+    }
+
+    fn enable_incoming_feed_at_generation(
+        self: &Arc<Self>,
+        settle_ms: u64,
+        expected_generation: Option<u64>,
+    ) -> Result<Value> {
         if !(1..=50_000).contains(&settle_ms) {
             bail!("settle_ms must be between 1 and 50000");
         }
         let runtime = tokio::runtime::Handle::try_current()
             .context("Incoming feed requires an async runtime")?;
-        self.feed_autostart
-            .store(false, std::sync::atomic::Ordering::Relaxed);
         let mut journal = self
             .events
             .lock()
             .map_err(|_| anyhow::anyhow!("Event journal lock is unavailable"))?;
+        // A disable or manual enable after this event's autostart claim wins.
+        if expected_generation.is_some_and(|expected| journal.generation != expected) {
+            drop(journal);
+            return self.incoming_feed_status();
+        }
+        self.feed_autostart
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if journal.feed_enabled {
             if journal.settle_ms != settle_ms {
                 bail!("Disable the running feed before changing its settle period");
@@ -341,3 +417,7 @@ impl State {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/state_review.rs"]
+mod review_tests;

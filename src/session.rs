@@ -6,7 +6,7 @@ mod import;
 mod transaction;
 use crate::state::State;
 use anyhow::{Context, Result, bail};
-pub use custody::check_deferred_custody;
+pub use custody::{check_deferred_custody, check_deferred_custody_with_config};
 use fs2::FileExt;
 use grammers_session::{BoxFuture, Session, SessionData, types::*};
 use serde::{Deserialize, Serialize};

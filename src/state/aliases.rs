@@ -272,11 +272,15 @@ impl State {
             if !store.is_object() || !store["accounts"].is_object() {
                 bail!("Alias store is invalid; existing data was preserved");
             }
-            if store["accounts"][&label].is_null() {
-                store["accounts"][&label] = json!({});
-            }
+            let accounts = store["accounts"]
+                .as_object_mut()
+                .context("Alias accounts must be an object")?;
+            let rows = accounts.entry(label.clone()).or_insert_with(|| json!({}));
+            let rows = rows
+                .as_object_mut()
+                .context("Account alias store is invalid; existing data was preserved")?;
             let mut name = Value::Null;
-            if let Some(previous) = store["accounts"][&label].get(&key) {
+            if let Some(previous) = rows.get(&key) {
                 let previous_id = alias_peer_id(&previous["peer"]);
                 let current_id = alias_peer_id(&peer);
                 let same_id = previous_id.is_some() && previous_id == current_id;
@@ -289,8 +293,10 @@ impl State {
                     );
                 }
             }
-            store["accounts"][&label][&key] =
-                json!({"peer":peer,"id":alias_peer_id(&peer),"account":label,"name":name});
+            rows.insert(
+                key.clone(),
+                json!({"peer":peer,"id":alias_peer_id(&peer),"account":label,"name":name}),
+            );
             Ok(json!({"saved":true,"alias":key,"account":label,"resolved":peer}))
         })
     }
@@ -298,9 +304,16 @@ impl State {
     pub fn alias_remove(&self, account: &str, alias: &str) -> Result<bool> {
         self.migrate_aliases()?;
         self.update_json("aliases-v2.json", json!({"accounts":{}}), |store| {
-            let Some(rows) = store["accounts"][account.to_lowercase()].as_object_mut() else {
+            let accounts = store
+                .get_mut("accounts")
+                .and_then(Value::as_object_mut)
+                .context("Alias store is invalid; existing data was preserved")?;
+            let Some(rows) = accounts.get_mut(&account.to_lowercase()) else {
                 return Ok(false);
             };
+            let rows = rows
+                .as_object_mut()
+                .context("Account alias store is invalid; existing data was preserved")?;
             Ok(rows.remove(&alias_key(alias)).is_some())
         })
     }

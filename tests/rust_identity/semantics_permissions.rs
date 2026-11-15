@@ -233,8 +233,13 @@ async fn removing_a_member_exception_does_not_unban_an_already_removed_member() 
 #[tokio::test]
 async fn member_exception_updates_clamp_all_allowances_to_group_denials() {
     let m = Mock::new();
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + 300;
     m.info(json!({"_":"channel","id":"7","megagroup":true,"forum":true,"default_banned_rights":{"_":"chatBannedRights","send_photos":true,"until_date":0}}));
-    m.reply("channels.getParticipant",json!({"participant":{"_":"channelParticipantBanned","banned_rights":{"_":"chatBannedRights","send_polls":true,"until_date":42}}}));
+    m.reply("channels.getParticipant",json!({"participant":{"_":"channelParticipantBanned","banned_rights":{"_":"chatBannedRights","send_polls":true,"until_date":expiry}}}));
     run(
         &m,
         "set_member_exception",
@@ -245,7 +250,29 @@ async fn member_exception_updates_clamp_all_allowances_to_group_denials() {
     let rights = &m.sent("channels.editBanned")[0]["banned_rights"];
     assert_eq!(rights["send_photos"], true);
     assert!(rights.get("send_polls").is_none());
-    assert_eq!(rights["until_date"], 42);
+    assert_eq!(rights["until_date"], expiry);
+}
+
+#[tokio::test]
+async fn permission_patches_cannot_make_expired_or_near_expiry_restrictions_permanent() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    for expiry in [now - 1, now + 20] {
+        let m = Mock::new();
+        m.info(json!({"_":"channel","id":"7","megagroup":true,"forum":true}));
+        m.reply("channels.getParticipant",json!({"participant":{"_":"channelParticipantBanned","banned_rights":{"_":"chatBannedRights","send_polls":true,"until_date":expiry}}}));
+        let error = run(
+            &m,
+            "set_member_exception",
+            json!({"chat_id":7,"user_id":8,"polls":false}),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("within 30 seconds"));
+        assert!(m.sent("channels.editBanned").is_empty());
+    }
 }
 
 #[tokio::test]

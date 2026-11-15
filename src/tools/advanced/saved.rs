@@ -59,11 +59,6 @@ fn sticker_ref(args: &Value) -> Result<Value> {
     let hash = id(a::required(args, "access_hash")?)?;
     Ok(json!({"_":"inputStickerSetID","id":sid.to_string(),"access_hash":hash.to_string()}))
 }
-fn input_document(args: &Value) -> Result<Value> {
-    Ok(
-        json!({"_":"inputDocument","id":positive(a::required(args,"document_id")?)?.to_string(),"access_hash":id(a::required(args,"access_hash")?)?.to_string(),"file_reference":[]}),
-    )
-}
 async fn replies(api: &dyn Telegram) -> Result<Value> {
     api.invoke("messages.getQuickReplies", json!({"hash":0}))
         .await
@@ -98,8 +93,13 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             let exists=before["quick_replies"].as_array().is_some_and(|r|r.iter().any(|r|r["shortcut"]==s));
             let mut p=json!({"peer":{"_":"inputPeerSelf"},"message":body,"random_id":a::random_id(),"quick_reply_shortcut":{"_":"inputQuickReplyShortcut","shortcut":s}});
             if let Some(e)=args.get("entities").filter(|v|!v.is_null()) {p["entities"]=super::common::entities(api,e,body).await?;}
-            api.invoke("messages.sendMessage",p).await?;
-            Ok(json!({"created":!exists,"shortcut":s,"catalogue":replies(api).await?}))
+            let sent=api.invoke("messages.sendMessage",p).await?;
+            let mut output=json!({"created":!exists,"shortcut":s,"updates":sent});
+            match replies(api).await {
+                Ok(catalogue)=>output["catalogue"]=catalogue,
+                Err(_)=>output["warning"]=json!("Quick reply was saved, but catalogue refresh failed. Do not repeat the add; use list_quick_replies."),
+            }
+            Ok(output)
         }
         "edit_quick_reply"=>{
             let sid=positive(a::required(args,"shortcut_id")?)?;let mid=positive(a::required(args,"message_id")?)?;
@@ -133,7 +133,10 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             let random:Vec<_>=wanted.iter().map(|_|a::random_id()).collect();
             api.invoke("messages.sendQuickReplyMessages",json!({"peer":a::peer(api,args,"chat_id").await?,"shortcut_id":sid,"id":wanted,"random_id":random})).await
         }
-        "inspect_sticker_set"=>api.invoke("messages.getStickerSet",json!({"stickerset":sticker_ref(args)?,"hash":0})).await,
+        "inspect_sticker_set"=>{
+            let result=api.invoke("messages.getStickerSet",json!({"stickerset":sticker_ref(args)?,"hash":0})).await?;
+            super::sticker_refs::remember(api,&result)?;Ok(result)
+        },
         "suggest_sticker_set_name"=>{
             let title=a::text(args,"title")?;nonempty(title,64,"Sticker set title")?;
             let result=api.invoke("stickers.suggestShortName",json!({"title":title})).await?;
@@ -147,12 +150,12 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
                 let current=api.invoke("messages.getStickerSet",json!({"stickerset":r,"hash":0})).await?;
                 ensure!(id(expected)?==id(&current["set"]["count"])?,"Sticker-set count changed; inspect the set before adding");
             }
-            api.invoke("stickers.addStickerToSet",json!({"stickerset":r,"sticker":{"_":"inputStickerSetItem","document":input_document(args)?,"emoji":emoji}})).await
+            api.invoke("stickers.addStickerToSet",json!({"stickerset":r,"sticker":{"_":"inputStickerSetItem","document":super::sticker_refs::resolve(api,args).await?,"emoji":emoji}})).await
         }
-        "remove_sticker_from_set"=>api.invoke("stickers.removeStickerFromSet",json!({"sticker":input_document(args)?})).await,
+        "remove_sticker_from_set"=>api.invoke("stickers.removeStickerFromSet",json!({"sticker":super::sticker_refs::resolve(api,args).await?})).await,
         "move_sticker_in_set"=>{
             let position=a::integer(args,"position",-1)?;ensure!(position>=0,"position must be nonnegative");
-            api.invoke("stickers.changeStickerPosition",json!({"sticker":input_document(args)?,"position":position})).await
+            api.invoke("stickers.changeStickerPosition",json!({"sticker":super::sticker_refs::resolve(api,args).await?,"position":position})).await
         }
         "install_sticker_set"=>api.invoke("messages.installStickerSet",json!({"stickerset":sticker_ref(args)?,"archived":a::boolean(args,"archived",false)?})).await,
         "uninstall_sticker_set"=>api.invoke("messages.uninstallStickerSet",json!({"stickerset":sticker_ref(args)?})).await,

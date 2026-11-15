@@ -201,7 +201,20 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 ensure!(kind(&p) == "inputPeerChat", "Target must be a group");
                 let mut results = Vec::new();
                 for u in us {
-                    match api.invoke("messages.addChatUser",json!({"chat_id":entity_id(&p)?,"user_id":u,"fwd_limit":100})).await{Ok(r)=>results.push(json!({"user":u,"success":true,"result":r})),Err(_)=>results.push(json!({"user":u,"success":false,"reason":"Telegram refused this invitation"}))}
+                    match api.invoke("messages.addChatUser",json!({"chat_id":entity_id(&p)?,"user_id":u,"fwd_limit":100})).await {
+                        Ok(r) => {
+                            let id = int_value(&entity_id(&u)?, "invited user id")?;
+                            let missing = r.get("missing_invitees").and_then(Value::as_array)
+                                .into_iter().flatten().find(|entry| int_value(&entry["user_id"], "missing invitee id").ok() == Some(id));
+                            let mut result = json!({"user":u,"success":missing.is_none(),"result":r});
+                            if let Some(missing) = missing {
+                                result["reason"] = "Telegram could not invite this user because of privacy or premium requirements".into();
+                                result["missing_invitee"] = missing.clone();
+                            }
+                            results.push(result);
+                        }
+                        Err(_) => results.push(json!({"user":u,"success":false,"reason":"Telegram refused this invitation"})),
+                    }
                 }
                 Ok(json!({"results":results}))
             }
@@ -350,22 +363,35 @@ async fn eject_and_clear(api: &dyn Telegram, channel: Value, participant: Value)
     // but cannot retain a session lease indefinitely on an unresponsive peer.
     let eject = tokio::time::timeout(RPC_BUDGET, api.invoke("channels.editBanned", json!({"channel":channel,"participant":participant,"banned_rights":{"_":"chatBannedRights","until_date":0,"view_messages":true}}))).await;
     let kicked = match eject {
-        Ok(result) => {
-            result?;
-            true
+        Ok(Ok(_)) => true,
+        // A concrete RPC refusal is a known rejection. Transport, response-
+        // decoding and persistence failures can all occur after the ban took
+        // effect; these need the same bounded cleanup as an elapsed deadline.
+        Ok(Err(error)) if known_rpc_refusal(&error) => {
+            return Err(error);
         }
+        Ok(Err(_)) => false,
         Err(_) => false,
     };
     let clear = tokio::time::timeout(RPC_BUDGET, api.invoke("channels.editBanned", json!({"channel":channel,"participant":participant,"banned_rights":{"_":"chatBannedRights","until_date":0}}))).await;
     match clear {
         Ok(Ok(result)) if kicked => Ok(json!({"kicked":true,"ban_lifted":true,"result":result})),
         Ok(Ok(result)) => Ok(
-            json!({"kicked":null,"ban_lifted":null,"cleanup_accepted":true,"result":result,"warning":"The removal outcome is unknown after a timeout. Telegram accepted a cleanup request, but a delayed removal may still take effect. Inspect membership and use unban_user before retrying"}),
+            json!({"kicked":null,"ban_lifted":null,"cleanup_accepted":true,"result":result,"warning":"The removal outcome is unknown after an ambiguous RPC outcome. Telegram accepted a cleanup request, but a delayed removal may still take effect. Inspect membership and use unban_user before retrying"}),
         ),
-        _ => Ok(
-            json!({"kicked":if kicked {json!(true)} else {Value::Null},"ban_lifted":false,"warning":if kicked {"The member was removed but ban cleanup was not verified; the member may remain banned. Use unban_user"} else {"Removal and cleanup outcomes are unknown after a timeout; inspect membership and use unban_user before retrying"}}),
-        ),
+        other => {
+            let rejected = matches!(other, Ok(Err(error)) if known_rpc_refusal(&error));
+            Ok(
+                json!({"kicked":if kicked {json!(true)} else {Value::Null},"ban_lifted":if rejected {json!(false)} else {Value::Null},"warning":if kicked {"The member was removed but ban cleanup was not verified; the member may remain banned. Use unban_user"} else {"Removal and cleanup outcomes are unknown; inspect membership and use unban_user before retrying"}}),
+            )
+        }
     }
+}
+
+fn known_rpc_refusal(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().starts_with("Telegram RPC "))
 }
 
 async fn create_channel(api: &dyn Telegram, a: &Value) -> Result<Value> {
@@ -397,7 +423,7 @@ async fn create_channel(api: &dyn Telegram, a: &Value) -> Result<Value> {
         .await?;
     let created=r.get("chats").and_then(Value::as_array).and_then(|xs|xs.iter().find(|e|kind(e)=="channel")).context("Telegram created the channel but returned no channel id; inspect recent chats before retrying")?;
     let p = json!({"_":"inputPeerChannel","channel_id":req(created,"id")?,"access_hash":req(created,"access_hash")?});
-    let mut record = json!({"created":true,"chat_id":created["id"],"public":false,"kind":if mega{"supergroup"}else{"channel"}});
+    let mut record = json!({"created":true,"chat_id":super::chats::marked(&p)?,"public":false,"kind":if mega{"supergroup"}else{"channel"}});
     if let Some(wanted) = wanted {
         match api
             .invoke(

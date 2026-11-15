@@ -33,7 +33,9 @@ async fn appended_task_ids_continue_after_highest() {
 }
 #[tokio::test]
 async fn removing_tasks_preserves_other_ids_and_flags() {
-    let m = Mock::new().respond("channels.getMessages", checklist());
+    let m = Mock::new()
+        .respond("channels.getMessages", checklist())
+        .respond("channels.getMessages", checklist());
     run(
         &m,
         "remove_checklist_tasks",

@@ -37,8 +37,9 @@ impl State {
             "always-approvals.json",
             json!({"grants":[],"folders":[]}),
             |store| {
-                let rows = store["grants"]
-                    .as_array_mut()
+                let rows = store
+                    .get_mut("grants")
+                    .and_then(Value::as_array_mut)
                     .context("Always-approval store is invalid; existing bytes were preserved")?;
                 let triple = json!([account.to_lowercase(), tool, normalize_key(chat)]);
                 if !rows.contains(&triple) {
@@ -54,8 +55,9 @@ impl State {
             "always-approvals.json",
             json!({"grants":[],"folders":[]}),
             |store| {
-                let rows = store["grants"]
-                    .as_array_mut()
+                let rows = store
+                    .get_mut("grants")
+                    .and_then(Value::as_array_mut)
                     .context("Always-approval store is invalid")?;
                 let expected = json!([account.to_lowercase(), tool, normalize_key(chat)]);
                 let before = rows.len();
@@ -71,8 +73,9 @@ impl State {
             "always-approvals.json",
             json!({"grants":[],"folders":[]}),
             |store| {
-                let rows = store["folders"]
-                    .as_array_mut()
+                let rows = store
+                    .get_mut("folders")
+                    .and_then(Value::as_array_mut)
                     .context("Always-allowed folder store is invalid")?;
                 let before = rows.len();
                 rows.retain(|row| {

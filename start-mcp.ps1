@@ -65,9 +65,13 @@ function Get-NativeBinary {
         }
         return (Get-Item -LiteralPath $env:TELEGRAM_MCP_BINARY).FullName
     }
-    foreach ($relative in 'telegram-mcp.exe', 'target/release/telegram-mcp.exe', 'target/debug/telegram-mcp.exe') {
-        $candidate = Join-Path $Root $relative
-        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    $names = if ($env:OS -eq 'Windows_NT') { @('telegram-mcp.exe', 'telegram-mcp') } else { @('telegram-mcp', 'telegram-mcp.exe') }
+    foreach ($directory in @('', 'target/release', 'target/debug')) {
+        foreach ($name in $names) {
+            $relative = if ($directory) { Join-Path $directory $name } else { $name }
+            $candidate = Join-Path $Root $relative
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+        }
     }
     $command = Get-Command telegram-mcp -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }

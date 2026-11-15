@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use telegram_mcp::backend::Telegram;
 use telegram_mcp::export::media;
 use telegram_mcp::export::{self, settings::Settings};
+#[path = "rust_visual_export/access.rs"]
+mod access;
 #[path = "rust_visual_export/media.rs"]
 mod media_edges;
 #[path = "rust_visual_export/settings.rs"]
@@ -122,7 +124,10 @@ impl Telegram for Fixture {
         }
         bail!("Unexpected fixture method: {method}")
     }
-    async fn resolve_peer(&self, _input: &Value) -> Result<Value> {
+    async fn resolve_peer(&self, input: &Value) -> Result<Value> {
+        if input.is_object() {
+            return Ok(input.clone());
+        }
         Ok(json!({"_":"inputPeerChannel","channel_id":"12","access_hash":"34"}))
     }
     async fn download(
@@ -158,13 +163,23 @@ fn settings(folder: &str) -> Settings {
 }
 
 fn isolated(name: &str) -> bool {
+    isolated_with_allowlist(name, None)
+}
+
+fn isolated_with_allowlist(name: &str, allowlist: Option<&str>) -> bool {
     if std::env::var("TEST_EXPORT_CHILD").as_deref() == Ok(name) {
         return false;
     }
     let temp = tempfile::tempdir().unwrap();
     let files = temp.path().join("files");
     std::fs::create_dir(&files).unwrap();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    if let Some(allowlist) = allowlist {
+        command.env("TELEGRAM_ALLOWED_CHAT_IDS", allowlist);
+    } else {
+        command.env_remove("TELEGRAM_ALLOWED_CHAT_IDS");
+    }
+    let mut child = command
         .args(["--exact", name, "--nocapture"])
         .env("TEST_EXPORT_CHILD", name)
         .env("TEST_EXPORT_ROOT", &files)

@@ -53,6 +53,36 @@ foreach ($script in $scripts) {
     }
 }
 
+# Test native discovery itself with empty, unexecuted filename fixtures. Both
+# launchers must find a local release/debug build without an override or PATH.
+$nativeLookupRoot = Join-Path ([IO.Path]::GetTempPath()) ('tg-native-lookup-' + [guid]::NewGuid())
+$savedLookupOverride = $env:TELEGRAM_MCP_BINARY
+try {
+    $env:TELEGRAM_MCP_BINARY = $null
+    [void] (New-Item -ItemType Directory -Path (Join-Path $nativeLookupRoot 'target/release') -Force)
+    [void] (New-Item -ItemType Directory -Path (Join-Path $nativeLookupRoot 'target/debug') -Force)
+    $nativeName = if ($env:OS -eq 'Windows_NT') { 'telegram-mcp.exe' } else { 'telegram-mcp' }
+    foreach ($directory in 'target/release', 'target/debug') {
+        foreach ($name in 'telegram-mcp', 'telegram-mcp.exe') {
+            [IO.File]::WriteAllText((Join-Path (Join-Path $nativeLookupRoot $directory) $name), '')
+        }
+    }
+    foreach ($path in @((Join-Path $projectRoot 'start-mcp.ps1'), (Join-Path $projectRoot 'account-manager/Native.ps1'))) {
+        $lookup = [regex]::Match([IO.File]::ReadAllText($path), '(?ms)^function Get-NativeBinary \{.*?^\}').Value
+        if (-not $lookup) { throw "Native discovery helper is missing from $path" }
+        & {
+            param($Definition, $Root, $Name)
+            . ([ScriptBlock]::Create($Definition))
+            $expected = Join-Path (Join-Path $Root 'target/release') $Name
+            if ((Get-NativeBinary -Root $Root) -ne $expected) { throw 'Native lookup missed the platform release binary.' }
+        } $lookup $nativeLookupRoot $nativeName
+    }
+}
+finally {
+    $env:TELEGRAM_MCP_BINARY = $savedLookupOverride
+    Remove-Item -LiteralPath $nativeLookupRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $launcher = Get-Content -LiteralPath $scripts[0] -Raw
 
 # Every run of the REAL launcher below is an automated start, and says so with

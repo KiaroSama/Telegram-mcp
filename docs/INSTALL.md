@@ -44,6 +44,16 @@ inspection use the Rust pipeline. Local Whisper transcription additionally needs
 explicitly configured native `whisper-cli` and local model; no model is downloaded
 automatically.
 
+PDF parsing runs in a separate process with a 25 MiB input budget, bounded
+decompression/output, 20 seconds of CPU time and a 40-second parent deadline.
+Linux applies a 512 MiB address-space limit and Windows applies a 512 MiB process
+memory limit. macOS instead monitors its native physical footprint and lifetime
+peak against 512 MiB every 20 ms, starting before input is read and checking the
+peak again before returning a result. Darwin cannot lower the address-space limit
+below the shared mappings already present at launch. This macOS limit is sampled,
+so it can briefly overshoot; unavailable memory accounting refuses processing.
+The watchdog terminates only its own parser process.
+
 ## Configure credentials and authorize an account
 
 Copy `.env.example` to a private `.env` in the directory from which you run setup.
@@ -148,10 +158,29 @@ Start the service locally:
 The MCP endpoint is `/mcp`. Configure the same private bearer token on clients. A
 private per-installation token protects the service; an explicit `TELEGRAM_HTTP_TOKEN`
 can select it. A non-loopback listener requires an explicitly configured token of at
-least 32 characters. The server must not be published as an unauthenticated Telegram
-account-control endpoint.
+least 32 characters, together with `TELEGRAM_HTTP_TLS_CERT` and
+`TELEGRAM_HTTP_TLS_KEY`. Both PEM files must form a matching certificate/key pair;
+malformed, mismatched or incomplete configuration fails before the listener opens.
+There is no plaintext fallback. The server must not be published as an
+unauthenticated Telegram account-control endpoint.
 
-The native `bridge` command attaches stdio clients to the shared service. If no verified
+For TLS, obtain a server certificate from a CA trusted by the clients and include
+the DNS name or IP address clients will use in its subject alternative names.
+Set the two TLS variables to the PEM certificate-chain and private-key files,
+then configure clients with `https://host:port/mcp` and their private bearer header.
+For a remote hostname, set `TELEGRAM_HTTP_ALLOWED_HOSTS` to the exact hostname or
+`host:port` authorities clients use, separated by commas. The default MCP Host
+allowlist accepts loopback hosts only.
+For a private CA, install that CA in each client's trust store. Do not disable
+certificate verification. Keep private keys outside the repository and restrict
+their filesystem access to the service operator.
+
+Loopback HTTP remains available without TLS for the local native `bridge`.
+The bridge's discovery protocol accepts loopback HTTP; use direct HTTPS-capable
+clients for a service configured with TLS. A locally generated test certificate
+is not a trusted production deployment certificate.
+
+The native `bridge` command attaches stdio clients to the local HTTP shared service. If no verified
 service exists, that explicit command can start the same native executable using the
 selected private configuration. Startup is serialized with an owner lock, bounded by
 a timeout and checked against the published PID, executable, creation identity and
@@ -189,10 +218,16 @@ docker build --tag telegram-mcp:local .
 docker run --rm -i --env-file .env --volume telegram-mcp-state:/data telegram-mcp:local serve
 ```
 
-For the shared service, replace `TELEGRAM_HTTP_TOKEN` in private `.env` with a fresh
-random token of at least 32 characters and run `docker compose up --build -d`.
-Compose binds inside the container to `0.0.0.0:8765`, requires that explicit token,
-and publishes only `127.0.0.1:8765` on the host. The `telegram-state` volume persists
+For the shared HTTPS service, replace `TELEGRAM_HTTP_TOKEN` in private `.env` with
+a fresh random token of at least 32 characters. Set `TELEGRAM_HTTP_TLS_CERT` and
+`TELEGRAM_HTTP_TLS_KEY` to absolute host paths for the matching PEM files, then run
+`docker compose up --build -d`. Compose mounts both files read-only and refuses
+nonexistent source paths. The container's non-root service user must have read access
+to the certificate and key; grant only that user access through ownership or a host
+ACL, and keep the private key outside the repository. Clients must trust the issuer
+and use a server name or IP listed in the certificate.
+Compose binds inside the container to `0.0.0.0:8765`, requires TLS and the explicit
+token, and publishes only `127.0.0.1:8765` on the host. The `telegram-state` volume persists
 account state across replacement. Do not use `docker compose down --volumes` unless
 you intentionally want to delete that state.
 

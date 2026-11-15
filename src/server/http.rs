@@ -6,11 +6,66 @@ use axum::{
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
+use axum_server::tls_rustls::RustlsConfig;
 use fs2::FileExt;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
 use sha2::{Digest, Sha256};
+
+/// A cancelled server future must not leave a detached signal waiter holding
+/// the TLS shutdown handle alive.
+pub(super) struct ShutdownSignal {
+    task: tokio::task::JoinHandle<()>,
+    listener: axum_server::Handle<std::net::SocketAddr>,
+    sessions: tokio_util::sync::CancellationToken,
+}
+impl ShutdownSignal {
+    pub(super) fn new(
+        task: tokio::task::JoinHandle<()>,
+        listener: axum_server::Handle<std::net::SocketAddr>,
+        sessions: tokio_util::sync::CancellationToken,
+    ) -> Self {
+        Self {
+            task,
+            listener,
+            sessions,
+        }
+    }
+}
+impl Drop for ShutdownSignal {
+    fn drop(&mut self) {
+        self.sessions.cancel();
+        self.listener.shutdown();
+        self.task.abort();
+    }
+}
+
+async fn tls_configuration(
+    address: std::net::SocketAddr,
+    cert: Option<std::path::PathBuf>,
+    key: Option<std::path::PathBuf>,
+) -> Result<Option<RustlsConfig>> {
+    match (cert, key) {
+        (None, None) => {
+            if !address.ip().is_loopback() {
+                bail!(
+                    "A non-loopback HTTP service requires TLS: configure TELEGRAM_HTTP_TLS_CERT and TELEGRAM_HTTP_TLS_KEY"
+                );
+            }
+            Ok(None)
+        }
+        (Some(cert), Some(key)) => RustlsConfig::from_pem_file(cert, key)
+            .await
+            .map(Some)
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "TLS certificate/key could not be read or are malformed or mismatched"
+                )
+            }),
+        _ => bail!("Configure both TELEGRAM_HTTP_TLS_CERT and TELEGRAM_HTTP_TLS_KEY"),
+    }
+}
 pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<()> {
     let configured = std::env::var("TELEGRAM_HTTP_TOKEN")
         .ok()
@@ -28,6 +83,19 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
     if token.len() < 32 {
         bail!("TELEGRAM_HTTP_TOKEN must contain at least 32 characters");
     }
+    // Validate the complete matching pair before binding a listener or
+    // publishing discovery. No TLS failure falls back to plaintext.
+    let tls = tls_configuration(
+        address,
+        std::env::var_os("TELEGRAM_HTTP_TLS_CERT")
+            .filter(|value| !value.is_empty())
+            .map(Into::into),
+        std::env::var_os("TELEGRAM_HTTP_TLS_KEY")
+            .filter(|value| !value.is_empty())
+            .map(Into::into),
+    )
+    .await?;
+    let scheme = if tls.is_some() { "https" } else { "http" };
     let state = Arc::clone(&server.runtime.state);
     let path = state.root().join("http-service.lock");
     let mut options = std::fs::OpenOptions::new();
@@ -60,17 +128,48 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
     let listener = tokio::net::TcpListener::bind(address).await?;
     let actual = listener.local_addr()?;
     let endpoint = if actual.ip().is_unspecified() {
-        format!("http://127.0.0.1:{}/mcp", actual.port())
+        let ip = if actual.is_ipv6() {
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)
+        } else {
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+        };
+        format!(
+            "{scheme}://{}/mcp",
+            std::net::SocketAddr::new(ip, actual.port())
+        )
     } else {
-        format!("http://{actual}/mcp")
+        format!("{scheme}://{actual}/mcp")
     };
     state.write_json("http-service.json",&json!({"url":endpoint,"token":token,"pid":std::process::id(),"started":chrono::Utc::now().to_rfc3339()}))?;
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            shutdown.cancel();
-        })
-        .await?;
+    let outcome = if let Some(tls) = tls {
+        async {
+            let service = axum_server::from_tcp_rustls(listener.into_std()?, tls)?;
+            let handle = axum_server::Handle::new();
+            let drain = handle.clone();
+            let sessions = shutdown.clone();
+            let _signal = ShutdownSignal::new(
+                tokio::spawn(async move {
+                    let _ = tokio::signal::ctrl_c().await;
+                    sessions.cancel();
+                    drain.graceful_shutdown(Some(Duration::from_secs(15)));
+                }),
+                handle.clone(),
+                shutdown,
+            );
+            service
+                .handle(handle)
+                .serve(router.into_make_service())
+                .await
+        }
+        .await
+    } else {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = tokio::signal::ctrl_c().await;
+                shutdown.cancel();
+            })
+            .await
+    };
     let _ = state.update_json("http-service.json", Value::Null, |record| {
         if record["token"] == token {
             *record = Value::Null;
@@ -78,6 +177,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
         Ok(())
     });
     drop(lease);
+    outcome?;
     Ok(())
 }
 async fn authorize(AxumState(token): AxumState<String>, request: Request, next: Next) -> Response {

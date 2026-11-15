@@ -1,9 +1,9 @@
+mod locking;
 use anyhow::{Context, Result, bail};
-use fs2::FileExt;
+pub(super) use locking::{ConfigWriteGuard, lock as config_write_lock};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -73,30 +73,49 @@ pub fn current_config() -> Result<ConfigSnapshot> {
     let path = SOURCE
         .get()
         .context("Configuration source has not been initialized")?;
-    let accepted = *ACCEPTED
+    let mut accepted = ACCEPTED
         .lock()
         .map_err(|_| anyhow::anyhow!("Configuration source lock is unavailable"))?;
-    if accepted && !path.exists() {
+    let (snapshot, present) = read_config_revision(path)?;
+    if *accepted && !present {
         bail!("The accepted .env file is missing; active configuration was preserved");
     }
-    let snapshot = read_config(path)?;
-    if path.is_file() {
-        *ACCEPTED
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Configuration source lock is unavailable"))? = true;
-    }
+    *accepted |= present;
     Ok(snapshot)
 }
 
 pub fn read_config(path: &Path) -> Result<ConfigSnapshot> {
-    let raw = match std::fs::read(path) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+    Ok(read_config_revision(path)?.0)
+}
+
+fn read_bytes(path: &Path) -> Result<(Vec<u8>, bool)> {
+    let (raw, present) = match std::fs::File::open(path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(8 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .context("Cannot read account configuration; active accounts were preserved")?;
+            (bytes, true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), false),
         Err(_) => bail!("Cannot read account configuration; active accounts were preserved"),
     };
     if raw.len() > 8 * 1024 * 1024 {
         bail!("Account configuration exceeds its byte budget");
     }
+    Ok((raw, present))
+}
+
+pub(super) fn file_values(path: &Path) -> Result<BTreeMap<String, String>> {
+    let (raw, _) = read_bytes(path)?;
+    parse_config(
+        std::str::from_utf8(&raw).context("Account configuration must be UTF-8")?,
+        &BTreeMap::new(),
+    )
+}
+
+fn read_config_revision(path: &Path) -> Result<(ConfigSnapshot, bool)> {
+    let (raw, present) = read_bytes(path)?;
     let process = PROCESS
         .get()
         .cloned()
@@ -108,12 +127,15 @@ pub fn read_config(path: &Path) -> Result<ConfigSnapshot> {
         .filter(|key| key.starts_with("TELEGRAM_SESSION_"))
         .cloned()
         .collect();
-    Ok(ConfigSnapshot {
-        values,
-        digest: format!("{:x}", Sha256::digest(&raw)),
-        path: path.to_owned(),
-        process_keys,
-    })
+    Ok((
+        ConfigSnapshot {
+            values,
+            digest: format!("{:x}", Sha256::digest(&raw)),
+            path: path.to_owned(),
+            process_keys,
+        },
+        present,
+    ))
 }
 
 /// Parse one immutable revision, using startup process values for interpolation.
@@ -142,12 +164,16 @@ fn logical_records(text: &str) -> Result<Vec<&str>> {
     let mut quote = None;
     let mut escaped = false;
     let mut comment = false;
+    let mut equal = false;
+    let mut value_started = false;
     for (index, c) in text.char_indices() {
         if c == '\n' && quote.is_none() {
             records.push(&text[start..index + 1]);
             start = index + 1;
             comment = false;
             escaped = false;
+            equal = false;
+            value_started = false;
             continue;
         }
         if comment {
@@ -157,18 +183,29 @@ fn logical_records(text: &str) -> Result<Vec<&str>> {
             escaped = false;
             continue;
         }
-        if c == '\\' && quote != Some('\'') {
+        if c == '\\' && quote.is_some() {
             escaped = true;
             continue;
         }
-        if c == '#' && quote.is_none() {
+        if let Some(open) = quote {
+            if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        if c == '#' {
             comment = true;
             continue;
         }
-        if matches!(c, '\'' | '"') {
-            if quote == Some(c) {
-                quote = None;
-            } else if quote.is_none() {
+        if !equal {
+            if c == '=' {
+                equal = true;
+            }
+            continue;
+        }
+        if !value_started && !c.is_whitespace() {
+            value_started = true;
+            if matches!(c, '\'' | '"') {
                 quote = Some(c);
             }
         }
@@ -221,26 +258,36 @@ fn parse_line(
                 i += 1;
                 continue;
             }
-            if quote.is_none() {
+            if quote.is_none() && i == 0 {
                 quote = Some(c);
                 i += 1;
                 continue;
             }
         }
-        if c == '\\' && quote != Some('\'') {
-            i += 1;
-            let next = *chars
-                .get(i)
-                .context("Account configuration ends with an incomplete escape")?;
-            result.push(match next {
-                'n' if quote == Some('"') => '\n',
-                'r' if quote == Some('"') => '\r',
-                't' if quote == Some('"') => '\t',
-                other => other,
-            });
-            keep = result.len();
-            i += 1;
-            continue;
+        if c == '\\'
+            && quote.is_some()
+            && let Some(next) = chars.get(i + 1).copied()
+        {
+            let decoded = match (quote, next) {
+                (_, '\\') => Some('\\'),
+                (Some('\''), '\'') => Some('\''),
+                (Some('"'), '\'') => Some('\''),
+                (Some('"'), '"') => Some('"'),
+                (Some('"'), 'a') => Some('\u{7}'),
+                (Some('"'), 'b') => Some('\u{8}'),
+                (Some('"'), 'f') => Some('\u{c}'),
+                (Some('"'), 'n') => Some('\n'),
+                (Some('"'), 'r') => Some('\r'),
+                (Some('"'), 't') => Some('\t'),
+                (Some('"'), 'v') => Some('\u{b}'),
+                _ => None,
+            };
+            if let Some(decoded) = decoded {
+                result.push(decoded);
+                keep = result.len();
+                i += 2;
+                continue;
+            }
         }
         if c == '$' && quote != Some('\'') {
             let start = i + 1;
@@ -304,6 +351,17 @@ pub fn write_env_value(
     value: &str,
     expected_digest: Option<&str>,
 ) -> Result<()> {
+    let guard = config_write_lock(path)?;
+    write_env_value_locked(&guard, key, value, expected_digest)
+}
+
+pub(super) fn write_env_value_locked(
+    guard: &ConfigWriteGuard,
+    key: &str,
+    value: &str,
+    expected_digest: Option<&str>,
+) -> Result<()> {
+    let path = &guard.path;
     label_for(key)?;
     if value.contains(['\r', '\n', '\0']) {
         bail!("An account configuration value must fit on one line");
@@ -318,22 +376,7 @@ pub fn write_env_value(
         .parent()
         .context("Configuration file has no parent directory")?;
     std::fs::create_dir_all(parent)?;
-    let lock_path = path.with_file_name(".env.native.lock");
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let lock = options.open(&lock_path)?;
-    FileExt::try_lock_exclusive(&lock).context("Account configuration is busy")?;
-    crate::state::storage::restrict(&lock_path, false)?;
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(_) => bail!("Cannot read existing account configuration; nothing was changed"),
-    };
+    let (bytes, _) = read_bytes(path)?;
     let text = std::str::from_utf8(&bytes).context("Account configuration must be UTF-8")?;
     let process = BTreeMap::new();
     let parsed = parse_config(text, &process)?;
@@ -343,13 +386,11 @@ pub fn write_env_value(
         bail!("Account configuration changed; no replacement was written");
     }
     let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let quoted = format!(
-        "\"{}\"",
-        value
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('$', "\\$")
-    );
+    let quoted = if value.contains('$') {
+        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+    } else {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    };
     let mut matched = false;
     let mut result = String::new();
     for line in logical_records(text)? {
@@ -361,7 +402,10 @@ pub fn write_env_value(
             .unwrap_or(body.trim_start_matches('\u{feff}').trim());
         if candidate
             .split_once('=')
-            .is_some_and(|(candidate, _)| candidate.trim() == key)
+            .map(|(key, _)| key)
+            .unwrap_or(candidate)
+            .trim()
+            == key
         {
             if body.starts_with('\u{feff}') {
                 result.push('\u{feff}');
@@ -379,28 +423,38 @@ pub fn write_env_value(
         }
         result.push_str(&format!("{key}={quoted}{ending}"));
     }
+    let backup_prefix = format!(
+        "{}.backup-",
+        path.file_name()
+            .context("Configuration source has no filename")?
+            .to_string_lossy()
+    );
     if path.exists() {
         let backup = path.with_file_name(format!(
-            ".env.backup-{}",
+            "{backup_prefix}{}",
             chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S_%f_UTC")
         ));
         private_replace(&backup, &bytes, false)?;
     }
     private_replace(path, result.as_bytes(), true)?;
     // Backups hold complete logins, so keep only the newest recoverable revision.
-    let mut backups = std::fs::read_dir(parent)?
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Ok(());
+    };
+    let mut backups = entries
         .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter(|entry| {
             entry
                 .file_name()
                 .to_str()
-                .is_some_and(|name| name.starts_with(".env.backup-"))
+                .is_some_and(|name| name.starts_with(&backup_prefix))
         })
         .collect::<Vec<_>>();
     backups.sort_by_key(|entry| entry.file_name());
     let excess = backups.len().saturating_sub(1);
     for entry in backups.into_iter().take(excess) {
-        std::fs::remove_file(entry.path())?;
+        let _ = std::fs::remove_file(entry.path());
     }
     Ok(())
 }
@@ -421,6 +475,13 @@ fn private_replace(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
             .map_err(|_| anyhow::anyhow!("Cannot preserve account configuration backup"))?;
     }
     #[cfg(unix)]
-    std::fs::File::open(parent)?.sync_all()?;
+    if std::fs::File::open(parent)
+        .and_then(|file| file.sync_all())
+        .is_err()
+    {
+        tracing::warn!(
+            "Configuration replacement committed; directory durability could not be confirmed"
+        );
+    }
     Ok(())
 }

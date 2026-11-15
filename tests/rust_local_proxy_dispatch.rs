@@ -3,6 +3,7 @@ mod local_dispatch_support;
 mod transport_support;
 use local_dispatch_support::{Api, call, isolated};
 use serde_json::json;
+use telegram_mcp::backend::Telegram;
 use telegram_mcp::{state::State, tools::local::proxies::parse_proxy};
 
 #[tokio::test]
@@ -150,12 +151,122 @@ async fn source_proxy_import_reads_nested_link_fields_and_bounds_transport_probe
     assert!(state.read_json("proxies-v1.json", json!({})).unwrap()[pending]["healthy"].is_null());
     assert_eq!(api.calls()[0].0, "messages.getHistory");
     assert_eq!(api.calls()[0].1["limit"], 200);
+    let repeated = call(&api, "test_proxies", json!({"pool":"work"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        state.read_json("proxies-v1.json", json!({})).unwrap()[pending]["healthy"],
+        json!(true),
+        "Repeating bulk tests must reach the previously deferred seventeenth proxy"
+    );
+    assert!(
+        repeated["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == pending && row["result"] == "telegram_transport_reachable")
+    );
+    assert_eq!(requests.lock().unwrap().len(), 32);
+    let deferred = repeated["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["result"] == "not_tested")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    let next = call(&api, "test_proxies", json!({"pool":"work"}))
+        .await
+        .unwrap();
+    assert!(
+        next["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == deferred && row["result"] == "telegram_transport_reachable"),
+        "Once all proxies have health data, repeated batches must still rotate past the previous batch"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 48);
     assert_eq!(
         call(&api, "test_proxies", json!({"ids":["missing"]}))
             .await
             .unwrap()["results"],
         json!([])
     );
+}
+
+#[derive(Default)]
+struct SourceApi {
+    inner: Api,
+    selectors: std::sync::Mutex<Vec<serde_json::Value>>,
+}
+#[async_trait::async_trait]
+impl Telegram for SourceApi {
+    async fn invoke(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> anyhow::Result<serde_json::Value> {
+        self.inner.invoke(name, args).await
+    }
+    async fn resolve_peer(&self, input: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
+        self.selectors.lock().unwrap().push(input.clone());
+        anyhow::ensure!(
+            input.as_str() == Some("@proxy_source"),
+            "Native peer resolution requires a selector rather than a Telegram URL"
+        );
+        Ok(json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"70"}))
+    }
+}
+#[tokio::test]
+async fn telegram_source_urls_are_normalized_before_history_resolution_without_read_acknowledgements()
+ {
+    if !isolated(
+        "telegram_source_urls_are_normalized_before_history_resolution_without_read_acknowledgements",
+    ) {
+        return;
+    }
+    let api = SourceApi::default();
+    let (target, _telegram, _) = transport_support::telegram(false).await;
+    let (address, _proxy, requests) = transport_support::http_proxy(target, false).await;
+    let link = format!("http://{address}");
+    for source in [
+        "https://t.me/proxy_source",
+        "https://t.me/s/proxy_source/123",
+        "tg://resolve?domain=proxy_source",
+    ] {
+        api.inner.reply(
+            "messages.getHistory",
+            json!({"messages":[{"message":link}]}),
+        );
+        telegram_mcp::tools::local::call(
+            &api,
+            "add_proxies",
+            &json!({"source":source,"account":"work"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+    assert_eq!(
+        api.selectors.lock().unwrap().as_slice(),
+        vec![json!("@proxy_source"); 3]
+    );
+    assert_eq!(
+        api.inner
+            .calls()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["messages.getHistory"; 3]
+    );
+    assert!(
+        api.inner
+            .calls()
+            .iter()
+            .all(|(_, args)| args["limit"] == 200)
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

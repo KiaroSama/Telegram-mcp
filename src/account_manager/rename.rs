@@ -254,7 +254,7 @@ pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>
             rewrites.push(json!({"name":name,"before":before,"after":{}}));
         }
     }
-    state.write_json_unlocked(JOURNAL, &json!({"files":files,"rewrites":rewrites}))?;
+    state.write_json_transaction_unlocked(JOURNAL, &json!({"files":files,"rewrites":rewrites}))?;
     let result = (|| -> Result<Vec<String>> {
         let mut changed = Vec::new();
         for (source, target) in &files {
@@ -265,7 +265,7 @@ pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>
             let name = row["name"]
                 .as_str()
                 .context("Invalid account transaction record")?;
-            state.write_json_unlocked(name, &row["after"])?;
+            state.write_json_transaction_unlocked(name, &row["after"])?;
             changed.push(name.to_owned());
         }
         std::fs::remove_file(state.root().join(JOURNAL))?;
@@ -291,6 +291,43 @@ fn recover_unlocked(state: &State) -> Result<()> {
     if journal.is_null() {
         return Ok(());
     }
+    // Ordinary writers are fenced while this marker exists. Also detect raw
+    // out-of-band edits before restoring any whole-record snapshot.
+    for pair in journal["files"]
+        .as_array()
+        .context("Invalid account transaction journal")?
+    {
+        let source = local_path(state, pair[0].as_str().context("Invalid account source")?)?;
+        let target = local_path(
+            state,
+            pair[1].as_str().context("Invalid account destination")?,
+        )?;
+        if source.exists() && target.exists() {
+            bail!("Account rollback found conflicting files; retain both and the private journal");
+        }
+        if !source.exists() && !target.exists() {
+            bail!("Account rollback source is missing; retain the private journal");
+        }
+    }
+    for row in journal["rewrites"]
+        .as_array()
+        .context("Invalid account transaction journal")?
+    {
+        let name = row["name"]
+            .as_str()
+            .context("Invalid account transaction record")?;
+        if let Some(source) = row["moved_source"].as_str()
+            && local_path(state, source)?.exists()
+        {
+            continue;
+        }
+        let current = state.read_json_unlocked(name, Value::Null)?;
+        if current != row["before"] && current != row["after"] {
+            bail!(
+                "Account state changed after the transaction snapshot; recovery retained all current records and its private journal"
+            );
+        }
+    }
     for row in journal["rewrites"]
         .as_array()
         .context("Invalid account transaction journal")?
@@ -307,7 +344,7 @@ fn recover_unlocked(state: &State) -> Result<()> {
                 continue;
             }
         }
-        state.write_json_unlocked(name, &row["before"])?;
+        state.write_json_transaction_unlocked(name, &row["before"])?;
     }
     for row in journal["files"]
         .as_array()

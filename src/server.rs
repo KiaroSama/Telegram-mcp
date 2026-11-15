@@ -4,6 +4,7 @@ pub mod bridge;
 mod catalogue;
 mod event_wait;
 mod http;
+mod recipient;
 #[cfg(test)]
 #[path = "../tests/unit/server.rs"]
 mod tests;
@@ -69,6 +70,8 @@ impl Telegram for LocalApi {
 impl Mcp {
     pub fn new() -> Result<Self> {
         let state = State::global()?;
+        crate::account_manager::recover_rename(&state)?;
+        crate::account_manager::recover_logins(&state)?;
         let guard = Safeguard::new(Arc::clone(&state));
         Ok(Self {
             runtime: Arc::new(Runtime {
@@ -141,11 +144,14 @@ impl Mcp {
                             | "get_file_roots_status"
                             | "safeguard_status"
                             | "list_proxies"
+                            | "remove_proxies"
+                            | "test_proxies"
                             | "get_ghost_mode"
                             | "incoming_feed_status"
                             | "prepare_upload"
                             | "wait_for_events"
-                    ) {
+                    ) || (name == "add_proxies" && args.get("source").is_none_or(Value::is_null))
+                    {
                         "default".into()
                     } else {
                         bail!("Several accounts are configured; specify account explicitly");
@@ -165,22 +171,6 @@ impl Mcp {
         let annotations = tool.annotations.as_ref();
         let read_only = annotations.and_then(|a| a.read_only_hint).unwrap_or(false);
         let destructive = annotations.and_then(|a| a.destructive_hint).unwrap_or(true);
-        match self
-            .runtime
-            .guard
-            .check(name, &args, read_only, destructive)?
-        {
-            Decision::Allow => {}
-            Decision::NeedsApproval {
-                fingerprint,
-                reasons,
-            } => {
-                return Ok(
-                    json!({"approval_required":true,"fingerprint":fingerprint,"reasons":reasons,"human_action":format!("Run telegram-mcp approve {fingerprint} in your terminal, then repeat the exact operation."),"performed":false}),
-                );
-            }
-            Decision::Refuse { reason } => bail!("{reason}"),
-        }
         let event_api = if name == "wait_for_events" {
             Some(self.event_api(&args).await?)
         } else {
@@ -205,7 +195,8 @@ impl Mcp {
                 | "test_proxies"
                 | "prepare_upload"
                 | "wait_for_events"
-        );
+        ) && !(name == "add_proxies"
+            && args.get("source").is_some_and(|v| !v.is_null()));
         let slot = if local_only {
             None
         } else {
@@ -216,14 +207,6 @@ impl Mcp {
                 .map(|slot| Arc::clone(&slot.api))
                 .unwrap_or_else(|| Arc::new(LocalApi(self.clone())))
         });
-        let policy = if name == "wait_for_events" {
-            self.runtime.policy.clone()
-        } else {
-            self.runtime
-                .policy
-                .scoped(name, &args, api.as_ref())
-                .await?
-        };
         // A complete domain operation (including read/modify/write sequences) is
         // serialized per account. Event waits are independent of this lock.
         let _serial = if matches!(
@@ -236,6 +219,46 @@ impl Mcp {
         } else {
             None
         };
+        // Resolve approval identities while holding the same account lock as
+        // execution and bookkeeping. The operation retains these exact private
+        // InputPeer references even if a username or saved alias is replaced.
+        let (api, approval_args) = if !read_only && slot.is_some() {
+            recipient::bind(api, &args).await?
+        } else {
+            (api, args.clone())
+        };
+        let mut policy_args = args.clone();
+        if name == "add_proxies"
+            && let Some(source) = args.get("source").filter(|value| !value.is_null())
+        {
+            // Telegram source imports read whole-channel history. Apply the
+            // same chat/topic policy to the normalized source before dispatch.
+            policy_args["chat_id"] = crate::tools::local::proxies::source_selector(source)?;
+        }
+        let policy = if name == "wait_for_events" {
+            self.runtime.policy.clone()
+        } else {
+            self.runtime
+                .policy
+                .scoped(name, &policy_args, api.as_ref())
+                .await?
+        };
+        match self
+            .runtime
+            .guard
+            .check(name, &approval_args, read_only, destructive)?
+        {
+            Decision::Allow => {}
+            Decision::NeedsApproval {
+                fingerprint,
+                reasons,
+            } => {
+                return Ok(
+                    json!({"approval_required":true,"fingerprint":fingerprint,"reasons":reasons,"human_action":format!("Run telegram-mcp approve {fingerprint} in your terminal, then repeat the exact operation."),"performed":false}),
+                );
+            }
+            Decision::Refuse { reason } => bail!("{reason}"),
+        }
         let timeout = if name.starts_with("export_") {
             Duration::from_secs(120)
         } else {
@@ -248,6 +271,15 @@ impl Mcp {
                     &self.runtime.state,
                     &args,
                     &self.runtime.policy,
+                )
+                .await
+            } else if matches!(name, "wait_for_new_message" | "wait_for_settled_message") {
+                crate::tools::local::wait_incoming_with_policy(
+                    api.as_ref(),
+                    &self.runtime.state,
+                    name,
+                    &args,
+                    &policy,
                 )
                 .await
             } else {
@@ -272,7 +304,17 @@ impl Mcp {
                 .invoke("account.updateStatus", json!({"offline":true}))
                 .await?;
         }
-        self.runtime.guard.note_success(name, &args)?;
+        if self
+            .runtime
+            .guard
+            .note_success(name, &approval_args)
+            .is_err()
+        {
+            completed_warning(
+                &mut value,
+                "Telegram completed this operation, but local recipient bookkeeping failed. Do not repeat the operation; inspect its result and repair private state before continuing.",
+            );
+        }
         if read_only {
             if name == "wait_for_events" {
                 for event in value["events"].as_array().into_iter().flatten() {
@@ -296,6 +338,13 @@ impl Mcp {
         redact_internal(&mut value);
         Ok(value)
     }
+}
+fn completed_warning(value: &mut Value, message: &'static str) {
+    if !value.is_object() {
+        *value = json!({"result": value.take()});
+    }
+    value["operation_completed"] = json!(true);
+    value["local_warnings"] = json!([message]);
 }
 impl ServerHandler for Mcp {
     fn get_info(&self) -> ServerConfig {

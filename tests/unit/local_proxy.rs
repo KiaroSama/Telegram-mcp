@@ -69,3 +69,71 @@ fn impossible_ports_and_unknown_protocols_are_refused() {
         assert!(parse_proxy(link).is_err(), "{link}");
     }
 }
+#[test]
+fn telegram_source_links_normalize_only_peer_identity_without_joining_or_opening_urls() {
+    for source in [
+        "https://t.me/Proxy_Source",
+        "t.me/proxy_source/42",
+        "https://telegram.me/proxy_source/42/43?single",
+        "https://t.me/s/proxy_source",
+        "tg://resolve?domain=proxy_source&post=42",
+        "tg:resolve?domain=proxy_source",
+        "telegram.dog/proxy_source",
+        "https://proxy_source.t.me/42",
+        "proxy_source.t.me",
+        "https://t.me/proxy_source#ignored-fragment",
+    ] {
+        assert_eq!(
+            source_selector(&json!(source)).unwrap(),
+            json!("@proxy_source")
+        );
+    }
+    for source in [
+        "https://t.me/c/12345/42",
+        "https://t.me/c/12345/41/42",
+        "tg://privatepost?channel=12345&post=42",
+    ] {
+        assert_eq!(
+            source_selector(&json!(source)).unwrap(),
+            json!("-1000000012345")
+        );
+    }
+    assert_eq!(
+        source_selector(&json!("-1000000012345")).unwrap(),
+        json!("-1000000012345")
+    );
+    assert_eq!(
+        source_selector(&json!("saved alias")).unwrap(),
+        json!("saved alias")
+    );
+}
+#[test]
+fn source_link_validation_rejects_foreign_hosts_invites_actions_and_ambiguous_ids() {
+    for source in [
+        "https://t.me.evil.test/source",
+        "https://example.test/source",
+        "https://owner@t.me/source",
+        "https://t.me:444/source",
+        "https://share.t.me/path",
+        "https://a.t.me/",
+        "https://t.me/+invite",
+        "https://t.me/joinchat/invite",
+        "https://t.me/proxy?server=host&port=443",
+        "https://t.me/source/webapp",
+        "https://t.me/source/0",
+        "https://t.me/c/0/42",
+        "https://t.me/c/9223372036854775807/42",
+        "https://t.me/source%2Fother",
+        "tg://resolve?domain=source&domain=other",
+        "tg://join?invite=hash",
+        "tg://resolve?phone=00000000",
+        "0",
+        "9223372036854775808",
+        "\n",
+    ] {
+        assert!(
+            source_selector(&json!(source)).is_err(),
+            "accepted invalid source {source:?}"
+        );
+    }
+}

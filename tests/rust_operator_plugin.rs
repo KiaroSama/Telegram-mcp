@@ -1,6 +1,10 @@
 //! End-to-end native helper checks: explicit source, destination, exit and private log.
 use std::{fs, path::Path, process::Command};
 
+fn temporary_root() -> tempfile::TempDir {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
+}
+
 fn command(root: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_operator-plugin"));
     let files = root.join("files");
@@ -19,7 +23,7 @@ fn command(root: &Path) -> Command {
 
 #[test]
 fn native_installer_cli_uses_explicit_source_and_preserves_collision() {
-    let root = tempfile::TempDir::new().unwrap();
+    let root = temporary_root();
     let project = root.path().join("target workspace");
     let run = command(root.path())
         .args(["install", "--client", "opencode", "--project"])
@@ -66,7 +70,7 @@ fn native_installer_cli_uses_explicit_source_and_preserves_collision() {
 
 #[test]
 fn native_packager_cli_creates_a_real_archive_without_runtime_state() {
-    let root = tempfile::TempDir::new().unwrap();
+    let root = temporary_root();
     let output = root.path().join("operator.zip");
     let run = command(root.path())
         .args(["package", "--client", "portable", "--output"])
@@ -92,7 +96,7 @@ fn native_packager_cli_creates_a_real_archive_without_runtime_state() {
 
 #[test]
 fn native_installer_cli_requires_an_explicit_destination() {
-    let root = tempfile::TempDir::new().unwrap();
+    let root = temporary_root();
     let run = command(root.path()).arg("install").output().unwrap();
     assert!(!run.status.success());
     assert!(

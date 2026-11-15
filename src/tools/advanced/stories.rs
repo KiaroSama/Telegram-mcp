@@ -61,7 +61,16 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
                     .unwrap_or(&json!("me")),
             )
             .await?;
-        let media = upload_media(api, path).await?;
+        let state = crate::state::State::global()?;
+        let absolute =
+            state.resolve_file(std::path::Path::new(path), crate::state::FileAccess::Read)?;
+        let media = upload_media(
+            api,
+            absolute
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Story file path must be UTF-8"))?,
+        )
+        .await?;
         let mut request = json!({"peer":p,"media":media,"privacy_rules":[{"_":rule}],"random_id":a::random_id(),"period":hours*3600,"pinned":a::boolean(args,"pin_to_profile",false)?});
         copy_optional(args, &mut request, &["caption"]);
         return api.invoke("stories.sendStory", request).await;

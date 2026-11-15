@@ -1,4 +1,6 @@
-use super::{config_digest, label_for, read_config, write_env_value};
+use super::config::{config_write_lock, write_env_value_locked};
+use super::recovery::{journal_name, recover_locked, value_digest};
+use super::{config_digest, label_for, read_config};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
@@ -30,7 +32,26 @@ pub fn begin_login(
     if account.starts_with("__login_") {
         bail!("This account prefix is reserved for private login staging");
     }
-    let snapshot = read_config(env_file)?;
+    super::recover_logins(&state)?;
+    if state.root().join(journal_name(&account)).exists() {
+        bail!(
+            "The completed login recovery marker could not be cleared; preserve it before changing this account again"
+        );
+    }
+    let env_file = if env_file.is_absolute() {
+        env_file.to_owned()
+    } else {
+        std::env::current_dir()?.join(env_file)
+    };
+    let snapshot = read_config(&env_file)?;
+    if replace_key.is_none()
+        && snapshot.values.iter().any(|(key, value)| {
+            !value.is_empty() && label_for(key).ok().as_deref() == Some(account.as_str())
+        })
+    {
+        bail!("This account is already configured; use the explicit repair flow");
+    }
+
     let source_digest = if let Some(key) = replace_key {
         if label_for(key)? != account {
             bail!("Replacement key does not belong to the selected account");
@@ -84,7 +105,7 @@ pub fn begin_login(
         state,
         account,
         stage,
-        env_file: env_file.to_owned(),
+        env_file,
         source_key: replace_key.map(str::to_owned),
         source_digest,
         expected_user_id,
@@ -107,6 +128,7 @@ impl LoginTransaction {
                 "The new login belongs to a different Telegram account; the existing session was preserved"
             );
         }
+        let config = config_write_lock(&self.env_file)?;
         if let (Some(key), Some(expected)) = (&self.source_key, &self.source_digest) {
             let snapshot = read_config(&self.env_file)?;
             if snapshot
@@ -144,9 +166,12 @@ impl LoginTransaction {
             "The account is still in use; stop its owned service before committing a replacement",
         )?;
         let _stage_lease = lock_stage(&self.state, &self.stage)?;
+        let _state_lock = self.state.state_lock()?;
+
         let source_name = format!("{}.session.json", self.stage);
         let target_name = format!("{}.session.json", self.account);
-        let mut staged = self.state.read_json(&source_name, Value::Null)?;
+        let mut staged = self.state.read_json_unlocked(&source_name, Value::Null)?;
+        let stage_digest = value_digest(&staged)?;
         if staged.is_null() {
             bail!("The staged native login was not saved");
         }
@@ -188,12 +213,13 @@ impl LoginTransaction {
                 format!("{key}:{}", config_digest(&self.account))
             };
         staged["authorization_source"] = json!(authorization_source);
-        let old = self.state.read_json(&target_name, Value::Null)?;
-        let backup_name = format!("{}.native-backup.json", self.account);
-        if !old.is_null() {
-            self.state.write_json(&backup_name, &old)?;
+        let old = self.state.read_json_unlocked(&target_name, Value::Null)?;
+        if self.source_key.is_none() && !old.is_null() {
+            bail!(
+                "This account gained a native session during login; the existing session was preserved"
+            );
         }
-        self.state.write_json(&target_name, &staged)?;
+        let backup_name = format!("{}.native-backup.json", self.account);
         if self.source_key.is_none() {
             let key = if self.account == "default" {
                 "TELEGRAM_SESSION_NAME".to_owned()
@@ -203,16 +229,48 @@ impl LoginTransaction {
                     self.account.to_ascii_uppercase()
                 )
             };
-            if let Err(error) = write_env_value(&self.env_file, &key, &self.account, None) {
-                if old.is_null() {
-                    std::fs::remove_file(self.state.root().join(&target_name))?;
-                } else {
-                    self.state.write_json(&target_name, &old)?;
-                }
-                return Err(error.context(
-                    "Could not save account configuration; the prior native session was restored",
-                ));
+            let snapshot = read_config(&config.path)?;
+            if snapshot
+                .process_keys
+                .iter()
+                .any(|key| label_for(key).ok().as_deref() == Some(self.account.as_str()))
+                || snapshot.values.iter().any(|(key, value)| {
+                    !value.is_empty()
+                        && label_for(key).ok().as_deref() == Some(self.account.as_str())
+                })
+            {
+                bail!(
+                    "This account gained configuration during login; the existing authorization was preserved"
+                );
             }
+            let name = journal_name(&self.account);
+            let journal = json!({"account":self.account,"stage":self.stage,"stage_digest":stage_digest,"env_file":config.path,"config_key":key,"config_digest":config_digest(&self.account),"installed":staged});
+            let publication = (|| -> Result<()> {
+                self.state.write_json_unlocked(&name, &journal)?;
+                self.state.write_json_unlocked(&target_name, &staged)?;
+                write_env_value_locked(&config, &key, &self.account, None)?;
+                Ok(())
+            })();
+            if let Err(error) = publication {
+                if self.state.root().join(&name).exists() {
+                    if recover_locked(&self.state, &name, &journal, &config)? {
+                        tracing::warn!("Account login committed before a post-publication error");
+                    } else {
+                        return Err(error.context("Could not save account configuration; the incomplete native session was removed"));
+                    }
+                } else {
+                    return Err(error);
+                }
+            } else if std::fs::remove_file(self.state.root().join(&name)).is_err() {
+                tracing::warn!(
+                    "Account login committed; its private recovery marker could not be removed"
+                );
+            }
+        } else {
+            if !old.is_null() {
+                self.state.write_json_unlocked(&backup_name, &old)?;
+            }
+            self.state.write_json_unlocked(&target_name, &staged)?;
         }
         // The new snapshot is durable. The staging copy is removed by Drop; the
         // single private backup keeps a failed operational rollback recoverable.
@@ -245,7 +303,8 @@ impl Drop for LoginTransaction {
     }
 }
 
-fn lock_stage(state: &State, stage: &str) -> Result<std::fs::File> {
+pub(super) fn lock_stage(state: &State, stage: &str) -> Result<std::fs::File> {
+    crate::session::validate_label(stage)?;
     let path = state.root().join(format!("{stage}.session.lock"));
     if path
         .symlink_metadata()

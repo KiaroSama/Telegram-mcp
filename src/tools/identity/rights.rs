@@ -358,6 +358,10 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         permissions.insert("embed_links", false);
     }
     let expiry = until.unwrap_or(int(own, "until_date", 0)?);
+    ensure!(
+        until.is_some() || expiry == 0 || expiry.saturating_sub(now()?) > 30,
+        "The existing member restriction has expired or expires within 30 seconds; refresh membership or give an explicit until_date before changing permissions"
+    );
     api.invoke(
         "channels.editBanned",
         json!({"channel":channel(&p)?,"participant":u,"banned_rights":banned(&permissions,expiry)}),

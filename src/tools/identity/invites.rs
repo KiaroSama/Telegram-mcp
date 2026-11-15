@@ -159,7 +159,13 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         "export_chat_invite"=>{
             let old=api.invoke("messages.getExportedChatInvites",json!({"peer":p,"admin_id":{"_":"inputUserSelf"},"limit":100})).await?;
             if let Some(invite)=old.get("invites").and_then(Value::as_array).and_then(|xs|xs.iter().find(|v|v["permanent"]==true&&v["revoked"]!=true)){
-                api.invoke("messages.editExportedChatInvite",json!({"peer":p,"link":req(invite,"link")?,"revoked":true})).await?;
+                let revoked = api.invoke("messages.editExportedChatInvite",json!({"peer":p,"link":req(invite,"link")?,"revoked":true})).await?;
+                if kind(&revoked) == "messages.exportedChatInviteReplaced" {
+                    let replacement = req(&revoked, "new_invite")?;
+                    ensure!(kind(replacement) == "chatInviteExported" && replacement["revoked"] != true,
+                        "Telegram replaced the primary invite but returned no usable replacement; inspect invite links before retrying");
+                    return Ok(replacement.clone());
+                }
             }
             api.invoke("messages.exportChatInvite",json!({"peer":p})).await
         }

@@ -71,6 +71,9 @@ The optional rlottie renderer is loaded through a Rust C-ABI adapter. CI builds 
 exact external revision above and requires distinct decoded frames with transparency;
 a missing shared library cannot turn that renderer job green. Its C++ dependency source
 is fetched outside this repository. Ordinary tests separately exercise safe fallback.
+On macOS ARM64 the pinned upstream NEON implementation has unresolved pixman assembly
+symbols. CI selects its existing scalar C++ implementation with `-U__ARM_NEON__`;
+the same required rendering assertions still run.
 
 ## Verification baseline
 
@@ -121,12 +124,20 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A source-stable local Linux run passed all **1,569 tests**, with zero skipped and actual
-rlottie rendering required. Unique physical-line coverage measured **85.43% reviewed
-core (14,225/16,652)** and **83.55% all production (20,242/24,226)**. The local core result
+identical code. A local Linux run passed all **1,667 tests**, with zero skipped and actual
+rlottie rendering required. Unique physical-line coverage measured **86.69% reviewed
+core (14,827/17,103)** and **83.77% all production (20,492/24,463)**. The local core result
 meets the unchanged floor. It remains single-platform evidence; the combined six-leg
 CI gate requires actual reports from Linux, macOS and Windows. Raw LLVM JSON region
 totals can count repeated instantiations and are not substituted for this metric.
+
+Windows coverage uses cargo-llvm-cov 0.9.1's supported `--no-rustc-wrapper` mode.
+The original wrapper loses instrumentation when Cargo passes compiler arguments through
+a Windows response file. Direct-argument and response-file reproductions isolated the
+failure; upstream fixed argument expansion in
+[PR 533](https://github.com/taiki-e/cargo-llvm-cov/pull/533), commit
+`dc927946e73a6ecf18b797f2995490e922662387`. The workflow fallback places the same
+instrumentation flags inside Cargo's response file and still requires actual profiles.
 
 
 ## Deliberate limits and migration cautions
@@ -161,6 +172,11 @@ legs require actual rendering and must fail when the library is absent.
 media-path containment and honest job outcomes. A readable native export is not proof
 of byte-identical Telegram Desktop/Qt ICC/mozjpeg output. Keep any remaining formatting,
 color-management or thumbnail differences explicit in the export tests and PR report.
+Unread snapshots bind resume to both the configured account and the actual authenticated
+`telegram_user_id`. Older snapshots lacking that identity require a new output path;
+an unsuccessful resume preserves the original bytes. The 32 MiB limit includes pretty
+JSON and its final newline. A saved partial snapshot reports a `byte_budget` cursor
+and can resume without marking Telegram messages read.
 
 **Service lifecycle:** account-store exclusivity, bearer authentication and explicit
 unknown mutation outcomes apply to the native runtime. Historical Python supervisor

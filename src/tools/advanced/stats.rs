@@ -217,7 +217,7 @@ fn daily(name: &str, graph: &Value, days: usize) -> Value {
         } else {
             None
         };
-        let level = matches!(name, "growth_graph" | "followers_graph");
+        let level = name == "growth_graph";
         let mut row = json!({});
         if level {
             row["start"] = json!(current.first());
@@ -249,7 +249,7 @@ fn daily(name: &str, graph: &Value, days: usize) -> Value {
         }
         out["series"][&label] = row;
     }
-    if !matches!(name, "growth_graph" | "followers_graph")
+    if name != "growth_graph"
         && let Some(rows) = out["series"].as_object_mut()
     {
         for row in rows.values_mut() {

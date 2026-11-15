@@ -65,3 +65,38 @@ fn bridge_process_identity_is_stable_and_rejects_another_image() {
     assert!(ownership::verified(std::process::id(), temp.path()).is_err());
     assert!(ownership::identity(u32::MAX).is_err());
 }
+
+#[cfg(windows)]
+#[test]
+fn bridge_private_pipe_handles_keep_io_and_lose_only_inheritance() {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{
+        GetHandleInformation, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    let mut file = tempfile::tempfile().unwrap();
+    let handle = file.as_raw_handle();
+    // This handle is local to the test and has no live child; no process-wide
+    // standard stream flags or parallel test state are modified.
+    assert_ne!(
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
+        0
+    );
+    let mut before = 0;
+    assert_ne!(unsafe { GetHandleInformation(handle, &mut before) }, 0);
+    assert_ne!(before & HANDLE_FLAG_INHERIT, 0);
+    startup::prevent_inheritance(handle).unwrap();
+    let mut after = 0;
+    assert_ne!(unsafe { GetHandleInformation(handle, &mut after) }, 0);
+    assert_eq!(after, before & !HANDLE_FLAG_INHERIT);
+    file.write_all(b"client-pipe-io-survives").unwrap();
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let mut actual = String::new();
+    file.read_to_string(&mut actual).unwrap();
+    assert_eq!(actual, "client-pipe-io-survives");
+    let error = startup::prevent_inheritance(INVALID_HANDLE_VALUE).unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "Cannot isolate the shared service from client pipes"
+    );
+}

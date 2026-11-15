@@ -4,7 +4,7 @@ use fs2::FileExt;
 use rand::Rng;
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path};
 
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
@@ -84,6 +84,7 @@ impl State {
             if !meta.is_file() || meta.file_type().is_symlink() {
                 bail!("Rotated event feed is not a regular file");
             }
+            repair_feed_tail(&rotated)?;
             if feed_expired(&rotated, max_age)? {
                 std::fs::remove_file(&rotated)?;
             }
@@ -92,19 +93,29 @@ impl State {
             if !meta.is_file() || meta.file_type().is_symlink() {
                 bail!("Event feed is not a regular file");
             }
-            if meta.len() + bytes.len() as u64 + 1 > max_bytes || feed_expired(&path, max_age)? {
+            let committed_length = repair_feed_tail(&path)?;
+            if committed_length + bytes.len() as u64 + 1 > max_bytes
+                || feed_expired(&path, max_age)?
+            {
                 if rotated.exists() {
                     std::fs::remove_file(&rotated)?;
                 }
                 std::fs::rename(&path, &rotated)?;
             }
         }
-        let mut file = options(false, true).create(true).append(true).open(&path)?;
+        let mut file = options(true, true)
+            .create(true)
+            .truncate(false)
+            .open(&path)?;
+        if !file.metadata()?.is_file() {
+            bail!("Event feed is not a regular file");
+        }
         restrict(&path, false)?;
-        file.write_all(&bytes)?;
-        file.write_all(b"\n")?;
-        file.sync_data()?;
-        Ok(())
+        append_transaction(&mut file, |file| {
+            file.write_all(&bytes)?;
+            file.write_all(b"\n")?;
+            file.sync_data()
+        })
     }
 
     pub(crate) fn maintain_event_feed(&self) -> Result<()> {
@@ -112,8 +123,11 @@ impl State {
         let max_age = super::events::positive_limit("TELEGRAM_EVENT_FEED_MAX_AGE_SECONDS", 604_800);
         for name in ["incoming_feed.jsonl", "incoming_feed.jsonl.1"] {
             let path = self.root.join(name);
-            if path.exists() && feed_expired(&path, max_age)? {
-                std::fs::remove_file(path)?;
+            if path.exists() {
+                repair_feed_tail(&path)?;
+                if feed_expired(&path, max_age)? {
+                    std::fs::remove_file(path)?;
+                }
             }
         }
         Ok(())
@@ -208,6 +222,23 @@ impl State {
     }
 
     pub(crate) fn write_json_unlocked(&self, name: &str, value: &Value) -> Result<()> {
+        match self
+            .root
+            .join("account-rename-transaction.json")
+            .symlink_metadata()
+        {
+            Ok(_) => bail!("Account rename recovery is pending; private state writes are paused"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                bail!("Cannot verify the account rename journal; private state writes are paused")
+            }
+        }
+        self.write_json_transaction_unlocked(name, value)
+    }
+
+    /// Trusted transaction apply/recovery only, while the caller holds state_lock.
+    /// Ordinary mutation paths must use the fenced writer above.
+    pub(crate) fn write_json_transaction_unlocked(&self, name: &str, value: &Value) -> Result<()> {
         let destination = self.local_path(name)?;
         if destination
             .symlink_metadata()
@@ -242,6 +273,67 @@ impl State {
     }
 }
 
+/// The state lock serializes writers. A failed append must not poison the next
+/// expiry check, including failures after a prefix or after the final newline.
+pub(super) fn append_transaction(
+    file: &mut File,
+    append: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> Result<()> {
+    let committed_length = file.seek(SeekFrom::End(0))?;
+    if let Err(error) = append(file) {
+        file.set_len(committed_length)
+            .and_then(|()| file.sync_data())
+            .context("Event append failed and rollback could not be confirmed; pending events were retained")?;
+        return Err(error).context("Event append failed; previous records were restored");
+    }
+    Ok(())
+}
+
+/// Recover only the uncommitted, bounded tail left by an interrupted append.
+/// Newline-terminated records are never rewritten, even if corrupt. A complete
+/// final JSON object is preserved by adding its missing separator.
+fn repair_feed_tail(path: &Path) -> Result<u64> {
+    let metadata = path.symlink_metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!("Event feed is not a regular file");
+    }
+    let mut file = options(true, true).open(path)?;
+    let length = file.metadata()?.len();
+    let start = length.saturating_sub(65_537);
+    file.seek(SeekFrom::Start(start))?;
+    let mut tail = Vec::new();
+    Read::by_ref(&mut file)
+        .take(65_538)
+        .read_to_end(&mut tail)?;
+    if file.metadata()?.len() != length || tail.len() as u64 != length - start {
+        bail!("Event feed changed during recovery; existing bytes were preserved");
+    }
+    if tail.is_empty() || tail.last() == Some(&b'\n') {
+        return Ok(length);
+    }
+    let after_separator = match tail.iter().rposition(|byte| *byte == b'\n') {
+        Some(index) => index + 1,
+        None if start == 0 => 0,
+        None => bail!("Event feed tail exceeds its byte budget; existing bytes were preserved"),
+    };
+    let fragment = &tail[after_separator..];
+    if fragment.len() > 65_536 {
+        bail!("Event feed tail exceeds its byte budget; existing bytes were preserved");
+    }
+    if serde_json::from_slice::<Value>(fragment).is_ok_and(|value| value.is_object()) {
+        append_transaction(&mut file, |file| {
+            file.write_all(b"\n")?;
+            file.sync_data()
+        })?;
+        Ok(length + 1)
+    } else {
+        let committed_length = start + after_separator as u64;
+        file.set_len(committed_length)?;
+        file.sync_data()?;
+        Ok(committed_length)
+    }
+}
+
 fn feed_expired(path: &Path, max_age: u64) -> Result<bool> {
     let file = options(true, false).open(path)?;
     let metadata = file.metadata()?;
@@ -250,7 +342,7 @@ fn feed_expired(path: &Path, max_age: u64) -> Result<bool> {
     }
     let mut first = String::new();
     BufReader::new(file).take(65_537).read_line(&mut first)?;
-    if first.len() > 65_536 {
+    if first.trim_end_matches('\n').len() > 65_536 {
         bail!("Event feed record exceeds its byte budget");
     }
     if first.trim().is_empty() {

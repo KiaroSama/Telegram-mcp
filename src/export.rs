@@ -157,7 +157,17 @@ async fn collect_and_write(
         if let Some(id) =
             numeric_id(&full["full_chat"]["migrated_from_chat_id"]).filter(|id| *id > 0)
         {
-            targets.push((json!({"_":"inputPeerChat","chat_id":id.to_string()}), true));
+            let legacy = json!({"_":"inputPeerChat","chat_id":id.to_string()});
+            // Migration links identify a second chat, not an extension of the
+            // requested supergroup's authorization. Check its explicit peer so
+            // neither an allowed supergroup nor a topic-only entry widens it.
+            if crate::server::access::AccessPolicy::from_environment()?
+                .check("export_chat_history", &json!({"chat_id":legacy}), api)
+                .await
+                .is_ok()
+            {
+                targets.push((legacy, true));
+            }
         }
     }
     let ranges = if kind == "chat" && takeout.is_some() {

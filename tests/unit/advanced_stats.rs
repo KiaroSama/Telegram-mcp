@@ -16,12 +16,20 @@ fn daily_total_and_previous_period() {
 #[test]
 fn level_graphs_report_change_instead_of_sum() {
     let g = graph(json!([["x", 0, 1, 2, 3], ["y0", 100, 110, 120, 150]]));
-    let r = daily("followers_graph", &g, 2);
+    let r = daily("growth_graph", &g, 2);
     assert_eq!(r["series"]["Messages"]["start"], 120.0);
     assert_eq!(r["series"]["Messages"]["end"], 150.0);
     assert_eq!(r["series"]["Messages"]["change"], 30.0);
     assert_eq!(r["series"]["Messages"]["previous_change"], 10.0);
     assert!(r["series"]["Messages"].get("total").is_none());
+}
+
+#[test]
+fn follower_graph_sums_relative_changes_instead_of_subtracting_endpoints() {
+    let g = graph(json!([["x", 0, 86400000, 172800000], ["y0", 2, 5, 3]]));
+    let result = daily("followers_graph", &g, 3);
+    assert_eq!(result["series"]["Messages"]["total"], 10.0);
+    assert!(result["series"]["Messages"].get("change").is_none());
 }
 #[test]
 fn too_short_history_does_not_invent_previous_total() {

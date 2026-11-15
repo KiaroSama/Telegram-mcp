@@ -45,7 +45,7 @@ Python console commands are not an alternative runtime.
 | `add_checklist_tasks` | `chat_id`, `message_id`, `tasks` | No |
 | `add_poll_option` | `chat_id`, `message_id`, `text` | No |
 | `add_quick_reply` | `shortcut`, `text` | No |
-| `add_sticker_to_set` | `short_name`, `document_id`, `access_hash`, `emoji` | No |
+| `add_sticker_to_set` | `short_name`, `document_id`, `emoji` | No |
 | `analyze_chat_statistics` | `chat_id` | Yes |
 | `close_poll` | `chat_id`, `message_id` | No |
 | `create_business_chat_link` | `text` | No |
@@ -98,7 +98,7 @@ Python console commands are not an alternative runtime.
 | `list_topics` | `chat_id` | Yes |
 | `list_unread_poll_votes` | `chat_id` | Yes |
 | `mark_poll_votes_read` | `chat_id` | No |
-| `move_sticker_in_set` | `document_id`, `access_hash`, `position` | No |
+| `move_sticker_in_set` | `document_id`, `position` | No |
 | `name_saved_tag` | None | No |
 | `open_mini_app` | `bot` | No |
 | `pin_forum_topic` | `chat_id`, `topic_id` | No |
@@ -109,7 +109,7 @@ Python console commands are not an alternative runtime.
 | `read_quick_reply` | `shortcut_id` | Yes |
 | `remove_chat_from_folder` | `folder_id`, `chat_id` | No |
 | `remove_checklist_tasks` | `chat_id`, `message_id`, `task_ids` | No |
-| `remove_sticker_from_set` | `document_id`, `access_hash` | No |
+| `remove_sticker_from_set` | `document_id` | No |
 | `rename_quick_reply` | `shortcut_id`, `shortcut` | No |
 | `reorder_folders` | `folder_ids` | No |
 | `reorder_pinned_chats` | `order` | No |

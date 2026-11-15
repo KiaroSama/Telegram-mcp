@@ -181,12 +181,20 @@ impl McpProcess {
             status.success(),
             "MCP child failed during clean stdio shutdown"
         );
-        while let Some(line) = self.output.next_line().await.unwrap() {
-            let value: Value = serde_json::from_str(&line)
-                .expect("MCP stdout contained non-JSON output during shutdown");
-            assert_eq!(value["jsonrpc"], "2.0");
-        }
-        String::from_utf8(self.stderr.await.unwrap()).expect("MCP stderr must be UTF-8")
+        tokio::time::timeout(DEADLINE, async {
+            while let Some(line) = self.output.next_line().await.unwrap() {
+                let value: Value = serde_json::from_str(&line)
+                    .expect("MCP stdout contained non-JSON output during shutdown");
+                assert_eq!(value["jsonrpc"], "2.0");
+            }
+        })
+        .await
+        .expect("MCP stdout did not reach EOF after its process exited; a child may have inherited the client pipe");
+        let stderr = tokio::time::timeout(DEADLINE, self.stderr)
+            .await
+            .expect("MCP stderr did not reach EOF after its process exited; a child may have inherited the client pipe")
+            .unwrap();
+        String::from_utf8(stderr).expect("MCP stderr must be UTF-8")
     }
 }
 

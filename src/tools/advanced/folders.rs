@@ -4,8 +4,8 @@ use anyhow::{Result, bail, ensure};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
-// Read-modify-write is serialized, including the reread, so concurrent edits cannot
-// resurrect removed chats. A global lock also protects folder-ID allocation.
+// Serialize this process's edits. Telegram offers no compare-and-swap, so
+// optimistic rereads cannot eliminate races with other Telegram clients.
 pub(super) static FOLDER_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 pub async fn call(api: &dyn Telegram, name: &str, args: &Value) -> Option<Result<Value>> {
     if !matches!(
@@ -123,18 +123,46 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             f[field] = json!(a::boolean(args, field, field == "exclude_archived")?);
         }
         copy_optional(args, &mut f, &["emoticon"]);
+        let latest = api.invoke("messages.getDialogFilters", json!({})).await?;
+        ensure!(
+            !super::folder_plan::list(&latest)?
+                .iter()
+                .any(|f| id(&f["id"]).ok() == Some(new_id)),
+            "Allocated folder ID was occupied by another client; list folders and retry creation"
+        );
         api.invoke(
             "messages.updateDialogFilter",
             json!({"id":new_id,"filter":f}),
         )
         .await?;
-        return Ok(json!({"success":true,"folder_id":new_id,"title":title}));
+        return Ok(
+            json!({"success":true,"folder_id":new_id,"title":title,"concurrency":"Optimistic ID check only; Telegram offers no atomic create-if-absent."}),
+        );
     }
     if name == "reorder_folders" {
-        let order = ids(a::required(args, "folder_ids")?, 100)?;
+        let raw = a::required(args, "folder_ids")?
+            .as_array()
+            .ok_or_else(|| anyhow::anyhow!("folder_ids must be a list"))?;
+        ensure!(
+            !raw.is_empty() && raw.len() <= 100,
+            "Expected 1..=100 folder IDs"
+        );
+        let order = raw.iter().map(id).collect::<Result<Vec<_>>>()?;
+        ensure!(
+            order.iter().all(|id| (0..=i32::MAX as i64).contains(id)),
+            "Folder IDs must be nonnegative 32-bit integers"
+        );
         unique(&order)?;
-        let existing: std::collections::BTreeSet<_> =
-            list.iter().filter_map(|v| id(&v["id"]).ok()).collect();
+        let existing: std::collections::BTreeSet<_> = list
+            .iter()
+            .filter_map(|v| {
+                if v["_"] == "dialogFilterDefault" {
+                    Some(0)
+                } else {
+                    id(&v["id"]).ok()
+                }
+            })
+            .collect();
         ensure!(
             order
                 .iter()
@@ -167,13 +195,19 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
     let mut f = target
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("Folder not found; use list_folders"))?;
+    ensure!(
+        f["_"] == "dialogFilter",
+        "Shared and system folder membership cannot be edited with this tool"
+    );
     let mut p = a::peer(api, args, "chat_id").await?;
     if p["_"] == "inputPeerSelf"
-        || ["include_peers", "pinned_peers"].iter().any(|k| {
-            f[*k]
-                .as_array()
-                .is_some_and(|v| v.iter().any(|p| p["_"] == "inputPeerSelf"))
-        })
+        || ["include_peers", "pinned_peers", "exclude_peers"]
+            .iter()
+            .any(|k| {
+                f[*k]
+                    .as_array()
+                    .is_some_and(|v| v.iter().any(|p| p["_"] == "inputPeerSelf"))
+            })
     {
         let me = api
             .invoke("users.getUsers", json!({"id":[{"_":"inputUserSelf"}]}))
@@ -186,7 +220,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
         if p["_"] == "inputPeerSelf" {
             p = concrete.clone();
         }
-        for key in ["include_peers", "pinned_peers"] {
+        for key in ["include_peers", "pinned_peers", "exclude_peers"] {
             if let Some(values) = f[key].as_array_mut() {
                 for stored in values {
                     if stored["_"] == "inputPeerSelf" {
@@ -216,6 +250,18 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
         }
         f[field] = json!(peers);
     }
+    let mut excluded = f["exclude_peers"].as_array().cloned().unwrap_or_default();
+    if name == "remove_chat_from_folder" {
+        if !excluded.iter().any(|v| peer_key(v) == key) {
+            excluded.push(p);
+            changed = true;
+        }
+    } else {
+        let before = excluded.len();
+        excluded.retain(|v| peer_key(v) != key);
+        changed |= before != excluded.len();
+    }
+    f["exclude_peers"] = json!(excluded);
     if changed {
         api.invoke("messages.updateDialogFilter", json!({"id":fid,"filter":f}))
             .await?;

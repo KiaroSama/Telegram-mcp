@@ -2,6 +2,23 @@ use super::common::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn rotating_primary_invite_returns_the_replacement_without_creating_another_link() {
+    let m = Mock::new();
+    m.reply(
+        "messages.getExportedChatInvites",
+        json!({"invites":[{"_":"chatInviteExported","permanent":true,"link":"https://t.me/+old"}]}),
+    );
+    let replacement =
+        json!({"_":"chatInviteExported","permanent":true,"link":"https://t.me/+replacement"});
+    m.reply("messages.editExportedChatInvite",json!({"_":"messages.exportedChatInviteReplaced","invite":{"_":"chatInviteExported","revoked":true,"link":"https://t.me/+old"},"new_invite":replacement,"users":[]}));
+    let result = run(&m, "export_chat_invite", json!({"chat_id":7}))
+        .await
+        .unwrap();
+    assert_eq!(result, replacement);
+    assert!(m.sent("messages.exportChatInvite").is_empty());
+}
+
+#[tokio::test]
 async fn invite_approval_and_usage_limit_are_incompatible() {
     let m = Mock::new();
     assert!(

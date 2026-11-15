@@ -8,6 +8,8 @@ use telegram_mcp::{
     state::State,
 };
 
+#[path = "rust_secret_custody/authorization.rs"]
+mod authorization;
 #[cfg(windows)]
 #[path = "common/windows_acl.rs"]
 mod windows_acl;
@@ -329,7 +331,14 @@ async fn fresh_native_session_persistence_keeps_native_origin_with_synthetic_aut
 #[test]
 fn sqlite_import_persists_legacy_origin_and_preserves_the_source_database() {
     let f = Fixture::new();
-    let path = f._temporary.path().join("legacy.session");
+    // macOS exposes its temporary root through /var -> /private/var. Resolve
+    // the owned fixture root before exercising the importer's symlink guard.
+    let path = f
+        ._temporary
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("legacy.session");
     let db = rusqlite::Connection::open(&path).unwrap();
     db.execute_batch("CREATE TABLE version(version integer primary key);INSERT INTO version VALUES(7);CREATE TABLE sessions(dc_id integer primary key,server_address text,port integer,auth_key blob,takeout_id integer);CREATE TABLE entities(id integer primary key,hash integer not null,username text,phone integer,name text,date integer);CREATE TABLE sent_files(md5_digest blob,file_size integer,type integer,id integer,hash integer,primary key(md5_digest,file_size,type));CREATE TABLE update_state(id integer primary key,pts integer,qts integer,date integer,seq integer);").unwrap();
     db.execute(

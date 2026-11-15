@@ -16,6 +16,42 @@ use crate::backend::Telegram;
 use anyhow::Result;
 use serde_json::Value;
 
+/// One peer-selector normalization shared by the handler and access policy.
+/// Only public username links are accepted here; private invites never resolve.
+pub(crate) fn normalize_lookup_query(query: &Value) -> Result<Value> {
+    let Some(raw) = query.as_str() else {
+        return Ok(query.clone());
+    };
+    let trimmed = raw.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let prefix = [
+        "https://t.me/",
+        "http://t.me/",
+        "t.me/",
+        "https://telegram.me/",
+        "http://telegram.me/",
+        "telegram.me/",
+    ]
+    .into_iter()
+    .find(|prefix| lower.starts_with(prefix));
+    let Some(prefix) = prefix else {
+        return Ok(query.clone());
+    };
+    let name = trimmed[prefix.len()..]
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    anyhow::ensure!(
+        !name.is_empty(),
+        "The public link contains no peer username"
+    );
+    anyhow::ensure!(
+        !name.starts_with('+') && !name.eq_ignore_ascii_case("joinchat"),
+        "This is a private invite link, not a peer username; use import_chat_invite or join_chat_by_link"
+    );
+    Ok(Value::String(name.to_owned()))
+}
+
 pub const TOOL_NAMES: &[&str] = &[
     "add_chat_to_community",
     "add_contact",

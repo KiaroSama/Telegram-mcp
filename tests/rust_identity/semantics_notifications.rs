@@ -13,7 +13,7 @@ fn sound(id: i64, name: Option<&str>) -> Value {
 }
 
 #[tokio::test]
-async fn changing_silent_mode_preserves_mute_preview_story_and_sound_settings() {
+async fn disabling_incoming_sound_preserves_outgoing_silent_mute_preview_and_story_settings() {
     let m = Mock::new();
     settings(&m);
     run(
@@ -24,13 +24,33 @@ async fn changing_silent_mode_preserves_mute_preview_story_and_sound_settings() 
     .await
     .unwrap();
     let request = &m.sent("account.updateNotifySettings")[0]["settings"];
-    assert_eq!(request["silent"], true);
+    assert_eq!(request["silent"], false);
     assert_eq!(request["mute_until"], 1900000000);
     assert_eq!(request["show_previews"], false);
     assert_eq!(request["stories_muted"], true);
     assert_eq!(request["stories_hide_sender"], true);
-    assert_eq!(request["sound"]["id"], "101");
+    assert_eq!(request["sound"]["_"], "notificationSoundNone");
     assert_eq!(request["stories_sound"]["_"], "notificationSoundDefault");
+}
+
+#[tokio::test]
+async fn enabling_incoming_sound_restores_default_without_enabling_outgoing_sound() {
+    let m = Mock::new();
+    m.reply(
+        "account.getNotifySettings",
+        json!({"silent":true,"mute_until":0,"other_sound":{"_":"notificationSoundNone"}}),
+    );
+    run(
+        &m,
+        "set_chat_sound_disabled",
+        json!({"chat":7,"disabled":false}),
+    )
+    .await
+    .unwrap();
+    let settings = &m.sent("account.updateNotifySettings")[0]["settings"];
+    assert_eq!(settings["sound"]["_"], "notificationSoundDefault");
+    assert_eq!(settings["silent"], true);
+    assert_eq!(settings["mute_until"], 0);
 }
 
 #[tokio::test]

@@ -119,20 +119,50 @@ async fn dispatch(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
         "incoming_feed_status"=>state.incoming_feed_status(),
         "disable_incoming_feed"=>state.disable_incoming_feed(),
         "enable_incoming_feed"=>state.enable_incoming_feed(crate::args::limit(args,"settle_ms",6000,50_000)? as u64),
-        "wait_for_new_message"|"wait_for_settled_message"=>{
-            let target=if let Some(input)=args.get("chat_id").filter(|v|!v.is_null()) {
-                let peer=api.resolve_peer(input).await?;
-                Some(marked_peer(&peer)?)
-            } else {None};
-            let (timeout,settle)=if name=="wait_for_settled_message" {
-                let millis=bounded_number(args,"max_wait_ms",50_000.,50_000.)?;
-                let quiet=bounded_number(args,"settle_ms",6_000.,50_000.)?;
-                (Duration::from_secs_f64(millis/1000.),Some(Duration::from_secs_f64(quiet/1000.)))
-            } else {(Duration::from_secs_f64(bounded_number(args,"timeout",50.,50.)?),None)};
-            state.wait_incoming(account,target.as_deref(),timeout,settle,crate::args::limit(args,"limit",50,100)? as usize).await
-        }
+        "wait_for_new_message"|"wait_for_settled_message"=>wait_incoming_with_policy(api,&state,name,args,&crate::server::access::AccessPolicy::default()).await,
         _=>bail!("Unknown local tool"),
     }
+}
+
+/// The server passes its scoped policy before the journal selects or consumes
+/// events. Trusted direct Rust callers retain the unrestricted wrapper above.
+pub(crate) async fn wait_incoming_with_policy(
+    api: &dyn Telegram,
+    state: &State,
+    name: &str,
+    args: &Value,
+    policy: &crate::server::access::AccessPolicy,
+) -> Result<Value> {
+    let account = args["account"].as_str();
+    let target = if let Some(input) = args.get("chat_id").filter(|v| !v.is_null()) {
+        let peer = api.resolve_peer(input).await?;
+        Some(marked_peer(&peer)?)
+    } else {
+        None
+    };
+    let (timeout, settle) = if name == "wait_for_settled_message" {
+        let millis = bounded_number(args, "max_wait_ms", 50_000., 50_000.)?;
+        let quiet = bounded_number(args, "settle_ms", 6_000., 50_000.)?;
+        (
+            Duration::from_secs_f64(millis / 1000.),
+            Some(Duration::from_secs_f64(quiet / 1000.)),
+        )
+    } else {
+        (
+            Duration::from_secs_f64(bounded_number(args, "timeout", 50., 50.)?),
+            None,
+        )
+    };
+    state
+        .wait_incoming_permitted(
+            account,
+            target.as_deref(),
+            timeout,
+            settle,
+            crate::args::limit(args, "limit", 50, 100)? as usize,
+            |event| policy.allows_event_peer(&event.chat_id, event.username.as_deref()),
+        )
+        .await
 }
 
 fn bounded_number(args: &Value, key: &str, default: f64, max: f64) -> Result<f64> {

@@ -8,7 +8,10 @@ telegram-mcp serve --http 127.0.0.1:8765
 
 The `/mcp` endpoint uses bearer authentication. Configure an explicit private
 `TELEGRAM_HTTP_TOKEN` when required; a non-loopback bind needs a token of at least
-32 characters. The native bridge attaches stdio clients to this shared service rather
+32 characters and a matching PEM pair in `TELEGRAM_HTTP_TLS_CERT` and
+`TELEGRAM_HTTP_TLS_KEY`. Non-loopback HTTP is refused; it never falls back from TLS
+to plaintext. Clients must validate the service certificate and supply the bearer
+over HTTPS. The native bridge attaches stdio clients to a loopback HTTP service rather
 than creating an independent authenticated Telegram client per application.
 
 `telegram-mcp bridge` is also the explicit native startup entry point. If discovery
@@ -41,10 +44,15 @@ connection closed.
 invoke the native Rust binary. The account-manager helpers use native account/health
 commands. Their tests run separately on Windows. They do not install Python or uv.
 
-Docker Compose starts the native HTTP service with an explicitly configured token,
+Docker Compose starts the native HTTPS service with an explicitly configured token,
 publishes the host port only on loopback and persists account state in a named volume.
-The container's `0.0.0.0` listener is protected by both the required token and the host's
-`127.0.0.1` port mapping. Preserve the volume across replacement.
+The container's `0.0.0.0` listener requires TLS even though the host port maps to
+`127.0.0.1`. Configure the token and absolute host certificate/private-key paths
+in private `.env`; Compose mounts both files read-only and refuses missing paths.
+Use a certificate trusted by the clients and containing their selected server name
+or IP address. Install a private issuer's CA in each client's trust store; do not
+disable validation. No test certificate or private key is shipped. Preserve the
+state volume across replacement.
 
 ## Logs and recovery limits
 

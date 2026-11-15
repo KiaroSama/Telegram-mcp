@@ -2,6 +2,7 @@
 mod config;
 mod health;
 mod login;
+mod recovery;
 mod rename;
 use base64::Engine;
 pub use config::{
@@ -10,6 +11,7 @@ pub use config::{
 };
 pub use health::{session_health, session_health_with_state};
 pub use login::{LoginTransaction, begin_login};
+pub use recovery::recover_logins;
 pub use rename::{recover_rename, rename_account};
 
 /// Validate the historic import format without persisting or opening a connection.

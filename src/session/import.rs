@@ -43,27 +43,7 @@ impl PersistentSession {
         let source_metadata = source
             .metadata()
             .context("Cannot inspect the opened legacy session")?;
-        // immutable=1 prevents SQLite from creating WAL/SHM beside the source,
-        // including a checkpointed database whose header still says WAL mode.
-        // Nonempty sidecars are refused above; the legacy owner must be stopped.
-        let canonical = path
-            .canonicalize()
-            .context("Cannot resolve the legacy SQLite path")?;
-        let mut uri = url::Url::from_file_path(canonical).map_err(|_| {
-            anyhow::anyhow!("Legacy SQLite path cannot be represented as a local file URI")
-        })?;
-        uri.query_pairs_mut()
-            .append_pair("mode", "ro")
-            .append_pair("immutable", "1");
-        let mut connection = Connection::open_with_flags(
-            uri.as_str(),
-            OpenFlags::SQLITE_OPEN_READ_ONLY
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX
-                | OpenFlags::SQLITE_OPEN_NOFOLLOW
-                | OpenFlags::SQLITE_OPEN_URI,
-        )
-        .context("Cannot open the legacy SQLite session read-only")?;
-        configure(&mut connection)?;
+        let mut connection = open_source(path)?;
         let transaction = connection
             .transaction()
             .context("Cannot begin a read-only session snapshot")?;
@@ -76,25 +56,79 @@ impl PersistentSession {
         transaction
             .rollback()
             .context("Could not release the legacy session snapshot")?;
-        let current_metadata =
-            std::fs::symlink_metadata(path).context("Legacy session path changed during import")?;
-        ensure!(
-            !current_metadata.file_type().is_symlink()
-                && current_metadata.len() == source_metadata.len()
-                && current_metadata.modified().ok() == source_metadata.modified().ok(),
-            "Legacy session changed during import; stop the legacy server and retry"
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            ensure!(
-                current_metadata.dev() == source_metadata.dev()
-                    && current_metadata.ino() == source_metadata.ino(),
-                "Legacy session identity changed during import"
-            );
-        }
+        validate_unchanged(path, &source_metadata)?;
         self.commit_import(imported)
     }
+}
+
+/// Read only the permanent authorization using the same immutable source,
+/// schema, query bounds and source-identity checks as the migration itself.
+pub(super) fn authorization_keys(path: &Path) -> Result<Vec<[u8; 256]>> {
+    let source = validate_source(path)?;
+    let metadata = source
+        .metadata()
+        .context("Cannot inspect legacy authorization source")?;
+    let mut connection = open_source(path)?;
+    let transaction = connection
+        .transaction()
+        .context("Cannot snapshot legacy authorization")?;
+    let version = validate_schema(&transaction)?;
+    let mut data = SessionData::default();
+    import_authorization(&transaction, version, &mut data)?;
+    transaction
+        .rollback()
+        .context("Cannot release legacy authorization snapshot")?;
+    validate_unchanged(path, &metadata)?;
+    Ok(data
+        .dc_options
+        .values()
+        .filter_map(|dc| dc.auth_key)
+        .collect())
+}
+
+fn open_source(path: &Path) -> Result<Connection> {
+    // immutable=1 prevents SQLite from creating WAL/SHM beside the source,
+    // including a checkpointed database whose header still says WAL mode.
+    // Nonempty sidecars are refused above; the legacy owner must be stopped.
+    let canonical = path
+        .canonicalize()
+        .context("Cannot resolve the legacy SQLite path")?;
+    let mut uri = url::Url::from_file_path(canonical).map_err(|_| {
+        anyhow::anyhow!("Legacy SQLite path cannot be represented as a local file URI")
+    })?;
+    uri.query_pairs_mut()
+        .append_pair("mode", "ro")
+        .append_pair("immutable", "1");
+    let mut connection = Connection::open_with_flags(
+        uri.as_str(),
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW
+            | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .context("Cannot open the legacy SQLite session read-only")?;
+    configure(&mut connection)?;
+    Ok(connection)
+}
+fn validate_unchanged(path: &Path, source_metadata: &std::fs::Metadata) -> Result<()> {
+    let current_metadata =
+        std::fs::symlink_metadata(path).context("Legacy session path changed during import")?;
+    ensure!(
+        !current_metadata.file_type().is_symlink()
+            && current_metadata.len() == source_metadata.len()
+            && current_metadata.modified().ok() == source_metadata.modified().ok(),
+        "Legacy session changed during import; stop the legacy server and retry"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        ensure!(
+            current_metadata.dev() == source_metadata.dev()
+                && current_metadata.ino() == source_metadata.ino(),
+            "Legacy session identity changed during import"
+        );
+    }
+    Ok(())
 }
 
 fn validate_source(path: &Path) -> Result<std::fs::File> {

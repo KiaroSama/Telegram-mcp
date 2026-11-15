@@ -42,7 +42,7 @@ fn matching_entity<'a>(r: &'a Value, p: &Value) -> Option<&'a Value> {
     let id = entity_id(p).ok()?;
     r.get(key)?.as_array()?.iter().find(|e| e["id"] == id)
 }
-fn marked(p: &Value) -> Result<String> {
+pub(super) fn marked(p: &Value) -> Result<String> {
     let id = int_value(&entity_id(p)?, "peer id")?;
     Ok(if kind(p).contains("Channel") {
         format!("{}", -1_000_000_000_000_i64 - id)
@@ -80,7 +80,7 @@ fn muted(d: &Value) -> bool {
 }
 fn summary(e: &Value, d: &Value, p: &Value) -> Result<Value> {
     Ok(
-        json!({"chat_id":marked(p)?,"name":display_name(e),"type":chat_kind(e),"username":e.get("username"),"unread":d.get("unread_count").unwrap_or(&Value::Null),"unread_mark":d["unread_mark"]==true,"archived":d["folder_id"]==1,"pinned":d["pinned"]==true,"muted":muted(d),"silent":d["notify_settings"]["silent"]==true}),
+        json!({"id":marked(p)?,"chat_id":marked(p)?,"name":display_name(e),"type":chat_kind(e),"username":e.get("username"),"unread":d.get("unread_count").unwrap_or(&Value::Null),"unread_mark":d["unread_mark"]==true,"archived":d["folder_id"]==1,"pinned":d["pinned"]==true,"muted":muted(d),"silent":d["notify_settings"]["silent"]==true}),
     )
 }
 async fn dialogs(api: &dyn Telegram, count: i64, folder: Option<i64>) -> Result<Value> {
@@ -239,7 +239,12 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 request["offset_date"] = result
                     .get("messages")
                     .and_then(Value::as_array)
-                    .and_then(|xs| xs.iter().find(|m| m["id"] == last["top_message"]))
+                    .and_then(|xs| {
+                        xs.iter().find(|m| {
+                            m["id"] == last["top_message"]
+                                && peer_key(&m["peer_id"]) == peer_key(&last["peer"])
+                        })
+                    })
                     .and_then(|m| m.get("date"))
                     .cloned()
                     .unwrap_or(json!(0));

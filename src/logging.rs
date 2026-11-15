@@ -31,6 +31,14 @@ impl Write for Writer {
             .0
             .lock()
             .map_err(|_| io::Error::other("Logging lock unavailable"))?;
+        // A previous rotation may have renamed the old file before replacement
+        // creation failed. Retry opening the current pathname after recovery,
+        // without rotating the already retained generation a second time.
+        if target.file.is_none() {
+            let file = private_open(&target.path)?;
+            target.bytes = file.metadata()?.len();
+            target.file = Some(file);
+        }
         let text = std::str::from_utf8(bytes).map_err(|_| {
             io::Error::new(io::ErrorKind::InvalidData, "Runtime log event is not UTF-8")
         })?;

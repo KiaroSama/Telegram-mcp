@@ -53,8 +53,10 @@ unicode-normalization = "0.1"
 url = "2"
 zip = { version = "9.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 x25519-dalek = "3"
+axum-server = { version = "=0.9.2", features = ["tls-rustls"] }
 
 [dev-dependencies]
+rcgen = "0.14"
 tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]

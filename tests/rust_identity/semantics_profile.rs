@@ -1,6 +1,24 @@
 use super::common::*;
 use serde_json::{Value, json};
 
+#[tokio::test]
+async fn command_menus_use_the_fallback_language_for_both_read_and_write() {
+    for (tool, method, args) in [
+        (
+            "set_bot_commands",
+            "bots.setBotCommands",
+            json!({"commands":[{"command":"help","description":"Help"}]}),
+        ),
+        ("get_bot_commands", "bots.getBotCommands", json!({})),
+    ] {
+        let m = Mock::new();
+        m.reply("users.getUsers", json!([{"_":"user","id":"8","bot":true}]));
+        run(&m, tool, args).await.unwrap();
+        assert_eq!(m.sent(method)[0]["lang_code"], "");
+        assert_eq!(m.sent(method)[0]["scope"]["_"], "botCommandScopeDefault");
+    }
+}
+
 fn photo(id: i64) -> Value {
     json!({"_":"photo","id":id.to_string(),"access_hash":"70","file_reference":[1,2,3]})
 }

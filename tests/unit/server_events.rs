@@ -135,18 +135,35 @@ async fn restricted_folder_snapshot_and_approved_patch_never_reach_rpc() {
             .is_err()
     );
     let args = json!({"account":"default","folder_id":7,"patch":{"title":"Changed"}});
-    let pending = mcp.execute("update_folder", args.clone()).await.unwrap();
-    assert_eq!(pending["approval_required"], true);
-    let fingerprint = pending["fingerprint"].as_str().unwrap();
+    assert!(mcp.execute("update_folder", args.clone()).await.is_err());
+    // Even a correctly normalized, exact terminal grant cannot widen chat
+    // access. Policy now refuses before consuming or requesting approval.
+    let mut normalized = args.clone();
+    let descriptor = mcp
+        .runtime
+        .tools
+        .iter()
+        .find(|tool| tool.name == "update_folder")
+        .unwrap();
+    validate_arguments(&mut normalized, &descriptor.input_schema).unwrap();
+    let fingerprint = crate::safeguard::request_fingerprint("update_folder", &normalized).unwrap();
     mcp.runtime
         .state
         .update_json("approval-grants.json", json!({}), |grants| {
-            grants[fingerprint] = json!({"expires":crate::safeguard::unix_seconds()+60});
+            grants[&fingerprint] = json!({"expires":crate::safeguard::unix_seconds()+60});
             Ok(())
         })
         .unwrap();
     assert!(mcp.execute("update_folder", args).await.is_err());
     assert!(api.calls.lock().unwrap().is_empty());
+    assert!(
+        mcp.runtime
+            .state
+            .read_json("approval-grants.json", json!({}))
+            .unwrap()
+            .get(&fingerprint)
+            .is_some()
+    );
 }
 
 #[tokio::test]

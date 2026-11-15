@@ -304,14 +304,10 @@ fn crash_journal_restores_files_and_metadata() {
     state
         .write_json("new.session.json", &json!({"keys":"original"}))
         .unwrap();
-    state
-        .write_json(
-            "ghost.json",
-            &json!({"accounts":{"new":false},"chats":{},"default":true}),
-        )
-        .unwrap();
+    let after = json!({"accounts":{"new":false},"chats":{},"default":true});
+    state.write_json("ghost.json", &after).unwrap();
     let before = json!({"accounts":{"old":false},"chats":{},"default":true});
-    state.write_json("account-rename-transaction.json",&json!({"files":[["old.session.json","new.session.json"]],"rewrites":[{"name":"ghost.json","before":before,"after":{}}]})).unwrap();
+    state.write_json("account-rename-transaction.json",&json!({"files":[["old.session.json","new.session.json"]],"rewrites":[{"name":"ghost.json","before":before,"after":after}]})).unwrap();
     recover_rename(&state).unwrap();
     assert!(state.root().join("old.session.json").exists());
     assert!(!state.root().join("new.session.json").exists());

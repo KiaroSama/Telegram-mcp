@@ -16,6 +16,8 @@ mod folder_planning;
 mod folders;
 #[path = "rust_advanced/polls.rs"]
 mod polls;
+#[path = "rust_advanced/review_regressions.rs"]
+mod review_regressions;
 #[path = "rust_advanced/routes.rs"]
 mod routes;
 #[path = "rust_advanced/saved.rs"]

@@ -4,6 +4,7 @@ fn standard() -> Mock {
     Mock::new()
         .forum()
         .respond("messages.getDialogFilters", folder(json!([]), json!([])))
+        .respond("messages.getDialogFilters", folder(json!([]), json!([])))
         .respond(
             "messages.getQuickReplies",
             json!({"quick_replies":[{"shortcut_id":5,"shortcut":"hello","count":1}]}),

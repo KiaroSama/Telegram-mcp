@@ -149,11 +149,20 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             );
             let mut updated = todo.clone();
             updated["list"] = json!(kept);
-            api.invoke(
-                "messages.editMessage",
-                json!({"peer":p,"id":mid,"media":{"_":"inputMediaTodo","todo":updated}}),
+            let latest = message(api, &p, mid).await?;
+            ensure!(
+                latest["media"]["todo"] == *todo,
+                "Checklist changed while preparing removal; read the checklist and retry"
+            );
+            let result = api
+                .invoke(
+                    "messages.editMessage",
+                    json!({"peer":p,"id":mid,"media":{"_":"inputMediaTodo","todo":updated}}),
+                )
+                .await?;
+            Ok(
+                json!({"updates":result,"concurrency":"Optimistic snapshot check only; Telegram has no atomic checklist edit. Concurrent changes after the check may be overwritten."}),
             )
-            .await
         }
         _ => bail!("Unknown checklist operation"),
     }

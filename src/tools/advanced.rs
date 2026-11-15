@@ -11,6 +11,7 @@ mod folders;
 mod polls;
 mod saved;
 mod stats;
+mod sticker_refs;
 mod stories;
 mod topics;
 

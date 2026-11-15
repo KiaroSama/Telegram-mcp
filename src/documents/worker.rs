@@ -6,12 +6,16 @@ const MAX_REQUEST: usize = 36 * 1024 * 1024;
 // A JSON string can require six bytes per source byte (e.g. U+0000).
 const MAX_RESPONSE: usize = MAX_TEXT_BYTES * 6 + 4096;
 static WORKERS: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+#[cfg(any(target_os = "macos", test))]
+mod memory;
 
 pub fn worker_entry() -> Result<()> {
     #[cfg(windows)]
     let _limits = limits()?;
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     limits()?;
+    #[cfg(target_os = "macos")]
+    let limits = limits()?;
     let mut input = Vec::new();
     std::io::stdin()
         .take(MAX_REQUEST as u64 + 1)
@@ -50,6 +54,12 @@ pub fn worker_entry() -> Result<()> {
         output.len() <= MAX_RESPONSE,
         "Document worker response exceeds its byte budget"
     );
+    // Check the lifetime high-water mark after all parsing/serialization and
+    // before releasing any result. The supervisor starts before stdin is read.
+    #[cfg(target_os = "macos")]
+    limits
+        .finish()
+        .context("Document worker exceeded its memory budget or accounting failed")?;
     std::io::stdout().write_all(&output)?;
     std::io::stdout().flush()?;
     Ok(())
@@ -233,28 +243,47 @@ pub(super) async fn extract(executable: &std::path::Path, bytes: &[u8]) -> Resul
     }
     result
 }
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn limits() -> Result<()> {
     let memory = libc::rlimit {
         rlim_cur: 512 * 1024 * 1024,
         rlim_max: 512 * 1024 * 1024,
     };
-    let cpu = libc::rlimit {
-        rlim_cur: 20,
-        rlim_max: 20,
-    };
     // SAFETY: called in the dedicated synchronous parser process before threads
-    // or network clients exist; both pointers refer to initialized limit values.
+    // or network clients exist; the pointer refers to an initialized limit.
     unsafe {
         ensure!(
             libc::setrlimit(libc::RLIMIT_AS, &memory) == 0,
             "Cannot bound document worker address space"
         );
-        ensure!(
-            libc::setrlimit(libc::RLIMIT_CPU, &cpu) == 0,
-            "Cannot bound document worker CPU time"
-        );
     }
+    cpu_limit()
+}
+#[cfg(target_os = "macos")]
+fn limits() -> Result<memory::MemoryGuard> {
+    cpu_limit()?;
+    // Darwin rejects RLIMIT_AS below the address space mapped at launch (which
+    // includes its shared cache). Measure physical memory plus its lifetime
+    // peak instead; this is a sampled limit, not an address-space reservation.
+    memory::MemoryGuard::start(
+        512 * 1024 * 1024,
+        std::time::Duration::from_millis(20),
+        memory::physical_footprint,
+    )
+    .context("Cannot supervise document worker memory")
+}
+#[cfg(unix)]
+fn cpu_limit() -> Result<()> {
+    let cpu = libc::rlimit {
+        rlim_cur: 20,
+        rlim_max: 20,
+    };
+    // SAFETY: the dedicated parser process applies an initialized CPU limit
+    // before it creates its watchdog thread or reads any untrusted input.
+    ensure!(
+        unsafe { libc::setrlimit(libc::RLIMIT_CPU, &cpu) } == 0,
+        "Cannot bound document worker CPU time"
+    );
     Ok(())
 }
 #[cfg(windows)]

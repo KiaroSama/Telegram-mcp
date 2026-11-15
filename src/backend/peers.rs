@@ -157,10 +157,16 @@ impl Native {
         let raw: tl::enums::InputPeer = reference.into();
         Schema::global().decode("InputPeer", &raw.to_bytes())
     }
-    pub(super) async fn cache_peers(&self, value: &Value) -> Result<()> {
-        self.0.session.cache_peers(peer_infos(value)).await?;
-        Ok(())
+}
+
+pub(super) async fn cache_rpc_outcome(session: &PersistentSession, result: Value) -> Result<Value> {
+    // Telegram's response already establishes the remote outcome. Peer caching
+    // is supplementary local work and cannot turn an accepted mutation into a
+    // retryable failure. PersistentSession leaves failed snapshots unpublished.
+    if session.cache_peers(peer_infos(&result)).await.is_err() {
+        tracing::warn!("Telegram completed an RPC but supplementary peer caching failed");
     }
+    Ok(result)
 }
 
 #[cfg(test)]

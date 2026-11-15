@@ -87,7 +87,9 @@ For shared clients, start the authenticated HTTP service:
 ```
 
 Use its `/mcp` endpoint with the configured bearer token. A non-loopback listener
-requires an explicitly configured private token. Keep tokens in private client
+requires TLS with a matching `TELEGRAM_HTTP_TLS_CERT` / `TELEGRAM_HTTP_TLS_KEY`
+PEM pair and an explicitly configured private token of at least 32 characters.
+Clients must trust the certificate and use HTTPS. Keep tokens in private client
 configuration, never the repository's integration examples. Transport setup and the
 shared-service bridge are described in [installation](docs/INSTALL.md) and
 [service operation](docs/service-supervision.md).
@@ -125,8 +127,10 @@ docker build --tag telegram-mcp:local .
 docker run --rm -i --env-file .env --volume telegram-mcp-state:/data telegram-mcp:local serve
 ```
 
-For a shared HTTP service, set a fresh private `TELEGRAM_HTTP_TOKEN` in `.env`, then use
-`docker compose up --build -d`. Compose publishes only `127.0.0.1:8765` and persists
+For a shared HTTPS service, set a fresh private `TELEGRAM_HTTP_TOKEN` and absolute
+host paths `TELEGRAM_HTTP_TLS_CERT` / `TELEGRAM_HTTP_TLS_KEY` in `.env`, then use
+`docker compose up --build -d`. Compose mounts the certificate/key read-only,
+publishes only `127.0.0.1:8765` and persists
 all state in the `telegram-state` volume. Keep that volume when replacing containers;
 removing it is account-state deletion. The runtime is non-root and contains the native
 server binary, native FFmpeg/FFprobe, certificates and system runtime libraries.

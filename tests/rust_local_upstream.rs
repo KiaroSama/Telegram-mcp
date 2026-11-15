@@ -14,6 +14,8 @@ use telegram_mcp::{
     tl::Schema,
     tools::local::{export_unread_with_state, upstream_events::get_messages_after},
 };
+#[path = "rust_local_upstream/unread_review.rs"]
+mod unread_review;
 
 #[derive(Default)]
 struct Api {
@@ -41,6 +43,9 @@ impl Telegram for Api {
     async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
         Schema::global().encode_call(method, &params)?;
         self.calls.lock().unwrap().push((method.into(), params));
+        if method == "users.getUsers" && !self.replies.lock().unwrap().contains_key(method) {
+            return Ok(json!([{"_":"user","id":"9","self":true}]));
+        }
         self.replies
             .lock()
             .unwrap()
@@ -293,8 +298,10 @@ async fn unread_export_uses_dialog_inbox_boundary_and_excludes_outgoing_messages
     assert_eq!(saved["chats"]["42"]["messages"][0]["id"], 5);
     assert_eq!(saved["chats"]["42"]["next_after_id"], 6);
     assert!(saved["chats"]["42"]["messages"][0].get("media").is_none());
-    assert_eq!(api.calls()[1].1["min_id"], 3);
-    assert_eq!(api.calls().len(), 2);
+    assert_eq!(saved["telegram_user_id"], "9");
+    assert_eq!(api.calls()[0].0, "users.getUsers");
+    assert_eq!(api.calls()[2].1["min_id"], 3);
+    assert_eq!(api.calls().len(), 3);
 }
 #[tokio::test]
 async fn unread_export_resumes_partial_snapshot_even_after_inbox_read_boundary_changes() {
@@ -316,7 +323,7 @@ async fn unread_export_resumes_partial_snapshot_even_after_inbox_read_boundary_c
         2
     );
     assert_eq!(saved["chats"]["42"]["unread_count_at_export"], 2);
-    assert_eq!(api.calls()[3].1["min_id"], 1);
+    assert_eq!(api.calls()[5].1["min_id"], 1);
     let calls = api.calls().len();
     assert!(
         export_unread_with_state(
@@ -341,7 +348,7 @@ async fn unread_export_with_zero_unread_never_requests_message_history() {
             .unwrap();
     assert_eq!(result["messages_exported"], 0);
     assert_eq!(result["complete"], true);
-    assert_eq!(api.calls().len(), 1);
+    assert_eq!(api.calls().len(), 2);
 }
 
 #[test]
@@ -377,7 +384,7 @@ async fn unread_export_refuses_invalid_dialog_counts_without_creating_success_ou
             .is_err()
     );
     assert!(!output.exists());
-    assert_eq!(api.calls().len(), 1);
+    assert_eq!(api.calls().len(), 2);
 }
 
 #[tokio::test]
@@ -469,5 +476,6 @@ async fn concurrent_unread_exports_lease_the_destination_without_locking_its_dat
         .await
         .unwrap();
     assert_eq!(resumed["complete"], true);
-    assert!(competing.calls().is_empty());
+    assert_eq!(competing.calls().len(), 1);
+    assert_eq!(competing.calls()[0].0, "users.getUsers");
 }

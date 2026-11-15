@@ -1,11 +1,7 @@
 mod local_support;
 use local_support::fixture;
-use serde_json::json;
 use std::sync::Arc;
-use telegram_mcp::{
-    safeguard::{Decision, Safeguard, approve_from_terminal},
-    state::State,
-};
+use telegram_mcp::{safeguard::approve_from_terminal, state::State};
 
 #[test]
 fn piped_input_cannot_authorize_a_pending_operation() {
@@ -47,6 +43,7 @@ fn piped_input_cannot_authorize_a_pending_operation() {
 #[cfg(unix)]
 mod unix {
     use super::*;
+    use serde_json::json;
     use std::{
         fs::File,
         io::{Read, Write},
@@ -55,7 +52,27 @@ mod unix {
         process::Stdio,
         time::{Duration, Instant},
     };
+    use telegram_mcp::safeguard::{Decision, Safeguard};
     const NAME: &str = "unix::genuine_terminal_approval_is_single_use_or_scoped_durable";
+
+    fn drain(master: &mut File, transcript: &mut Vec<u8>) {
+        let mut buffer = [0; 4096];
+        loop {
+            match master.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    transcript.extend_from_slice(&buffer[..count]);
+                    assert!(
+                        transcript.len() <= 65536,
+                        "Synthetic terminal exceeded its transcript budget"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => panic!("Synthetic terminal read failed: {error}"),
+            }
+        }
+    }
 
     fn review(
         state: &State,
@@ -82,6 +99,16 @@ mod unix {
         // SAFETY: openpty returned two new owned descriptors, each wrapped once.
         let mut master = unsafe { File::from_raw_fd(master) };
         let slave = unsafe { File::from_raw_fd(slave) };
+        // SAFETY: master is an owned live descriptor. Nonblocking reads let us
+        // capture the review before sending input while retaining a deadline.
+        unsafe {
+            let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
+            assert!(flags >= 0);
+            assert_eq!(
+                libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
+                0
+            );
+        }
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
             .args(["--exact", NAME, "--nocapture"])
@@ -99,12 +126,23 @@ mod unix {
             .current_dir(installation)
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
-            .stderr(Stdio::from(slave));
+            .stderr(Stdio::from(slave.try_clone().unwrap()));
         let mut child = command.spawn().unwrap();
         drop(command);
-        master.write_all(format!("{reply}\n").as_bytes()).unwrap();
+        let mut transcript = Vec::new();
+        let mut replied = false;
+        let prompt = b"Type APPROVE for this request once";
         let started = Instant::now();
         let status = loop {
+            drain(&mut master, &mut transcript);
+            if !replied
+                && transcript
+                    .windows(prompt.len())
+                    .any(|window| window == prompt)
+            {
+                master.write_all(format!("{reply}\n").as_bytes()).unwrap();
+                replied = true;
+            }
             if let Some(status) = child.try_wait().unwrap() {
                 break status;
             }
@@ -114,24 +152,11 @@ mod unix {
             }
             std::thread::sleep(Duration::from_millis(5));
         };
-        // SAFETY: master is still owned and live; nonblocking is only for this
-        // fixture's final transcript drain after its child has stopped.
-        unsafe {
-            let flags = libc::fcntl(master.as_raw_fd(), libc::F_GETFL);
-            assert!(flags >= 0);
-            assert_eq!(
-                libc::fcntl(master.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK),
-                0
-            );
-        }
-        let mut transcript = Vec::new();
-        let mut buffer = [0; 4096];
-        loop {
-            match master.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(count) => transcript.extend_from_slice(&buffer[..count]),
-            }
-        }
+        // Keep one slave open until the final drain: Darwin may discard unread
+        // terminal output when its last slave closes. This descriptor belongs
+        // only to this test and never grants terminal approval to the MCP side.
+        drain(&mut master, &mut transcript);
+        drop(slave);
         let transcript = String::from_utf8_lossy(&transcript).into_owned();
         assert!(status.success(), "{transcript}");
         transcript

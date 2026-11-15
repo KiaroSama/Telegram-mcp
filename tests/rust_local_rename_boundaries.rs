@@ -196,12 +196,16 @@ fn recovery_preserves_conflicting_files_and_refuses_traversal_in_a_private_journ
     );
     let outside = dir.path().join("outside.json");
     std::fs::write(&outside, "preserve").unwrap();
-    state
-        .write_json(
-            "account-rename-transaction.json",
+    // Replace the synthetic journal outside normal writers to model corruption;
+    // guarded state writes intentionally refuse any pending rename transaction.
+    std::fs::write(
+        state.root().join("account-rename-transaction.json"),
+        serde_json::to_vec(
             &json!({"files":[["../outside.json","new.session.json"]],"rewrites":[]}),
         )
-        .unwrap();
+        .unwrap(),
+    )
+    .unwrap();
     assert!(recover_rename(&state).is_err());
     assert_eq!(std::fs::read_to_string(outside).unwrap(), "preserve");
 }

@@ -97,9 +97,16 @@ impl Safeguard {
                 chats.len() > 5
             });
             let known = self.state.read_json("sent-recipients.json", json!({}))?;
-            facts.first_message = !known[&account]
-                .as_array()
-                .is_some_and(|rows| rows.iter().any(|v| normalize_key(v) == normalize_key(chat)));
+            let entries = known
+                .as_object()
+                .context("Sent-recipient store is invalid")?;
+            facts.first_message = match entries.get(&account) {
+                None | Some(Value::Null) => true,
+                Some(Value::Array(rows)) => {
+                    !rows.iter().any(|v| normalize_key(v) == normalize_key(chat))
+                }
+                _ => bail!("Sent-recipient record is invalid; repair private state before sending"),
+            };
         }
         if !read_only {
             facts.tainted = self
@@ -174,8 +181,30 @@ impl Safeguard {
             .or_else(|| args.get("to_chat_id"))
             .context("A send tool did not provide a recipient")?;
         let key = normalize_key(chat);
+        // Count the accepted remote send even if supplementary disk bookkeeping
+        // fails. The account execution lock protects the next approval decision.
+        {
+            let mut sends = self
+                .sends
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Send policy lock is unavailable"))?;
+            let recent = sends.entry((account.clone(), tool.to_owned())).or_default();
+            while recent
+                .front()
+                .is_some_and(|(when, _)| when.elapsed() >= Duration::from_secs(60))
+            {
+                recent.pop_front();
+            }
+            recent.push_back((Instant::now(), key.clone()));
+            while recent.len() > 1000 {
+                recent.pop_front();
+            }
+        }
         self.state
             .update_json("sent-recipients.json", json!({}), |known| {
+                known
+                    .as_object()
+                    .context("Sent-recipient store is invalid")?;
                 if known[&account].is_null() {
                     known[&account] = json!([]);
                 }
@@ -190,21 +219,6 @@ impl Safeguard {
                 }
                 Ok(())
             })?;
-        let mut sends = self
-            .sends
-            .lock()
-            .map_err(|_| anyhow::anyhow!("Send policy lock is unavailable"))?;
-        let recent = sends.entry((account, tool.to_owned())).or_default();
-        while recent
-            .front()
-            .is_some_and(|(when, _)| when.elapsed() >= Duration::from_secs(60))
-        {
-            recent.pop_front();
-        }
-        recent.push_back((Instant::now(), key));
-        while recent.len() > 1000 {
-            recent.pop_front();
-        }
         Ok(())
     }
 

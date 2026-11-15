@@ -46,12 +46,15 @@ impl Mock {
             .push_back(Ok(value));
     }
     pub(crate) fn fail(&self, method: &str) {
+        self.fail_with(method, "Telegram RPC 400 SYNTHETIC_REFUSAL");
+    }
+    pub(crate) fn fail_with(&self, method: &str, reason: &str) {
         self.replies
             .lock()
             .unwrap()
             .entry(method.into())
             .or_default()
-            .push_back(Err("Injected RPC refusal".into()));
+            .push_back(Err(reason.into()));
     }
     pub(crate) fn sent(&self, method: &str) -> Vec<Value> {
         self.calls
