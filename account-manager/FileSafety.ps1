@@ -10,7 +10,7 @@
     `$script:` variables. Nothing here reads `$PSScriptRoot` - that automatic
     variable points at the file it is WRITTEN in, so a function that moved here
     and still used it would resolve against `lib\` instead of the project root.
-    That is exactly why the venv-calling functions stayed in the launcher.
+    That is exactly why the native-executable-calling functions stayed in the launcher.
 #>
 
 # --- private files ------------------------------------------------------------
@@ -22,8 +22,28 @@ function Get-StateDirectory {
       or synced. Same rule as `telegram_mcp.aliases.aliases_file_path`, so an
       operator has one place to look and one place to lock down.
     #>
-    $base = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { Join-Path $HOME '.local/state' }
-    return Join-Path $base 'telegram-mcp'
+    if ($env:TELEGRAM_STATE_DIR) { return $env:TELEGRAM_STATE_DIR }
+    # Let the native parser resolve .env-owned state settings once; the process
+    # environment alone does not contain settings loaded by the child executable.
+    $cached = Get-Variable -Name NativeStateDirectory -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $sourceRoot = Get-Variable -Name ProjectRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $signature = "$sourceRoot|$env:XDG_STATE_HOME"
+    $cachedSignature = Get-Variable -Name NativeStateDirectorySignature -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($cached -and $cachedSignature -eq $signature) { return $cached }
+    try {
+        $native = Get-NativeBinary -Root $script:ProjectRoot
+        Push-Location -LiteralPath $script:ProjectRoot
+        try { $value = (& $native state-path 2>$null | Select-Object -Last 1) }
+        finally { Pop-Location }
+        if ($LASTEXITCODE -eq 0 -and $value -and [IO.Path]::IsPathRooted("$value".Trim())) {
+            $script:NativeStateDirectory = "$value".Trim()
+            $script:NativeStateDirectorySignature = $signature
+            return $script:NativeStateDirectory
+        }
+    }
+    catch { }
+    if ($env:XDG_STATE_HOME) { return Join-Path $env:XDG_STATE_HOME 'telegram-mcp' }
+    return Join-Path (Join-Path $HOME '.local/state') 'telegram-mcp'
 }
 
 function Set-OwnerOnlyAcl {

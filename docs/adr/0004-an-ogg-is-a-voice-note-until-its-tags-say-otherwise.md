@@ -1,5 +1,11 @@
 # An `.ogg` is a voice note until its tags say otherwise
 
+> Rust migration note: this is a historical decision record. Its original source
+> paths describe the former implementation; current native behavior and any
+> remaining limits are documented in [MIGRATION.md](../MIGRATION.md). Secret-chat
+> integration is deferred until the owner supplies the separate Rust backend.
+
+
 The two repositories agreed on the eight media kind names and disagreed on which one
 an unnamed `.ogg` becomes: this server inferred `voice_note`, the Telethon Secret Chat
 package inferred `audio`. Both defaults were deliberate and both were argued in

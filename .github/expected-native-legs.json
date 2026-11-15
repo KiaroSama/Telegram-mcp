@@ -1,0 +1,8 @@
+{
+  "linux": "linux",
+  "macos": "macos",
+  "windows": "windows",
+  "renderer-linux": "linux",
+  "renderer-macos": "macos",
+  "renderer-windows": "windows"
+}

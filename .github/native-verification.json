@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "categories": {
+    "tool_surface": [
+      "server::tests::all_catalogue_tools_have_native_implementations",
+      "server::tests::execute_read_dispatches_real_history_request_and_redacts_secrets"
+    ],
+    "protocol_codec": [
+      "history_request_bytes_match_grammers",
+      "shared_flag_translation_matches_grammers",
+      "malformed_utf8_is_refused_without_lossy_decoding"
+    ],
+    "message_behavior": [
+      "reads_never_send_read_acknowledgements",
+      "send_keeps_topic_and_reply_id_distinct",
+      "unchanged_edit_is_reported_without_retry"
+    ],
+    "media_transfer": [
+      "explicit_voice_kind_rejects_mp3",
+      "sticker_caption_is_refused_instead_of_dropped",
+      "ogg_with_title_is_music_instead_of_voice"
+    ],
+    "identity_permissions": [
+      "admin_permissions::admin_patch_preserves_unmentioned_rights_and_title",
+      "contacts_privacy::privacy_unknown_later_rule_prevents_all_mutations"
+    ],
+    "account_state": [
+      "identical_authorization_cannot_be_active_under_two_labels_and_lease_releases_on_drop",
+      "failed_datacenter_key_write_does_not_install_undurable_authorization",
+      "rename_destination_conflict_leaves_every_source_unchanged"
+    ],
+    "filesystem_boundaries": [
+      "symlink_escape_for_existing_and_new_files_is_rejected",
+      "private_state_is_protected_even_under_broad_root"
+    ],
+    "human_approval": [
+      "caller_confirmation_bool_cannot_approve",
+      "private_approval_grant_is_single_use_and_exact",
+      "server::tests::destructive_call_requires_terminal_approval_before_rpc"
+    ],
+    "event_lifecycle": [
+      "settled_wait_consumes_exact_burst",
+      "incoming_wait_preserves_other_account_events"
+    ],
+    "visual_rendering": [
+      "png_round_trip_preserves_pixels",
+      "contact_sheet_preserves_failed_tiles_and_unicode_labels",
+      "tgs_renderer_renders_distinct_frames_when_required"
+    ],
+    "chat_export": [
+      "export_existing_destination_is_never_overwritten",
+      "export_cancel_interrupts_pending_request_and_reports_cancelled",
+      "json_message_retains_unknown_layer_fields"
+    ],
+    "publication_privacy": [
+      "privacy::tests::credential_in_example_is_not_exempt_by_path",
+      "privacy::tests::protects_accounts_but_allows_public_plugin_manifests",
+      "history::tests::chunk_boundary_does_not_hide_a_real_credential"
+    ],
+    "ci_evidence": [
+      "evidence::tests::junit_rejects_declared_count_disagreeing_with_cases",
+      "evidence::tests::junit_rejects_duplicate_case_identity",
+      "evidence::tests::junit_retains_skipped_case_without_claiming_execution",
+      "status::tests::status_rejects_ancestor_commit_and_stale_attempt",
+      "status::tests::status_cannot_report_skipped_cancelled_or_running_as_success"
+    ],
+    "advanced_api": [
+      "polls::minimal_poll_results_are_refetched",
+      "folders::folder_edit_preserves_unrelated_flags",
+      "topics::false_topic_field_is_sent_and_omitted_title_stays_omitted"
+    ],
+    "plugin_distribution": [
+      "tests::installer_failure_rolls_back_only_new_owned_files",
+      "tests::package_flavors_preserve_skills_and_omit_runtime_credentials",
+      "native_installer_cli_uses_explicit_source_and_preserves_collision"
+    ]
+  }
+}

@@ -321,7 +321,7 @@ $($functions.Value -join "`n`n")
 
     # --- labels a person actually types --------------------------------------
     #
-    # python-dotenv REFUSES a key containing a space: it warns and drops the line,
+    # the environment parser REFUSES a key containing a space: it warns and drops the line,
     # so "KGB Verifier" stored literally would save an account that never loads.
     # Spaces and hyphens must therefore reach .env as underscores.
     $cases = @(
@@ -344,7 +344,7 @@ $($functions.Value -join "`n`n")
     }
     Write-Host 'ok  blank cancels, and a character with no safe mapping is refused'
 
-    # The stored key must be one python-dotenv can parse back.
+    # The stored key must be one the environment parser can parse back.
     $label = ConvertTo-Label -Raw 'KGB Verifier'
     Set-EnvValue -Key "TELEGRAM_SESSION_STRING_$($label.ToUpperInvariant())" -Value '1AAAAAkgb'
     $line = @([IO.File]::ReadAllLines($envPath) | Where-Object { $_ -match '^TELEGRAM_SESSION_STRING_KGB' })
@@ -400,22 +400,21 @@ $($functions.Value -join "`n`n")
     }
     Write-Host 'ok  no login-method flag is forced, so the generator offers both'
 
-    # `uv run` rebuilds and reinstalls the project when a source file changed, and
-    # prints build/wheel progress on top of the login prompt. The venv is already
-    # there; uv is only for when it is not.
-    $venvAt = $code.IndexOf('.venv\Scripts\python.exe')
-    $uvAt = $code.IndexOf('Get-Command uv')
-    if ($venvAt -lt 0 -or $uvAt -lt 0) { throw 'The generator launch lost one of its two interpreters.' }
-    if ($venvAt -gt $uvAt) { throw 'uv is tried before the venv, which reintroduces the rebuild noise.' }
-    Write-Host 'ok  the existing venv is preferred over a uv rebuild'
+    if ($code -notmatch 'Get-NativeBinary' -or $code -notmatch "'login'") {
+        throw 'The account manager no longer invokes the native login command.'
+    }
+    if ($code -match 'Get-Command uv|python.exe|cargo build') {
+        throw 'Interactive login must use the installed native executable without rebuilding.'
+    }
+    Write-Host 'ok  installed native login is used without a toolchain rebuild'
 
-    if ($code -notmatch 'UV_LINK_MODE') {
-        throw 'The uv fallback does not apply uv''s own fix for the hardlink warning.'
+    if ($code -notmatch '--env-file' -or $code -notmatch '--no-echo') {
+        throw 'Native login lost its explicit configuration file or credential suppression.'
     }
-    if ($code -notmatch '\$env:UV_LINK_MODE = \$previousLinkMode') {
-        throw 'UV_LINK_MODE is set for the process and never restored.'
+    if ($code -notmatch '--expected-config-digest|--expected-user-id') {
+        throw 'Native repair no longer binds replacement to the reviewed account generation.'
     }
-    Write-Host 'ok  the uv fallback silences the hardlink warning and restores the variable'
+    Write-Host 'ok  native login carries configuration and generation guards'
 
     # The main menu has no previous step. FFmWiz states this in a comment and does
     # not advertise back there; the same has to hold here or the hint lies.
@@ -655,21 +654,13 @@ try {
     Remove-SecretChatKeys -Label 'a_label_with_no_store_at_all'
     Write-Host 'ok  a missing key store is not an error'
 
-    # The two languages must agree on the path, or the removal above deletes
-    # nothing and the whole class of bug returns in silence.
-    $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    if (Test-Path -LiteralPath $python -PathType Leaf) {
-        Push-Location -LiteralPath $projectRoot
-        try {
-            $fromPython = & $python -c "from telegram_mcp.secret_backend import _storage_for; print(_storage_for('probe').path)" 2>$null
-        }
-        finally { Pop-Location }
-        $fromPowerShell = Join-Path $stateRoot 'probe'
-        if ("$fromPython".Trim() -ne $fromPowerShell) {
-            throw "The two halves disagree on the key store path: PowerShell '$fromPowerShell' vs Python '$fromPython'."
-        }
-        Write-Host 'ok  PowerShell and Python resolve the same key store'
+    # The native process and the retained launcher must agree on private state.
+    $native = Get-NativeBinary -Root $projectRoot
+    $nativeState = (& $native state-path | Select-Object -Last 1).Trim()
+    if ($LASTEXITCODE -ne 0 -or $nativeState -ne (Get-StateDirectory)) {
+        throw 'Native Rust and PowerShell disagree on their private state directory.'
     }
+    Write-Host 'ok  PowerShell and native Rust resolve the same state directory'
 
     $removeBlock = [regex]::Match($source, '(?ms)^function Remove-Account \{.*?^\}').Value
     if ($removeBlock -notmatch 'Remove-SecretChatKeys -Label \$label') {
@@ -687,14 +678,14 @@ try {
             throw "The launcher still tells the owner to restart for an account change: '$claim'."
         }
     }
-    $profileSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'telegram_mcp/tools/profile.py'))
+    $profileSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'src/tools/identity/profile.rs'))
     if ($profileSource -match 'Restart the MCP server') {
-        throw 'get_me still tells the caller to restart; a replaced session is picked up on its own.'
+        throw 'Native profile tools still claim account replacement needs a restart.'
     }
-    # And the mechanism that makes that true has to still be wired in.
-    $connection = [IO.File]::ReadAllText((Join-Path $projectRoot 'telegram_mcp/connection.py'))
-    if ($connection -notmatch '(?ms)def get_client.*?refresh_accounts\(\)') {
-        throw 'get_client no longer refreshes from .env, so "no restart needed" became false.'
+    $connection = ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/account_manager/config.rs'))) +
+        ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/backend/config.rs')))
+    if ($connection -notmatch 'current_config') {
+        throw 'Native account configuration no longer refreshes its immutable file snapshot.'
     }
     Write-Host 'ok  no message claims a restart is needed, and the reload is still wired in'
 
@@ -704,7 +695,7 @@ try {
     # could take the listing down. There is no second half, so there is no probe.
     $show = [regex]::Match($source, '(?ms)^function Show-Accounts \{.*?^\}').Value
     if (-not $show) { throw 'Could not isolate Show-Accounts.' }
-    foreach ($spawn in @('Start-Process', '& $python', 'python.exe')) {
+    foreach ($spawn in @('Start-Process', '& $native', 'python.exe')) {
         if ($show -match [regex]::Escape($spawn)) {
             throw "Show-Accounts spawns '$spawn'; listing accounts must not run anything."
         }

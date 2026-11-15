@@ -1,3 +1,4 @@
+#Requires -Version 7.0
 [CmdletBinding()]
 param(
     # Persist the server's DIAGNOSTIC output (stderr) to a file under the state
@@ -16,6 +17,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+$script:ProjectRoot = $PSScriptRoot
 $exitCode = 1
 $logPath = $null
 $launchMutex = $null
@@ -55,6 +57,23 @@ $script:LogEnabled = -not $script:LogDisabledReason
 $script:LogRetention = 10
 $script:LogMaxBytes = 5MB
 
+function Get-NativeBinary {
+    param([string] $Root = $script:ProjectRoot)
+    if ($env:TELEGRAM_MCP_BINARY) {
+        if (-not (Test-Path -LiteralPath $env:TELEGRAM_MCP_BINARY -PathType Leaf)) {
+            throw 'TELEGRAM_MCP_BINARY does not name an existing native executable.'
+        }
+        return (Get-Item -LiteralPath $env:TELEGRAM_MCP_BINARY).FullName
+    }
+    foreach ($relative in 'telegram-mcp.exe', 'target/release/telegram-mcp.exe', 'target/debug/telegram-mcp.exe') {
+        $candidate = Join-Path $Root $relative
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { return $candidate }
+    }
+    $command = Get-Command telegram-mcp -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    throw 'The native telegram-mcp executable is missing. Run cargo build --locked --release, or set TELEGRAM_MCP_BINARY.'
+}
+
 function Get-StateDirectory {
     <#
       Where runtime state goes: NOT beside the source. `logs/` next to the script
@@ -62,8 +81,28 @@ function Get-StateDirectory {
       whatever the repository directory grants. Same rule as
       `telegram_mcp.aliases.aliases_file_path`, so there is one place to lock down.
     #>
-    $base = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { Join-Path $HOME '.local/state' }
-    return Join-Path $base 'telegram-mcp'
+    if ($env:TELEGRAM_STATE_DIR) { return $env:TELEGRAM_STATE_DIR }
+    # Let the native parser resolve .env-owned state settings once; the process
+    # environment alone does not contain settings loaded by the child executable.
+    $cached = Get-Variable -Name NativeStateDirectory -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $sourceRoot = Get-Variable -Name ProjectRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $signature = "$sourceRoot|$env:XDG_STATE_HOME"
+    $cachedSignature = Get-Variable -Name NativeStateDirectorySignature -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($cached -and $cachedSignature -eq $signature) { return $cached }
+    try {
+        $native = Get-NativeBinary -Root $script:ProjectRoot
+        Push-Location -LiteralPath $script:ProjectRoot
+        try { $value = (& $native state-path 2>$null | Select-Object -Last 1) }
+        finally { Pop-Location }
+        if ($LASTEXITCODE -eq 0 -and $value -and [IO.Path]::IsPathRooted("$value".Trim())) {
+            $script:NativeStateDirectory = "$value".Trim()
+            $script:NativeStateDirectorySignature = $signature
+            return $script:NativeStateDirectory
+        }
+    }
+    catch { }
+    if ($env:XDG_STATE_HOME) { return Join-Path $env:XDG_STATE_HOME 'telegram-mcp' }
+    return Join-Path (Join-Path $HOME '.local/state') 'telegram-mcp'
 }
 
 function Set-OwnerOnlyAcl {
@@ -190,7 +229,7 @@ function Stop-OtherInstances {
     <#
       Stop every running copy of THIS checkout's server so this one can start.
 
-      A copy is a tree - the launcher's pwsh, uv, the tee wrapper, main.py - and
+      A copy is a tree - the launcher's pwsh and server, the native executable - and
       killing any one member left the rest serving the old code on the port, so each
       tree goes whole (taskkill /T). Matched by this checkout's own paths, in the
       processes that run them, so another checkout's server and an editor that merely
@@ -213,8 +252,8 @@ function Stop-OtherInstances {
         $walk = $parents[$walk]
     }
 
-    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|main\.py)'
-    $runners = 'pwsh.exe', 'powershell.exe', 'python.exe', 'pythonw.exe', 'uv.exe'
+    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|(?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe)'
+    $runners = 'pwsh.exe', 'powershell.exe', 'telegram-mcp.exe'
     $targets = @($processes | Where-Object {
             $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
             -not $protected.ContainsKey([int] $_.ProcessId) -and $_.CommandLine -match $pattern
@@ -251,7 +290,7 @@ try {
         [void] (New-Item -ItemType Directory -Path $logsDirectory -Force)
         # The directory first, and fatally: its inheritable entries are what make
         # every log file born inside it owner-only, including the rolled parts the
-        # Python tee creates later, which no startup sweep can reach.
+        # native logger creates later, which no startup sweep can reach.
         #
         # A throw here is caught below, which sets $logPath to $null - and that is
         # what turns file logging off. Warning and carrying on would keep writing
@@ -279,7 +318,7 @@ try {
             Remove-Item -LiteralPath $logPath -Force -ErrorAction SilentlyContinue
             throw 'the log file could not be made owner-only'
         }
-        # `.log` AND `.log.1`: the Python tee rolls a full log to `<name>.log.1`,
+        # `.log` AND `.log.1`: the native logger rolls a full log to `<name>.log.1`,
         # and a filter ending in `.log` never matched those, so every rotated part
         # survived every prune and the retention count bounded half the files.
         Remove-StaleFiles -Directory $logsDirectory -Filter 'start-mcp_*.log' -Keep $script:LogRetention
@@ -297,10 +336,7 @@ try {
         Write-Warning "File logging failed, continuing without it: $($script:LogFailure)"
     }
 
-    $uv = Get-Command uv -ErrorAction SilentlyContinue
-    if (-not $uv) {
-        throw "uv was not found in PATH. Install uv, then run this launcher again."
-    }
+    $native = Get-NativeBinary -Root $PSScriptRoot
 
     # Three distinct states, three distinct words. "unavailable" covered all of
     # them and told the reader nothing about which one they were in.
@@ -308,7 +344,7 @@ try {
     elseif ($script:LogFailure) { "FAILED ($script:LogFailure)" }
     elseif ($script:LogDisabledReason) { $script:LogDisabledReason }
     else { 'none' }
-    $startMessage = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] Starting: uv run main.py; log=$logDisplay"
+    $startMessage = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] Starting: telegram-mcp serve; log=$logDisplay"
     # stderr, not Write-Host: the host stream is stdout once redirected, and the
     # client reads this process's stdout as the MCP protocol.
     [Console]::Error.WriteLine($startMessage)
@@ -354,294 +390,22 @@ try {
         }
     }
 
-    # Startup consumes the installed environment; it never modifies a live venv.
-    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        throw 'The project environment is missing. Install the locked environment before starting.'
-    }
-    $env:UV_NO_SYNC = '1'
-    $env:UV_PROJECT_ENVIRONMENT = Join-Path $PSScriptRoot '.venv'
-    $env:UV_PYTHON = $python
-    $env:PYTHONUTF8 = '1'
+    # The native server writes filtered diagnostic records itself. stdout stays
+    # connected directly to the MCP client and never passes through a tee.
+    $previousLogFile = $env:TELEGRAM_MCP_LOG_FILE
+    $previousLogLimit = $env:TELEGRAM_MCP_LOG_MAX_BYTES
+    $env:TELEGRAM_MCP_LOG_FILE = if ($logPath) { $logPath } else { '' }
+    $env:TELEGRAM_MCP_LOG_MAX_BYTES = "$script:LogMaxBytes"
     Push-Location -LiteralPath $PSScriptRoot
     try {
-        if ($logPath) {
-            $pythonWrapper = @'
-import atexit, os, re, runpy, sys, threading, traceback
-
-# STDERR ONLY. On the stdio transport stdout carries the MCP protocol -- complete
-# tool results, i.e. the user's own messages, contacts and files -- so it is
-# passed straight through and never written to disk. stderr is diagnostics, which
-# telegram_mcp.safe_log already bounds.
-ansi = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
-lock = threading.RLock()
-log_path, max_bytes, script, *args = sys.argv[1:]
-max_bytes = int(max_bytes)
-
-def secure(path):
-    # Owner-only, on every file this wrapper creates -- the first one and every
-    # one a rollover makes. os.chmod is not that guarantee on Windows: it toggles
-    # the read-only attribute and cannot clear the read bit.
-    #
-    # icacls used to stand in for it here and could not: `/inheritance:r`
-    # removes the INHERITED entries and `/grant:r` replaces ONE principal's,
-    # so every other explicit entry survived while the call exited 0.
-    # telegram_mcp.owner_only writes the whole DACL and reads it back, and it
-    # imports without pulling in telethon or mcp -- which matters, because
-    # reporting an import failure of those is the job this wrapper exists for.
-    if os.name != "nt":
-        try:
-            os.chmod(path, 0o600)
-            return True
-        except OSError:
-            return False
-    try:
-        from telegram_mcp.owner_only import restrict_to_owner_strict
-    except Exception:
-        # The launcher made the logs directory owner-only with INHERITABLE
-        # entries, and fatally, before this process started - so a file born in
-        # it is born private and there is nothing left to prove here. On POSIX
-        # this branch is unreachable: the chmod above needs no package.
-        return True
-    try:
-        return bool(restrict_to_owner_strict(path))
-    except OSError:
-        return False
-
-# newline="" for the same reason roll() has it, twenty lines down: without it
-# Windows turns each written line ending into two bytes on disk while the cap
-# counts one, so the FIRST segment overran the ceiling by one byte per line.
-# Only the rolled segments were ever correct.
-log = open(log_path, "a", encoding="utf-8", buffering=1, newline="")
-# Fail closed. This file is what an operator attaches to a bug report, and it
-# carries whatever the server wrote to stderr; ignoring a failed hardening kept
-# writing that into a file whose permissions nobody established.
-persist = secure(log_path)
-if not persist:
-    log.close()
-    log = None
-
-def roll():
-    # One previous part, not an archive: a server that logs for days must not be
-    # able to fill the disk, and the interesting end of a wedged run is the tail.
-    global log, persist
-    log.close()
-    try:
-        os.replace(log_path, log_path + ".1")
-    except OSError:
-        # The roll did NOT happen. Re-opening in append mode would carry on
-        # growing the same file past a ceiling this code believes it enforces,
-        # so persistence stops rather than the bound quietly ceasing to hold.
-        log = None
-        persist = False
-        return
-    secure(log_path + ".1")
-    # newline='' disables Windows newline translation. Without it a written line
-    # ending becomes two bytes on disk while the cap counts one, so a ceiling
-    # computed in bytes is wrong by the number of lines written - and the file
-    # ends up over a limit the code believes it enforced.
-    log = open(log_path, "a", encoding="utf-8", buffering=1, newline="")
-    if not secure(log_path):
-        log.close()
-        log = None
-        persist = False
-
-# Only the server's OWN diagnostics are written down. `telegram_mcp` logs through
-# safe_log, whose RedactingFilter replaces every value with a shape and a digest
-# before it reaches stderr, so those lines are safe by construction and carry this
-# exact prefix. Everything else on the child's stderr was composed by something
-# that made no such promise - a Telethon warning naming a chat, a deprecation
-# notice quoting an argument, a third-party traceback with locals in it. Removing
-# ANSI escapes does not make that safe; it only makes it tidy. Those lines go to
-# the terminal and are COUNTED, not persisted.
-# Two shapes, both composed by this project and both safe by construction:
-#
-#   1. `telegram_mcp` logger records, redacted by safe_log's RedactingFilter
-#      before they reach stderr.
-#   2. `[telegram-mcp] ` startup notes from runner.py's `startup_note`, whose
-#      comment states the same promise and routes every exception through
-#      safe_exception first.
-#
-# The second was missing, and its absence is what made this launcher look
-# broken: the logger sits at ERROR, so the entire startup narrative - including
-# the sentence explaining WHY a run refused to start - travels as those notes,
-# and every one of them was being counted and thrown away. An operator opened
-# the log after a failed launch and found nothing about the failure.
-SERVER_LINE = re.compile(
-    r'^(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d{3} \[[A-Z]+\] telegram_mcp - |\[telegram-mcp\] )'
-)
-partial = ''
-withheld = 0
-
-def emit(line):
-    # The one place anything reaches the log, so the size ceiling is enforced in
-    # one place too.
-    global log, persist
-    if not persist:
-        return
-    encoded = line.encode('utf-8')
-    if max_bytes:
-        if log.tell() + len(encoded) > max_bytes:
-            roll()
-            if not persist:
-                return
-        if len(encoded) > max_bytes:
-            marker = '... [truncated at the log size ceiling]' + chr(10)
-            keep = max(0, max_bytes - len(marker.encode('utf-8')))
-            line = encoded[:keep].decode('utf-8', 'ignore') + marker
-    log.write(line)
-
-def persist_chunk(text):
-    # Line by line, because the allowlist is a per-line decision and the pump
-    # delivers arbitrary chunks.
-    global partial, withheld
-    partial += text
-    while chr(10) in partial:
-        line, partial = partial.split(chr(10), 1)
-        if SERVER_LINE.match(line):
-            emit(line + chr(10))
-        else:
-            withheld += 1
-
-class Tee:
-    def __init__(self, stream):
-        self.stream = stream
-
-    def write(self, text):
-        with lock:
-            # The terminal gets everything, always and first. What is written
-            # down is decided by `persist_chunk`, one line at a time.
-            written = self.stream.write(text)
-            self.stream.flush()
-            if not persist:
-                return written
-            persist_chunk(ansi.sub('', text))
-        return written
-    def flush(self):
-        with lock:
-            self.stream.flush()
-            if persist:
-                log.flush()
-
-    def isatty(self):
-        return self.stream.isatty()
-
-    def __getattr__(self, name):
-        return getattr(self.stream, name)
-
-def _report_withheld():
-    # atexit, registered BEFORE the server is loaded, so it runs LAST: handlers
-    # fire in reverse registration order, and anything the child writes from its
-    # own atexit hook has to be counted before this line is written.
-    global withheld
-    with lock:
-        if partial and not SERVER_LINE.match(partial):
-            withheld += 1
-        if withheld and persist:
-            emit(
-                f'[launcher] {withheld} line(s) of child output were shown on the '
-                'terminal and not written here: they did not come from this '
-                'server' + chr(39) + 's redacting logger.' + chr(10)
-            )
-
-atexit.register(_report_withheld)
-
-stderr = sys.stderr
-sys.stderr = Tee(stderr)
-# The CHECKOUT, first. `python -c` used to give this for free -- sys.path[0] is
-# the working directory, which the launcher has already set to the project -- and
-# running the wrapper from a file replaced it with the wrapper's own directory.
-# telegram_mcp.install_guard reads the project's provenance from where the
-# package was imported, so the server refused to start: "the installed
-# 'telegram-mcp' distribution was not installed from an explicit source
-# checkout". `script` is main.py's absolute path, so its directory IS the
-# checkout; stated rather than inherited from wherever this file happens to sit.
-sys.path.insert(0, os.path.dirname(os.path.abspath(script)))
-sys.argv = [script, *args]
-exit_code = 0
-try:
-    runpy.run_path(script, run_name="__main__")
-except KeyboardInterrupt:
-    pass
-except SystemExit as exc:
-    exit_code = exc.code if isinstance(exc.code, int) else 1
-    if exc.code is not None and not isinstance(exc.code, int):
-        print(exc.code, file=sys.stderr)
-except BaseException as exc:
-    # Two destinations, deliberately different. A traceback carries the
-    # arguments and repr of every frame, which here means chat titles,
-    # usernames, phone numbers and paths - and the log file is the thing an
-    # operator attaches to a bug report. So the full traceback goes straight to
-    # the terminal, bypassing the tee, and only its shape is persisted.
-    traceback.print_exception(exc, file=stderr)
-    stderr.flush()
-    frames = traceback.extract_tb(exc.__traceback__)
-    # Basename, not the full filename: the path leaks the install location and
-    # with it the OS account name, into the file operators attach to reports.
-    where = (
-        f'{os.path.basename(frames[-1].filename)}:{frames[-1].lineno}'
-        if frames
-        else 'unknown'
-    )
-    # Straight to both, bypassing the tee: this record is composed HERE from a
-    # type name and a basename, so it is the one thing on this stream already
-    # known to be safe - and routing it through the allowlist withheld it, which
-    # left the log with nothing at all about the failure.
-    shape = f'{type(exc).__name__} at {where}'
-    print(shape, file=stderr)
-    stderr.flush()
-    with lock:
-        emit(shape + chr(10))
-    exit_code = 1
-finally:
-    sys.stdout.flush()
-    sys.stderr.flush()
-
-if exit_code:
-    raise SystemExit(exit_code)
-'@
-            # A FILE, not `-c`. The wrapper above is multi-line Python containing
-            # double quotes, and handing that to a native executable as one
-            # argument is precisely where Windows PowerShell 5.1 differs from
-            # pwsh 7: 5.1 drops the inner quotes, so `python -c` received
-            # `r(?:...` and died with `SyntaxError: unexpected character
-            # after line continuation character` four seconds in, before a
-            # single client started. `powershell.exe` IS 5.1 - what a
-            # double-click, a Start-Process and most embedding clients use - so
-            # the launcher was dead for everyone not developing in pwsh.
-            #
-            # Escaping it correctly for both hosts is possible and is the wrong
-            # answer: a path has no quoting for a shell to get wrong.
-            # In this launcher's own state directory, not bare %TEMP%, and
-            # owner-only: it is a script this process is about to EXECUTE, and a
-            # file another local process can replace between the write and the
-            # run is an execution primitive handed to whoever gets there first.
-            # Same standard the log files are held to, through the same helper.
-            $wrapperDirectory = Join-Path (Get-StateDirectory) 'run'
-            [void] (New-Item -ItemType Directory -Path $wrapperDirectory -Force)
-            [void] (Set-OwnerOnlyAcl -Path $wrapperDirectory)
-            $wrapperPath = Join-Path $wrapperDirectory "tee-$PID.py"
-            [IO.File]::WriteAllText($wrapperPath, $pythonWrapper, [Text.UTF8Encoding]::new($false))
-            if (-not (Set-OwnerOnlyAcl -Path $wrapperPath)) {
-                Remove-Item -LiteralPath $wrapperPath -Force -ErrorAction SilentlyContinue
-                throw 'the logging wrapper could not be made owner-only'
-            }
-            try {
-                & $uv.Path run python $wrapperPath $logPath $script:LogMaxBytes `
-                    (Join-Path $PSScriptRoot 'main.py') @ServerArguments
-            }
-            finally {
-                Remove-Item -LiteralPath $wrapperPath -Force -ErrorAction SilentlyContinue
-            }
-        }
-        else {
-            & $uv.Path run main.py @ServerArguments
-        }
+        & $native serve @ServerArguments
         $nativeExitCode = Get-Variable LASTEXITCODE -ValueOnly -ErrorAction SilentlyContinue
         $exitCode = if ($null -eq $nativeExitCode) { 0 } else { [int] $nativeExitCode }
     }
     finally {
         Pop-Location
+        $env:TELEGRAM_MCP_LOG_FILE = $previousLogFile
+        $env:TELEGRAM_MCP_LOG_MAX_BYTES = $previousLogLimit
     }
 
     # 75 is EXIT_SESSION_HELD in telegram_mcp/runner.py: another instance of
@@ -650,8 +414,7 @@ if exit_code:
     # for both. That is the server working, not failing - and it is the most
     # common way this launcher is run wrongly, so it gets a sentence of its own.
     # It used to leave through the same `exit 1` as a crash, and the last thing
-    # an operator read was "uv exited with code 1", which blames the package
-    # manager and sends them to debug uv.
+    # an operator read was "telegram-mcp exited with code 1", which blames a toolchain that is not involved in runtime startup.
     if ($exitCode -eq $script:ExitSessionHeld) {
         $heldMessage = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] " +
         '[launcher] Not started: another instance of this server is already connected ' +
@@ -663,7 +426,7 @@ if exit_code:
         }
     }
     elseif ($exitCode -ne 0) {
-        Write-Error "uv exited with code $exitCode." -ErrorAction Continue
+        Write-Error "telegram-mcp exited with code $exitCode." -ErrorAction Continue
     }
 }
 catch {

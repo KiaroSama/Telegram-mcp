@@ -2,7 +2,7 @@
 # order of stop / move / .env / restart, and the removal of every secret-chat sidecar.
 #
 # Runs against a throwaway sandbox: its own .env, secrets.md and XDG_STATE_HOME. The
-# server stop/start and the Python state move are stubbed; tests/test_account_rename.py
+# server stop/start and the native state move are stubbed; tests/rust_local_accounts.rs
 # covers the move itself.
 
 $ErrorActionPreference = 'Stop'

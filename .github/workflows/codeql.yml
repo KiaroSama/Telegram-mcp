@@ -1,31 +1,22 @@
-# Static security analysis, which this repository had none of.
-#
-# The other scanners here answer different questions: `secret-scan.yml` looks for
-# credential SHAPES in the tree and in history, `Dependency review` looks at what
-# is pulled in. Neither reads the code. CodeQL does - taint from an argument to a
-# sink, a path built from caller-supplied text, a command line assembled by
-# string - which is most of what this server does for a living: it resolves paths
-# inside allowed roots, spawns ffmpeg and a native decoder, and hands
-# model-supplied ids to Telegram.
-#
-# Why `manual` and not `autobuild`: Python needs no build, and `autobuild` on a
-# project whose dependencies come from a lockfile only invites the analysis to
-# resolve something. The extraction is over the source as committed.
 name: CodeQL
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '30 4 * * 4'
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
-  cancel-in-progress: false
+env:
+  VALIDATED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   status_begin:
     name: CI status pending
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/ci-status.yml
     permissions:
       contents: read
@@ -34,10 +25,36 @@ jobs:
     with:
       phase: begin
       workflow: codeql.yml
-
+  analyze:
+    name: Analyse Rust and Actions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      # Official current CodeQL docs support Rust with build-mode none.
+      # rust-analyzer still runs build scripts and macros; this is not a build gate.
+      - uses: github/codeql-action/init@5895b2c9be147bc7f1c75ce72c5cb577febb1907 # v4
+        with:
+          languages: rust,actions
+          build-mode: none
+          queries: security-extended
+          config-file: ./.github/codeql/codeql-config.yml
+      - uses: github/codeql-action/analyze@5895b2c9be147bc7f1c75ce72c5cb577febb1907 # v4
+        with:
+          category: /language:rust-actions
   status_finish:
     name: CI status final
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [status_begin, analyze]
     uses: ./.github/workflows/ci-status.yml
     permissions:
@@ -47,40 +64,3 @@ jobs:
     with:
       phase: finish
       workflow: codeql.yml
-
-  analyze:
-    name: Analyse Python
-    needs: status_begin
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      # The findings go to the repository's security tab, which needs write.
-      security-events: write
-      contents: read
-      actions: read
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-
-      - name: Initialise CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: python
-          build-mode: none
-          # Scopes the analysis; see the file for why `tests/` is out.
-          config-file: ./.github/codeql/codeql-config.yml
-          # security-extended over the default: this is a credential-handling,
-          # subprocess-spawning, path-resolving server, and the default suite
-          # leaves out most of the path and command-injection queries.
-          queries: security-extended
-
-      - name: Analyse
-        uses: github/codeql-action/analyze@v4
-        with:
-          category: "/language:python"

@@ -1,97 +1,61 @@
-# Automatic shared-service recovery
+# Operating the native shared service
 
-Run the installed checkout's transport-only supervisor:
+Run the compiled binary from the intended installation and private configuration:
 
-```powershell
-& .\.venv\Scripts\telegram-mcp.exe supervise
+```bash
+telegram-mcp serve --http 127.0.0.1:8765
 ```
 
-Linux uses `.venv/bin/telegram-mcp supervise`. Configuration comes from this checkout's
-`.env`/transport environment: loopback only, explicit `MCP_PORT`, default8765. There are
-no credentials in the command. It never installs or synchronizes the environment.
+The `/mcp` endpoint uses bearer authentication. Configure an explicit private
+`TELEGRAM_HTTP_TOKEN` when required; a non-loopback bind needs a token of at least
+32 characters. The native bridge attaches stdio clients to this shared service rather
+than creating an independent authenticated Telegram client per application.
 
-Cold `bridge` startup elects this supervisor automatically. A healthy existing server
-is verified and reused without launching another authenticated client. Closing a bridge
-closes only its transport session, not the elected supervisor or shared service.
+`telegram-mcp bridge` is also the explicit native startup entry point. If discovery
+does not identify a live owner, it serializes startup, verifies that the configured
+loopback port is free and launches the same executable with the selected configuration.
+It waits at most 30 seconds for owner identity and authenticated readiness. Failed
+startup cleans up its own child. Existing services are checked using the process image
+and creation identity around attachment, so a reused PID is insufficient. Other shared
+API clients attach only. No caller may replace an unrelated occupied listener.
 
-## Recovery contract
+## Ownership and health
 
-- One lifetime OS lease per normalized checkout and port covers startup, health checks,
-  retirement and restart delay. A second supervisor exits75 without starting a generation.
-- Windows starts the existing launcher hidden/suspended, assigns a fresh noninherited
-  Job Object before resuming, and retains that job across the entire generation.
-  Ordinary descendants cannot break out. Launcher exit alone is not tree exit.
-  Owned launches explicitly use Normal CPU priority instead of inheriting a scheduled
-  task's BelowNormal background class. The elected Windows supervisor also sets and
-  verifies its own Normal class before monitoring. No High/Realtime priority, task
-  credentials, task settings or unrelated process priorities are changed.
-- Startup grace is300seconds. Afterwards a bounded OPTIONS probe runs about once per
-  minute; three consecutive misses trigger retirement. Each supervisor HTTP probe has a10second
-  timeout. Windows monitoring reads the native TCP owner table and verifies the retained
-  Job Object membership before and after the probe; it does not spawn PowerShell/CIM.
-  Cold/warm bridge attachment uses native process handles, creation times, executable
-  paths and parsed command lines for its separate strict checkout identity checks,
-  without spawning PowerShell/WMI. Unknown or changed identities still refuse attachment.
-  A successful probe resets misses. This proves responsive HTTP, not Telegram connectivity.
-- Cleanup requests termination of the complete owned generation and waits up to30seconds
-  per attempt for positive exit evidence. Unconfirmed cleanup retains its boundary and
-  election, logs the blocked state, and retries confirmation about once per minute.
-  **No replacement starts until complete retirement is confirmed.**
-- Rapid exits back off10,20,40,80,160,300seconds;300seconds is the cap. Stable uptime
-  resets the delay to5seconds. An unknown or separately owned listener is left untouched;
-  supervision waits for it to disappear rather than adopting or killing it.
+Authorization stores are account-scoped and exclusive. A second process must not
+ignore or delete a live account lease. Closing an MCP transport session does not mean
+the account store should be erased. Use `telegram-mcp accounts --json` and
+`telegram-mcp health --json` to inspect locally recorded state without revealing keys.
 
-The account session/store leases remain unchanged and are never deleted. Outstanding
-Telegram mutations are not replayed across a restart. Forced termination is not proof
-that pending database or secret-state writes were flushed; inspect failure logs and
-preserve stores rather than restoring stale cryptographic counters after traffic.
+HTTP reachability and Telegram connectivity are separate facts. A responsive listener
+may still be offline from Telegram; a transport-only probe cannot establish delivery,
+admin rights, Premium status or complete update recovery. After changing service setup,
+verify MCP initialize, tools/list and an authorized read-only account call.
 
-## Permanent Windows startup
+A mutation timeout has an unknown outcome: inspect the relevant Telegram state before
+retrying. Do not replay writes simply because a service process restarted or an HTTP
+connection closed.
 
-Use a per-user Windows scheduled task to invoke the absolute installed command with
-`supervise`, hidden, from the checkout. Preserve an existing task's identity, network
-context and logon/wake/retry triggers when replacing a legacy keepalive wrapper. Set
-multiple instances to IgnoreNew and execution time limit to unlimited (`PT0S`). Task
-settings do not replace the supervisor's OS election.
+## Windows and containers
 
-Stop and confirm the old owner and all its descendants are gone before replacing its
-wrapper or syncing packages. Back up the existing wrapper/task definition locally first.
-Do not run the old taskkill loop alongside the new supervisor. Manual launcher takeover
-remains separate: the supervisor never kills that separately owned replacement.
-A person-opened Windows launcher keeps a checkout-specific named OS reservation alive
-from before takeover until exit. Automatic creation refuses an existing reservation
-around its listener check and launch, including before the manual server binds.
-The manual process releases mutex ownership but retains its handle, allowing a later
-manual launch to take over; the OS removes the reservation after its last handle closes.
-No marker or session lock is deleted.
-A failed takeover refuses replacement. Manual and automatic starts consume the existing
-pinned environment without synchronizing it; install/update packages explicitly while
-all owned consumers are stopped.
+`start-mcp.ps1` and `Manage-Accounts.ps1` remain supported PowerShell entry points and
+invoke the native Rust binary. The account-manager helpers use native account/health
+commands. Their tests run separately on Windows. They do not install Python or uv.
 
-## Repeated disconnections despite recovery
+Docker Compose starts the native HTTP service with an explicitly configured token,
+publishes the host port only on loopback and persists account state in a named volume.
+The container's `0.0.0.0` listener is protected by both the required token and the host's
+`127.0.0.1` port mapping. Preserve the volume across replacement.
 
-The locked runtime includes `cryptg`, Telethon's native AES-IGE backend. Without a
-usable native backend, Telethon falls back to pure-Python decryption on the same
-event loop as HTTP; large incoming batches can delay probes and connector requests.
-Install the complete locked environment while the owned service is stopped, then
-restart it. Do not delete session locks or open a second authenticated client.
-A successful restart alone does not establish that this bottleneck is resolved.
+## Logs and recovery limits
 
-## Logs and limits
+The Rust service writes private diagnostic logs while reserving stdout for MCP stdio.
+Logs must describe fixed states and errors without raw tool arguments, Telegram content,
+authorization keys, phone codes or environment dumps. Share only reviewed excerpts.
+A log entry is evidence of what that component observed, not independent confirmation
+that a remote action completed.
 
-Each supervisor run creates a private UTF-8 file under the state directory's `logs/`,
-`supervise_YYYY-MM-DD_HH-mm-ss_UTC.log` (collision suffix if needed). Entries are UTC
-`[timestamp] [LEVEL] [supervise] Message`; fixed statuses and numeric health/backoff
-counts only, no argv, environment, exception bodies, credentials or protocol payloads.
-Logging failure falls back to stderr; logs are not automatically pruned. Share only
-reviewed, sanitized excerpts. Launcher diagnostics remain in their existing per-run logs.
-
-Windows abrupt supervisor death closes its last job handle and terminates ordinary owned
-descendants; external scheduling starts a fresh supervisor. This does not cover remote
-or WMI-spawned children or kernel I/O stalls. Linux retains its existing process-group
-cleanup with `/proc` exit evidence; descendants that escape the group and abrupt parent
-death are not equivalent to Windows job containment. No universal hang-free claim is made.
-
-After deployment verify real MCP initialize, tools/list and transport-session closure;
-then native bridge discovery/EOF and exactly one shared listener. Synthetic CI fixtures
-exercise recovery without opening Telegram accounts or sending messages.
+The native bridge implements the bounded startup/attachment behavior described above.
+Historical Python supervision also had additional process-tree, restart-backoff and
+generation-retirement rules; those broader guarantees do not follow from bridge startup.
+Secret-key flushing is deferred with the encryption backend. Never stop an unknown
+listener or delete a state lock to obtain a clean health report.

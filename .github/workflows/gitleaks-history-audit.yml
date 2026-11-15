@@ -1,0 +1,27 @@
+name: Historical Gitleaks audit
+
+# Deliberate full-history audit, separate from current-tree/introduction PR gates.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  history:
+    name: Audit all fetched history without rewriting it
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Protect checkout diagnostics
+        run: test "${RUNNER_DEBUG:-0}" != 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+      - name: Report redacted historical findings with the pinned scanner
+        run: cargo run --locked --bin ci -- gitleaks-full-history

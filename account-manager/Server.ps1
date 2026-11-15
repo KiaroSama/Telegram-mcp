@@ -10,8 +10,8 @@
 function Get-ServerTrees {
     <#
       The top process of every running copy of this checkout's server - the same
-      match `start-mcp.ps1`'s own takeover uses: pwsh/powershell/python/uv whose
-      command line names this checkout's start-mcp.ps1 or main.py. This process and
+      match `start-mcp.ps1`'s own takeover uses: PowerShell and the native executable whose
+      command line names this checkout's start-mcp.ps1 or telegram-mcp.exe. This process and
       its ancestors never count.
     #>
     param([Parameter(Mandatory)] [string] $Root)
@@ -24,8 +24,8 @@ function Get-ServerTrees {
         $protected[$walk] = $true
         $walk = $parents[$walk]
     }
-    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|main\.py)'
-    $runners = 'pwsh.exe', 'powershell.exe', 'python.exe', 'pythonw.exe', 'uv.exe'
+    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|(?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe)'
+    $runners = 'pwsh.exe', 'powershell.exe', 'telegram-mcp.exe'
     $matched = @($processes | Where-Object {
             $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
             -not $protected.ContainsKey([int] $_.ProcessId) -and $_.CommandLine -match $pattern
@@ -67,12 +67,18 @@ function Start-TelegramServer {
       supervisor started in the meantime and the supervisor then yields to it.
     #>
     param([Parameter(Mandatory)] [string] $Root)
-    # No `??`: the launcher still runs under Windows PowerShell 5.1.
     $shell = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    if (-not $shell) { $shell = Get-Command powershell.exe }
+    if (-not $shell) { throw 'PowerShell 7 (pwsh.exe) is required to restart the server.' }
     $launcher = Join-Path $Root 'start-mcp.ps1'
+    $hostName = if ($env:MCP_HOST) { $env:MCP_HOST } else { '127.0.0.1' }
+    $port = if ($env:MCP_PORT) { $env:MCP_PORT } else { '8765' }
+    foreach ($line in Get-EnvLines) {
+        if (-not $env:MCP_HOST -and $line -match '^\s*MCP_HOST\s*=\s*["'']?([^"''#\s]+)') { $hostName = $Matches[1] }
+        if (-not $env:MCP_PORT -and $line -match '^\s*MCP_PORT\s*=\s*["'']?(\d+)') { $port = $Matches[1] }
+    }
+    $address = if ($hostName.Contains(':')) { "[${hostName}]:$port" } else { "${hostName}:$port" }
     $process = Start-Process -FilePath $shell.Source -WindowStyle Hidden -WorkingDirectory $Root -PassThru `
-        -ArgumentList ('-NoLogo -NoProfile -File "{0}"' -f $launcher)
+        -ArgumentList ('-NoLogo -NoProfile -File "{0}" --http {1}' -f $launcher, $address)
     Write-Log "Started the MCP server again (pid $($process.Id))"
     return $process.Id
 }

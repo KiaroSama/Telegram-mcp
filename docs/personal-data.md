@@ -1,81 +1,48 @@
-# Where an account's own data goes
+# Personal data and private state
 
-This server talks to more than one Telegram account, and work done for a real
-account leaves things behind: a scan of a channel, the ids a pack uses, a
-half-finished job's progress file, a script written for one task. None of that
-is a project file. It belongs to one person.
+The Rust runtime separates install files, private account state and explicitly allowed
+content files. Use `telegram-mcp state-path` to inspect the actual state location.
+`TELEGRAM_STATE_DIR` overrides it directly; otherwise `XDG_STATE_HOME/telegram-mcp`,
+`$HOME/.local/state/telegram-mcp` on all platforms, falling back to `USERPROFILE`
+when `HOME` is unavailable, preserves the existing installation’s state location.
 
-It goes here:
+Authorization sessions, account configuration, aliases, pending approvals, private event
+data and logs belong in the private state directory. They never belong in the public
+checkout, fixtures, plugin archives or CI artifacts. A session is a credential to the
+account. A message-content backup is not authorization-state export permission.
 
-```
-.personal/<telegram user id>/
-```
+## File access
 
-`.personal/` is git-ignored and stays on the machine that made it. Ask for the
-path rather than choosing one:
+`TELEGRAM_FILE_ROOTS` contains the intentional local directories tools may read/write.
+A JSON array avoids path-list separator ambiguity across operating systems. Allowed
+roots must exist. Without a custom setting, the service creates a private `files`
+directory under its working directory.
 
-```python
-from telegram_mcp.personal import personal_dir
+Native path validation resolves existing files and destination ancestors, rejects
+traversal and symlink escapes, and protects private state, dotenv files and repository
+metadata even under a broad allowed root. A path outside those roots is refused before
+upload/download or export work. A caller cannot bypass that boundary merely by supplying
+an absolute path or a different filename suffix.
 
-directory = await personal_dir(client)          # .personal/5899781975/
-(directory / "scan.json").write_text(payload, encoding="utf-8")
-```
+Aliases and event feeds are account-scoped. Updates must preserve unrelated fields,
+write valid UTF-8 and fail on unreadable/corrupt state instead of resetting it silently.
+Atomic replacement and owner-only storage protect normal operation; a malicious process
+already running as the same OS user remains outside that guarantee.
 
-The directory is created the first time it is asked for, along with a short
-`README.md` beside it so anyone who finds the folder later understands it
-without reading the source.
+## Backups, deletion and containers
 
-## Why the folder is a number
+Preserve existing Telethon and secret-chat stores when installing the native version.
+Their formats are not interchangeable with grammers state, and secret-chat integration
+is deferred pending the owner's Rust backend. Lost encryption keys cannot be recreated
+by signing in again.
 
-**The name is the account's numeric Telegram id, never its label.**
+The Docker image stores all persistent state under `/data`, runs as a non-root user
+and creates the state directory with private permissions. Keep the named volume when
+replacing a container. Deleting the volume is deliberate account-state deletion and
+must never be advertised as routine upgrade cleanup.
 
-A label is a name in `.env`. It can be renamed, removed and added back, or given
-to a different account entirely. The numeric id is Telegram's own and does not
-move.
-
-Key the folder by the label and an account that returns as `refx_2` stops
-finding the work it did when it was called `refx` — nothing errors, the data is
-simply somewhere it no longer looks. Key it by the id and the label can change
-as often as you like.
-
-`personal_dir` takes the client and nothing else. There is deliberately no
-`label` argument: a caller cannot pass the wrong one, and the label never
-reaches the path or the id cache.
-
-The cache behind it is keyed by the client object, not by a name. The first
-version keyed it by label, and a second account borrowing a label was handed the
-first one's directory - silently, which is what made it worth removing rather
-than documenting.
-
-## What does not go here
-
-- **Anything the project itself needs.** If a second checkout would want it, it
-  is a project file and belongs in the repository.
-- **Secrets.** `secrets.md` and `.env` have their own rules; this is for
-  material that is merely personal, not for credentials.
-- **Another account's data.** One directory per id, and nothing crosses between
-  them. That separation is the reason this exists.
-
-## Relationship to `.ignoreme`
-
-They are different directories with different guarantees, and the difference is
-deliberate.
-
-| | `.ignoreme/` | `.personal/<id>/` |
-|---|---|---|
-| written by the server | never | constantly |
-| read by the server | never | yes |
-| organised by | nothing | one directory per account id |
-
-`.ignoreme` is read-only by rule: nothing may modify, copy, or transmit what is
-in it. A directory that a running job writes a progress file into every
-twenty-five messages cannot live under that rule, so it is its own thing.
-
-## For contributors
-
-`telegram_mcp/personal.py` is the only place that builds the path.
-`tests/test_personal_dir.py` covers the cases that fail silently: a renamed
-label, two accounts, and a label reused by a different account.
-
-The ignore rule ships in `.gitignore`, so a fresh clone has it before anything
-is written.
+The Git and Docker ignore rules exclude credentials, sessions, local memory, logs and
+personal content roots. CI also checks the tracked tree and reachable history; an
+ignore rule alone does not protect a file previously forced into Git. Gitleaks and the
+project's credential-shape scan provide evidence within their documented patterns,
+not a universal guarantee that no private data exists.
