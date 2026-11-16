@@ -64,9 +64,14 @@ pub fn measure(
         let position = queries
             .get(original)
             .and_then(|query| {
-                vision::rank(query, index, index.len(), &BTreeSet::new())
-                    .iter()
-                    .position(|(_, id)| id == wanted)
+                vision::rank(
+                    query,
+                    index,
+                    index.len(),
+                    &BTreeSet::from([original.clone()]),
+                )
+                .iter()
+                .position(|(_, id)| id == wanted)
             })
             .map(|rank| rank + 1);
         match position {

@@ -15,10 +15,7 @@ const GENERIC_NAMES: &[&str] = &[
 
 fn rules() -> Result<Vec<(&'static str, Regex)>> {
     [
-        (
-            "Telegram API hash",
-            r"(?:^|[^0-9a-fA-F])([0-9a-fA-F]{32})(?:$|[^0-9a-fA-F])",
-        ),
+        ("Telegram API hash", r"[0-9a-fA-F]{32}"),
         ("Telegram bot token", r"\b\d{8,10}:[A-Za-z0-9_-]{30,45}\b"),
         (
             "Telegram authorization string",
@@ -73,6 +70,19 @@ fn problems(text: &str, rules: &[(&str, Regex)]) -> Result<Vec<(usize, String)>>
                 .get(1)
                 .or_else(|| capture.get(0))
                 .context("Credential matcher failed")?;
+            if *name == "Telegram API hash"
+                && (value
+                    .start()
+                    .checked_sub(1)
+                    .and_then(|index| text.as_bytes().get(index))
+                    .is_some_and(u8::is_ascii_hexdigit)
+                    || text
+                        .as_bytes()
+                        .get(value.end())
+                        .is_some_and(u8::is_ascii_hexdigit))
+            {
+                continue;
+            }
             if PLACEHOLDERS.contains(&value.as_str()) {
                 continue;
             }

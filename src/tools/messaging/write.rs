@@ -324,7 +324,8 @@ async fn preserve_scheduled(
             "The queued body is unreadable as plain text/media; cancel it and queue a new copy instead of replacing opaque rich content"
         );
         request["message"] = json!(text);
-        request["entities"] = current.get("entities").cloned().unwrap_or(json!([]));
+        request["entities"] =
+            json!(build_entities(api, text, current.get("entities").unwrap_or(&json!([]))).await?);
     }
     let date = when.or_else(|| current["date"].as_i64()).ok_or_else(|| {
         anyhow::anyhow!("The scheduled message has no date to preserve; supply when")

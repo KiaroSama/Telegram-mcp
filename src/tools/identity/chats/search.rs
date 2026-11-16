@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
+    let folder = folder_selector(a)?;
     let query = text(a, "query")?
         .trim()
         .trim_start_matches('@')
@@ -8,11 +9,7 @@ pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
     ensure!(!query.is_empty(), "Give part of a chat name or username");
     let maximum = limit(a, "limit", 50, 100)? as usize;
     let folders = filters(api).await?;
-    let inside = a
-        .get("folder")
-        .and_then(Value::as_str)
-        .map(|name| find_filter(&folders, name))
-        .transpose()?;
+    let inside = folder.map(|name| find_filter(&folders, name)).transpose()?;
     let found = api
         .invoke("contacts.search", json!({"q":query,"limit":100}))
         .await?;
@@ -67,43 +64,57 @@ pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
     }
     let mut unique = std::collections::HashSet::new();
     peers.retain(|p| unique.insert(peer_key(p)));
+    // Limit remote work independently of the result count: many matching
+    // contacts may have no dialog, or may be excluded by the selected folder.
+    let candidate_limit_reached = peers.len() > 1000;
+    peers.truncate(1000);
+    let mut candidates = Vec::new();
+    for p in &peers {
+        if let Some(e) = matching_entity(&found, p)
+            .or_else(|| matching_entity(&local, p))
+            .or_else(|| matching_entity(&contacts, p))
+        {
+            candidates.push((p, e, input_from_entity(e)?));
+        }
+    }
     let mut results = Vec::new();
-    for p in peers {
-        let Some(e) = matching_entity(&found, &p)
-            .or_else(|| matching_entity(&local, &p))
-            .or_else(|| matching_entity(&contacts, &p))
-        else {
-            continue;
-        };
-        let input = input_from_entity(e)?;
+    'batches: for batch in candidates.chunks(100) {
         let one = api
             .invoke(
                 "messages.getPeerDialogs",
-                json!({"peers":[{"_":"inputDialogPeer","peer":input}]}),
+                json!({"peers":batch.iter().map(|(_,_,input)|json!({"_":"inputDialogPeer","peer":input})).collect::<Vec<_>>()}),
             )
             .await?;
-        let Some(d) = one
-            .get("dialogs")
-            .and_then(Value::as_array)
-            .and_then(|ds| ds.first())
-        else {
-            continue;
-        };
-        if inside.is_some_and(|f| !in_folder(f, e, d, &input)) {
-            continue;
-        }
-        let mut row = summary(e, d, &p)?;
-        row["folders"] = folders
-            .iter()
-            .filter(|f| in_folder(f, e, d, &input))
-            .map(|f| Value::String(filter_title(f).into()))
-            .collect();
-        results.push(row);
-        if results.len() >= maximum {
-            break;
+        for (p, e, input) in batch {
+            let Some(d) = one
+                .get("dialogs")
+                .and_then(Value::as_array)
+                .and_then(|dialogs| {
+                    dialogs
+                        .iter()
+                        .find(|dialog| peer_key(&dialog["peer"]) == peer_key(p))
+                })
+            else {
+                continue;
+            };
+            if inside.is_some_and(|f| !in_folder(f, e, d, input)) {
+                continue;
+            }
+            let mut row = summary(e, d, p)?;
+            row["folders"] = folders
+                .iter()
+                .filter(|f| in_folder(f, e, d, input))
+                .map(|f| Value::String(filter_title(f).into()))
+                .collect();
+            results.push(row);
+            if results.len() >= maximum {
+                break 'batches;
+            }
         }
     }
-    Ok(json!({"results":results,"untrusted_content":true}))
+    Ok(
+        json!({"results":results,"metadata":{"candidate_limit_reached":candidate_limit_reached},"untrusted_content":true}),
+    )
 }
 
 pub(super) async fn lookup(api: &dyn Telegram, a: &Value) -> Result<Value> {

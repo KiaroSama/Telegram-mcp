@@ -121,7 +121,12 @@ fn private_open(path: &std::path::Path) -> io::Result<File> {
     Ok(file)
 }
 pub fn initialize() -> Result<()> {
-    if std::env::var_os("TELEGRAM_MCP_LOG_FILE").is_some_and(|value| value.is_empty()) {
+    if std::env::var_os("TELEGRAM_MCP_LOG_FILE").is_some_and(|value| {
+        value.is_empty()
+            || value
+                .to_str()
+                .is_some_and(|text| text.eq_ignore_ascii_case("off"))
+    }) {
         tracing_subscriber::fmt()
             .with_ansi(false)
             .with_env_filter("off,telegram_mcp=info,operator_plugin=info")

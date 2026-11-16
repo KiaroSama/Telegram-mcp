@@ -378,12 +378,33 @@ async fn rich_file_uploads_bind_named_photo_and_document_references_within_priva
     assert_eq!(files[1]["_"], "inputRichFileDocument");
     assert_eq!(files[1]["document"]["id"], "4");
     assert_eq!(api.uploaded.lock().unwrap().len(), 2);
+    std::fs::write(
+        state.root().join("private.json"),
+        b"private readable state fixture",
+    )
+    .unwrap();
     for files in [
         json!({"bad":3}),
         json!({"bad":state.root().join("private.json")}),
     ] {
         let api = Api::new(vec![]);
-        assert!(run(&api,"send_message",json!({"chat_id":7,"message":"rich","parse_mode":"rich_markdown","rich_files":files})).await.is_err());
+        let invalid_type = files["bad"].is_number();
+        let error = run(
+            &api,
+            "send_message",
+            json!({"chat_id":7,"message":"rich","parse_mode":"rich_markdown","rich_files":files}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(
+            if invalid_type {
+                error.contains("path")
+            } else {
+                error.contains("root") || error.contains("private") || error.contains("protected")
+            },
+            "{error}"
+        );
         assert!(api.uploaded.lock().unwrap().is_empty());
     }
     let api = Api::new(vec![(
@@ -431,4 +452,27 @@ async fn forwarding_and_draft_mutations_preserve_topics_schedule_and_source_boun
     assert_eq!(calls[0].1["reply_to"]["top_msg_id"], 55);
     assert_eq!(calls[1].1["message"], "");
     assert_eq!(calls[2].1["id"], json!([8]));
+}
+
+#[tokio::test]
+async fn preserving_scheduled_mentions_rebuilds_the_outgoing_input_user() {
+    let mut queued = message(8, "Alice");
+    queued["entities"] =
+        json!([{"_":"messageEntityMentionName","offset":0,"length":5,"user_id":"7"}]);
+    let api = Api::new(vec![
+        ("messages.getScheduledHistory", messages(vec![queued])),
+        ("messages.editMessage", updates()),
+    ]);
+    run(
+        &api,
+        "edit_scheduled_message",
+        json!({"chat_id":7,"message_id":8}),
+    )
+    .await
+    .unwrap();
+    let calls = api.calls();
+    assert_eq!(
+        calls[1].1["entities"][0],
+        json!({"_":"inputMessageEntityMentionName","offset":0,"length":5,"user_id":{"_":"inputUser","user_id":"7","access_hash":"13"}})
+    );
 }

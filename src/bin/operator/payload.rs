@@ -176,6 +176,12 @@ pub fn read_payload(source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
     }
     let mut result = BTreeMap::new();
     for file in files {
+        for parent in Path::new(&file).ancestors().skip(1) {
+            ensure!(
+                plain(&source.join(parent))?.is_dir(),
+                "Every package document parent must be an unlinked directory"
+            );
+        }
         let path = source.join(&file);
         ensure!(
             plain(&path)?.is_file() && fs::metadata(&path)?.len() <= 1_000_000,

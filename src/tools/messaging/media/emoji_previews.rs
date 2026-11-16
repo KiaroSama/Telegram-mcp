@@ -184,7 +184,7 @@ async fn video(
             end * index as f64 / (count - 1) as f64
         };
         let output = temp.path().join(format!("frame-{index}.png"));
-        let mut command = super::child("ffmpeg");
+        let mut command = super::decoder();
         command.args([
             "-nostdin",
             "-v",

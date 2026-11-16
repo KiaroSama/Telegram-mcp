@@ -2,6 +2,75 @@ use super::common::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn a_known_community_ban_survives_each_joined_chat_cleanup_failure() {
+    let m = Mock::new();
+    m.reply("communities.getParticipantJoinedChats",json!({"joined_chat_ids":["9","10","11","12"],"chats":[{"_":"chat","id":"9"},{"_":"channel","id":"10"},{"_":"unknownJoinedChat","id":"11"},{"_":"channel","id":"12","access_hash":"120"}]}));
+    m.fail("messages.deleteChatUser");
+    let result = run(
+        &m,
+        "ban_community_member",
+        json!({"community":7,"user":8,"also_from_chats":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["banned"], true);
+    let rows = result["removed_from_chats"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(
+        rows.iter()
+            .map(|r| r["removed"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(false), json!(false), json!(false), json!(true)]
+    );
+    assert_eq!(
+        m.sent("channels.editBanned")[0]["channel"]["channel_id"],
+        "12"
+    );
+}
+
+#[tokio::test]
+async fn an_unchanged_community_ban_still_cleans_joined_chats_without_inventing_status() {
+    let m = Mock::new();
+    m.reply(
+        "communities.getParticipantJoinedChats",
+        json!({"joined_chat_ids":["9"],"chats":[{"_":"chat","id":"9"}]}),
+    );
+    m.reply("communities.toggleParticipantBanned", json!(false));
+    let result = run(
+        &m,
+        "ban_community_member",
+        json!({"community":7,"user":8,"also_from_chats":true}),
+    )
+    .await
+    .unwrap();
+    assert!(result["banned"].is_null());
+    assert_eq!(result["ban_changed"], false);
+    assert_eq!(result["removed_from_chats"][0]["removed"], true);
+    assert_eq!(m.sent("messages.deleteChatUser").len(), 1);
+}
+
+#[tokio::test]
+async fn a_lost_joined_chat_removal_response_is_reported_as_unknown() {
+    let m = Mock::new();
+    m.reply("communities.getParticipantJoinedChats",json!({"joined_chat_ids":["9","12"],"chats":[{"_":"chat","id":"9"},{"_":"channel","id":"12","access_hash":"120"}]}));
+    m.fail_with(
+        "messages.deleteChatUser",
+        "Telegram transport failed; operation outcome may be unknown and was not retried",
+    );
+    let result = run(
+        &m,
+        "ban_community_member",
+        json!({"community":7,"user":8,"also_from_chats":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["banned"], true);
+    assert!(result["removed_from_chats"][0]["removed"].is_null());
+    assert_eq!(result["removed_from_chats"][1]["removed"], true);
+    assert_eq!(m.sent("messages.deleteChatUser").len(), 1);
+}
+
+#[tokio::test]
 async fn community_membership_is_verified_before_mutation() {
     let m = Mock::new();
     assert!(

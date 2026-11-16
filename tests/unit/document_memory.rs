@@ -1,4 +1,10 @@
 use super::*;
+use crate::{
+    backend::Telegram,
+    documents::{check_message_topic, image_work},
+};
+use anyhow::Result;
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 #[test]
@@ -167,4 +173,91 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
 #[test]
 fn native_darwin_accounting_reports_this_process_without_privilege() {
     assert!(physical_footprint().unwrap() > 0);
+}
+
+#[tokio::test]
+async fn topic_starters_require_the_exact_service_action_and_matching_channel() {
+    struct NoRequests;
+    #[async_trait::async_trait]
+    impl Telegram for NoRequests {
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+            panic!("Topic creation service metadata requires no lookup");
+        }
+        async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+            panic!("The peer is already bound");
+        }
+    }
+    let channel = json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"70"});
+    let starter = json!({"_":"messageService","id":8,"peer_id":{"_":"peerChannel","channel_id":"7"},"action":{"_":"messageActionTopicCreate","title":"Synthetic topic","icon_color":0}});
+    let mut ordinary = starter.clone();
+    ordinary["_"] = json!("message");
+    let mut user_constructor = starter.clone();
+    user_constructor["_"] = json!("user");
+    let mut wrong_peer = starter.clone();
+    wrong_peer["peer_id"] = json!({"_":"peerUser","user_id":"7"});
+    let mut wrong_id = starter.clone();
+    wrong_id["id"] = json!(9);
+    let mut wrong_action = starter.clone();
+    wrong_action["action"]["_"] = json!("messageActionTopicEdit");
+    for (message, allowed) in [
+        (starter, true),
+        (ordinary, false),
+        (user_constructor, false),
+        (wrong_peer, false),
+        (wrong_id, false),
+        (wrong_action, false),
+    ] {
+        assert_eq!(
+            check_message_topic(&NoRequests, &channel, &message, 8)
+                .await
+                .is_ok(),
+            allowed,
+            "{message}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancelled_image_requests_hold_the_worker_budget_until_their_cpu_work_finishes() {
+    let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let mut releases = Vec::new();
+    let mut callers = Vec::new();
+    for id in 0..2 {
+        let (release, wait) = std::sync::mpsc::channel();
+        releases.push(release);
+        let started = started.clone();
+        callers.push(tokio::spawn(image_work(move || {
+            started.send(id).unwrap();
+            let _ = wait.recv();
+            Ok(())
+        })));
+    }
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    for caller in callers {
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+    }
+    let third = tokio::spawn(image_work(move || {
+        started.send(2).unwrap();
+        Ok(())
+    }));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(30), observed.recv())
+            .await
+            .is_err()
+    );
+    releases[0].send(()).unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+            .await
+            .unwrap(),
+        Some(2)
+    );
+    third.await.unwrap().unwrap();
+    releases[1].send(()).unwrap();
 }

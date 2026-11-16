@@ -123,3 +123,109 @@ async fn managed_stream_preserves_writes_flush_and_shutdown_semantics() {
     stream.shutdown().await.unwrap();
     assert_eq!(peer.read(&mut [0; 1]).await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn remote_plaintext_credentials_are_refused_before_any_protocol_bytes() {
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap(); // Select a local interface; no datagram is sent.
+    let ip = route.local_addr().unwrap().ip();
+    assert!(!ip.is_loopback());
+    for kind in ["http", "socks5", "socks4"] {
+        let listener = TcpListener::bind((ip, 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut proxy = proxy(kind, address);
+        proxy.username = Some("synthetic-user".into());
+        let connection = connect(Some(&proxy), "149.154.167.50:443".parse().unwrap(), 2);
+        let (result, accepted) = tokio::join!(connection, listener.accept());
+        assert!(result.err().unwrap().to_string().contains("verified HTTPS"));
+        let mut socket = accepted.unwrap().0;
+        assert!(
+            socket.read_u8().await.is_err(),
+            "No credential or greeting bytes may reach this socket"
+        );
+    }
+}
+
+#[tokio::test]
+async fn https_connect_requires_a_trusted_certificate_and_matching_server_name() {
+    for (trusted, matching) in [(true, true), (false, true), (true, false)] {
+        let material = rcgen::generate_simple_self_signed(vec![
+            if matching {
+                "127.0.0.1"
+            } else {
+                "wrong.example"
+            }
+            .into(),
+        ])
+        .unwrap();
+        let certificate = material.cert.der().clone();
+        let server = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certificate.clone()],
+                rustls::pki_types::PrivatePkcs8KeyDer::from(material.signing_key.serialize_der())
+                    .into(),
+            )
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let Ok(mut socket) = tokio_rustls::TlsAcceptor::from(Arc::new(server))
+                .accept(socket)
+                .await
+            else {
+                return None;
+            };
+            let mut request = vec![];
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.ok()?);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 Connection established\r\n\r\nprivate tunnel bytes")
+                .await
+                .ok()?;
+            Some(String::from_utf8(request).unwrap())
+        });
+        let mut roots = rustls::RootCertStore::empty();
+        if trusted {
+            roots.add(certificate).unwrap();
+        }
+        let config = Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let mut proxy = proxy("https", address);
+        proxy.username = Some("synthetic-user".into());
+        proxy.password = Some("synthetic-password".into());
+        let outcome = connect_verified(
+            Some(&proxy),
+            "149.154.167.50:443".parse().unwrap(),
+            2,
+            Some(config),
+        )
+        .await;
+        if trusted && matching {
+            let mut stream = outcome.unwrap();
+            let mut bytes = [0; 20];
+            stream.read_exact(&mut bytes).await.unwrap();
+            assert_eq!(&bytes, b"private tunnel bytes");
+            let request = task.await.unwrap().unwrap();
+            assert!(request.starts_with("CONNECT 149.154.167.50:443 HTTP/1.1\r\n"));
+            assert!(request.contains("Proxy-Authorization: Basic "));
+        } else {
+            assert!(
+                outcome
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("TLS handshake verification failed")
+            );
+            assert!(
+                task.await.unwrap().is_none(),
+                "CONNECT and credentials must not be sent before certificate verification"
+            );
+        }
+    }
+}

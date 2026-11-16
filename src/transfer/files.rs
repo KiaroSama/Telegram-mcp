@@ -6,6 +6,9 @@ use std::{
     fs::File,
     path::{Path, PathBuf},
 };
+#[cfg(all(test, unix))]
+#[path = "../../tests/unit/transfer_files.rs"]
+mod tests;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Identity {
@@ -127,7 +130,7 @@ impl Directory {
             libc::openat(
                 self.file.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK,
             )
         };
         ensure!(fd >= 0, "Cannot open anchored transfer file");

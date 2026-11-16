@@ -4,7 +4,7 @@ use anyhow::{Result, ensure};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
-    sync::OnceLock,
+    sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -13,7 +13,8 @@ struct Catalogue {
     checked: Instant,
     unknown: HashSet<i64>,
 }
-static CACHE: OnceLock<tokio::sync::Mutex<HashMap<String, Catalogue>>> = OnceLock::new();
+type Entry = Arc<tokio::sync::Mutex<Option<Catalogue>>>;
+static CACHE: OnceLock<tokio::sync::Mutex<HashMap<String, Entry>>> = OnceLock::new();
 fn has(data: &Value, id_value: i64) -> bool {
     data["effects"]
         .as_array()
@@ -30,11 +31,27 @@ async fn catalogue(
             .invoke("messages.getAvailableEffects", json!({"hash":0}))
             .await;
     };
-    let mut cache = CACHE
-        .get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
-        .lock()
-        .await;
-    let old = cache.get(&k);
+    let entry = {
+        let mut cache = CACHE
+            .get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+            .lock()
+            .await;
+        if cache.len() >= 64 && !cache.contains_key(&k) {
+            cache.retain(|_, entry| Arc::strong_count(entry) > 1);
+        }
+        if cache.len() < 64 || cache.contains_key(&k) {
+            Some(Arc::clone(cache.entry(k).or_default()))
+        } else {
+            None
+        }
+    };
+    let Some(entry) = entry else {
+        return api
+            .invoke("messages.getAvailableEffects", json!({"hash":0}))
+            .await;
+    };
+    let mut cache = entry.lock().await;
+    let old = cache.as_ref();
     let cold = old.is_none();
     let due = old.is_none_or(|c| c.checked.elapsed() >= Duration::from_secs(3600));
     let missing =
@@ -49,7 +66,7 @@ async fn catalogue(
             .invoke("messages.getAvailableEffects", json!({"hash":hash}))
             .await?;
         if data["_"] == "messages.availableEffectsNotModified" {
-            let old = cache.get_mut(&k).ok_or_else(|| {
+            let old = cache.as_mut().ok_or_else(|| {
                 anyhow::anyhow!("Telegram returned NotModified without a cached catalogue")
             })?;
             old.checked = Instant::now();
@@ -58,21 +75,15 @@ async fn catalogue(
                 data["effects"].is_array() && data["documents"].is_array(),
                 "Telegram returned an invalid effect catalogue"
             );
-            if cache.len() >= 64 && !cache.contains_key(&k) {
-                cache.clear();
-            }
-            cache.insert(
-                k.clone(),
-                Catalogue {
-                    data,
-                    checked: Instant::now(),
-                    unknown: HashSet::new(),
-                },
-            );
+            *cache = Some(Catalogue {
+                data,
+                checked: Instant::now(),
+                unknown: HashSet::new(),
+            });
         }
     }
     let current = cache
-        .get_mut(&k)
+        .as_mut()
         .ok_or_else(|| anyhow::anyhow!("Effect catalogue unavailable"))?;
     if let Some(i) = wanted
         && !has(&current.data, i)

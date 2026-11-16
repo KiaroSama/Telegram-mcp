@@ -170,6 +170,8 @@ async fn records(local: tokio::io::DuplexStream, remote: TcpStream) -> Result<()
     let (mut input, mut output) = tokio::io::split(local);
     let (mut network_input, mut network_output) = remote.into_split();
     let outgoing = async {
+        // Telegram MTProxy requires exactly one dummy CCS before client data.
+        network_output.write_all(&CCS_AND_DATA[..6]).await?;
         let mut data = vec![0; 16384];
         loop {
             let n = input.read(&mut data).await?;

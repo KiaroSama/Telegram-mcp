@@ -16,9 +16,7 @@ reviews:
     - ".github/actions/**"
     - ".github/codeql/**"
     - "Cargo.toml"
-    - "Dockerfile"
     - "docker-compose.yml"
-    - ".coderabbit.yaml"
     - "!tests/fixtures/**"
     - "!tests/common/**"
     - "!tests/local_dispatch_support/**"
@@ -35,6 +33,10 @@ reviews:
     - "!tests/rust_messaging_branches/support.rs"
     - "!tests/rust_proxy_transport/support.rs"
     - "!.github/workflows/python-lint-format.yml"
+    # These unchanged build/audit wrappers were reviewed in the preceding
+    # migration round. Their actual build/scanner gates continue to run; keep
+    # the service's review slots for all Rust/PowerShell code and test bodies.
+    - "!.github/workflows/gitleaks-history-audit.yml"
   path_instructions:
     - path: "src/**"
       instructions: >-

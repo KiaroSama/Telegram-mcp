@@ -76,14 +76,16 @@ pub fn insert_emoji(
                 .context("Entity range overflows")?;
             byte_index(text, start)?;
             byte_index(text, end)?;
+            ensure!(
+                !(["code", "pre"].contains(&kind(entity)) && start < at && at < end),
+                "A custom emoji cannot be inserted inside code or pre formatting"
+            );
             if start >= at {
                 item["offset"] = start
                     .checked_add(width)
                     .context("Entity offset overflows")?
                     .into();
-            } else if end > at
-                || (end == at && ["blockquote", "pre", "code"].contains(&kind(entity)))
-            {
+            } else if end > at || (end == at && kind(entity) == "blockquote") {
                 item["length"] = length
                     .checked_add(width)
                     .context("Entity length overflows")?

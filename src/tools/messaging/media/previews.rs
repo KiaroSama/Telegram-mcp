@@ -243,7 +243,7 @@ pub async fn render(data: &[u8], count: i64, dimension: i64) -> Result<Value> {
         operation = "media_frames",
         "Starting bounded media frame decoder"
     );
-    let mut child=super::child("ffmpeg").args(["-nostdin","-max_alloc","67108864","-max_pixels","50000000","-v","error","-protocol_whitelist","file,pipe","-format_whitelist","mov,matroska,webm,ogg,mp3,wav,flac,aac,gif,apng,avi","-i"]).arg(&input).args(["-vf",&filter,"-frames:v",&count.clamp(1,12).to_string(),"-threads","1"]).arg(&output).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn().context("FFmpeg is required to decode this animation/video; install FFmpeg with the needed codec")?;
+    let mut child=super::decoder().args(["-nostdin","-max_alloc","67108864","-max_pixels","50000000","-v","error","-protocol_whitelist","file,pipe","-format_whitelist","mov,matroska,webm,ogg,mp3,wav,flac,aac,gif,apng,avi","-i"]).arg(&input).args(["-vf",&filter,"-frames:v",&count.clamp(1,12).to_string(),"-threads","1"]).arg(&output).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn().context("FFmpeg is required to decode this animation/video; install FFmpeg with the needed codec")?;
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), child.wait()).await;
     match result {
         Ok(result) => ensure!(

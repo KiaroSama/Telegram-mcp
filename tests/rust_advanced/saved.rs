@@ -32,7 +32,9 @@ async fn hidden_is_only_valid_for_general() {
 #[tokio::test]
 async fn removing_chat_updates_included_and_pinned_lists() {
     let p = Mock::new().peer;
-    let m = Mock::new().respond("messages.getDialogFilters", folder(json!([p]), json!([p])));
+    let m = Mock::new()
+        .respond("messages.getDialogFilters", folder(json!([p]), json!([p])))
+        .respond("messages.getDialogFilters", folder(json!([p]), json!([p])));
     run(
         &m,
         "remove_chat_from_folder",

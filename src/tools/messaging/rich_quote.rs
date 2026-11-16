@@ -171,7 +171,11 @@ pub fn select(rich: &Value, a: &Value) -> Result<(Vec<Value>, usize)> {
         {
             continue;
         }
-        for (byte, _) in source.text.match_indices(wanted) {
+        for (byte, _) in source
+            .text
+            .char_indices()
+            .filter(|(byte, _)| source.text[*byte..].starts_with(wanted))
+        {
             let start = source.text[..byte].encode_utf16().count();
             let absolute = source.base + start;
             if offset.is_some_and(|o| o != absolute) {

@@ -124,9 +124,10 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A local Linux run passed all **1,667 tests**, with zero skipped and actual
-rlottie rendering required. Unique physical-line coverage measured **86.69% reviewed
-core (14,827/17,103)** and **83.77% all production (20,492/24,463)**. The local core result
+identical code. A local Linux run passed all **1,747 tests**, with zero skipped and actual
+rlottie rendering required. Unique physical-line coverage measured approximately
+**87.2% reviewed core (17,871 executable source lines)** and **84.4% all production
+(25,334 executable source lines)**. Exact covered-line counts remain in the CI reports. The local core result
 meets the unchanged floor. It remains single-platform evidence; the combined six-leg
 CI gate requires actual reports from Linux, macOS and Windows. Raw LLVM JSON region
 totals can count repeated instantiations and are not substituted for this metric.
@@ -154,6 +155,9 @@ leaving the encryption tools disabled alone would not protect those updates. Fre
 separate native authorization works, and legacy session/key files remain unchanged.
 This gate covers detected owned layouts, not unknown external stores. Do not delete
 state to bypass it; connect the owner's reviewed Rust secret backend when available.
+Cross-label authorization identity uses bounded, constant-time comparison of 256-byte
+keys. Owned temporary comparison buffers are zeroized; original configuration and
+persisted session stores remain unchanged.
 
 **Session formats:** native grammers state is distinct from Telethon SQLite/string
 sessions. Configured supported StringSession and SQLite schema7/8 authorization is

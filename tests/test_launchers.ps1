@@ -85,6 +85,67 @@ finally {
 
 $launcher = Get-Content -LiteralPath $scripts[0] -Raw
 
+# Server takeover must leave a separate login/health CLI invocation alone.
+& {
+    param($Root, $Launcher)
+    . (Join-Path $Root 'account-manager/Server.ps1')
+    $takeover = [regex]::Match($Launcher, '(?ms)^function Stop-OtherInstances \{.*?^\}').Value
+    . ([ScriptBlock]::Create($takeover))
+    $checkout = 'C:\fixture checkout'
+    $script:processFixtures = @(
+        [pscustomobject] @{ ProcessId = $PID; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'protected' },
+        [pscustomobject] @{ ProcessId = 5000001; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\target\release\telegram-mcp.exe" login --account work' },
+        [pscustomobject] @{ ProcessId = 5000002; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\target\debug\telegram-mcp.exe" session-health --key TELEGRAM_SESSION_NAME_WORK' },
+        [pscustomobject] @{ ProcessId = 5000003; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\target\release\telegram-mcp.exe" serve --http 127.0.0.1:8765' },
+        [pscustomobject] @{ ProcessId = 5000004; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh.exe -File "C:\fixture checkout\start-mcp.ps1"' },
+        [pscustomobject] @{ ProcessId = 5000005; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = 'C:\foreign\telegram-mcp.exe serve' }
+    )
+    $script:killed = @()
+    function Get-CimInstance { param($ClassName) $script:processFixtures }
+    function Get-Process { param($Id) $null }
+    function taskkill.exe { $script:killed += $args }
+    $trees = @(Get-ServerTrees -Root $checkout)
+    if ((($trees | Sort-Object) -join ',') -ne '5000003,5000004') { throw 'Account manager matched a non-server CLI invocation.' }
+    $stopped = Stop-OtherInstances -Root $checkout -WaitSeconds 0
+    if ((($stopped.Stopped | Sort-Object) -join ',') -ne '5000003,5000004') { throw 'Launcher takeover matched a non-server CLI invocation.' }
+} $projectRoot $launcher
+
+# State discovery uses the native canonical root for explicit overrides and the
+# selected configuration, and changes its cache when that selector changes.
+$stateLookupRoot = Join-Path ([IO.Path]::GetTempPath()) ('tg-state-lookup-' + [guid]::NewGuid())
+try {
+    [void] [IO.Directory]::CreateDirectory((Join-Path $stateLookupRoot 'raw'))
+    & {
+        param($Root, $Launcher, $Fixture)
+        $script:ProjectRoot = $Root
+        foreach ($name in 'Get-NativeBinary', 'Get-StateDirectory') {
+            $body = [regex]::Match($Launcher, "(?ms)^function $name \{.*?^\}").Value
+            . ([ScriptBlock]::Create($body))
+        }
+        $oldState = $env:TELEGRAM_STATE_DIR
+        $oldSelector = $env:TELEGRAM_ENV_FILE
+        try {
+            $env:TELEGRAM_ENV_FILE = $null
+            $ServerArguments = @()
+            $env:TELEGRAM_STATE_DIR = Join-Path $Fixture 'raw/../explicit'
+            $native = Get-NativeBinary -Root $Root
+            $canonical = (& $native state-path | Select-Object -Last 1).Trim()
+            if ((Get-StateDirectory) -ne $canonical) { throw 'An explicit state override bypassed native canonicalization.' }
+            $env:TELEGRAM_STATE_DIR = $null
+            foreach ($name in 'first', 'second') {
+                $selected = Join-Path $Fixture "$name.env"
+                $destination = Join-Path $Fixture $name
+                [IO.File]::WriteAllText($selected, "TELEGRAM_STATE_DIR='$destination'`n")
+                $ServerArguments = @('--config', $selected)
+                $canonical = (& $native state-path --config $selected | Select-Object -Last 1).Trim()
+                if ((Get-StateDirectory) -ne $canonical) { throw 'State discovery ignored or cached the wrong configuration selector.' }
+            }
+        }
+        finally { $env:TELEGRAM_STATE_DIR = $oldState; $env:TELEGRAM_ENV_FILE = $oldSelector }
+    } $projectRoot $launcher $stateLookupRoot
+}
+finally { Remove-Item -LiteralPath $stateLookupRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
 # Every run of the REAL launcher below is an automated start, and says so with
 # -NonInteractive. Without it, a person running these tests in their own console
 # hands the launcher an interactive input, the launcher takes it for a person
@@ -249,6 +310,10 @@ if ($Arguments.Count -and $Arguments[0] -eq 'state-path') {
     [Console]::Out.WriteLine((Join-Path $env:XDG_STATE_HOME 'telegram-mcp'))
     exit 0
 }
+if ($env:TG_TEST_EXPECT_LOG_DISABLED -eq '1' -and $env:TELEGRAM_MCP_LOG_FILE -ne 'off') {
+    [Console]::Error.WriteLine('The launcher did not forward its nonempty logging-disable setting.')
+    exit 91
+}
 [Console]::Out.WriteLine('fake-normal-output')
 [Console]::Error.WriteLine('fake-error-output')
 exit 0
@@ -351,7 +416,9 @@ try {
         if ($refusal[2]) { $env:TELEGRAM_MCP_LAUNCHER_LOG = $refusal[2] }
         else { Remove-Item -LiteralPath Env:TELEGRAM_MCP_LAUNCHER_LOG -ErrorAction SilentlyContinue }
         try {
+            $env:TG_TEST_EXPECT_LOG_DISABLED = '1'
             $offErr = (& pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scripts[0] @($refusal[1]) 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw "Logging opt-out was not accepted by the native child: $offErr" }
             $offLogs = Join-Path $offHome 'telegram-mcp/logs'
             $leaked = @(Get-ChildItem -LiteralPath $offLogs -File -Recurse -ErrorAction SilentlyContinue)
             if ($leaked.Count -ne 0) {
@@ -362,6 +429,7 @@ try {
             }
         }
         finally {
+            Remove-Item -LiteralPath Env:TG_TEST_EXPECT_LOG_DISABLED -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $offHome -Recurse -Force -ErrorAction SilentlyContinue
         }
     }

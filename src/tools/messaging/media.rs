@@ -38,3 +38,17 @@ pub fn child(program: impl AsRef<std::ffi::OsStr>) -> tokio::process::Command {
     }
     command
 }
+
+/// Bound both decoder and filter workers before the caller adds any inputs.
+pub fn decoder() -> tokio::process::Command {
+    let mut command = child("ffmpeg");
+    command.args([
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
+    ]);
+    command
+}

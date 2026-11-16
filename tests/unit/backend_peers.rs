@@ -189,3 +189,50 @@ async fn successful_rpc_result_is_preserved_when_peer_storage_cannot_commit() {
             .is_some()
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_indeterminate_commit_notifies_existing_and_later_pool_watchers() {
+    use std::{os::unix::fs::PermissionsExt, time::Duration};
+    struct Restore(std::path::PathBuf, std::fs::Permissions);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, self.1.clone());
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let files = temp.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let state = Arc::new(
+        State::at_with_installation(
+            temp.path().join("state"),
+            vec![files],
+            temp.path().to_owned(),
+        )
+        .unwrap(),
+    );
+    let session = Arc::new(PersistentSession::open(state.clone(), "watcher").unwrap());
+    session.set_home_dc_id(2).await.unwrap();
+    let watcher = tokio::spawn({
+        let session = session.clone();
+        async move { session.wait_for_write_uncertainty().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!watcher.is_finished());
+    let restore = Restore(
+        state.root().to_owned(),
+        std::fs::metadata(state.root()).unwrap().permissions(),
+    );
+    std::fs::set_permissions(state.root(), std::fs::Permissions::from_mode(0o300)).unwrap();
+    let failed = session.set_home_dc_id(3).await;
+    drop(restore);
+    assert!(failed.is_err());
+    tokio::time::timeout(Duration::from_secs(1), watcher)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), session.wait_for_write_uncertainty())
+        .await
+        .unwrap();
+    assert!(session.check_health().is_err());
+}

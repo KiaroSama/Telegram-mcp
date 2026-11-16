@@ -129,3 +129,154 @@ async fn invalid_public_inventory_source_reports_no_private_values_on_error() {
     assert!(output.stdout.is_empty());
     assert_no_canaries(directory.path(), &output, &[source_text, api_hash]);
 }
+
+fn selected_cli(root: &Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_telegram-mcp"));
+    command
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if name.starts_with("TELEGRAM_") || name.starts_with("MCP_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .env("TOKIO_WORKER_THREADS", "2")
+        .env("XDG_STATE_HOME", root.join("unused-state-home"));
+    command
+}
+
+#[tokio::test]
+async fn explicit_subcommand_source_wins_over_environment_and_global_config() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let ambient = root.join("ambient.env");
+    let explicit = root.join("explicit-α.env");
+    let wrong_state = root.join("ambient-state");
+    let right_state = root.join("explicit-state");
+    std::fs::create_dir(&right_state).unwrap();
+    std::fs::create_dir(root.join("files")).unwrap();
+    std::fs::write(right_state.join("work.session.json"), b"{}").unwrap();
+    for (path, state) in [(&ambient, &wrong_state), (&explicit, &right_state)] {
+        std::fs::write(
+            path,
+            format!(
+                "TELEGRAM_SESSION_NAME_WORK=work\nTELEGRAM_STATE_DIR={}\n",
+                serde_json::to_string(state.to_str().unwrap()).unwrap()
+            ),
+        )
+        .unwrap();
+    }
+    for global_flag in [false, true] {
+        let mut command = selected_cli(root);
+        command.env("TELEGRAM_ENV_FILE", &ambient);
+        if global_flag {
+            command.arg("--config").arg(&ambient);
+        }
+        command
+            .args(["session-health", "--env-file"])
+            .arg(&explicit)
+            .args(["--key", "TELEGRAM_SESSION_NAME_WORK", "--json"]);
+        let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report["status"], "unknown",
+            "The explicit source's existing native snapshot must be inspected"
+        );
+        assert!(
+            !wrong_state.exists(),
+            "An overridden environment source cannot create private state"
+        );
+    }
+}
+
+#[tokio::test]
+async fn native_bind_address_uses_the_selected_file_and_process_precedence_without_connecting() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("selected.env");
+    std::fs::write(
+        &source,
+        b"BIND_HOST=::1\nMCP_HOST=${BIND_HOST}\nMCP_PORT=18461\n",
+    )
+    .unwrap();
+    let mut command = selected_cli(temp.path());
+    command.args(["--config"]).arg(&source).arg("bind-address");
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "[::1]:18461"
+    );
+    let mut command = selected_cli(temp.path());
+    command
+        .arg("--config")
+        .arg(&source)
+        .arg("bind-address")
+        .env("MCP_PORT", "18462");
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "[::1]:18462"
+    );
+    assert!(!temp.path().join("unused-state-home").exists());
+}
+
+#[tokio::test]
+async fn account_removal_cli_archives_the_session_and_preserves_unrelated_configuration() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let source = root.join("selected.env");
+    let state = root.join("private");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::write(
+        &source,
+        b"TELEGRAM_SESSION_NAME_WORK=work\nOTHER=preserved\n",
+    )
+    .unwrap();
+    std::fs::write(state.join("work.session.json"), b"{}").unwrap();
+    let mut command = selected_cli(root);
+    command
+        .args(["remove-account", "--account", "work", "--env-file"])
+        .arg(&source)
+        .args(["--key", "TELEGRAM_SESSION_NAME_WORK", "--state-dir"])
+        .arg(&state);
+    let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["removed"], true);
+    let archived = report["archived"].as_str().unwrap();
+    assert!(state.join(format!("{archived}.session.json")).is_file());
+    assert!(!state.join("work.session.json").exists());
+    assert!(!state.join("account-rename-transaction.json").exists());
+    let remaining = std::fs::read_to_string(source).unwrap();
+    assert!(remaining.contains("OTHER=preserved"));
+    assert!(!remaining.contains("TELEGRAM_SESSION_NAME_WORK"));
+}

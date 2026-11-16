@@ -1,3 +1,4 @@
+use super::config::{ConfigWriteGuard, config_write_lock, file_values, remove_env_value_locked};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
@@ -48,6 +49,64 @@ fn local_path(state: &State, name: &str) -> Result<std::path::PathBuf> {
 }
 
 pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>> {
+    recover_rename(state)?;
+    rename_with_config(state, from, to, None)
+}
+
+/// Archive one account and remove its exact file-owned configuration together.
+pub fn remove_account(state: &State, account: &str, env_file: &Path, key: &str) -> Result<Value> {
+    let account = account.to_ascii_lowercase();
+    crate::session::validate_label(&account)?;
+    if super::label_for(key)? != account {
+        bail!("Removal key does not belong to the selected account");
+    }
+    recover_rename(state)?;
+    super::recover_logins(state)?;
+    let config = config_write_lock(env_file)?;
+    let metadata = config
+        .path
+        .symlink_metadata()
+        .context("The account configuration is missing")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!("Account removal requires a regular configuration file");
+    }
+    let snapshot = super::read_config(&config.path)?;
+    if snapshot
+        .process_keys
+        .iter()
+        .any(|key| super::label_for(key).is_ok_and(|label| label == account))
+    {
+        bail!("This account is owned by the process environment; remove it there first");
+    }
+    let values = file_values(&config.path)?;
+    let value = values
+        .get(key)
+        .filter(|value| !value.is_empty())
+        .context("The selected account configuration is missing")?;
+    if values.iter().any(|(other, value)| {
+        other != key
+            && !value.is_empty()
+            && super::label_for(other).is_ok_and(|label| label == account)
+    }) {
+        bail!("Several configuration keys define this account; resolve them before removal");
+    }
+    use rand::Rng;
+    let archive = format!(
+        "__removed_{}_{:012x}",
+        account.chars().take(41).collect::<String>(),
+        rand::rng().random::<u64>() & 0xffffffffffff
+    );
+    let plan = json!({"env_file":config.path,"key":key,"digest":super::config_digest(value)});
+    let moved = rename_with_config(state, &account, &archive, Some((&config, &plan)))?;
+    Ok(json!({"removed":true,"account":account,"archived":archive,"moved":moved}))
+}
+
+fn rename_with_config(
+    state: &State,
+    from: &str,
+    to: &str,
+    removal: Option<(&ConfigWriteGuard, &Value)>,
+) -> Result<Vec<String>> {
     let from = from.to_ascii_lowercase();
     let to = to.to_ascii_lowercase();
     crate::session::validate_label(&from)?;
@@ -79,7 +138,15 @@ pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>
     }
     let _lock = state.state_lock()?;
     if state.root().join(JOURNAL).exists() {
-        recover_unlocked(state)?;
+        bail!("Recover the pending account transaction before renaming");
+    }
+    if [&from, &to].into_iter().any(|label| {
+        state
+            .root()
+            .join(super::recovery::journal_name(label))
+            .exists()
+    }) {
+        bail!("Recover the pending account login before renaming its account");
     }
     let mut files = Vec::<(String, String)>::new();
     let native = (format!("{from}.session.json"), format!("{to}.session.json"));
@@ -254,7 +321,7 @@ pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>
             rewrites.push(json!({"name":name,"before":before,"after":{}}));
         }
     }
-    state.write_json_transaction_unlocked(JOURNAL, &json!({"files":files,"rewrites":rewrites}))?;
+    state.write_json_transaction_unlocked(JOURNAL, &json!({"from":from,"to":to,"files":files,"rewrites":rewrites,"removal":removal.map(|(_,plan)|plan)}))?;
     let result = (|| -> Result<Vec<String>> {
         let mut changed = Vec::new();
         for (source, target) in &files {
@@ -268,11 +335,25 @@ pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>
             state.write_json_transaction_unlocked(name, &row["after"])?;
             changed.push(name.to_owned());
         }
-        std::fs::remove_file(state.root().join(JOURNAL))?;
+        if let Some((config, plan)) = removal {
+            remove_env_value_locked(
+                config,
+                plan["key"].as_str().context("Invalid removal key")?,
+                plan["digest"].as_str().context("Invalid removal digest")?,
+            )?;
+        }
+        if let Err(error) = std::fs::remove_file(state.root().join(JOURNAL)) {
+            if removal.is_none() {
+                return Err(error.into());
+            }
+            tracing::warn!(
+                "Account removal completed; its private recovery marker could not be removed"
+            );
+        }
         Ok(changed)
     })();
     if result.is_err() {
-        recover_unlocked(state).context("Account rename failed; rollback could not finish, retain the private transaction journal")?;
+        recover_unlocked(state, removal.map(|(config,_)|config)).context("Account rename failed; rollback could not finish, retain the private transaction journal")?;
     }
     drop(leases);
     result
@@ -282,15 +363,74 @@ pub fn recover_rename(state: &State) -> Result<()> {
     if !state.root().join(JOURNAL).exists() {
         return Ok(());
     }
+    let initial = state.read_json(JOURNAL, Value::Null)?;
+    let config = if let Some(path) = initial["removal"]["env_file"].as_str() {
+        let path = Path::new(path);
+        if !path.is_absolute() {
+            bail!("Account removal source must be absolute");
+        }
+        Some(config_write_lock(path)?)
+    } else {
+        None
+    };
+    let mut leases = Vec::new();
+    for label in [initial["from"].as_str(), initial["to"].as_str()]
+        .into_iter()
+        .flatten()
+    {
+        leases.push(super::login::lock_stage(state, label)?);
+    }
     let _lock = state.state_lock()?;
-    recover_unlocked(state)
+    if state.read_json_unlocked(JOURNAL, Value::Null)? != initial {
+        bail!("Account transaction changed while acquiring recovery ownership");
+    }
+    recover_unlocked(state, config.as_ref())
 }
 
-fn recover_unlocked(state: &State) -> Result<()> {
+fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<()> {
     let journal = state.read_json_unlocked(JOURNAL, Value::Null)?;
     if journal.is_null() {
         return Ok(());
     }
+    let committed = if !journal["removal"].is_null() {
+        let plan = &journal["removal"];
+        let config = config.context("Account removal recovery needs its configuration lock")?;
+        if plan["env_file"].as_str() != config.path.to_str() {
+            bail!("Account removal configuration source changed");
+        }
+        let metadata = config
+            .path
+            .symlink_metadata()
+            .context("Account removal configuration is missing; retain its journal")?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            bail!("Account removal configuration is not a regular file");
+        }
+        let key = plan["key"]
+            .as_str()
+            .context("Invalid account removal key")?;
+        if Some(super::label_for(key)?.as_str()) != journal["from"].as_str()
+            || !journal["to"]
+                .as_str()
+                .is_some_and(|label| label.starts_with("__removed_"))
+        {
+            bail!("Account removal labels conflict with their configuration key");
+        }
+        let digest = plan["digest"]
+            .as_str()
+            .context("Invalid account removal digest")?;
+        if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            bail!("Invalid account removal digest");
+        }
+        match file_values(&config.path)?.get(key) {
+            Some(value) if super::config_digest(value) == digest => false,
+            Some(_) => bail!(
+                "The removed account configuration changed; preserve its state and transaction journal"
+            ),
+            None => true,
+        }
+    } else {
+        false
+    };
     // Ordinary writers are fenced while this marker exists. Also detect raw
     // out-of-band edits before restoring any whole-record snapshot.
     for pair in journal["files"]
@@ -319,6 +459,11 @@ fn recover_unlocked(state: &State) -> Result<()> {
         if let Some(source) = row["moved_source"].as_str()
             && local_path(state, source)?.exists()
         {
+            if committed && state.read_json_unlocked(source, Value::Null)? != row["before"] {
+                bail!(
+                    "Account authorization changed before archival; retain its current session and journal"
+                );
+            }
             continue;
         }
         let current = state.read_json_unlocked(name, Value::Null)?;
@@ -327,6 +472,34 @@ fn recover_unlocked(state: &State) -> Result<()> {
                 "Account state changed after the transaction snapshot; recovery retained all current records and its private journal"
             );
         }
+    }
+    if committed {
+        // Configuration deletion is the commit point. Finish any remaining
+        // archival moves without restoring an obsolete whole .env revision.
+        for pair in journal["files"]
+            .as_array()
+            .context("Invalid account transaction journal")?
+        {
+            let source = local_path(state, pair[0].as_str().context("Invalid account source")?)?;
+            let target = local_path(
+                state,
+                pair[1].as_str().context("Invalid account destination")?,
+            )?;
+            if source.exists() {
+                std::fs::rename(source, target)?;
+            }
+        }
+        for row in journal["rewrites"]
+            .as_array()
+            .context("Invalid account transaction journal")?
+        {
+            let name = row["name"]
+                .as_str()
+                .context("Invalid account transaction record")?;
+            state.write_json_transaction_unlocked(name, &row["after"])?;
+        }
+        std::fs::remove_file(state.root().join(JOURNAL))?;
+        return Ok(());
     }
     for row in journal["rewrites"]
         .as_array()

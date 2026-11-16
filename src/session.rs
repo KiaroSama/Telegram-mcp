@@ -12,7 +12,10 @@ use grammers_session::{BoxFuture, Session, SessionData, types::*};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 #[derive(Serialize, Deserialize)]
@@ -35,7 +38,7 @@ impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Private session storage failed; existing state was preserved"
+            "Private session storage failed; inspect the saved snapshot before retrying"
         )
     }
 }
@@ -48,6 +51,8 @@ pub struct PersistentSession {
     auth_leases: Mutex<std::collections::HashMap<String, File>>,
     binding: Mutex<Option<String>>,
     origin: Mutex<String>,
+    write_uncertain: AtomicBool,
+    health_changed: tokio::sync::Notify,
 }
 pub fn validate_label(name: &str) -> Result<()> {
     if name.is_empty()
@@ -111,14 +116,40 @@ impl PersistentSession {
             auth_leases: Mutex::new(std::collections::HashMap::new()),
             binding: Mutex::new(binding),
             origin: Mutex::new(origin),
+            write_uncertain: AtomicBool::new(false),
+            health_changed: tokio::sync::Notify::new(),
         };
         session.acquire_auth_leases(&*session.data()?)?;
         Ok(session)
     }
     fn data(&self) -> std::result::Result<MutexGuard<'_, SessionData>, SessionError> {
-        self.data.lock().map_err(|_| SessionError)
+        self.check_health()?;
+        let data = self.data.lock().map_err(|_| SessionError)?;
+        self.check_health()?;
+        Ok(data)
+    }
+    pub(crate) fn check_health(&self) -> std::result::Result<(), SessionError> {
+        if self.write_uncertain.load(Ordering::Acquire) {
+            Err(SessionError)
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) async fn wait_for_write_uncertainty(&self) {
+        loop {
+            let changed = self.health_changed.notified();
+            tokio::pin!(changed);
+            // Register before checking the flag so a commit between the check
+            // and awaiting cannot lose notify_waiters' notification.
+            changed.as_mut().enable();
+            if self.check_health().is_err() {
+                return;
+            }
+            changed.await;
+        }
     }
     fn persist(&self, data: &SessionData) -> std::result::Result<(), SessionError> {
+        self.check_health()?;
         self.acquire_auth_leases(data).map_err(|_| SessionError)?;
         let snapshot = Snapshot {
             home_dc: data.home_dc,
@@ -131,7 +162,16 @@ impl PersistentSession {
         let value = serde_json::to_value(snapshot).map_err(|_| SessionError)?;
         self.state
             .write_json(&format!("{}.session.json", self.name), &value)
-            .map_err(|_| SessionError)
+            .map_err(|error| {
+                if error
+                    .downcast_ref::<crate::state::storage::DurabilityUncertain>()
+                    .is_some()
+                {
+                    self.write_uncertain.store(true, Ordering::Release);
+                    self.health_changed.notify_waiters();
+                }
+                SessionError
+            })
     }
     pub fn import_telethon(&self, text: &str) -> Result<()> {
         use base64::Engine;
@@ -233,7 +273,7 @@ impl Session for PersistentSession {
     ) -> BoxFuture<'_, std::result::Result<(), SessionError>> {
         Box::pin(async move {
             if peers.is_empty() {
-                return Ok(());
+                return self.check_health();
             }
             self.transaction(|d| {
                 for peer in peers {

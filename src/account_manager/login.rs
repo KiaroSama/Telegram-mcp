@@ -29,6 +29,12 @@ pub fn begin_login(
 ) -> Result<LoginTransaction> {
     crate::session::validate_label(account)?;
     let account = account.to_ascii_lowercase();
+    let key = if account == "default" {
+        "TELEGRAM_SESSION_NAME".to_owned()
+    } else {
+        format!("TELEGRAM_SESSION_NAME_{}", account.to_ascii_uppercase())
+    };
+    label_for(&key)?;
     if account.starts_with("__login_") {
         bail!("This account prefix is reserved for private login staging");
     }

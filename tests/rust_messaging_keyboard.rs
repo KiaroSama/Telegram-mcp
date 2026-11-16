@@ -292,3 +292,18 @@ fn ogg_with_title_is_music_instead_of_voice() {
     std::fs::write(temp.path(), b"OggS OpusHead OpusTags TITLE=Song").unwrap();
     assert_eq!(uploads::infer_kind(temp.path()), "audio");
 }
+
+#[test]
+fn overlapping_rich_quotes_require_offsets_and_accept_the_second_occurrence() {
+    let source =
+        json!({"blocks":[{"_":"pageBlockParagraph","text":{"_":"textPlain","text":"🙂ababa"}}]});
+    assert!(
+        rich_quote::select(&source, &json!({"quote_text":"aba"}))
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous")
+    );
+    let (_, offset) =
+        rich_quote::select(&source, &json!({"quote_text":"aba","quote_offset":4})).unwrap();
+    assert_eq!(offset, 4);
+}

@@ -2,57 +2,92 @@
 //! pixels through the same bounded worker protocol on other platforms.
 
 use serde_json::{Value, json};
-use std::io::Write;
+use tokio::io::AsyncWriteExt;
 
 fn run_worker(request: &Value) -> Value {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_telegram-mcp"));
-    command.arg("__capture-worker").env_clear();
-    for key in [
-        "PATH",
-        "SystemRoot",
-        "WINDIR",
-        "TEMP",
-        "TMP",
-        "LANG",
-        "LLVM_PROFILE_FILE",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            command.env(key, value);
-        }
-    }
-    let mut child = command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
         .unwrap()
-        .write_all(&serde_json::to_vec(request).unwrap())
+        .block_on(async {
+            let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_telegram-mcp"));
+            command.arg("__capture-worker").env_clear();
+            for key in [
+                "PATH",
+                "SystemRoot",
+                "WINDIR",
+                "TEMP",
+                "TMP",
+                "LANG",
+                "LLVM_PROFILE_FILE",
+            ] {
+                if let Some(value) = std::env::var_os(key) {
+                    command.env(key, value);
+                }
+            }
+            let mut child = command
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(&serde_json::to_vec(request).unwrap())
+                .await
+                .unwrap();
+            let output =
+                tokio::time::timeout(std::time::Duration::from_secs(25), child.wait_with_output())
+                    .await
+                    .expect(
+                        "Native visual worker did not finish within its integration-test deadline",
+                    )
+                    .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["ok"], true, "{value}");
+            value["result"].clone()
+        })
+}
+
+#[test]
+fn native_visual_worker_drains_responses_larger_than_pipe_capacity() {
+    use base64::Engine as _;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("noise.gif");
+    let image = image::RgbaImage::from_fn(512, 512, |x, y| {
+        let mut n = x + y * 512;
+        n = (n ^ (n >> 16)).wrapping_mul(0x7feb_352d);
+        n = (n ^ (n >> 15)).wrapping_mul(0x846c_a68b);
+        n ^= n >> 16;
+        image::Rgba([(n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, 255])
+    });
+    let mut encoder = image::codecs::gif::GifEncoder::new(std::fs::File::create(&path).unwrap());
+    encoder
+        .encode_frame(image::Frame::new(image.clone()))
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            break;
-        }
-        if std::time::Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("Native visual worker did not finish within its integration-test deadline");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+    encoder.encode_frame(image::Frame::new(image)).unwrap();
+    drop(encoder);
+    let expected = image::open(&path).unwrap().to_rgba8();
+    let result =
+        run_worker(&json!({"tool":"__decode_media","path":path,"count":1,"max_dimension":512}));
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(result[0]["data"].as_str().unwrap())
+        .unwrap();
+    assert!(data.len() > 64 * 1024);
+    assert_eq!(
+        telegram_mcp::tools::visual::images::decode_image(&data)
+            .unwrap()
+            .to_rgba8(),
+        expected
     );
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["ok"], true, "{value}");
-    value["result"].clone()
 }
 
 #[test]

@@ -117,7 +117,9 @@ async fn view_lookup_does_not_increment_counts() {
 }
 #[tokio::test]
 async fn channel_inspection_uses_channel_scoped_message_ids() {
-    let w = Wire::channel(vec![messages(vec![message(9, "post")])]);
+    let mut post = message(9, "post");
+    post["peer_id"] = json!({"_":"peerChannel","channel_id":"7"});
+    let w = Wire::channel(vec![messages(vec![post])]);
     run(&w, "inspect_message", json!({"chat_id":7,"message_id":9}))
         .await
         .unwrap();
@@ -530,4 +532,62 @@ async fn zero_context_returns_only_the_selected_message_window() {
     .await
     .unwrap();
     assert_eq!(w.calls()[0].1["limit"], 1);
+}
+
+#[tokio::test]
+async fn fetching_an_account_global_id_never_returns_another_chats_message() {
+    use telegram_mcp::tools::messaging::helpers::fetch;
+    let mut other = message(9, "private in another chat");
+    other["peer_id"] = json!({"_":"peerUser","user_id":"8"});
+    let w = Wire::new(vec![messages(vec![other])]);
+    let error = fetch(
+        &w,
+        &json!({"_":"inputPeerUser","user_id":"7","access_hash":"13"}),
+        9,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("requested chat"));
+    assert_eq!(w.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn fetched_messages_must_match_the_requested_peer_type_and_id() {
+    use telegram_mcp::tools::messaging::helpers::fetch;
+    for peer in [
+        json!({"_":"inputPeerUser","user_id":"7","access_hash":"13"}),
+        json!({"_":"inputPeerChat","chat_id":"7"}),
+        json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"13"}),
+    ] {
+        for wrong in [
+            json!(null),
+            json!({"_":"peerUser","user_id":"8"}),
+            json!({"_":"peerChat","chat_id":"8"}),
+            json!({"_":"peerChannel","channel_id":"8"}),
+        ] {
+            let mut source = message(9, "unrelated content");
+            source["peer_id"] = wrong;
+            let w = Wire::new(vec![messages(vec![source])]);
+            assert!(fetch(&w, &peer, 9).await.is_err());
+            assert_eq!(w.calls().len(), 1);
+        }
+    }
+    let w = Wire::new(vec![
+        json!([{"_":"user","id":"7"}]),
+        messages(vec![message(9, "saved message")]),
+    ]);
+    assert_eq!(
+        fetch(&w, &json!({"_":"inputPeerSelf"}), 9).await.unwrap()["message"],
+        "saved message"
+    );
+    assert_eq!(
+        w.calls()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["users.getUsers", "messages.getMessages"]
+    );
+    let w = Wire::new(vec![json!([])]);
+    assert!(fetch(&w, &json!({"_":"inputPeerSelf"}), 9).await.is_err());
+    assert_eq!(w.calls().len(), 1);
 }

@@ -27,6 +27,19 @@ pub async fn session_health_with_state(state: &State, env_file: &Path, key: &str
     }
     if key.starts_with("TELEGRAM_SESSION_NAME")
         && !state.root().join(format!("{label}.session.json")).is_file()
+        && ![
+            snapshot.path.parent().unwrap_or(Path::new(".")),
+            state.root(),
+        ]
+        .into_iter()
+        .flat_map(|base| {
+            let path = base.join(value);
+            [
+                path.clone(),
+                std::path::PathBuf::from(format!("{}.session", path.display())),
+            ]
+        })
+        .any(|path| path.is_file())
     {
         return Ok(status("invalid"));
     }
@@ -46,13 +59,13 @@ pub async fn session_health_with_state(state: &State, env_file: &Path, key: &str
         Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
         _ => false,
     };
-    if endpoint.scheme() != "http"
+    if !matches!(endpoint.scheme(), "http" | "https")
         || !loopback
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
         || endpoint.fragment().is_some()
     {
-        bail!("Private service discovery must name a loopback HTTP endpoint");
+        bail!("Private service discovery must name a loopback HTTP or HTTPS endpoint");
     }
     let token = discovery["token"]
         .as_str()

@@ -259,3 +259,98 @@ fn an_existing_snapshot_without_an_authorization_cannot_consume_the_encrypted_qu
     snapshot(&f, "alias", None, "legacy");
     check_deferred_custody_with_config(&f.state, "alias", &config(&f, &[])).unwrap();
 }
+
+#[test]
+fn an_oversized_native_authorization_set_is_refused_before_comparing_custody() {
+    let f = Fixture::new();
+    custody(&f);
+    snapshot(&f, "old", Some(0x72), "legacy");
+    snapshot(&f, "alias", Some(0x73), "legacy");
+    let mut alias = f
+        .state
+        .read_json("alias.session.json", Value::Null)
+        .unwrap();
+    let options: Vec<grammers_session::types::DcOption> =
+        serde_json::from_value(alias["dc_options"].clone()).unwrap();
+    let prototype = options[0].clone();
+    alias["dc_options"] = (1..=33)
+        .map(|id| {
+            let mut option = prototype.clone();
+            option.id = id;
+            option.auth_key = Some([0x73u8; 256]);
+            json!(option)
+        })
+        .collect();
+    let _: Vec<grammers_session::types::DcOption> =
+        serde_json::from_value(alias["dc_options"].clone()).unwrap();
+    f.state.write_json("alias.session.json", &alias).unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "alias", &config(&f, &[])).is_err());
+    assert_eq!(
+        f.state
+            .read_json("alias.session.json", Value::Null)
+            .unwrap(),
+        alias
+    );
+}
+
+#[test]
+fn a_single_byte_difference_at_every_key_position_identifies_a_different_authorization() {
+    let f = Fixture::new();
+    custody(&f);
+    snapshot(&f, "old", Some(0x72), "legacy");
+    let original = string(0x72);
+    let mut bytes = base64::engine::general_purpose::URL_SAFE
+        .decode(&original[1..])
+        .unwrap();
+    let offset = bytes.len() - 256;
+    for position in 0..256 {
+        bytes[offset + position] ^= 1;
+        let different = format!(
+            "1{}",
+            base64::engine::general_purpose::URL_SAFE.encode(&bytes)
+        );
+        check_deferred_custody_with_config(
+            &f.state,
+            "alias",
+            &config(&f, &[("TELEGRAM_SESSION_STRING_ALIAS", different)]),
+        )
+        .unwrap_or_else(|_| panic!("Distinct authorization was confused at byte {position}"));
+        bytes[offset + position] ^= 1;
+    }
+    assert!(
+        check_deferred_custody_with_config(
+            &f.state,
+            "alias",
+            &config(&f, &[("TELEGRAM_SESSION_STRING_ALIAS", original)])
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn an_authorization_shared_only_by_a_non_home_datacenter_still_blocks_custody() {
+    let f = Fixture::new();
+    custody(&f);
+    snapshot(&f, "old", Some(0x72), "legacy");
+    snapshot(&f, "alias", Some(0x73), "legacy");
+    let mut alias = f
+        .state
+        .read_json("alias.session.json", Value::Null)
+        .unwrap();
+    let home = alias["home_dc"].as_i64().unwrap() as i32;
+    let mut options: Vec<grammers_session::types::DcOption> =
+        serde_json::from_value(alias["dc_options"].clone()).unwrap();
+    let secondary = options.iter_mut().find(|option| option.id != home).unwrap();
+    secondary.auth_key = Some([0x72; 256]);
+    alias["dc_options"] = json!(options);
+    f.state.write_json("alias.session.json", &alias).unwrap();
+    let error =
+        check_deferred_custody_with_config(&f.state, "alias", &config(&f, &[])).unwrap_err();
+    assert!(error.to_string().contains("existing secret-chat custody"));
+    assert_eq!(
+        f.state
+            .read_json("alias.session.json", Value::Null)
+            .unwrap(),
+        alias
+    );
+}

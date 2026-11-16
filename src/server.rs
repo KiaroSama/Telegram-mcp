@@ -295,14 +295,8 @@ impl Mcp {
         ) {
             crate::transfer::attach_download(&mut value);
         }
-        if name == "set_ghost_mode"
-            && value["effective"] == true
-            && let Some(active) = self.runtime.accounts.lock().await.get(&account).cloned()
-        {
-            active
-                .api
-                .invoke("account.updateStatus", json!({"offline":true}))
-                .await?;
+        if name == "set_ghost_mode" && value["effective"] == true {
+            self.restore_offline_presence(&account, &mut value).await;
         }
         if self
             .runtime
@@ -337,6 +331,24 @@ impl Mcp {
         policy.filter_for(name, &mut value)?;
         redact_internal(&mut value);
         Ok(value)
+    }
+    async fn restore_offline_presence(&self, account: &str, value: &mut Value) {
+        let active = self.runtime.accounts.lock().await.get(account).cloned();
+        if let Some(active) = active {
+            let status = tokio::time::timeout(
+                Duration::from_secs(10),
+                active
+                    .api
+                    .invoke("account.updateStatus", json!({"offline":true})),
+            )
+            .await;
+            if !matches!(status, Ok(Ok(_))) {
+                completed_warning(
+                    value,
+                    "Ghost mode was saved, but the offline status update was not confirmed. Inspect presence before continuing.",
+                );
+            }
+        }
     }
 }
 fn completed_warning(value: &mut Value, message: &'static str) {

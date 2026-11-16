@@ -407,3 +407,61 @@ fn truncated_encrypted_envelope_is_refused() {
     let mut packet = vec![1; 39];
     assert!(mtproxy::strip_padding(&mut packet).is_err());
 }
+
+#[tokio::test]
+async fn unauthenticated_sockets_do_not_consume_authenticated_tunnel_capacity() {
+    let (_temp, state) = state();
+    let (target, _telegram, _) = telegram(false).await;
+    let route = proxy::route(state, &snapshot(&[]), "default")
+        .await
+        .unwrap();
+    let url = url::Url::parse(route.proxy_url.as_ref().unwrap()).unwrap();
+    let mut idle = vec![];
+    for _ in 0..16 {
+        idle.push(
+            TcpStream::connect((url.host_str().unwrap(), url.port().unwrap()))
+                .await
+                .unwrap(),
+        );
+    }
+    let mut owner = tokio::time::timeout(Duration::from_secs(3), connect_gateway(&route, target))
+        .await
+        .unwrap()
+        .unwrap();
+    owner
+        .write_all(&mtproxy::full_frame(b"owner payload!!!", 0).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        mtproxy::read_full(&mut owner, 0).await.unwrap(),
+        b"owner payload!!!"
+    );
+    assert_eq!(idle.len(), 16);
+}
+
+#[tokio::test]
+async fn failed_route_telemetry_cannot_discard_a_verified_owner_connection() {
+    let (_temp, state) = state();
+    std::fs::write(
+        state.root().join("proxy-routes-v1.json"),
+        b"invalid telemetry fixture",
+    )
+    .unwrap();
+    let (target, _telegram, _) = telegram(false).await;
+    let route = proxy::route(state, &snapshot(&[]), "default")
+        .await
+        .unwrap();
+    let mut owner = connect_gateway(&route, target).await.unwrap();
+    owner
+        .write_all(&mtproxy::full_frame(b"owner payload!!!", 0).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        mtproxy::read_full(&mut owner, 0).await.unwrap(),
+        b"owner payload!!!"
+    );
+    assert_eq!(
+        route.metadata()["verification"],
+        "telegram_transport_verified"
+    );
+}

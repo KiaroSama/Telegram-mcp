@@ -37,6 +37,8 @@ lopdf = { version = "0.47", default-features = false }
 rand = "0.9"
 regex = "1"
 reqwest = { version = "0.13", features = ["json", "query", "multipart"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+rustls-platform-verifier = "=0.7.1"
 rmcp = { version = "3.10", features = ["server", "client", "transport-io", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }
 roxmltree = "0.21"
 rusqlite = { version = "0.43", default-features = false, features = ["bundled", "limits", "hooks"] }
@@ -44,8 +46,10 @@ rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.10"
+subtle = "=2.6.1"
 tempfile = "3"
 tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
 tokio-util = { version = "0.7", features = ["io"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -53,6 +57,7 @@ unicode-normalization = "0.1"
 url = "2"
 zip = { version = "9.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 x25519-dalek = "3"
+zeroize = "=1.9.1"
 axum-server = { version = "=0.9.2", features = ["tls-rustls"] }
 
 [dev-dependencies]

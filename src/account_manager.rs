@@ -6,13 +6,13 @@ mod recovery;
 mod rename;
 use base64::Engine;
 pub use config::{
-    ConfigSnapshot, capture_process_config, config_digest, current_config, label_for, parse_config,
-    read_config, select_source, write_env_value,
+    ConfigSnapshot, bind_address, capture_process_config, config_digest, current_config, label_for,
+    parse_config, read_config, select_source, write_env_value,
 };
 pub use health::{session_health, session_health_with_state};
 pub use login::{LoginTransaction, begin_login};
 pub use recovery::recover_logins;
-pub use rename::{recover_rename, rename_account};
+pub use rename::{recover_rename, remove_account, rename_account};
 
 /// Validate the historic import format without persisting or opening a connection.
 pub fn session_validate(text: &str) -> &'static str {

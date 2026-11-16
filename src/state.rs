@@ -189,6 +189,17 @@ impl State {
                 if !data.is_object() {
                     bail!("ghost.json is not an object; nothing was overwritten");
                 }
+                if ["accounts", "chats"]
+                    .iter()
+                    .any(|field| !data[*field].is_null() && !data[*field].is_object())
+                    || data["chats"].as_object().is_some_and(|accounts| {
+                        accounts
+                            .values()
+                            .any(|chats| !chats.is_null() && !chats.is_object())
+                    })
+                {
+                    bail!("ghost.json nested settings are invalid; nothing was overwritten");
+                }
                 if let (Some(a), Some(c)) = (account, chat) {
                     if data["chats"].is_null() {
                         data["chats"] = json!({});

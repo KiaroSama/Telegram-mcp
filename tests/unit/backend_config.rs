@@ -118,3 +118,37 @@ fn public_revision_serialization_keeps_all_digest_bytes_including_leading_zeroes
         json!("ab".repeat(32))
     );
 }
+
+#[tokio::test]
+async fn opening_a_removed_configuration_never_touches_its_private_authorization() {
+    let temp = tempfile::tempdir().unwrap();
+    let files = temp.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let state = std::sync::Arc::new(State::at(temp.path().join("state"), vec![files]).unwrap());
+    let path = state.root().join("retired.session.json");
+    // A deliberately opaque retained record is a failsafe: even if the source
+    // guard regresses, parsing fails before any transport can be constructed.
+    std::fs::write(&path, b"retained-authorization-canary").unwrap();
+    let snapshot = crate::account_manager::ConfigSnapshot {
+        values: BTreeMap::from([("TELEGRAM_API_ID".into(), "1".into())]),
+        digest: String::new(),
+        path: temp.path().join(".env"),
+        process_keys: BTreeSet::new(),
+    };
+    let error = crate::backend::Native::open_snapshot(
+        state.clone(),
+        "retired",
+        "retired",
+        &snapshot,
+        false,
+    )
+    .await
+    .err()
+    .expect("An unconfigured authorization cannot be attached");
+    assert!(error.to_string().contains("no longer configured"));
+    assert_eq!(
+        std::fs::read(path).unwrap(),
+        b"retained-authorization-canary"
+    );
+    assert!(!state.root().join("retired.session.lock").exists());
+}

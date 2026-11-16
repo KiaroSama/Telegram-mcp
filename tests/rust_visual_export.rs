@@ -22,6 +22,9 @@ struct Fixture {
     block: bool,
     fail: bool,
     complex: bool,
+    short_page: bool,
+    admin_partial: bool,
+    entered: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait::async_trait]
@@ -32,6 +35,7 @@ impl Telegram for Fixture {
             .unwrap()
             .push((method.into(), params.clone()));
         if self.block {
+            self.entered.notify_one();
             std::future::pending::<()>().await;
         }
         if self.fail {
@@ -86,7 +90,13 @@ impl Telegram for Fixture {
         }
         if method == "messages.getHistory" {
             let offset = params["offset_id"].as_i64().unwrap();
-            let ids: Vec<i64> = if self.complex {
+            let ids: Vec<i64> = if self.short_page {
+                match offset {
+                    0 => vec![9],
+                    9 => vec![8],
+                    _ => vec![],
+                }
+            } else if self.complex {
                 if offset != 0 {
                     vec![]
                 } else {
@@ -117,10 +127,15 @@ impl Telegram for Fixture {
             );
         }
         if method == "channels.getAdminLog" {
-            return Ok(
-                json!({"events":[{"id":"8007199254740999","date":1700000000,"user_id":"9007199254740993",
-                "action":{"_":"channelAdminLogEventActionDeleteMessage","message":{"_":"message","id":12,"date":1700000000,"message":"Deleted text"}}}],"users":[],"chats":[]}),
-            );
+            if params["max_id"].as_str() != Some("0") {
+                return Ok(json!({"events":[],"users":[],"chats":[]}));
+            }
+            let mut response = json!({"events":[{"id":"8007199254740999","date":1700000000,"user_id":"9007199254740993",
+                "action":{"_":"channelAdminLogEventActionDeleteMessage","message":{"_":"message","id":12,"date":1700000000,"message":"Deleted text"}}}],"users":[],"chats":[]});
+            if self.admin_partial {
+                response["events"][0]["action"]["message"]["rich_message"] = json!({"part":true});
+            }
+            return Ok(response);
         }
         bail!("Unexpected fixture method: {method}")
     }
@@ -276,9 +291,14 @@ fn export_cancel_interrupts_pending_request_and_reports_cancelled() {
             ..Default::default()
         };
         let settings = settings("cancel");
+        let folder = settings.path.clone();
+        let entered = api.entered.clone();
         let job = export::jobs::start(Arc::new(api), "chat", json!({"chat_id":"@test"}), settings)
             .unwrap();
         assert_eq!(job["status"], "running");
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
         let cancelled = export::jobs::cancel(&json!({"job_id":job["job_id"]})).unwrap();
         assert_eq!(cancelled["cancelled"], true);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -292,6 +312,10 @@ fn export_cancel_interrupts_pending_request_and_reports_cancelled() {
         })
         .await
         .unwrap();
+        assert!(
+            !folder.exists(),
+            "A cancelled pending takeout initialization must not create export output"
+        );
         assert_eq!(
             export::jobs::cancel(&json!({"job_id":job["job_id"]})).unwrap()["cancelled"],
             false

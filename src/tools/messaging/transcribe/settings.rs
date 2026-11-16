@@ -73,6 +73,17 @@ impl Settings {
                 "Configured transcription key contains invalid characters"
             );
         }
+        if let Some(endpoint) = &endpoint {
+            let loopback = match endpoint.host() {
+                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+                _ => false,
+            };
+            ensure!(
+                endpoint.scheme() == "https" || (key.is_none() && loopback),
+                "Transcription endpoints require HTTPS; credential-free HTTP is allowed only on a literal loopback address"
+            );
+        }
         let model = match engine.as_str() {
             "groq" => get("TELEGRAM_TRANSCRIBE_GROQ_MODEL").unwrap_or("whisper-large-v3-turbo"),
             "openai" => get("TELEGRAM_TRANSCRIBE_OPENAI_MODEL").unwrap_or("whisper-1"),

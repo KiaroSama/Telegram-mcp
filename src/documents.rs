@@ -9,10 +9,36 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+    time::Duration,
+};
 pub use worker::worker_entry;
 pub const MAX_DOCUMENT_BYTES: u64 = 25 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
+static IMAGE_WORKERS: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+async fn image_work<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    let permit = tokio::time::timeout(
+        Duration::from_secs(5),
+        Arc::clone(IMAGE_WORKERS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(2))))
+            .acquire_owned(),
+    )
+    .await
+    .context("Image inspection workers are busy")?
+    .context("Image inspection workers are unavailable")?;
+    tokio::task::spawn_blocking(move || {
+        // Cancellation of the async caller must not release capacity while
+        // the bounded blocking decode/resize is still running.
+        let _permit = permit;
+        work()
+    })
+    .await
+    .context("Image inspection worker failed")?
+}
 
 /// A trusted host dependency, separate from every MCP argument and environment
 /// variable. Embedders may provide the native executable explicitly; the server
@@ -59,14 +85,7 @@ pub async fn inspect_with_worker(
     let id = helpers::id(args, "message_id")?;
     let message = helpers::fetch(api, &peer, id).await?;
     if let Some(expected) = topic {
-        let actual = message["reply_to"]["reply_to_top_id"].as_i64().or_else(|| {
-            (message["reply_to"]["forum_topic"] == true)
-                .then(|| message["reply_to"]["reply_to_msg_id"].as_i64().unwrap_or(1))
-        });
-        ensure!(
-            actual == Some(expected),
-            "The document is outside the requested forum topic"
-        );
+        check_message_topic(api, &peer, &message, expected).await?;
     }
     let media = message
         .get("media")
@@ -111,12 +130,19 @@ pub async fn inspect_with_worker(
     ensure!(!bytes.is_empty(), "The document download was empty");
     let mut metadata = json!({"message_id":id,"filename":filename,"bytes":bytes.len(),"untrusted":true,"stored":false});
     if image::guess_format(&bytes).is_ok() {
-        let image = images::decode_image(&bytes)?;
-        let (data, details) = images::encode_image(&image, "png", 1568, 90, false)?;
+        let (data, details) = image_work(move || {
+            let image = images::decode_image(&bytes)?;
+            let (data, details) = images::encode_image(&image, "png", 1568, 90, false)?;
+            Ok((
+                base64::engine::general_purpose::STANDARD.encode(data),
+                details,
+            ))
+        })
+        .await?;
         metadata["kind"] = json!("image");
         metadata["image"] = details;
         return Ok(
-            json!({"content":[{"type":"image","mimeType":"image/png","data":base64::engine::general_purpose::STANDARD.encode(data)}],"metadata":metadata}),
+            json!({"content":[{"type":"image","mimeType":"image/png","data":data}],"metadata":metadata}),
         );
     }
     let content = if pdf {
@@ -138,6 +164,55 @@ pub async fn inspect_with_worker(
     Ok(
         json!({"text":content["text"],"truncated":content["truncated"],"reason":content["reason"],"metadata":metadata}),
     )
+}
+
+pub(crate) async fn check_message_topic(
+    api: &dyn Telegram,
+    peer: &Value,
+    message: &Value,
+    expected: i64,
+) -> Result<()> {
+    let mut actual = message["reply_to"]["reply_to_top_id"].as_i64().or_else(|| {
+        (message["reply_to"]["forum_topic"] == true)
+            .then(|| message["reply_to"]["reply_to_msg_id"].as_i64().unwrap_or(1))
+    });
+    if actual.is_none()
+        && message["_"] == "messageService"
+        && message["action"]["_"] == "messageActionTopicCreate"
+        && message["id"].as_i64() == Some(expected)
+        && helpers::channel(peer).is_some()
+        && helpers::same_peer(
+            &message["peer_id"],
+            &json!({"_":"peerChannel","channel_id":peer["channel_id"]}),
+        )
+    {
+        actual = Some(expected);
+    }
+    if actual.is_none()
+        && expected == 1
+        && let Some(channel) = helpers::channel(peer)
+    {
+        let detail = api
+            .invoke("channels.getFullChannel", json!({"channel":channel}))
+            .await?;
+        if detail["chats"].as_array().is_some_and(|chats| {
+            chats.iter().any(|chat| {
+                chat["_"] == "channel"
+                    && chat["id"].to_string().trim_matches('"')
+                        == peer["channel_id"].to_string().trim_matches('"')
+                    && chat["forum"] == true
+            })
+        }) {
+            // General (id 1) uses ordinary messages and ordinary replies;
+            // they intentionally have no forum top-message metadata.
+            actual = Some(1);
+        }
+    }
+    ensure!(
+        actual == Some(expected),
+        "The message is outside the requested forum topic"
+    );
+    Ok(())
 }
 pub fn decode_text(bytes: &[u8]) -> Result<String> {
     let bytes = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes);

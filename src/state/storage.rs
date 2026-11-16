@@ -9,6 +9,19 @@ use std::path::{Component, Path};
 
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 
+/// Replacement succeeded, but its directory durability could not be confirmed.
+/// Callers must fence use of a potentially different on-disk authorization.
+#[derive(Debug)]
+pub(crate) struct DurabilityUncertain;
+
+impl std::fmt::Display for DurabilityUncertain {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Private state replacement completed but durability is uncertain")
+    }
+}
+
+impl std::error::Error for DurabilityUncertain {}
+
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
     if path
         .symlink_metadata()
@@ -187,8 +200,9 @@ impl State {
             match FileExt::try_lock_exclusive(&lock) {
                 Ok(()) => break,
                 Err(error)
-                    if error.kind() == std::io::ErrorKind::WouldBlock
-                        && std::time::Instant::now() < deadline =>
+                    if error.raw_os_error().is_some_and(|code| {
+                        fs2::lock_contended_error().raw_os_error() == Some(code)
+                    }) && std::time::Instant::now() < deadline =>
                 {
                     std::thread::sleep(std::time::Duration::from_millis(2))
                 }
@@ -246,7 +260,8 @@ impl State {
         {
             bail!("Refusing to replace a nonregular private state record");
         }
-        let bytes = serde_json::to_vec_pretty(value)?;
+        let mut bytes = serde_json::to_vec_pretty(value)?;
+        bytes.push(b'\n');
         if bytes.len() as u64 > MAX_STATE_BYTES {
             bail!("Private state record exceeds its byte limit");
         }
@@ -257,13 +272,13 @@ impl State {
             let mut file = options(false, true).create_new(true).open(&temporary)?;
             restrict(&temporary, false)?;
             file.write_all(&bytes)?;
-            file.write_all(b"\n")?;
             file.sync_all()?;
             drop(file);
-            std::fs::rename(&temporary, &destination)
-                .context("Cannot atomically replace private state record")?;
-            #[cfg(unix)]
-            File::open(&self.root)?.sync_all()?;
+            replace_and_sync(&temporary, &destination, || {
+                #[cfg(unix)]
+                File::open(&self.root)?.sync_all()?;
+                Ok(())
+            })?;
             Ok(())
         })();
         if result.is_err() {
@@ -271,6 +286,16 @@ impl State {
         }
         result
     }
+}
+
+pub(super) fn replace_and_sync(
+    temporary: &Path,
+    destination: &Path,
+    sync: impl FnOnce() -> std::io::Result<()>,
+) -> Result<()> {
+    std::fs::rename(temporary, destination)
+        .context("Cannot atomically replace private state record")?;
+    sync().context(DurabilityUncertain)
 }
 
 /// The state lock serializes writers. A failed append must not poison the next

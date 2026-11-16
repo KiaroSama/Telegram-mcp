@@ -2,6 +2,79 @@ use super::common::*;
 use serde_json::{Value, json};
 
 #[tokio::test]
+async fn malformed_folder_selectors_cannot_widen_search_or_change_global_pins() {
+    for folder in [json!(4), json!(false), json!({}), json!([])] {
+        for name in ["pin_chat", "unpin_chat", "search_my_chats"] {
+            let m = Mock::new();
+            assert!(
+                run(&m, name, json!({"chat":7,"query":"Ada","folder":folder}))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                m.methods().is_empty(),
+                "{name} issued a request for malformed folder {folder}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn contact_fallback_batches_dialog_lookups_and_matches_response_peers() {
+    let m = Mock::new();
+    let users = (1..=250)
+        .map(|id| json!({"_":"user","id":id.to_string(),"access_hash":"80","first_name":"Ada"}))
+        .collect::<Vec<_>>();
+    m.reply("messages.getDialogFilters",json!({"filters":[{"_":"dialogFilter","id":2,"title":{"_":"textWithEntities","text":"Chosen","entities":[]},"pinned_peers":[],"include_peers":[{"_":"inputPeerUser","user_id":"150","access_hash":"80"}],"exclude_peers":[]}]}));
+    m.reply(
+        "contacts.search",
+        json!({"my_results":[],"users":[],"chats":[]}),
+    );
+    m.reply("messages.getDialogs", json!({"dialogs":[]}));
+    m.reply("contacts.getContacts", json!({"users":users}));
+    m.reply("messages.getPeerDialogs", json!({"dialogs":[]}));
+    m.reply("messages.getPeerDialogs",json!({"dialogs":[{"_":"dialog","peer":{"_":"peerUser","user_id":"151"},"unread_count":99},{"_":"dialog","peer":{"_":"peerUser","user_id":"150"},"unread_count":7}]}));
+    let result = run(
+        &m,
+        "search_my_chats",
+        json!({"query":"ada","folder":"Chosen","limit":1}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["results"].as_array().unwrap().len(), 1);
+    assert_eq!(result["results"][0]["id"], "150");
+    assert_eq!(result["results"][0]["unread"], 7);
+    let calls = m.sent("messages.getPeerDialogs");
+    assert_eq!(calls.len(), 2);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call["peers"].as_array().unwrap().len() == 100)
+    );
+}
+
+#[tokio::test]
+async fn contact_search_bounds_remote_work_and_discloses_an_incomplete_candidate_scan() {
+    let m = Mock::new();
+    m.reply("messages.getDialogFilters", json!({"filters":[]}));
+    m.reply("contacts.search", json!({"my_results":[]}));
+    m.reply("messages.getDialogs", json!({"dialogs":[]}));
+    let users = (1..=1100)
+        .map(|id| json!({"_":"user","id":id.to_string(),"access_hash":"80","first_name":"Ada"}))
+        .collect::<Vec<_>>();
+    m.reply("contacts.getContacts", json!({"users":users}));
+    for _ in 0..10 {
+        m.reply("messages.getPeerDialogs", json!({"dialogs":[]}));
+    }
+    let result = run(&m, "search_my_chats", json!({"query":"Ada"}))
+        .await
+        .unwrap();
+    assert!(result["results"].as_array().unwrap().is_empty());
+    assert_eq!(m.sent("messages.getPeerDialogs").len(), 10);
+    assert_eq!(result["metadata"]["candidate_limit_reached"], true);
+}
+
+#[tokio::test]
 async fn search_my_chats_falls_back_to_contacts_missing_from_telegram_search() {
     let m = Mock::new();
     m.reply("messages.getDialogFilters", json!({"filters":[]}));

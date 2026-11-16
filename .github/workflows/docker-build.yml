@@ -112,6 +112,7 @@ jobs:
           jq -e '
             .services["telegram-mcp"] as $service
             | ($service.environment.TELEGRAM_HTTP_TOKEN | length >= 32)
+              and $service.environment.TELEGRAM_STATE_DIR == "/data/state/telegram-mcp"
               and $service.environment.TELEGRAM_HTTP_TLS_CERT == "/run/telegram-tls/server.pem"
               and $service.environment.TELEGRAM_HTTP_TLS_KEY == "/run/telegram-tls/server-key.pem"
               and ([ $service.volumes[]

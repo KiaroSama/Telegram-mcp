@@ -55,6 +55,11 @@ fn bridge_descriptor_requires_private_authentication_and_nonreusable_process_evi
 
 #[test]
 fn bridge_process_identity_is_stable_and_rejects_another_image() {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("TEST_DELETED_BRIDGE_IMAGE").is_some() {
+        std::thread::park_timeout(Duration::from_secs(20));
+        return;
+    }
     let actual = std::env::current_exe().unwrap().canonicalize().unwrap();
     let first = ownership::verified(std::process::id(), &actual).unwrap();
     assert_eq!(
@@ -64,6 +69,24 @@ fn bridge_process_identity_is_stable_and_rejects_another_image() {
     let temp = tempfile::NamedTempFile::new().unwrap();
     assert!(ownership::verified(std::process::id(), temp.path()).is_err());
     assert!(ownership::identity(u32::MAX).is_err());
+    #[cfg(target_os = "linux")]
+    {
+        let copy = tempfile::tempdir().unwrap();
+        let path = copy.path().join("replaced-native-test (deleted)");
+        std::fs::copy(&actual, &path).unwrap();
+        let mut child=std::process::Command::new(&path).args(["--exact","server::bridge::tests::bridge_process_identity_is_stable_and_rejects_another_image"])
+            .env("TEST_DELETED_BRIDGE_IMAGE","1").stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap();
+        assert_eq!(
+            ownership::identity(child.id()).unwrap().image,
+            path.canonicalize().unwrap()
+        );
+        std::fs::remove_file(&path).unwrap();
+        let error = ownership::identity(child.id()).unwrap_err();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(error.to_string().contains("replaced binary"));
+        assert!(error.to_string().contains("stop its owned service"));
+    }
 }
 
 #[cfg(windows)]

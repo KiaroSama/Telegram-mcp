@@ -1,6 +1,23 @@
 use super::*;
 
 #[test]
+fn encoded_attachment_names_include_ids_and_preserve_extensions_within_component_limits() {
+    if isolated(
+        "media_edges::encoded_attachment_names_include_ids_and_preserve_extensions_within_component_limits",
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let api=Fixture::default();let mut options=settings("unicode-names");options.media[6]=true;
+        let mut message=document_message(24);message["id"]=json!("9223372036854775807");message["media"]["document"]["id"]=json!("9223372036854775806");
+        message["media"]["document"]["attributes"]=json!([{"_":"documentAttributeFilename","file_name":format!("{}.pdf","界😀".repeat(100))}]);
+        assert!(media::download_media(&api,&mut message,&options,&options.path).await.unwrap());
+        let path=std::path::Path::new(message["export_file"].as_str().unwrap());let name=path.file_name().unwrap().to_str().unwrap();
+        assert!(name.len()<=255);assert!(name.encode_utf16().count()<=255);assert!(name.starts_with("9223372036854775807_9223372036854775806_"));assert!(name.ends_with(".pdf"));assert!(options.path.join(path).is_file());
+    });
+}
+
+#[test]
 fn photo_export_checks_progressive_sizes_then_downloads_largest_area_with_the_right_dc() {
     if isolated(
         "media_edges::photo_export_checks_progressive_sizes_then_downloads_largest_area_with_the_right_dc",

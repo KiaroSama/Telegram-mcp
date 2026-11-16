@@ -11,14 +11,16 @@ pub(super) struct Attachment {
     pub(super) bytes: Vec<u8>,
     pub(super) calls: Mutex<Vec<String>>,
     pub(super) downloaded: Mutex<Vec<(Value, u64)>>,
+    pub(super) forum: bool,
 }
 impl Attachment {
     pub(super) fn text(name: &str, mime: &str, bytes: Vec<u8>) -> Self {
         Self {
-            message: json!({"_":"message","id":4,"media":{"_":"messageMediaDocument","document":{"_":"document","id":"30","access_hash":"31","file_reference":[1,2,3],"mime_type":mime,"size":bytes.len(),"attributes":[{"_":"documentAttributeFilename","file_name":name}]}}}),
+            message: json!({"_":"message","id":4,"peer_id":{"_":"peerChannel","channel_id":"7"},"media":{"_":"messageMediaDocument","document":{"_":"document","id":"30","access_hash":"31","file_reference":[1,2,3],"mime_type":mime,"size":bytes.len(),"attributes":[{"_":"documentAttributeFilename","file_name":name}]}}}),
             bytes,
             calls: Mutex::new(Vec::new()),
             downloaded: Mutex::new(Vec::new()),
+            forum: false,
         }
     }
     async fn inspect(&self) -> Result<Value> {
@@ -32,6 +34,8 @@ impl Telegram for Attachment {
         self.calls.lock().unwrap().push(method.into());
         if method == "channels.getMessages" {
             Ok(json!({"messages":[self.message]}))
+        } else if method == "channels.getFullChannel" {
+            Ok(json!({"chats":[{"_":"channel","id":"7","forum":self.forum}],"full_chat":{}}))
         } else {
             bail!("Unexpected request")
         }
@@ -43,6 +47,47 @@ impl Telegram for Attachment {
         Schema::global().encode_object(&location)?;
         self.downloaded.lock().unwrap().push((location, budget));
         Ok(self.bytes.clone())
+    }
+}
+
+#[tokio::test]
+async fn general_topic_accepts_topicless_messages_only_after_verifying_the_forum() {
+    let mut fixture = Attachment::text("general.txt", "text/plain", b"General document".to_vec());
+    fixture.message["peer_id"] = json!({"_":"peerChannel","channel_id":"7"});
+    fixture.forum = true;
+    let result = documents::inspect(&fixture, &json!({"chat_id":7,"message_id":4,"topic_id":1}))
+        .await
+        .unwrap();
+    assert_eq!(result["text"], "General document");
+    assert!(
+        fixture
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|m| m == "channels.getFullChannel")
+    );
+    fixture.message["reply_to"] = json!({"reply_to_msg_id":77});
+    assert_eq!(
+        documents::inspect(&fixture, &json!({"chat_id":7,"message_id":4,"topic_id":1}))
+            .await
+            .unwrap()["text"],
+        "General document"
+    );
+    for reply in [
+        Value::Null,
+        json!({"reply_to_msg_id":77}),
+        json!({"forum_topic":true,"reply_to_top_id":8}),
+    ] {
+        let mut outside = Attachment::text("outside.txt", "text/plain", b"outside".to_vec());
+        outside.message["peer_id"] = json!({"_":"peerChannel","channel_id":"7"});
+        outside.message["reply_to"] = reply;
+        assert!(
+            documents::inspect(&outside, &json!({"chat_id":7,"message_id":4,"topic_id":1}))
+                .await
+                .is_err()
+        );
+        assert!(outside.downloaded.lock().unwrap().is_empty());
     }
 }
 
@@ -139,6 +184,27 @@ async fn image_documents_return_actual_bounded_png_pixels() {
     )
     .unwrap();
     assert_eq!((decoded.width(), decoded.height()), (1568, 784));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn inspecting_image_pixels_yields_the_async_executor_to_other_requests() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fixture = Attachment::text("image.png", "image/png", png(2560, 1280));
+    let progressed = AtomicBool::new(false);
+    let (result, ()) = tokio::join!(
+        async {
+            let result = fixture.inspect().await;
+            assert!(
+                progressed.load(Ordering::Acquire),
+                "image decoding and resizing blocked the sole async runtime thread"
+            );
+            result
+        },
+        async {
+            progressed.store(true, Ordering::Release);
+        }
+    );
+    assert_eq!(result.unwrap()["metadata"]["kind"], "image");
 }
 
 #[tokio::test]

@@ -17,13 +17,33 @@ fn identifier(value: &Value) -> String {
         .to_string()
 }
 
+fn bounded_component(name: &str, max_bytes: usize, max_units: usize) -> String {
+    let (stem, extension) = name
+        .rsplit_once('.')
+        .filter(|(_, extension)| !extension.is_empty() && extension.len() <= 32)
+        .map(|(stem, extension)| (stem, format!(".{extension}")))
+        .unwrap_or((name, String::new()));
+    let mut result = String::new();
+    let mut units = 0;
+    for ch in stem.chars() {
+        if result.len() + ch.len_utf8() + extension.len() > max_bytes
+            || units + ch.len_utf16() + extension.encode_utf16().count() > max_units
+        {
+            break;
+        }
+        result.push(ch);
+        units += ch.len_utf16();
+    }
+    result.push_str(&extension);
+    result
+}
+
 pub fn safe_file_name(source: &str) -> String {
     let name: String = source
         .chars()
         .filter(|ch| {
             !ch.is_control() && !matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
         })
-        .take(140)
         .collect();
     let name = name.trim_matches(|ch| ch == '.' || ch == ' ').to_owned();
     if name.is_empty()
@@ -42,7 +62,7 @@ pub fn safe_file_name(source: &str) -> String {
     {
         "file".into()
     } else {
-        name
+        bounded_component(&name, 255, 255)
     }
 }
 
@@ -157,11 +177,18 @@ pub async fn download_media(
     }
     // Prefixing by the source id makes same-name attachments unambiguous and
     // does not reuse an existing file left by an earlier partial export.
-    filename = format!(
-        "{}_{}_{}",
+    let prefix = format!(
+        "{}_{}_",
         identifier(&message["id"]),
-        identifier(&object["id"]),
-        filename
+        identifier(&object["id"])
+    );
+    filename = format!(
+        "{prefix}{}",
+        bounded_component(
+            &filename,
+            255 - prefix.len(),
+            255 - prefix.encode_utf16().count()
+        )
     );
     let relative = format!("{folder}/{filename}");
     let state = crate::state::State::from_environment()?;

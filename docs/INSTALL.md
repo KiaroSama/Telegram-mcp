@@ -41,8 +41,11 @@ install Homebrew's `ffmpeg`. Windows builds are linked from
 Gyan 9.0.2 Windows archive against its exact SHA-256; Linux/macOS jobs install their
 platform packages and log both executable versions. PDF/text and ordinary image
 inspection use the Rust pipeline. Local Whisper transcription additionally needs an
-explicitly configured native `whisper-cli` and local model; no model is downloaded
-automatically.
+explicitly configured native `whisper-cli` and local model; no model is downloaded automatically.
+
+Hosted transcription requires HTTPS for remote services and all API keys. Credential-free HTTP is accepted only for literal loopback endpoints such as `http://127.0.0.1:8080/v1`; `localhost` aliases are not trusted as loopback destinations.
+
+Proxy URLs support SOCKS4, SOCKS5, HTTP CONNECT, verified HTTPS CONNECT and MTProxy. Use `https://proxy.example:443` and private username/password settings for authenticated remote HTTP proxies; HTTPS checks the hostname and operating system trust store. Authenticated plaintext HTTP/SOCKS is accepted only when the actual connected socket is loopback, for an owner-managed local tunnel. Anonymous remote HTTP/SOCKS routes remain available.
 
 PDF parsing runs in a separate process with a 25 MiB input budget, bounded
 decompression/output, 20 seconds of CPU time and a 40-second parent deadline.
@@ -99,6 +102,17 @@ key/digest and expected account identity. A failed or mismatched login preserves
 original authorization. `login --env-file PATH` selects its actual private configuration;
 repair/replacement arguments are intended for the manager’s verified transaction flow,
 not a reason to guess identity or replace an active session.
+An explicit subcommand `--env-file` takes precedence over `--config` and
+`TELEGRAM_ENV_FILE`. Process configuration values continue to override file values.
+
+To retire an account, use
+`telegram-mcp remove-account --account LABEL --env-file FILE --key KEY`. This archives its private records and removes only that exact file-owned
+key. Original authorizations and encryption custody remain preserved. The command
+refuses active accounts and process-owned or ambiguous configuration sources.
+
+`telegram-mcp --config FILE bind-address` prints the same resolved address used by
+the shared service. Set `TELEGRAM_MCP_LOG_FILE=off` for stderr-only runtime logging;
+this explicit sentinel also works in PowerShell versions that remove empty values.
 
 ## Persistent private state
 

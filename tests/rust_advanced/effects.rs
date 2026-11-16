@@ -124,18 +124,81 @@ async fn account_sessions_do_not_share_effect_file_references() {
 }
 #[tokio::test]
 async fn simultaneous_effect_reads_share_one_catalogue_fetch() {
-    let m = Mock::new()
-        .cached("advanced-effects-concurrent")
+    struct Held {
+        inner: Mock,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Semaphore,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl Telegram for Held {
+        fn cache_key(&self) -> Option<String> {
+            self.inner.cache_key()
+        }
+        async fn invoke(&self, method: &str, args: Value) -> Result<Value> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.entered.notify_one();
+            self.release.acquire().await.unwrap().forget();
+            self.inner.invoke(method, args).await
+        }
+        async fn resolve_peer(&self, value: &Value) -> Result<Value> {
+            self.inner.resolve_peer(value).await
+        }
+    }
+    let unrelated = Mock::new()
+        .cached("advanced-effects-concurrent-unrelated")
         .respond("messages.getAvailableEffects", catalogue());
-    let one = json!({"effect_id":"50"});
-    let two = json!({"effect_id":"100"});
-    let (a, b) = tokio::join!(
-        run(&m, "get_message_effect", one),
-        run(&m, "get_message_effect", two)
-    );
-    a.unwrap();
-    b.unwrap();
-    assert_eq!(m.count("messages.getAvailableEffects"), 1);
+    run(&unrelated, "get_message_effect", json!({"effect_id":"50"}))
+        .await
+        .unwrap();
+    let api = std::sync::Arc::new(Held {
+        inner: Mock::new()
+            .cached("advanced-effects-concurrent")
+            .respond("messages.getAvailableEffects", catalogue()),
+        entered: Default::default(),
+        release: tokio::sync::Semaphore::new(0),
+        calls: Default::default(),
+    });
+    let first = std::sync::Arc::clone(&api);
+    let one = tokio::spawn(async move {
+        advanced::call(
+            first.as_ref(),
+            "get_message_effect",
+            &json!({"effect_id":"50"}),
+        )
+        .await
+        .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), api.entered.notified())
+        .await
+        .unwrap();
+    // This cached account remains usable while another account's RPC is held.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        run(&unrelated, "get_message_effect", json!({"effect_id":"100"})),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let second = std::sync::Arc::clone(&api);
+    let (started, running) = tokio::sync::oneshot::channel();
+    let two = tokio::spawn(async move {
+        started.send(()).unwrap();
+        advanced::call(
+            second.as_ref(),
+            "get_message_effect",
+            &json!({"effect_id":"100"}),
+        )
+        .await
+        .unwrap()
+    });
+    running.await.unwrap();
+    assert_eq!(api.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    api.release.add_permits(2);
+    one.await.unwrap().unwrap();
+    two.await.unwrap().unwrap();
+    assert_eq!(api.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(unrelated.count("messages.getAvailableEffects"), 1);
 }
 #[tokio::test]
 async fn effect_animation_metadata_names_premium_sticker_thumb_fallback() {

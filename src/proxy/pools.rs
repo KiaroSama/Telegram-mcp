@@ -32,7 +32,7 @@ pub(super) fn validate(proxy: &Proxy) -> Result<()> {
     ensure!(
         matches!(
             proxy.kind.as_str(),
-            "socks5" | "socks4" | "http" | "mtproto"
+            "socks5" | "socks4" | "http" | "https" | "mtproto"
         ),
         "Configured proxy protocol is unsupported"
     );
@@ -78,6 +78,7 @@ fn configured(snapshot: &ConfigSnapshot, label: &str) -> Result<Option<Proxy>> {
         "socks5" | "socks5h" => "socks5",
         "socks4" | "socks4a" => "socks4",
         "http" => "http",
+        "https" => "https",
         "mtproto" | "mtproxy" => "mtproto",
         _ => bail!("Configured proxy protocol is unsupported"),
     };

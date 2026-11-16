@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -14,7 +14,7 @@ struct Cli {
 enum Command {
     /// Connect a stdio client to the existing shared HTTP service.
     Bridge,
-    /// Serve MCP over stdin/stdout, or loopback HTTP for shared clients.
+    /// Serve MCP over stdin/stdout or an authenticated HTTP/TLS endpoint.
     Serve {
         #[arg(long)]
         http: Option<std::net::SocketAddr>,
@@ -23,8 +23,8 @@ enum Command {
     Login {
         #[arg(long, default_value = "default")]
         account: String,
-        #[arg(long, default_value = ".env")]
-        env_file: std::path::PathBuf,
+        #[arg(long)]
+        env_file: Option<std::path::PathBuf>,
         #[arg(long)]
         replace_key: Option<String>,
         #[arg(long)]
@@ -38,8 +38,8 @@ enum Command {
     SessionValidate,
     /// Check authorization through the existing shared service.
     SessionHealth {
-        #[arg(long, default_value = ".env")]
-        env_file: std::path::PathBuf,
+        #[arg(long)]
+        env_file: Option<std::path::PathBuf>,
         #[arg(long)]
         key: String,
         #[arg(long)]
@@ -51,6 +51,17 @@ enum Command {
         from: String,
         #[arg(long)]
         to: String,
+        #[arg(long)]
+        state_dir: Option<std::path::PathBuf>,
+    },
+    /// Archive private account records and remove their exact configuration key.
+    RemoveAccount {
+        #[arg(long)]
+        account: String,
+        #[arg(long)]
+        env_file: Option<std::path::PathBuf>,
+        #[arg(long)]
+        key: String,
         #[arg(long)]
         state_dir: Option<std::path::PathBuf>,
     },
@@ -70,6 +81,8 @@ enum Command {
     },
     /// Print the directory holding private persistent state.
     StatePath,
+    /// Print the resolved shared-service address from the selected configuration.
+    BindAddress,
 }
 fn main() -> Result<()> {
     if std::env::args_os()
@@ -91,19 +104,25 @@ fn main() -> Result<()> {
             });
     }
     let mut cli = Cli::parse();
-    let env_file = cli.config.clone().unwrap_or_else(|| match &cli.command {
-        Some(Command::Login { env_file, .. }) | Some(Command::SessionHealth { env_file, .. }) => {
-            env_file.clone()
-        }
-        _ => std::path::PathBuf::from(".env"),
-    });
+    let explicit = match &cli.command {
+        Some(Command::Login { env_file, .. })
+        | Some(Command::SessionHealth { env_file, .. })
+        | Some(Command::RemoveAccount { env_file, .. }) => env_file.clone(),
+        _ => None,
+    };
+    let env_file = explicit
+        .or_else(|| cli.config.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from(".env"));
     match cli.command.as_mut() {
         Some(Command::Login {
             env_file: selected, ..
         })
         | Some(Command::SessionHealth {
             env_file: selected, ..
-        }) => *selected = env_file.clone(),
+        })
+        | Some(Command::RemoveAccount {
+            env_file: selected, ..
+        }) => *selected = Some(env_file.clone()),
         _ => {}
     }
     telegram_mcp::account_manager::select_source(&env_file)?;
@@ -129,6 +148,7 @@ async fn run(cli: Cli) -> Result<()> {
         Command::StatePath => {
             println!("{}", telegram_mcp::state::State::global()?.root().display())
         }
+        Command::BindAddress => println!("{}", telegram_mcp::account_manager::bind_address()?),
         Command::Accounts { .. } => {
             println!("{}", telegram_mcp::backend::public_configuration_json()?)
         }
@@ -142,7 +162,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let result = telegram_mcp::backend::login_transaction(
                 &account,
-                &env_file,
+                &env_file.context("The selected configuration file is missing")?,
                 replace_key.as_deref(),
                 expected_config_digest.as_deref(),
                 expected_user_id,
@@ -165,7 +185,11 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::SessionHealth { env_file, key, .. } => println!(
             "{}",
-            telegram_mcp::account_manager::session_health(&env_file, &key).await?
+            telegram_mcp::account_manager::session_health(
+                &env_file.context("The selected configuration file is missing")?,
+                &key
+            )
+            .await?
         ),
         Command::RenameAccount {
             from,
@@ -183,6 +207,25 @@ async fn run(cli: Cli) -> Result<()> {
                 serde_json::json!({"renamed":true,"from":from,"to":to,"moved":moved})
             );
         }
+        Command::RemoveAccount {
+            account,
+            env_file,
+            key,
+            state_dir,
+        } => {
+            let state = if let Some(root) = state_dir {
+                std::sync::Arc::new(telegram_mcp::state::State::at(root, Vec::new())?)
+            } else {
+                telegram_mcp::state::State::global()?
+            };
+            let result = telegram_mcp::account_manager::remove_account(
+                &state,
+                &account,
+                &env_file.context("The selected configuration file is missing")?,
+                &key,
+            )?;
+            println!("{result}");
+        }
         Command::Approve { fingerprint } => telegram_mcp::safeguard::approve_from_terminal(
             telegram_mcp::state::State::global()?,
             &fingerprint,
@@ -198,11 +241,7 @@ async fn run(cli: Cli) -> Result<()> {
                 {
                     "stdio" => {}
                     "http" | "streamable-http" => {
-                        let host = std::env::var("MCP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-                        let port = std::env::var("MCP_PORT")
-                            .unwrap_or_else(|_| "8765".into())
-                            .parse::<u16>()?;
-                        http = Some(std::net::SocketAddr::new(host.parse()?, port));
+                        http = Some(telegram_mcp::account_manager::bind_address()?);
                     }
                     _ => anyhow::bail!("MCP_TRANSPORT must be stdio or http"),
                 }

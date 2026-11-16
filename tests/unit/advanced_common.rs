@@ -4,6 +4,11 @@ struct Api {
     response: Option<Value>,
     pending: bool,
     calls: std::sync::Mutex<Vec<(String, Value)>>,
+    key: Option<String>,
+    gate: Option<(
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Semaphore>,
+    )>,
 }
 impl Api {
     fn returning(response: Option<Value>) -> Self {
@@ -11,14 +16,23 @@ impl Api {
             response,
             pending: false,
             calls: std::sync::Mutex::new(vec![]),
+            key: None,
+            gate: None,
         }
     }
 }
 #[async_trait::async_trait]
 impl Telegram for Api {
+    fn cache_key(&self) -> Option<String> {
+        self.key.clone()
+    }
     async fn invoke(&self, method: &str, args: Value) -> Result<Value> {
         crate::tl::Schema::global().encode_call(method, &args)?;
         self.calls.lock().unwrap().push((method.into(), args));
+        if let Some((entered, release)) = &self.gate {
+            entered.notify_one();
+            release.acquire().await.unwrap().forget();
+        }
         if self.pending {
             return std::future::pending().await;
         }
@@ -29,6 +43,48 @@ impl Telegram for Api {
     async fn resolve_peer(&self, _: &Value) -> Result<Value> {
         anyhow::bail!("Unexpected peer lookup")
     }
+}
+
+#[tokio::test]
+async fn app_limit_refresh_serializes_one_account_without_blocking_other_accounts() {
+    use std::sync::Arc;
+    let mut warm = Api::returning(Some(
+        json!({"config":{"value":[{"key":"quota","value":{"value":12}}]}}),
+    ));
+    warm.key = Some(format!("warm-limits-{}", rand::random::<u64>()));
+    assert_eq!(app_limits(&warm).await["quota"], 12);
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut slow = Api::returning(Some(
+        json!({"config":{"value":[{"key":"quota","value":{"value":20}}]}}),
+    ));
+    slow.key = Some(format!("slow-limits-{}", rand::random::<u64>()));
+    slow.gate = Some((Arc::clone(&entered), Arc::clone(&release)));
+    let slow = Arc::new(slow);
+    let first = Arc::clone(&slow);
+    let one = tokio::spawn(async move { app_limits(first.as_ref()).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), app_limits(&warm))
+            .await
+            .unwrap()["quota"],
+        12
+    );
+    let second = Arc::clone(&slow);
+    let (started, running) = tokio::sync::oneshot::channel();
+    let two = tokio::spawn(async move {
+        started.send(()).unwrap();
+        app_limits(second.as_ref()).await
+    });
+    running.await.unwrap();
+    assert_eq!(slow.calls.lock().unwrap().len(), 1);
+    release.add_permits(2);
+    assert_eq!(one.await.unwrap()["quota"], 20);
+    assert_eq!(two.await.unwrap()["quota"], 20);
+    assert_eq!(slow.calls.lock().unwrap().len(), 1);
+    assert_eq!(warm.calls.lock().unwrap().len(), 1);
 }
 
 #[test]

@@ -6,16 +6,23 @@ use crate::{
     tools::local::upstream_events::{message_reply_id, message_topic_id},
 };
 use anyhow::{Context, Result};
-use grammers_client::{Client, peer::Peer, update::Update};
-use grammers_mtsender::UpdatesConfiguration;
+#[cfg(test)]
+use grammers_client::update::Update;
+use grammers_client::{
+    Client,
+    peer::{Peer, User},
+};
+use grammers_mtsender::{
+    InvocationError, SenderPoolFatHandle, UpdatesConfiguration, UpdatesReceiver,
+};
 use grammers_session::{
     Session,
-    types::{PeerKind, UpdateState, UpdatesState},
+    types::{PeerId, PeerInfo, PeerKind, UpdateState, UpdatesState},
     updates::{MessageBox, State as DeliveredState, UpdatesLike},
 };
 use grammers_tl_types as tl;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 struct MessageContext {
     chat_id: String,
@@ -37,9 +44,33 @@ fn peer_name(peer: &Peer) -> String {
     name.chars().take(512).collect()
 }
 
+fn identities(raw: &tl::enums::Message) -> Option<(PeerId, Option<PeerId>)> {
+    let (peer, from, out) = match raw {
+        tl::enums::Message::Message(m) => (&m.peer_id, m.from_id.as_ref(), m.out),
+        tl::enums::Message::Service(m) => (&m.peer_id, m.from_id.as_ref(), m.out),
+        _ => return None,
+    };
+    let peer = PeerId::from(peer.clone());
+    let sender = from.cloned().map(PeerId::from).or_else(|| {
+        (peer.kind() == PeerKind::User).then(|| if out { PeerId::self_user() } else { peer })
+    });
+    Some((peer, sender))
+}
+
+#[cfg(test)]
 fn context(message: &grammers_client::update::Message) -> Result<MessageContext> {
-    let peer = message.peer();
-    let chat_type = match message.peer_id().kind() {
+    let inner: &grammers_client::message::Message = message;
+    context_parts(&inner.raw, message.peer(), message.sender())
+}
+
+fn context_parts(
+    raw: &tl::enums::Message,
+    peer: Option<&Peer>,
+    sender: Option<&Peer>,
+) -> Result<MessageContext> {
+    let (peer_id, sender_id) =
+        identities(raw).context("Message update has no concrete chat identity")?;
+    let chat_type = match peer_id.kind() {
         PeerKind::User => "private",
         PeerKind::Chat => "group",
         PeerKind::Channel => match peer {
@@ -51,10 +82,8 @@ fn context(message: &grammers_client::update::Message) -> Result<MessageContext>
     };
     let forum = matches!(peer,Some(Peer::Group(group))
         if matches!(&group.raw,tl::enums::Chat::Channel(channel) if channel.forum));
-    let sender = message.sender();
     Ok(MessageContext {
-        chat_id: message
-            .peer_id()
+        chat_id: peer_id
             .bot_api_dialog_id()
             .context("Message update has no concrete chat identity")?
             .to_string(),
@@ -65,8 +94,7 @@ fn context(message: &grammers_client::update::Message) -> Result<MessageContext>
         bot: matches!(peer, Some(Peer::User(user)) if user.is_bot()),
         // An outgoing private message may have only InputPeerSelf's sentinel.
         // An unknown sender stays unknown rather than exposing that sentinel.
-        sender_id: message
-            .sender_id()
+        sender_id: sender_id
             .and_then(|id| id.bot_api_dialog_id())
             .map(|id| id.to_string()),
         sender_name: sender.map(peer_name).filter(|name| !name.is_empty()),
@@ -204,9 +232,9 @@ fn publish(
     Ok(())
 }
 
-/// Grammers supplies a per-event pts but container-wide seq/date. Keep the
-/// latter unchanged: advancing them here could skip unconsumed siblings after
-/// a crash. Secondary/qts state is exclusively owned by its separate backend.
+/// Difference siblings can share the final batch pts. This adapter is called
+/// only after the complete batch was processed; seq/date remain container-wide
+/// and unchanged. Secondary/qts is exclusively owned by its separate backend.
 fn cloud_cursor(current: &UpdatesState, delivered: &DeliveredState) -> Option<UpdateState> {
     match delivered.message_box {
         Some(MessageBox::Common { pts }) if pts > 0 && pts > current.pts => {
@@ -242,70 +270,197 @@ async fn checkpoint(session: &PersistentSession, delivered: &DeliveredState) -> 
     Ok(())
 }
 
+async fn process_batch<F, Fut>(
+    session: &PersistentSession,
+    batch: Vec<(tl::enums::Update, DeliveredState)>,
+    mut deliver: F,
+) -> Result<()>
+where
+    F: FnMut(tl::enums::Update) -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    session.check_health()?;
+    let mut delivered = Vec::new();
+    for (update, position) in batch {
+        session.check_health()?;
+        if deliver(update).await? {
+            delivered.push(position);
+        }
+    }
+    for position in delivered {
+        session.check_health()?;
+        checkpoint(session, &position).await?;
+    }
+    Ok(())
+}
+
+fn retry_delay(error: &InvocationError, failures: u32) -> Option<Duration> {
+    let delay = Duration::from_millis((250u64 << failures.min(7)).min(30_000));
+    match error {
+        InvocationError::Io(_) => Some(delay),
+        InvocationError::Rpc(rpc) if rpc.code >= 500 => Some(delay),
+        InvocationError::Rpc(rpc) if rpc.code == 420 && rpc.name == "FLOOD_WAIT" => rpc
+            .value
+            .filter(|seconds| *seconds <= 86_400)
+            .map(|seconds| delay.max(Duration::from_secs(u64::from(seconds)))),
+        InvocationError::Transport(grammers_mtproto::transport::Error::BadStatus {
+            status: 429,
+        }) => Some(delay),
+        _ => None,
+    }
+}
+
+type Batch = (
+    Vec<(tl::enums::Update, DeliveredState)>,
+    Vec<tl::enums::User>,
+    Vec<tl::enums::Chat>,
+);
+trait BatchReader: Send {
+    fn read(
+        &mut self,
+    ) -> impl std::future::Future<Output = std::result::Result<Batch, InvocationError>> + Send;
+}
+impl BatchReader for UpdatesReceiver {
+    async fn read(&mut self) -> std::result::Result<Batch, InvocationError> {
+        self.next().await
+    }
+}
+async fn next_batch(reader: &mut impl BatchReader, session: &PersistentSession) -> Option<Batch> {
+    let mut failures = 0u32;
+    loop {
+        if session.check_health().is_err() {
+            return None;
+        }
+        let next = tokio::select! {biased;_=session.wait_for_write_uncertainty()=>return None,result=reader.read()=>result};
+        match next {
+            Ok(batch) => return Some(batch),
+            Err(error) => {
+                let Some(delay) = retry_delay(&error, failures) else {
+                    tracing::warn!(
+                        "Telegram update stream stopped; its account connection is retired"
+                    );
+                    return None;
+                };
+                failures = failures.saturating_add(1);
+                tracing::warn!("Telegram update read failed temporarily; retry is scheduled");
+                tokio::select! {biased;_=session.wait_for_write_uncertainty()=>return None,_=tokio::time::sleep(delay)=>{}}
+            }
+        }
+    }
+}
+
+async fn deliver_message(
+    client: &Client,
+    session: &PersistentSession,
+    state: &Arc<State>,
+    policy: &AccessPolicy,
+    account: &str,
+    peers: &HashMap<PeerId, Peer>,
+    update: tl::enums::Update,
+) -> Result<bool> {
+    let raw = match update {
+        tl::enums::Update::NewMessage(message) => message.message,
+        tl::enums::Update::NewChannelMessage(message) => message.message,
+        _ => return Ok(false),
+    };
+    let Some((peer_id, sender_id)) = identities(&raw) else {
+        return Ok(false);
+    };
+    let peer = context_parts(
+        &raw,
+        peers.get(&peer_id),
+        sender_id.and_then(|id| peers.get(&id)),
+    )?;
+    let mut fields = message_fields(&raw).context("Missing message metadata")?;
+    let reply_id = message_reply_id(&fields).and_then(|id| i32::try_from(id).ok());
+    address_reply(policy, &mut fields, &peer, || async {
+        let reference = if let Some(peer) = peers.get(&peer_id) {
+            peer.to_ref()
+                .await
+                .map_err(|_| anyhow::anyhow!("Reply peer reference unavailable"))?
+        } else {
+            session.peer_ref(peer_id).await?
+        };
+        let Some(reference) = reference else {
+            return Ok(None);
+        };
+        let Some(id) = reply_id else { return Ok(None) };
+        let reply = client
+            .get_messages_by_id(reference, &[id])
+            .await?
+            .into_iter()
+            .flatten()
+            .next();
+        Ok(reply.and_then(|reply| {
+            if reply.peer_id() != peer_id {
+                return None;
+            }
+            let reply_fields = message_fields(&reply.raw)?;
+            let topic = message_topic_id(&reply_fields, peer.forum);
+            policy
+                .allows_message_event(&peer.chat_id, peer.username.as_deref(), topic)
+                .then(|| reply.outgoing())
+        }))
+    })
+    .await;
+    publish(state, policy, account, &fields, &peer)?;
+    Ok(true)
+}
+
 pub(super) async fn run(
     client: Client,
+    handle: SenderPoolFatHandle,
     updates: tokio::sync::mpsc::Receiver<UpdatesLike>,
     state: Arc<State>,
     session: Arc<PersistentSession>,
     account: String,
 ) {
-    let Ok(mut stream) = client
-        .stream_updates(updates, UpdatesConfiguration { catch_up: true })
-        .await
-    else {
+    let create = UpdatesReceiver::create(
+        handle.thin.clone(),
+        handle.session.clone(),
+        updates,
+        UpdatesConfiguration { catch_up: true },
+    );
+    let started = tokio::select! {
+        biased;
+        _=session.wait_for_write_uncertainty()=>{handle.quit();return;},
+        result=create=>result,
+    };
+    let Ok(mut stream) = started else {
         tracing::warn!("Telegram message update stream could not start");
+        handle.quit();
         return;
     };
     loop {
-        let update = match stream.next().await {
-            Ok(update) => update,
-            Err(_) => {
-                tracing::warn!("Telegram update stream stopped; reconnect is required");
-                break;
-            }
-        };
-        // Upstream's message metadata stream represents newly delivered
-        // messages. Edits/deletions have no compatible event-kind contract.
-        let Update::NewMessage(message) = &update else {
-            continue;
+        let Some((batch, users, chats)) = next_batch(&mut stream, &session).await else {
+            break;
         };
         let outcome = async {
+            session.check_health()?;
+            let peers = users
+                .into_iter()
+                .map(|user| Peer::User(User::from_raw(&client, user)))
+                .chain(chats.into_iter().map(|chat| Peer::from_raw(&client, chat)))
+                .map(|peer| (peer.id(), peer))
+                .collect::<HashMap<_, _>>();
+            session
+                .cache_peers(peers.values().map(PeerInfo::from).collect())
+                .await?;
             let policy = AccessPolicy::from_environment()?;
-            let peer = context(message)?;
-            let inner: &grammers_client::message::Message = message;
-            let mut fields = message_fields(&inner.raw).context("Missing message metadata")?;
-            address_reply(&policy, &mut fields, &peer, || async {
-                // Official grammers get_reply_to_message invokes only
-                // messages.getMessages/channels.getMessages, never readHistory.
-                let reply = message.get_reply().await?;
-                Ok(reply.and_then(|reply| {
-                    if reply.peer_id() != message.peer_id() {
-                        return None;
-                    }
-                    let reply_fields = message_fields(&reply.raw)?;
-                    let reply_topic = message_topic_id(&reply_fields, peer.forum);
-                    policy
-                        .allows_message_event(&peer.chat_id, peer.username.as_deref(), reply_topic)
-                        .then(|| reply.outgoing())
-                }))
+            process_batch(&session, batch, |raw| {
+                deliver_message(&client, &session, &state, &policy, &account, &peers, raw)
             })
-            .await;
-            publish(&state, &policy, &account, &fields, &peer)
-        }
-        .await;
+            .await
+        };
+        let outcome = tokio::select! {biased;_=session.wait_for_write_uncertainty()=>break,result=outcome=>result};
         if outcome.is_err() {
             tracing::warn!(
                 "Telegram message metadata could not be recorded; update consumer stopped"
             );
             break;
         }
-        if checkpoint(&session, update.state()).await.is_err() {
-            tracing::warn!(
-                "Telegram message cursor could not be persisted; update consumer stopped"
-            );
-            break;
-        }
     }
+    handle.quit();
 }
 
 #[cfg(test)]

@@ -136,6 +136,9 @@ async fn collect_and_write(
     tracking: (&mut watch::Receiver<bool>, &str),
 ) -> Result<Value> {
     let (cancel, job_id) = tracking;
+    if *cancel.borrow() {
+        bail!("Export cancelled");
+    }
     let state = crate::state::State::from_environment()?;
     let folder = state.resolve_file(&settings.path, crate::state::FileAccess::Write)?;
     std::fs::create_dir(&folder)
@@ -279,10 +282,19 @@ async fn collect_and_write(
                         source_record.clone()
                     };
                     if message["rich_message"]["part"] == true {
+                        let message_id = if kind == "recent_actions" {
+                            numeric_id(&source_record["action"]["message"]["id"])
+                                .or_else(|| {
+                                    numeric_id(&source_record["action"]["new_message"]["id"])
+                                })
+                                .unwrap_or(id)
+                        } else {
+                            id
+                        };
                         let full = invoke(
                             api,
                             "messages.getRichMessage",
-                            json!({"peer":target,"id":id}),
+                            json!({"peer":target,"id":message_id}),
                             takeout,
                             cancel,
                         )
@@ -291,7 +303,7 @@ async fn collect_and_write(
                             .as_array()
                             .into_iter()
                             .flatten()
-                            .find(|m| numeric_id(&m["id"]) == Some(id))
+                            .find(|m| numeric_id(&m["id"]) == Some(message_id))
                             .and_then(|m| m.get("rich_message"))
                             .context("Full rich message could not be loaded")?;
                         if rich["part"] == true {
@@ -342,7 +354,7 @@ async fn collect_and_write(
                     bail!("Export pagination did not advance; output is partial");
                 }
                 offset = next_offset;
-                if source.len() < PAGE_SIZE as usize || past_start {
+                if past_start {
                     break;
                 }
             }

@@ -300,6 +300,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         "search_my_chats" => search::mine(api, a).await,
         "pin_chat" | "unpin_chat" => {
+            let folder = folder_selector(a)?;
             let p = peer(api, a, "chat").await?;
             let pinned = name == "pin_chat";
             let one = api
@@ -314,7 +315,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                     .is_some_and(|ds| !ds.is_empty()),
                 "That chat is not in your chat list"
             );
-            if let Some(folder) = a.get("folder").and_then(Value::as_str) {
+            if let Some(folder) = folder {
                 let fs = filters(api).await?;
                 let mut f = find_filter(&fs, folder)?.clone();
                 let mut pins = f
@@ -362,6 +363,13 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
 }
 
+fn folder_selector(a: &Value) -> Result<Option<&str>> {
+    a.get("folder")
+        .filter(|value| !value.is_null())
+        .map(|value| value.as_str().context("folder must be a string"))
+        .transpose()
+}
+
 async fn remove(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     let both = req(a, "both_sides")?
         .as_bool()
@@ -395,11 +403,25 @@ async fn remove(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             .await;
     }
     if kind(&p) == "inputPeerChat" && name == "delete_chat" {
-        api.invoke(
-            "messages.deleteChatUser",
-            json!({"chat_id":entity_id(&p)?,"user_id":{"_":"inputUserSelf"}}),
-        )
-        .await?;
+        let leave = api
+            .invoke(
+                "messages.deleteChatUser",
+                json!({"chat_id":entity_id(&p)?,"user_id":{"_":"inputUserSelf"}}),
+            )
+            .await;
+        if let Err(error) = leave {
+            let already_left = error.chain().any(|cause| {
+                let message = cause.to_string();
+                let Some(rpc) = message.strip_prefix("Telegram RPC ") else {
+                    return false;
+                };
+                let mut fields = rpc.split_whitespace();
+                fields.next() == Some("400") && fields.next() == Some("USER_NOT_PARTICIPANT")
+            });
+            if !already_left {
+                return Err(error);
+            }
+        }
     }
     for pass in 1..=50 {
         let r = api

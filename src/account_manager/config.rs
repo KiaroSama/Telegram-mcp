@@ -47,6 +47,24 @@ pub fn config_digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
 }
 
+/// Resolve the shared service address with the same file and process precedence.
+pub fn bind_address() -> Result<std::net::SocketAddr> {
+    let snapshot = current_config()?;
+    let value = |key: &str| {
+        PROCESS
+            .get()
+            .and_then(|values| values.get(key))
+            .or_else(|| snapshot.values.get(key))
+            .cloned()
+    };
+    let host = value("MCP_HOST").unwrap_or_else(|| "127.0.0.1".into());
+    let port = value("MCP_PORT").unwrap_or_else(|| "8765".into());
+    Ok(std::net::SocketAddr::new(
+        host.parse().context("MCP_HOST must be an IP address")?,
+        port.parse().context("MCP_PORT must be a valid port")?,
+    ))
+}
+
 pub fn label_for(key: &str) -> Result<String> {
     for prefix in ["TELEGRAM_SESSION_STRING", "TELEGRAM_SESSION_NAME"] {
         if key == prefix {
@@ -291,9 +309,8 @@ fn parse_line(
         }
         if c == '$' && quote != Some('\'') {
             let start = i + 1;
-            let mut end = start;
             if chars.get(start) == Some(&'{') {
-                end = start + 1;
+                let mut end = start + 1;
                 while end < chars.len() && chars[end] != '}' {
                     end += 1;
                 }
@@ -312,22 +329,6 @@ fn parse_line(
                 );
                 keep = result.len();
                 i = end + 1;
-                continue;
-            }
-            while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
-                end += 1;
-            }
-            if end > start {
-                let name: String = chars[start..end].iter().collect();
-                result.push_str(
-                    process
-                        .get(&name)
-                        .or_else(|| values.get(&name))
-                        .map(String::as_str)
-                        .unwrap_or(""),
-                );
-                keep = result.len();
-                i = end;
                 continue;
             }
         }
@@ -361,9 +362,26 @@ pub(super) fn write_env_value_locked(
     value: &str,
     expected_digest: Option<&str>,
 ) -> Result<()> {
+    rewrite_env_locked(guard, key, Some(value), expected_digest)
+}
+
+pub(super) fn remove_env_value_locked(
+    guard: &ConfigWriteGuard,
+    key: &str,
+    expected_digest: &str,
+) -> Result<()> {
+    rewrite_env_locked(guard, key, None, Some(expected_digest))
+}
+
+fn rewrite_env_locked(
+    guard: &ConfigWriteGuard,
+    key: &str,
+    value: Option<&str>,
+    expected_digest: Option<&str>,
+) -> Result<()> {
     let path = &guard.path;
     label_for(key)?;
-    if value.contains(['\r', '\n', '\0']) {
+    if value.is_some_and(|value| value.contains(['\r', '\n', '\0'])) {
         bail!("An account configuration value must fit on one line");
     }
     if path
@@ -386,11 +404,13 @@ pub(super) fn write_env_value_locked(
         bail!("Account configuration changed; no replacement was written");
     }
     let ending = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let quoted = if value.contains('$') {
-        format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
-    } else {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-    };
+    let quoted = value.map(|value| {
+        if value.contains('$') {
+            format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+        } else {
+            format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+    });
     let mut matched = false;
     let mut result = String::new();
     for line in logical_records(text)? {
@@ -410,14 +430,16 @@ pub(super) fn write_env_value_locked(
             if body.starts_with('\u{feff}') {
                 result.push('\u{feff}');
             }
-            result.push_str(&format!("{key}={quoted}"));
-            result.push_str(ending);
+            if let Some(quoted) = &quoted {
+                result.push_str(&format!("{key}={quoted}"));
+                result.push_str(ending);
+            }
             matched = true;
         } else {
             result.push_str(line);
         }
     }
-    if !matched {
+    if !matched && let Some(quoted) = &quoted {
         if !result.is_empty() && !result.ends_with('\n') {
             result.push_str(ending);
         }

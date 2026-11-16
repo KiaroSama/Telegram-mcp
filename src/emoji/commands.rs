@@ -18,10 +18,11 @@ pub(super) async fn index(
     if source.packs_dir.is_some() || remote.is_none() {
         let root = packs::find_root(source.packs_dir.as_deref())?;
         let (entries, problems) = packs::read_catalogue(&root)?;
+        let complete = problems.is_empty();
         for problem in problems {
             eprintln!("packs: {problem}");
         }
-        let counts = packs::refresh(&mut stored, &entries, rebuild).await;
+        let counts = packs::refresh_complete(&mut stored, &entries, rebuild, complete).await;
         println!("{}", serde_json::to_string_pretty(&counts)?);
     } else {
         let studio = Studio::connect(cli.account.clone(), cli.url.as_deref()).await?;

@@ -1,29 +1,70 @@
 use super::*;
 use crate::account_manager::{ConfigSnapshot, label_for};
 use base64::Engine;
-use sha2::{Digest, Sha256};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::path::PathBuf;
+use subtle::{Choice, ConstantTimeEq};
+use zeroize::{Zeroize, Zeroizing};
 
-pub(super) fn fingerprints(
+const MAX_AUTHORIZATION_KEYS: usize = 32;
+
+/// Only temporary comparison copies live here. This does not erase original
+/// configuration strings, persisted sessions or the session library's storage.
+pub(super) struct AuthorizationKeys {
+    values: Vec<Zeroizing<[u8; 256]>>,
+}
+impl AuthorizationKeys {
+    fn new() -> Self {
+        Self {
+            values: Vec::with_capacity(MAX_AUTHORIZATION_KEYS),
+        }
+    }
+    fn push(&mut self, value: Zeroizing<[u8; 256]>) -> Result<()> {
+        anyhow::ensure!(
+            self.values.len() < MAX_AUTHORIZATION_KEYS,
+            "Authorization comparison exceeds its key budget"
+        );
+        self.values.push(value);
+        Ok(())
+    }
+    pub(super) fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+    pub(super) fn intersects(&self, other: &Self) -> bool {
+        let mut equal = Choice::from(0);
+        // Every pair has the same 256-byte length. Accumulate all comparisons,
+        // including pairs after a match; neither contents nor matching position
+        // select an early return. Only the bounded key counts affect loop size.
+        for left in &self.values {
+            for right in &other.values {
+                equal |= left[..].ct_eq(&right[..]);
+            }
+        }
+        bool::from(equal)
+    }
+}
+
+pub(super) fn load(
     state: &State,
     label: &str,
     config: &ConfigSnapshot,
     custody_owner: bool,
-) -> Result<BTreeSet<[u8; 32]>> {
+) -> Result<AuthorizationKeys> {
     let native = state.read_json(&format!("{label}.session.json"), serde_json::Value::Null)?;
     if !native.is_null() {
-        let snapshot: Snapshot = serde_json::from_value(native)?;
+        let mut snapshot: Snapshot = serde_json::from_value(native)?;
         // A fresh native authorization is explicitly exempt for its own label,
         // but cannot identify old encryption custody left from an older login.
         if custody_owner && snapshot.authorization_origin == "native" {
             bail!("Fresh native authorization does not identify deferred legacy custody");
         }
-        let keys = snapshot
-            .dc_options
-            .iter()
-            .filter_map(|dc| dc.auth_key)
-            .map(digest)
-            .collect::<BTreeSet<_>>();
+        let mut keys = AuthorizationKeys::new();
+        for option in &mut snapshot.dc_options {
+            if let Some(key) = &mut option.auth_key {
+                let comparison = Zeroizing::new(*key);
+                key.zeroize();
+                keys.push(comparison)?;
+            }
+        }
         if !keys.is_empty() || !custody_owner {
             return Ok(keys);
         }
@@ -40,27 +81,30 @@ pub(super) fn fingerprints(
         }
     }
     let Some((key, value)) = source else {
-        return Ok(BTreeSet::new());
+        return Ok(AuthorizationKeys::new());
     };
     if key.starts_with("TELEGRAM_SESSION_STRING") {
         anyhow::ensure!(value.starts_with('1'), "Unsupported StringSession version");
-        let bytes = base64::engine::general_purpose::URL_SAFE.decode(&value[1..])?;
+        let bytes = Zeroizing::new(base64::engine::general_purpose::URL_SAFE.decode(&value[1..])?);
         anyhow::ensure!(
             matches!(bytes.len(), 263 | 275) && (1..=5).contains(&bytes[0]),
             "Invalid StringSession shape"
         );
-        let key: [u8; 256] = bytes[bytes.len() - 256..].try_into()?;
-        return Ok(BTreeSet::from([digest(key)]));
+        let mut key = Zeroizing::new([0u8; 256]);
+        key.copy_from_slice(&bytes[bytes.len() - 256..]);
+        let mut keys = AuthorizationKeys::new();
+        keys.push(key)?;
+        return Ok(keys);
     }
     let path = source_path(state, config, value)?;
-    Ok(super::super::import::authorization_keys(&path)?
-        .into_iter()
-        .map(digest)
-        .collect())
-}
-
-fn digest(key: [u8; 256]) -> [u8; 32] {
-    Sha256::digest(key).into()
+    let mut source = Zeroizing::new(super::super::import::authorization_keys(&path)?);
+    let mut keys = AuthorizationKeys::new();
+    for raw in source.iter_mut() {
+        let comparison = Zeroizing::new(*raw);
+        raw.zeroize();
+        keys.push(comparison)?;
+    }
+    Ok(keys)
 }
 
 fn source_path(state: &State, config: &ConfigSnapshot, value: &str) -> Result<PathBuf> {

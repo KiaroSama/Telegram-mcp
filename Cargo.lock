@@ -3629,11 +3629,15 @@ dependencies = [
  "roxmltree",
  "rpassword",
  "rusqlite",
+ "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "subtle",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
@@ -3641,6 +3645,7 @@ dependencies = [
  "url",
  "windows-sys 0.61.2",
  "x25519-dalek",
+ "zeroize",
  "zip",
 ]
 

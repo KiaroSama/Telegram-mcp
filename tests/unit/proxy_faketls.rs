@@ -19,9 +19,16 @@ async fn native_tls_record_bridge_forwards_actual_data_and_graceful_shutdown() {
     let (mut local, mut network, task) = bridge().await;
     local.write_all(b"outgoing bytes").await.unwrap();
     local.flush().await.unwrap();
+    let mut ccs = [0; 6];
+    network.read_exact(&mut ccs).await.unwrap();
+    assert_eq!(ccs, [0x14, 3, 3, 0, 1, 1]);
     let mut bytes = vec![0; 19];
     network.read_exact(&mut bytes).await.unwrap();
     assert_eq!(bytes, record(0x17, b"outgoing bytes"));
+    local.write_all(b"next").await.unwrap();
+    let mut next = [0; 9];
+    network.read_exact(&mut next).await.unwrap();
+    assert_eq!(next.as_slice(), record(0x17, b"next"));
     network.write_all(&record(0x17, b"reply")).await.unwrap();
     let mut response = [0; 5];
     local.read_exact(&mut response).await.unwrap();

@@ -462,6 +462,18 @@ fn export_filename_refuses_windows_reserved_names() {
 fn export_filename_preserves_unicode() {
     assert_eq!(media::safe_file_name("نامه.txt"), "نامه.txt");
 }
+
+#[test]
+fn capture_normalizes_decimal_region_strings_before_the_worker() {
+    let request = telegram_mcp::tools::visual::capture::normalize(
+        "get_telegram_region",
+        &json!({"left":"0","top":"1","right":"100","bottom":"101"}),
+    )
+    .unwrap();
+    for (key, value) in [("left", 0), ("top", 1), ("right", 100), ("bottom", 101)] {
+        assert_eq!(request[key].as_u64(), Some(value));
+    }
+}
 #[test]
 fn export_filename_refuses_empty_result() {
     assert_eq!(media::safe_file_name("../.."), "file");

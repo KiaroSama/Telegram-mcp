@@ -21,13 +21,18 @@ preserve entity offsets in UTF-16 code units.
 ```bash
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-features
+cargo test --locked --all-features -- --test-threads=1
 cargo build --locked --release --bin telegram-mcp
 cargo run --locked --bin ci -- privacy
 cargo run --locked --bin ci -- privacy-history
 ```
 
-For CI's bounded runner, install the versions declared in `tests.yml` and run:
+The standard Cargo runner runs these tests serially because Unix subprocess tests
+can briefly inherit a sibling test's open file lease before `exec` closes it.
+This can make an immediate close/reopen assertion observe temporary contention.
+CI uses Nextest's separate process for each case, preserving parallel execution
+without sharing incidental lease descriptors between cases. For CI's bounded
+runner, install the versions declared in `tests.yml` and run:
 
 ```bash
 cargo nextest run --locked --all-features --profile ci

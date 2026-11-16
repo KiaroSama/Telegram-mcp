@@ -387,3 +387,46 @@ fn endpoint_embedded_credentials_are_refused() {
 
 #[path = "rust_transcription/hosted.rs"]
 mod hosted_tests;
+
+#[test]
+fn hosted_endpoint_security_rejects_cleartext_remote_audio_and_cleartext_keys() {
+    for (endpoint, key) in [
+        ("http://api.example.com/v1", None),
+        ("http://localhost/v1", None),
+        ("http://127.0.0.1/v1", Some("synthetic-key")),
+        ("http://[::1]/v1", Some("synthetic-key")),
+    ] {
+        let mut values = BTreeMap::from([(
+            "TELEGRAM_TRANSCRIBE_OPENAI_URL".to_owned(),
+            endpoint.to_owned(),
+        )]);
+        if let Some(key) = key {
+            values.insert(
+                "TELEGRAM_TRANSCRIBE_OPENAI_API_KEY".to_owned(),
+                key.to_owned(),
+            );
+        }
+        let error = Settings::from_values(&values, &json!({"engine":"openai"}))
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("HTTPS"));
+        assert!(!error.contains("synthetic-key"));
+    }
+    for endpoint in [
+        "https://api.example.com/v1",
+        "http://127.0.0.1/v1",
+        "http://[::1]/v1",
+    ] {
+        assert!(
+            Settings::from_values(
+                &BTreeMap::from([(
+                    "TELEGRAM_TRANSCRIBE_OPENAI_URL".to_owned(),
+                    endpoint.to_owned()
+                )]),
+                &json!({"engine":"openai"})
+            )
+            .is_ok()
+        );
+    }
+}

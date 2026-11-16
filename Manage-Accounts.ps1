@@ -2,10 +2,9 @@
 <#
     Add, remove and inspect the Telegram accounts this server exposes.
 
-    Accounts live in `.env` as TELEGRAM_SESSION_STRING_<LABEL> lines, one per
-    account, plus the unsuffixed TELEGRAM_SESSION_STRING which the server labels
-    "default". This menu edits exactly those lines and leaves every other line in
-    the file byte-for-byte alone.
+    Accounts use TELEGRAM_SESSION_NAME_<LABEL> for native authorization or
+    TELEGRAM_SESSION_STRING_<LABEL> for legacy imports. Unsuffixed keys name
+    "default". The manager preserves every unrelated configuration record.
 
     Two rules shape the whole script, because a session string is a live login to
     a Telegram account and is worth more than a password:
@@ -15,9 +14,9 @@
       * `.env` is copied to .env.backup-<UTC> before any rewrite, so a mistake
         here costs one rename rather than every configured account.
 
-    Adding an account needs a session string, which comes from
-    the native `telegram-mcp login` command. This script offers to run that for you, but the
-    QR scan or the phone code is yours to complete - nothing here logs you in.
+    Native `telegram-mcp login` saves private authorization and its configuration
+    together. Existing legacy session strings can also be imported. QR scans,
+    phone codes and passwords are completed by the person using this console.
 #>
 
 [CmdletBinding()]
@@ -87,7 +86,7 @@ function Show-Accounts {
 
 function Invoke-SessionGenerator {
     param(
-        [string] $Label,
+        [Parameter(Mandatory)] [string] $Label,
         # Add-Account has just asked whether to generate one. Asking again here is
         # the same question twice in a row, which is what a caller reports as noise.
         [switch] $AlreadyConfirmed,
@@ -101,29 +100,38 @@ function Invoke-SessionGenerator {
     if ($ReplaceKey) { Write-Host 'Log in to the same account you are repairing.' }
     else { Write-Host 'Log in as the account you want to ADD, not one already configured.' }
     if ($Label) {
-        Write-Hint "It will save the result as '$Label' - press Enter when it offers to."
+        Write-Hint "Successful login saves private authorization as '$Label'."
     }
     Write-Host ''
     if (-not $AlreadyConfirmed -and -not (Read-Confirmation 'Run the session generator now?')) { return }
 
-    $native = Get-NativeBinary -Root $PSScriptRoot
-    $account = if ($Label) { $Label } else { 'default' }
+    $native = Get-NativeBinary -Root $script:ProjectRoot
+    $account = $Label
     $arguments = @('login', '--account', $account, '--env-file', $envPath, '--no-echo')
     if ($ReplaceKey) {
+        if ($ExpectedUserId -le 0 -or -not $ExpectedConfigDigest) {
+            $health = Get-SessionHealth -Key $ReplaceKey
+            if ($ExpectedUserId -le 0 -and $health.PSObject.Properties['user_id']) {
+                $ExpectedUserId = [long] $health.user_id
+            }
+            if (-not $ExpectedConfigDigest -and $health.PSObject.Properties['config_digest']) {
+                $ExpectedConfigDigest = [string] $health.config_digest
+            }
+        }
         $arguments += @('--replace-key', $ReplaceKey)
         if ($ExpectedConfigDigest) { $arguments += @('--expected-config-digest', $ExpectedConfigDigest) }
         if ($ExpectedUserId -gt 0) { $arguments += @('--expected-user-id', "$ExpectedUserId") }
     }
     $restartService = $false
-    if ($ReplaceKey) { $restartService = Stop-TelegramServer -Root $PSScriptRoot }
-    Push-Location -LiteralPath $PSScriptRoot
+    if ($ReplaceKey) { $restartService = Stop-TelegramServer -Root $script:ProjectRoot }
+    Push-Location -LiteralPath $script:ProjectRoot
     try {
         & $native @arguments
         $script:GeneratorExitCode = $LASTEXITCODE
     }
     finally {
         Pop-Location
-        if ($restartService) { Start-TelegramServer -Root $PSScriptRoot | Out-Null }
+        if ($restartService) { Start-TelegramServer -Root $script:ProjectRoot | Out-Null }
     }
 
     if ($script:GeneratorExitCode -ne 0) {
@@ -149,7 +157,7 @@ function Add-Account {
 
     Write-Host ''
     Write-Host (Get-Painted -Text 'A session string authorises full access to that Telegram account.' -ColorName 'NoteYellow')
-    if (Read-Confirmation 'Do you need to generate one first?') {
+    if (Read-Confirmation 'Log in and save native authorization now?') {
         if ($accounts.Contains($label)) {
             Invoke-SessionGenerator -Label $label -ReplaceKey $accounts[$label] -AlreadyConfirmed
         }
@@ -181,7 +189,7 @@ function Add-Account {
             return
         }
         'invalid' {
-            Write-Failure 'Telethon cannot read that as a session string, so it would never load.'
+            Write-Failure 'The native parser cannot read that legacy session string.'
             Write-Host 'Check you copied the whole line the generator printed. Nothing was saved.'
             return
         }
@@ -296,20 +304,12 @@ function Remove-Account {
     Write-Host 'session from Telegram: Settings > Devices.'
     if (-not (Read-Confirmation "Remove '$label'?")) { Write-Host 'Cancelled.'; return }
 
-    # Archive the native login and every account-scoped record before freeing
-    # its label. A later account must never inherit this person's aliases or keys.
-    $archiveLabel = $label.Substring(0, [Math]::Min(41, $label.Length))
-    $archive = '__removed_{0}_{1}' -f $archiveLabel, [guid]::NewGuid().ToString('N').Substring(0, 12)
+    # Native removal journals the archive and exact configuration deletion as
+    # one operation, including recovery after this PowerShell process terminates.
     $restartService = Stop-TelegramServer -Root $PSScriptRoot
-    $moved = $false
+    $backup = $null
     try {
-        Move-AccountState -From $label -To $archive | Out-Null
-        $moved = $true
-        $backup = Remove-EnvKey -Key $accounts[$label]
-    }
-    catch {
-        if ($moved) { Move-AccountState -From $archive -To $label | Out-Null }
-        throw
+        Remove-AccountState -Label $label -Key $accounts[$label] | Out-Null
     }
     finally {
         if ($restartService) { Start-TelegramServer -Root $PSScriptRoot | Out-Null }
@@ -320,6 +320,22 @@ function Remove-Account {
     Write-Host "Removed '$label'." -ForegroundColor Green
     if ($backup) { Write-Host "Previous .env kept as $(Split-Path -Leaf $backup)" }
     Write-Host 'A running server picks this up on its own - no restart needed.' -ForegroundColor Cyan
+}
+
+function Remove-AccountState {
+    param(
+        [Parameter(Mandatory)] [string] $Label,
+        [Parameter(Mandatory)] [string] $Key
+    )
+    $native = Get-NativeBinary -Root $PSScriptRoot
+    Push-Location -LiteralPath $PSScriptRoot
+    try {
+        $output = @(& $native remove-account --state-dir (Get-StateDirectory) --env-file $envPath --account $Label --key $Key 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    }
+    finally { Pop-Location }
+    if ($code -ne 0) { throw 'Account removal failed; its private transaction will recover before serving.' }
+    return $output
 }
 
 function Move-AccountState {
@@ -435,7 +451,7 @@ $script:MenuItems = [ordered] @{
     '2' = 'Add an account'
     '3' = 'Remove an account'
     '4' = 'Rename an account'
-    '5' = 'Generate a session string only'
+    '5' = 'Log in and save a new account'
     '6' = 'Check session health / re-login'
 }
 
@@ -485,7 +501,10 @@ try {
             '2' { Add-Account }
             '3' { Remove-Account }
             '4' { Rename-Account }
-            '5' { Invoke-SessionGenerator }
+            '5' {
+                $label = Read-Label 'Label for the account to log in - blank to cancel'
+                if ($label) { Invoke-SessionGenerator -Label $label }
+            }
             '6' { Test-AccountSessions }
             default { Write-Failure "Enter a menu number from 1 to $($script:MenuItems.Count), or exit." }
         }

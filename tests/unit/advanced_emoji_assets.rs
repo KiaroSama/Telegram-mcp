@@ -67,18 +67,25 @@ fn saved_emoji_bytes_are_complete_and_unix_permissions_are_private() {
 struct MediaApi {
     files: std::sync::Mutex<std::collections::VecDeque<std::result::Result<Vec<u8>, &'static str>>>,
     reads: std::sync::Mutex<Vec<(Value, u64)>>,
+    document: Option<Value>,
 }
 impl MediaApi {
     fn new(files: Vec<std::result::Result<Vec<u8>, &'static str>>) -> Self {
         Self {
             files: std::sync::Mutex::new(files.into()),
             reads: std::sync::Mutex::new(vec![]),
+            document: None,
         }
     }
 }
 #[async_trait::async_trait]
 impl Telegram for MediaApi {
-    async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+    async fn invoke(&self, method: &str, args: Value) -> Result<Value> {
+        if let Some(document) = &self.document {
+            assert_eq!(method, "messages.getCustomEmojiDocuments");
+            assert_eq!(args["document_id"], json!(["42"]));
+            return Ok(json!([document]));
+        }
         anyhow::bail!("No RPC expected")
     }
     async fn resolve_peer(&self, _: &Value) -> Result<Value> {
@@ -96,6 +103,39 @@ impl Telegram for MediaApi {
 }
 fn document() -> Value {
     json!({"_":"document","id":"42","access_hash":"99","file_reference":[1],"dc_id":4})
+}
+
+#[tokio::test]
+async fn downloaded_emoji_preview_saves_exact_bytes_through_the_async_worker_without_clobbering() {
+    let state = State::global().unwrap();
+    let temp = tempfile::tempdir_in(&state.file_roots()[0]).unwrap();
+    let destination = temp.path().join("published.png");
+    let image = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        2,
+        2,
+        image::Rgba([30, 60, 90, 255]),
+    ));
+    let (png, _) =
+        crate::tools::visual::images::encode_image(&image, "png", 64, 80, false).unwrap();
+    let mut api = MediaApi::new(vec![Ok(png.clone())]);
+    api.document = Some(document());
+    let args = json!({"document_id":"42","thumbnail":false,"save_path":destination});
+    let rendered = preview(&api, &args).await.unwrap();
+    assert_eq!(
+        rendered["saved_path"],
+        destination.to_string_lossy().as_ref()
+    );
+    assert_eq!(std::fs::read(&destination).unwrap(), png);
+    assert!(
+        rendered["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["type"] == "image")
+    );
+    assert!(preview(&api, &args).await.is_err());
+    assert_eq!(api.reads.lock().unwrap().len(), 1);
+    assert_eq!(std::fs::read(&destination).unwrap(), png);
 }
 
 #[tokio::test]

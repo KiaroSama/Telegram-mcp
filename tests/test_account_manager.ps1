@@ -71,6 +71,7 @@ try {
 
     $harness = @"
 `$PSScriptRoot = '$sandbox'
+`$script:ProjectRoot = `$PSScriptRoot
 `$envPath = Join-Path `$PSScriptRoot '.env'
 `$script:LogPath = `$null
 `$script:Quitting = `$false
@@ -416,6 +417,42 @@ $($functions.Value -join "`n`n")
     }
     Write-Host 'ok  native login carries configuration and generation guards'
 
+    # A legacy-only replacement must obtain the existing identity before stopping
+    # the shared service and forward it to the native identity guard.
+    & {
+        param($Definition, $Sandbox)
+        . ([ScriptBlock]::Create($Definition))
+        $envPath = Join-Path $Sandbox '.env'
+        $PSScriptRoot = $Sandbox
+        $script:ProjectRoot = $Sandbox
+        $fixture = Join-Path $Sandbox 'login-probe.ps1'
+        $record = Join-Path $Sandbox 'login-arguments.json'
+        [IO.File]::WriteAllText($fixture, @'
+param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $Arguments)
+[IO.File]::WriteAllText($env:TG_TEST_LOGIN_ARGUMENTS, (ConvertTo-Json -InputObject $Arguments))
+exit 0
+'@)
+        $script:loginProbePath = $fixture
+        function Get-NativeBinary { param($Root) $script:loginProbePath }
+        function Get-SessionHealth { param($Key) [pscustomobject] @{ status = 'healthy'; user_id = 4242; config_digest = ('d' * 64) } }
+        function Stop-TelegramServer { param($Root) $false }
+        function Write-Hint { param($Message) }
+        $oldRecord = $env:TG_TEST_LOGIN_ARGUMENTS
+        try {
+            $env:TG_TEST_LOGIN_ARGUMENTS = $record
+            Invoke-SessionGenerator -Label work -ReplaceKey TELEGRAM_SESSION_STRING_WORK -AlreadyConfirmed
+            $arguments = [IO.File]::ReadAllText($record) | ConvertFrom-Json
+            $identityIndex = [Array]::IndexOf($arguments, '--expected-user-id')
+            $digestIndex = [Array]::IndexOf($arguments, '--expected-config-digest')
+            if ($identityIndex -lt 0 -or $arguments[$identityIndex + 1] -ne '4242') { throw 'Legacy replacement lost the health-confirmed account identity.' }
+            if ($digestIndex -lt 0 -or $arguments[$digestIndex + 1] -ne ('d' * 64)) { throw 'Legacy replacement lost its configuration generation.' }
+        }
+        finally { $env:TG_TEST_LOGIN_ARGUMENTS = $oldRecord }
+    } $generator.Value $sandbox
+    if ($source -match 'Generate a session string only' -or $source -notmatch "'5' = 'Log in and save a new account'") {
+        throw 'The native persistent-login menu still promises a session-string-only operation.'
+    }
+
     # The main menu has no previous step. FFmWiz states this in a comment and does
     # not advertise back there; the same has to hold here or the hint lies.
     if ($source -notmatch "Read-Answer -Prompt 'Selection' -NoBack") {
@@ -663,10 +700,9 @@ try {
     # The native process and the retained launcher must agree on private state.
     $native = Get-NativeBinary -Root $projectRoot
     $nativeState = (& $native state-path | Select-Object -Last 1).Trim()
-    # Rust's canonical Windows paths use the verbatim prefix; PowerShell can
-    # name the same directory through the ordinary DOS/UNC spelling.
-    $nativeState = $nativeState -replace '^\\\\\?\\UNC\\', '\\' -replace '^\\\\\?\\', ''
-    $launcherState = [IO.Path]::GetFullPath((Get-StateDirectory))
+    # Both resolve through native canonicalization, including junctions and
+    # short names. Comparing textual GetFullPath spellings is insufficient.
+    $launcherState = (Get-StateDirectory).Trim()
     if ($LASTEXITCODE -ne 0 -or $nativeState -ne $launcherState) {
         throw 'Native Rust and PowerShell disagree on their private state directory.'
     }

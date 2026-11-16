@@ -2,6 +2,9 @@ use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::OnceLock;
+#[cfg(test)]
+#[path = "../../tests/unit/taint.rs"]
+mod tests;
 
 const PASSAGE: usize = 24;
 const MAX_WINDOWS: usize = 300_000;
@@ -112,6 +115,9 @@ impl Memory {
             }
         }
         let batch = windows(text);
+        if batch.is_empty() {
+            return;
+        }
         for window in &batch {
             let record = memory
                 .windows

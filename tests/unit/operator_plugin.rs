@@ -200,3 +200,34 @@ fn linked_destination_or_payload_is_refused() {
     assert!(install::install(&source, &linked.join("skills")).is_err());
     assert!(fs::read_dir(target).unwrap().next().is_none());
 }
+
+#[test]
+fn a_linked_docs_parent_cannot_copy_an_external_document_into_a_package() {
+    let (root, source) = fixture();
+    let external = root.path().join("external-documents");
+    fs::create_dir(&external).unwrap();
+    let canary = "Synthetic document outside the allowlisted source";
+    fs::write(external.join("operator-plugin.md"), canary).unwrap();
+    fs::remove_dir_all(source.join("docs")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&external, source.join("docs")).unwrap();
+    #[cfg(windows)]
+    assert!(
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(source.join("docs"))
+            .arg(&external)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let output = root.path().join("refused.zip");
+    assert!(package::package(&source, &output, "portable").is_err());
+    assert!(!output.exists());
+    assert_eq!(
+        fs::read_to_string(external.join("operator-plugin.md")).unwrap(),
+        canary
+    );
+}

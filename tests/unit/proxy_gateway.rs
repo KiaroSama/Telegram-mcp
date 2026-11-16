@@ -98,7 +98,7 @@ fn res_pq_parser_accepts_both_tl_byte_lengths_and_refuses_malformed_vectors() {
 #[tokio::test]
 async fn failed_route_backoff_is_immediate_and_does_not_attempt_a_socket() {
     let (_dir, state) = state();
-    let context = ContextState {
+    let context = Arc::new(ContextState {
         state,
         label: "work".into(),
         snapshot: ConfigSnapshot {
@@ -109,7 +109,7 @@ async fn failed_route_backoff_is_immediate_and_does_not_attempt_a_socket() {
         },
         status: Arc::new(Mutex::new(Value::Null)),
         failed_until: Mutex::new(Some(Instant::now() + Duration::from_secs(30))),
-    };
+    });
     let error = select(&context, "127.0.0.1:1".parse().unwrap())
         .await
         .err()
@@ -179,7 +179,7 @@ async fn exhausting_every_route_sets_backoff_without_publishing_a_successful_rou
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let target = listener.local_addr().unwrap();
     drop(listener);
-    let context = ContextState {
+    let context = Arc::new(ContextState {
         state,
         label: "work".into(),
         snapshot: ConfigSnapshot {
@@ -190,7 +190,7 @@ async fn exhausting_every_route_sets_backoff_without_publishing_a_successful_rou
         },
         status: Arc::new(Mutex::new(Value::Null)),
         failed_until: Mutex::new(None),
-    };
+    });
     assert!(select(&context, target).await.is_err());
     assert!(context.failed_until.lock().unwrap().is_some());
     assert_eq!(*context.status.lock().unwrap(), Value::Null);
@@ -202,4 +202,33 @@ async fn exhausting_every_route_sets_backoff_without_publishing_a_successful_rou
             .to_string()
             .contains("backoff")
     );
+}
+
+#[tokio::test]
+async fn aborted_accept_retries_without_closing_an_existing_owner_stream() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let client = TcpStream::connect(listener.local_addr().unwrap());
+    let (client, accepted) = tokio::join!(client, listener.accept());
+    let mut client = client.unwrap();
+    let (mut owner, address) = accepted.unwrap();
+    let next = TcpStream::connect(listener.local_addr().unwrap());
+    let (next, next_accepted) = tokio::join!(next, listener.accept());
+    let mut next = next.unwrap();
+    let mut outcomes = std::collections::VecDeque::from([
+        Err(std::io::Error::from(std::io::ErrorKind::ConnectionAborted)),
+        Err(std::io::Error::from_raw_os_error(24)),
+        Ok((next_accepted.unwrap().0, address)),
+    ]);
+    let retry = accept_with(|| std::future::ready(outcomes.pop_front().unwrap()));
+    let owner_traffic = async {
+        client.write_all(b"owner").await.unwrap();
+        let mut bytes = [0; 5];
+        owner.read_exact(&mut bytes).await.unwrap();
+        assert_eq!(&bytes, b"owner");
+    };
+    let ((mut accepted, _), ()) = tokio::join!(retry, owner_traffic);
+    next.write_all(b"new").await.unwrap();
+    let mut bytes = [0; 3];
+    accepted.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"new");
 }

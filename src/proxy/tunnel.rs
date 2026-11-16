@@ -18,6 +18,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
 pub type Stream = Box<dyn Io>;
 
 pub async fn connect(proxy: Option<&Proxy>, target: SocketAddr, dc: i16) -> Result<Stream> {
+    connect_verified(proxy, target, dc, None).await
+}
+async fn connect_verified(
+    proxy: Option<&Proxy>,
+    target: SocketAddr,
+    dc: i16,
+    tls_config: Option<Arc<rustls::ClientConfig>>,
+) -> Result<Stream> {
     let Some(proxy) = proxy else {
         return Ok(Box::new(
             TcpStream::connect(target)
@@ -26,19 +34,49 @@ pub async fn connect(proxy: Option<&Proxy>, target: SocketAddr, dc: i16) -> Resu
         ));
     };
     super::pools::validate(proxy)?;
-    let mut socket = TcpStream::connect((proxy.host.as_str(), proxy.port))
+    let socket = TcpStream::connect((proxy.host.as_str(), proxy.port))
         .await
         .context("Proxy endpoint could not be reached")?;
+    let credentials = proxy.username.as_ref().is_some_and(|v| !v.is_empty())
+        || proxy.password.as_ref().is_some_and(|v| !v.is_empty());
+    ensure!(
+        proxy.kind == "https" || !credentials || socket.peer_addr()?.ip().is_loopback(),
+        "Remote proxy credentials require verified HTTPS CONNECT; use a secure local tunnel for authenticated SOCKS or HTTP"
+    );
+    if proxy.kind == "mtproto" {
+        return super::mtproxy::connect(socket, proxy, dc).await;
+    }
+    let mut socket: Stream = if proxy.kind == "https" {
+        use rustls_platform_verifier::BuilderVerifierExt;
+        let config = match tls_config {
+            Some(config) => config,
+            None => Arc::new(
+                rustls::ClientConfig::builder()
+                    .with_platform_verifier()
+                    .context("The operating system TLS trust store is unavailable")?
+                    .with_no_client_auth(),
+            ),
+        };
+        let name = rustls::pki_types::ServerName::try_from(proxy.host.clone())
+            .context("Invalid HTTPS proxy server name")?;
+        Box::new(
+            tokio_rustls::TlsConnector::from(config)
+                .connect(name, socket)
+                .await
+                .context("HTTPS proxy certificate or TLS handshake verification failed")?,
+        )
+    } else {
+        Box::new(socket)
+    };
     match proxy.kind.as_str() {
         "socks5" => socks5(&mut socket, proxy, target).await?,
         "socks4" => socks4(&mut socket, proxy, target).await?,
-        "http" => http(&mut socket, proxy, target).await?,
-        "mtproto" => return super::mtproxy::connect(socket, proxy, dc).await,
+        "http" | "https" => http(&mut socket, proxy, target).await?,
         _ => bail!("Unsupported configured proxy protocol"),
     }
-    Ok(Box::new(socket))
+    Ok(socket)
 }
-async fn socks5(socket: &mut TcpStream, proxy: &Proxy, target: SocketAddr) -> Result<()> {
+async fn socks5(socket: &mut (impl Io + ?Sized), proxy: &Proxy, target: SocketAddr) -> Result<()> {
     let authenticated = proxy.username.as_ref().is_some_and(|s| !s.is_empty())
         || proxy.password.as_ref().is_some_and(|s| !s.is_empty());
     socket
@@ -86,7 +124,7 @@ async fn socks5(socket: &mut TcpStream, proxy: &Proxy, target: SocketAddr) -> Re
     read_bound(socket, reply[3]).await?;
     Ok(())
 }
-async fn socks4(socket: &mut TcpStream, proxy: &Proxy, target: SocketAddr) -> Result<()> {
+async fn socks4(socket: &mut (impl Io + ?Sized), proxy: &Proxy, target: SocketAddr) -> Result<()> {
     let IpAddr::V4(ip) = target.ip() else {
         bail!("SOCKS4 cannot route an IPv6 Telegram destination")
     };
@@ -109,7 +147,7 @@ async fn socks4(socket: &mut TcpStream, proxy: &Proxy, target: SocketAddr) -> Re
     );
     Ok(())
 }
-async fn http(socket: &mut TcpStream, proxy: &Proxy, target: SocketAddr) -> Result<()> {
+async fn http(socket: &mut (impl Io + ?Sized), proxy: &Proxy, target: SocketAddr) -> Result<()> {
     let authority = target.to_string();
     let mut request = format!(
         "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: Keep-Alive\r\n"
@@ -160,7 +198,7 @@ pub(crate) fn append_address(request: &mut Vec<u8>, target: SocketAddr) {
     }
     request.extend(target.port().to_be_bytes());
 }
-pub(crate) async fn read_bound(socket: &mut TcpStream, kind: u8) -> Result<()> {
+pub(crate) async fn read_bound(socket: &mut (impl Io + ?Sized), kind: u8) -> Result<()> {
     let bytes = match kind {
         1 => 4,
         4 => 16,

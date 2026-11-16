@@ -360,3 +360,131 @@ async fn sticker_uploads_carry_sticker_attributes_instead_of_file_forcing() {
     );
     assert_eq!(uploads::infer_kind(Path::new("unknown.xyz")), "document");
 }
+
+#[tokio::test]
+async fn caption_limit_applies_to_parsed_text_before_uploading() {
+    let (_dir, state) = local_support::fixture();
+    let path = state.file_roots()[0].join("caption.png");
+    std::fs::write(&path, png()).unwrap();
+    let w = MediaWire::new(
+        vec![("messages.sendMedia", json!({"_":"updates","updates":[]}))],
+        vec![],
+    );
+    send(&w, &state, "send_file", json!({"chat_id":7,"file_path":path,"caption":format!("<b>{}</b>", "a".repeat(1024)),"parse_mode":"html"})).await.unwrap();
+    assert_eq!(w.calls()[0].1["message"].as_str().unwrap().len(), 1024);
+    assert_eq!(w.calls()[0].1["entities"][0]["length"], 1024);
+    let w = MediaWire::new(vec![], vec![]);
+    assert!(send(&w, &state, "send_file", json!({"chat_id":7,"file_path":path,"caption":format!("<b>{}</b>", "a".repeat(1025)),"parse_mode":"html"})).await.unwrap_err().to_string().contains("1024"));
+    assert!(w.uploads.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn heterogeneous_file_lists_preserve_contiguous_groups_order_and_one_caption() {
+    let (_dir, state) = local_support::fixture();
+    let mut paths = vec![];
+    for name in ["first.png", "second.png", "third.bin", "fourth.png"] {
+        let path = state.file_roots()[0].join(name);
+        std::fs::write(
+            &path,
+            if name.ends_with("png") {
+                png()
+            } else {
+                b"document".to_vec()
+            },
+        )
+        .unwrap();
+        paths.push(path);
+    }
+    let w = MediaWire::new(
+        vec![
+            ("messages.uploadMedia", json!({"photo":photo(1)})),
+            ("messages.uploadMedia", json!({"photo":photo(2)})),
+            (
+                "messages.sendMultiMedia",
+                json!({"_":"updates","updates":[]}),
+            ),
+            ("messages.sendMedia", json!({"_":"updates","updates":[]})),
+            ("messages.sendMedia", json!({"_":"updates","updates":[]})),
+        ],
+        vec![],
+    );
+    let result = send(&w,&state,"send_file",json!({"chat_id":7,"file_path":paths,"caption":"<b>first</b>","parse_mode":"html","topic_id":55,"reply_to_message_id":8,"send_as":7})).await.unwrap();
+    assert_eq!(result["results"].as_array().unwrap().len(), 3);
+    assert_eq!(*w.uploads.lock().unwrap(), paths);
+    let calls = w.calls();
+    assert_eq!(calls[2].1["multi_media"].as_array().unwrap().len(), 2);
+    assert_eq!(calls[2].1["multi_media"][0]["message"], "first");
+    assert_eq!(
+        calls[2].1["multi_media"][0]["entities"][0]["_"],
+        "messageEntityBold"
+    );
+    assert_eq!(calls[2].1["multi_media"][1]["message"], "");
+    assert_eq!(calls[3].1["media"]["_"], "inputMediaUploadedDocument");
+    assert_eq!(calls[4].1["media"]["_"], "inputMediaUploadedPhoto");
+    for (_, req) in &calls[2..] {
+        assert_eq!(req["reply_to"]["top_msg_id"], 55);
+        assert_eq!(req["send_as"]["user_id"], "7");
+    }
+    for (_, req) in &calls[3..] {
+        assert_eq!(req["message"], "");
+        assert_eq!(req["entities"], json!([]));
+    }
+}
+
+#[tokio::test]
+async fn later_group_failure_keeps_completed_results_and_never_retries_a_send() {
+    use async_trait::async_trait;
+    use telegram_mcp::backend::Telegram;
+    struct Failure(MediaWire, std::sync::atomic::AtomicUsize);
+    #[async_trait]
+    impl Telegram for Failure {
+        async fn invoke(&self, method: &str, args: Value) -> anyhow::Result<Value> {
+            if method == "messages.sendMedia"
+                && self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                telegram_mcp::tl::Schema::global().encode_call(method, &args)?;
+                self.0.calls.lock().unwrap().push((method.to_owned(), args));
+                anyhow::bail!("synthetic connection lost after sending");
+            }
+            self.0.invoke(method, args).await
+        }
+        async fn resolve_peer(&self, input: &Value) -> anyhow::Result<Value> {
+            self.0.resolve_peer(input).await
+        }
+        async fn upload(&self, path: &Path) -> anyhow::Result<Value> {
+            self.0.upload(path).await
+        }
+    }
+    let (_dir, state) = local_support::fixture();
+    let paths: Vec<_> = ["first.png", "second.bin", "third.png"]
+        .iter()
+        .map(|name| {
+            let path = state.file_roots()[0].join(name);
+            std::fs::write(&path, b"synthetic upload").unwrap();
+            path
+        })
+        .collect();
+    let w = Failure(
+        MediaWire::new(
+            vec![(
+                "messages.sendMedia",
+                json!({"_":"updates","updates":[],"completed_fixture":true}),
+            )],
+            vec![],
+        ),
+        std::sync::atomic::AtomicUsize::new(0),
+    );
+    let result = uploads::run_with_state(
+        &w,
+        &state,
+        "send_file",
+        &json!({"chat_id":7,"file_path":paths}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["partial"], true);
+    assert_eq!(result["completed"][0]["completed_fixture"], true);
+    assert_eq!(result["failed_file_index"], 1);
+    assert_eq!(w.0.calls().len(), 2);
+    assert_eq!(w.1.load(std::sync::atomic::Ordering::SeqCst), 2);
+}

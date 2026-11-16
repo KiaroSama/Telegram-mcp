@@ -200,6 +200,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
         "Shared and system folder membership cannot be edited with this tool"
     );
     let mut p = a::peer(api, args, "chat_id").await?;
+    let mut self_id = None;
     if p["_"] == "inputPeerSelf"
         || ["include_peers", "pinned_peers", "exclude_peers"]
             .iter()
@@ -216,6 +217,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             .as_array()
             .and_then(|v| v.first())
             .ok_or_else(|| anyhow::anyhow!("Account identity unavailable"))?;
+        self_id = Some(positive(&user["id"])?);
         let concrete = json!({"_":"inputPeerUser","user_id":user["id"],"access_hash":user.get("access_hash").cloned().unwrap_or(json!("0"))});
         if p["_"] == "inputPeerSelf" {
             p = concrete.clone();
@@ -230,6 +232,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             }
         }
     }
+    let before = super::folder_plan::state(&f, self_id)?["revision"].clone();
     let key = peer_key(&p);
     let mut changed = false;
     for field in ["include_peers", "pinned_peers"] {
@@ -263,6 +266,18 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
     }
     f["exclude_peers"] = json!(excluded);
     if changed {
+        let latest = api.invoke("messages.getDialogFilters", json!({})).await?;
+        let latest = super::folder_plan::list(&latest)?
+            .iter()
+            .find(|folder| id(&folder["id"]).ok() == Some(fid))
+            .ok_or_else(|| {
+                anyhow::anyhow!("Folder changed while preparing membership; list folders and retry")
+            })?;
+        ensure!(
+            latest["_"] == "dialogFilter"
+                && super::folder_plan::state(latest, self_id)?["revision"] == before,
+            "Folder changed while preparing membership; list folders and retry"
+        );
         api.invoke("messages.updateDialogFilter", json!({"id":fid,"filter":f}))
             .await?;
     }

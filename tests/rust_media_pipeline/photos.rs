@@ -140,3 +140,28 @@ async fn photo_selection_bounds_and_missing_results_never_download_another_photo
         }
     }
 }
+
+#[tokio::test]
+async fn photo_sheets_bound_retained_cells_even_when_the_server_exceeds_the_limit() {
+    let w = MediaWire::new(
+        vec![(
+            "photos.getUserPhotos",
+            json!({"photos":(1..=25).map(photo).collect::<Vec<_>>()}),
+        )],
+        png(),
+    );
+    let result = run(
+        &w,
+        "get_photo_sheet",
+        json!({"chat_id":7,"limit":24,"columns":6}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(w.downloads.lock().unwrap().len(), 24);
+    assert_eq!(
+        result["metadata"]["photo_ids"].as_array().unwrap().len(),
+        24
+    );
+    assert_eq!(result["metadata"]["photo_ids"][23], "24");
+    assert_eq!(result["content"][0]["mimeType"], "image/png");
+}

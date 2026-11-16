@@ -53,11 +53,45 @@ pub async fn fetch(api: &dyn Telegram, peer: &Value, message_id: i64) -> Result<
     } else {
         "messages.getMessages"
     };
+    let expected = requested_peer(api, peer).await?;
     let response = api.invoke(method, request).await?;
     result_messages(&response)
         .into_iter()
-        .find(|m| m["id"].as_i64() == Some(message_id))
-        .ok_or_else(|| anyhow!("Message {message_id} was not found"))
+        .find(|m| m["id"].as_i64() == Some(message_id) && same_peer(&m["peer_id"], &expected))
+        .ok_or_else(|| anyhow!("Message {message_id} was not found in the requested chat"))
+}
+pub async fn requested_peer(api: &dyn Telegram, peer: &Value) -> Result<Value> {
+    let (constructor, key) = match peer["_"].as_str() {
+        Some("inputPeerUser") => ("peerUser", "user_id"),
+        Some("inputPeerChat") => ("peerChat", "chat_id"),
+        Some("inputPeerChannel") => ("peerChannel", "channel_id"),
+        Some("inputPeerSelf") => {
+            let users = api
+                .invoke("users.getUsers", json!({"id":[{"_":"inputUserSelf"}]}))
+                .await?;
+            let id = users[0]
+                .get("id")
+                .filter(|id| {
+                    id.as_i64().is_some_and(|id| id > 0)
+                        || id
+                            .as_str()
+                            .is_some_and(|id| id.parse::<i64>().is_ok_and(|id| id > 0))
+                })
+                .ok_or_else(|| anyhow!("Could not resolve the current account's peer"))?;
+            return Ok(json!({"_":"peerUser","user_id":id}));
+        }
+        _ => bail!("Could not bind the message to the requested chat"),
+    };
+    ensure!(!peer[key].is_null(), "The requested peer has no id");
+    Ok(json!({"_":constructor,key:peer[key]}))
+}
+pub fn same_peer(actual: &Value, expected: &Value) -> bool {
+    actual["_"] == expected["_"]
+        && ["user_id", "chat_id", "channel_id"].iter().any(|key| {
+            actual.get(*key).filter(|v| !v.is_null()).is_some_and(|id| {
+                id.to_string().trim_matches('"') == expected[*key].to_string().trim_matches('"')
+            })
+        })
 }
 pub fn copy_optional(target: &mut Value, source: &Value, pairs: &[(&str, &str)]) {
     for (from, to) in pairs {

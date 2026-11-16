@@ -130,9 +130,28 @@ pub(super) async fn preview(api: &dyn Telegram, args: &Value) -> Result<Value> {
         .and_then(|v| v.iter().find(|d| id(&d["id"]).ok() == Some(wanted)))
         .context("Custom emoji document was not found")?;
     let (data, used_thumbnail) = bytes(api, doc, thumbnail, max as u64).await?;
-    let saved = destination
-        .map(|(state, path)| save(&state, &path, &data, wanted))
-        .transpose()?;
+    let data = std::sync::Arc::new(data);
+    let saved = if let Some((state, path)) = destination {
+        static SAVES: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+            std::sync::OnceLock::new();
+        let permit = std::sync::Arc::clone(
+            SAVES.get_or_init(|| std::sync::Arc::new(tokio::sync::Semaphore::new(2))),
+        )
+        .acquire_owned()
+        .await
+        .context("Emoji file worker unavailable")?;
+        let data = std::sync::Arc::clone(&data);
+        Some(
+            tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                save(&state, &path, &data, wanted)
+            })
+            .await
+            .context("Emoji file worker stopped")??,
+        )
+    } else {
+        None
+    };
     match previews::render(&data, count, dimension).await {
         Ok(mut out) => {
             out["document_id"] = json!(wanted.to_string());

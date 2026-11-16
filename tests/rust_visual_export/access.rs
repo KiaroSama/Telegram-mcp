@@ -60,7 +60,7 @@ fn separately_allowed_legacy_group_retains_migrated_history() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let (result, api) = migrated_export("legacy-allowed").await;
         assert_eq!(result["messages"], 4);
-        assert_eq!(legacy_history_reads(&api), 2);
+        assert_eq!(legacy_history_reads(&api), 4);
     });
 }
 

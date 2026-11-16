@@ -140,7 +140,7 @@ server binary, native FFmpeg/FFprobe, certificates and system runtime libraries.
 ```bash
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
-cargo test --locked --all-features
+cargo test --locked --all-features -- --test-threads=1
 cargo build --locked --release --bin telegram-mcp
 ```
 

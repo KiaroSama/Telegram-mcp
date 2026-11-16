@@ -268,7 +268,7 @@ fn insert_blockquote_takes_in_an_exact_edge_glyph() {
     assert_eq!(entities[0]["length"], 12);
 }
 #[test]
-fn insert_preformatted_block_takes_in_an_exact_edge_glyph() {
+fn insert_preformatted_block_leaves_an_exact_edge_glyph_outside() {
     let (_, entities) = compose::insert_emoji(
         "alpha",
         &[json!({"type":"pre","offset":0,"length":5,"language":"rust"})],
@@ -278,11 +278,11 @@ fn insert_preformatted_block_takes_in_an_exact_edge_glyph() {
         "end",
     )
     .unwrap();
-    assert_eq!(entities[0]["length"], 7);
+    assert_eq!(entities[0]["length"], 5);
     assert_eq!(entities[0]["language"], "rust");
 }
 #[test]
-fn insert_code_block_takes_in_an_exact_edge_glyph() {
+fn insert_code_block_leaves_an_exact_edge_glyph_outside() {
     let (_, entities) = compose::insert_emoji(
         "alpha",
         &[json!({"_":"messageEntityCode","offset":0,"length":5})],
@@ -292,7 +292,37 @@ fn insert_code_block_takes_in_an_exact_edge_glyph() {
         "end",
     )
     .unwrap();
-    assert_eq!(entities[0]["length"], 7);
+    assert_eq!(entities[0]["length"], 5);
+}
+
+#[test]
+fn insert_refuses_custom_emoji_inside_code_and_pre_ranges() {
+    for kind in ["code", "pre"] {
+        assert!(
+            compose::insert_emoji(
+                "alpha\nbeta",
+                &[json!({"type":kind,"offset":0,"length":10})],
+                2,
+                "🔥",
+                "9",
+                "start"
+            )
+            .is_err()
+        );
+        let (_, entities) = compose::insert_emoji(
+            "alpha",
+            &[json!({"type":kind,"offset":0,"length":5})],
+            1,
+            "🔥",
+            "9",
+            "start",
+        )
+        .unwrap();
+        assert_eq!(
+            entities.iter().find(|e| e["type"] == kind).unwrap()["offset"],
+            2
+        );
+    }
 }
 #[test]
 fn insert_inline_link_never_swallows_the_new_emoji() {

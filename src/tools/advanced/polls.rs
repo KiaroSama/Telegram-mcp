@@ -112,8 +112,12 @@ fn deadline(when: i64) -> Result<()> {
     Ok(())
 }
 async fn create(api: &dyn Telegram, args: &Value) -> Result<Value> {
-    let question = a::text(args, "question")?;
-    nonempty(question, 255, "Poll question")?;
+    let question = parsed(a::text(args, "question")?, args)?;
+    nonempty(
+        question["text"].as_str().unwrap_or_default(),
+        255,
+        "Poll question",
+    )?;
     let raw = a::required(args, "options")?
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("options must be a list"))?;
@@ -126,8 +130,13 @@ async fn create(api: &dyn Telegram, args: &Value) -> Result<Value> {
         let s = v
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Poll options must be strings"))?;
-        nonempty(s, 100, "Poll option")?;
-        options.push(s);
+        let option = parsed(s, args)?;
+        nonempty(
+            option["text"].as_str().unwrap_or_default(),
+            100,
+            "Poll option",
+        )?;
+        options.push(option);
     }
     let quiz = a::boolean(args, "quiz_mode", false)?;
     let multiple = a::boolean(args, "multiple_choice", false)?;
@@ -184,10 +193,8 @@ async fn create(api: &dyn Telegram, args: &Value) -> Result<Value> {
         !adding || public != Some(false),
         "Adding options requires public votes"
     );
-    let explanation = args
-        .get("explanation")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let solution = parsed(string(args, "explanation", "")?, args)?;
+    let explanation = solution["text"].as_str().unwrap_or_default();
     ensure!(
         explanation.encode_utf16().count() <= 200,
         "Quiz explanation exceeds 200 UTF-16 units"
@@ -273,13 +280,13 @@ async fn create(api: &dyn Telegram, args: &Value) -> Result<Value> {
     );
     let mut answers = Vec::new();
     for (i, s) in options.iter().enumerate() {
-        let mut answer = json!({"_":"inputPollAnswer","text":parsed(s,args)?});
+        let mut answer = json!({"_":"inputPollAnswer","text":s});
         if let Some(path) = files.and_then(|v| v[i].as_str()) {
             answer["media"] = attachment(api, &p, path).await?;
         }
         answers.push(answer);
     }
-    let mut poll = json!({"_":"poll","id":a::random_id(),"hash":"0","question":parsed(question,args)?,"answers":answers,"quiz":quiz,"multiple_choice":multiple||correct.len()>1,"public_voters":!broadcast&&public.unwrap_or(true),"open_answers":adding,"revoting_disabled":quiz||revote==Some(false),"shuffle_answers":a::boolean(args,"shuffle_options",false)?,"hide_results_until_close":a::boolean(args,"hide_results_until_close",false)?,"subscribers_only":a::boolean(args,"members_only",false)?});
+    let mut poll = json!({"_":"poll","id":a::random_id(),"hash":"0","question":question,"answers":answers,"quiz":quiz,"multiple_choice":multiple||correct.len()>1,"public_voters":!broadcast&&public.unwrap_or(true),"open_answers":adding,"revoting_disabled":quiz||revote==Some(false),"shuffle_answers":a::boolean(args,"shuffle_options",false)?,"hide_results_until_close":a::boolean(args,"hide_results_until_close",false)?,"subscribers_only":a::boolean(args,"members_only",false)?});
     if let Some(c) = close {
         deadline(c)?;
         poll["close_date"] = json!(c);
@@ -294,7 +301,6 @@ async fn create(api: &dyn Telegram, args: &Value) -> Result<Value> {
     if quiz {
         media["correct_answers"] = json!(correct);
         if !explanation.is_empty() {
-            let solution = parsed(explanation, args)?;
             media["solution"] = solution["text"].clone();
             media["solution_entities"] = solution["entities"].clone();
         }

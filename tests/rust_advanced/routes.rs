@@ -97,9 +97,23 @@ request!(away_message_refers_to_stored_shortcut,"set_business_away_message",{"sh
 request!(outside_hours_away_schedule_uses_dedicated_constructor,"set_business_away_message",{"shortcut_id":5,"schedule":"outside_hours","recipients":["contacts"]},"account.updateBusinessAwayMessage",{"message":{"_":"inputBusinessAwayMessage","shortcut_id":5,"schedule":{"_":"businessAwayMessageScheduleOutsideWorkHours"},"recipients":{"_":"inputBusinessRecipients","contacts":true},"offline_only":false}});
 request!(business_greeting_preserves_selected_recipient_group,"set_business_greeting",{"shortcut_id":5,"no_activity_days":14,"recipients":["new_chats"]},"account.updateBusinessGreetingMessage",{"message":{"_":"inputBusinessGreetingMessage","shortcut_id":5,"recipients":{"_":"inputBusinessRecipients","new_chats":true},"no_activity_days":14}});
 request!(business_intro_carries_optional_sticker_reference,"set_business_intro",{"title":"Hello","description":"Welcome","sticker_document_id":"123","sticker_access_hash":"456"},"account.updateBusinessIntro",{"intro":{"_":"inputBusinessIntro","title":"Hello","description":"Welcome","sticker":{"_":"inputDocument","id":"123","access_hash":"456","file_reference":[]}}});
-request!(clearing_business_intro_omits_intro,"set_business_intro",{"title":null},"account.updateBusinessIntro",{});
+#[tokio::test]
+async fn clearing_business_intro_omits_intro() {
+    let m = standard();
+    run(&m, "set_business_intro", json!({"title":null}))
+        .await
+        .unwrap();
+    assert_eq!(m.request("account.updateBusinessIntro"), json!({}));
+}
 request!(business_location_address_only_has_no_geo_point,"set_business_location",{"address":"Office"},"account.updateBusinessLocation",{"address":"Office"});
-request!(clearing_business_location_omits_address_and_geo,"set_business_location",{"address":null},"account.updateBusinessLocation",{});
+#[tokio::test]
+async fn clearing_business_location_omits_address_and_geo() {
+    let m = standard();
+    run(&m, "set_business_location", json!({"address":null}))
+        .await
+        .unwrap();
+    assert_eq!(m.request("account.updateBusinessLocation"), json!({}));
+}
 request!(
     business_link_list_reads_all_links,
     "list_business_chat_links",

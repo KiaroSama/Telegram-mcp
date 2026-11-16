@@ -39,20 +39,45 @@ pub(super) async fn start(
     let task = tokio::spawn(async move {
         let mut tasks = JoinSet::new();
         let permits = Arc::new(Semaphore::new(16));
+        let authentication = Arc::new(Semaphore::new(64));
         loop {
             tokio::select! {
-                accepted=listener.accept()=>{let Ok((socket,peer))=accepted else{break};if !peer.ip().is_loopback(){continue}let Ok(permit)=Arc::clone(&permits).try_acquire_owned()else{continue};let context=Arc::clone(&context);let username=username.clone();let password=password.clone();tasks.spawn(async move{let _permit=permit;let _=serve(socket,context,&username,&password).await;});},
+                accepted=accept_with(|| listener.accept())=>{
+                    let (socket,peer) = accepted;
+                    if !peer.ip().is_loopback(){continue}
+                    let Ok(authentication)=Arc::clone(&authentication).try_acquire_owned()else{continue};
+                    let context=Arc::clone(&context);let username=username.clone();let password=password.clone();let permits=Arc::clone(&permits);
+                    tasks.spawn(async move{let _=serve(socket,context,&username,&password,authentication,permits).await;});
+                },
                 Some(_)=tasks.join_next(),if !tasks.is_empty()=>{},
             }
         }
-        tasks.abort_all();
-        while tasks.join_next().await.is_some() {}
     });
     Ok(Route {
         proxy_url,
         status,
         task: Some(task),
     })
+}
+// Socket accept errors can be temporary (aborted handshakes or descriptor pressure).
+// The listener is owned for the route lifetime; cancellation is handled by Route::drop.
+async fn accept_with<F, Fut>(mut accept: F) -> (TcpStream, SocketAddr)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<(TcpStream, SocketAddr)>>,
+{
+    loop {
+        match accept().await {
+            Ok(connection) => return connection,
+            Err(_) => {
+                tracing::warn!(
+                    operation = "proxy_accept",
+                    "Private gateway accept failed; retrying"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
 }
 fn equal(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
@@ -120,6 +145,8 @@ async fn serve(
     context: Arc<ContextState>,
     user: &str,
     password: &str,
+    authentication: tokio::sync::OwnedSemaphorePermit,
+    permits: Arc<Semaphore>,
 ) -> Result<()> {
     let target = tokio::time::timeout(
         Duration::from_secs(5),
@@ -127,6 +154,10 @@ async fn serve(
     )
     .await
     .context("Private proxy authentication timed out")??;
+    drop(authentication);
+    let _permit = permits
+        .try_acquire_owned()
+        .context("Private proxy gateway has 16 authenticated tunnels already")?;
     let result = select(&context, target).await;
     let mut upstream = match result {
         Ok(stream) => stream,
@@ -143,7 +174,7 @@ async fn serve(
         .context("Proxy tunnel closed")?;
     Ok(())
 }
-async fn select(context: &ContextState, target: SocketAddr) -> Result<tunnel::Stream> {
+async fn select(context: &Arc<ContextState>, target: SocketAddr) -> Result<tunnel::Stream> {
     if context
         .failed_until
         .lock()
@@ -179,10 +210,22 @@ async fn select(context: &ContextState, target: SocketAddr) -> Result<tunnel::St
             .min(Duration::from_secs(10));
         match tokio::time::timeout(budget, attempt).await {
             Ok(Ok(stream)) => {
-                context.record(candidate, started.elapsed().as_millis() as u64, target)?;
+                let context = Arc::clone(context);
+                let candidate = candidate.clone();
+                let latency = started.elapsed().as_millis() as u64;
+                // Disk telemetry cannot discard a working connection or block this Tokio worker.
+                let _ = tokio::task::spawn_blocking(move || {
+                    context.record(&candidate, latency, target)
+                })
+                .await;
                 return Ok(stream);
             }
-            _ => context.record_failure(candidate),
+            _ => {
+                let context = Arc::clone(context);
+                let candidate = candidate.clone();
+                let _ =
+                    tokio::task::spawn_blocking(move || context.record_failure(&candidate)).await;
+            }
         }
     }
     *context

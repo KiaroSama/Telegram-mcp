@@ -215,6 +215,29 @@ impl AccessPolicy {
                 ) {
                     bail!("This operation cannot enforce a topic restriction safely");
                 }
+                let reply_field = if name == "reply_to_message" {
+                    Some("message_id")
+                } else if name == "send_message"
+                    && args
+                        .get("reply_to_message_id")
+                        .is_some_and(|id| !id.is_null())
+                {
+                    Some("reply_to_message_id")
+                } else {
+                    None
+                };
+                if let Some(field) = reply_field {
+                    let message_id = crate::tools::messaging::helpers::id(args, field)?;
+                    let message =
+                        crate::tools::messaging::helpers::fetch(api, &resolved, message_id).await?;
+                    crate::documents::check_message_topic(
+                        api,
+                        &resolved,
+                        &message,
+                        topic.expect("The permitted topic was checked above"),
+                    )
+                    .await?;
+                }
             }
             scoped.bind(marked, &entry);
         }

@@ -266,25 +266,37 @@ pub fn as_input_media(media: &Value) -> Result<Value> {
 pub async fn app_limits(api: &dyn Telegram) -> Value {
     use std::{
         collections::HashMap,
-        sync::OnceLock,
+        sync::{Arc, OnceLock},
         time::{Duration, Instant},
     };
-    static CACHE: OnceLock<tokio::sync::Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
+    type Entry = Arc<tokio::sync::Mutex<Option<(Instant, Value)>>>;
+    static CACHE: OnceLock<tokio::sync::Mutex<HashMap<String, Entry>>> = OnceLock::new();
     if let Some(key) = api.cache_key() {
-        let mut cache = CACHE
-            .get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
-            .lock()
-            .await;
-        if let Some((time, value)) = cache.get(&key)
+        let entry = {
+            let mut cache = CACHE
+                .get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+                .lock()
+                .await;
+            if cache.len() >= 64 && !cache.contains_key(&key) {
+                cache.retain(|_, entry| Arc::strong_count(entry) > 1);
+            }
+            if cache.len() < 64 || cache.contains_key(&key) {
+                Some(Arc::clone(cache.entry(key).or_default()))
+            } else {
+                None
+            }
+        };
+        let Some(entry) = entry else {
+            return fetch_app_limits(api).await;
+        };
+        let mut cached = entry.lock().await;
+        if let Some((time, value)) = cached.as_ref()
             && time.elapsed() < Duration::from_secs(3600)
         {
             return value.clone();
         }
         let value = fetch_app_limits(api).await;
-        if cache.len() >= 64 && !cache.contains_key(&key) {
-            cache.clear();
-        }
-        cache.insert(key, (Instant::now(), value.clone()));
+        *cached = Some((Instant::now(), value.clone()));
         return value;
     }
     fetch_app_limits(api).await

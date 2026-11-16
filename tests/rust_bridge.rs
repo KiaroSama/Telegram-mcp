@@ -7,6 +7,32 @@ use fs2::FileExt;
 use serde_json::{Value, json};
 use std::{process::Stdio, time::Duration};
 
+#[test]
+fn child_startup_diagnostics_keep_errors_and_redact_private_material() {
+    let private = "a".repeat(64);
+    let key_kind = "PRIVATE KEY";
+    let input = format!(
+        "Error: Cannot inspect shared service process\nBearer generated-credential\ntoken=generated-token\napi_hash=credential-hash\n{private}\n-----BEGIN {key_kind}-----\nprivate-key-data\n-----END {key_kind}-----\n{} پایان",
+        "x".repeat(20_000)
+    );
+    let actual = stderr_diagnostic(input.as_bytes());
+    assert!(actual.contains("Cannot inspect shared service process"));
+    for value in [
+        "generated-credential",
+        "generated-token",
+        "credential-hash",
+        "private-key-data",
+        private.as_str(),
+    ] {
+        assert!(!actual.contains(value));
+    }
+    assert!(actual.chars().count() <= 4096);
+    assert!(
+        !stderr_diagnostic(format!("-----BEGIN {key_kind}-----\nprivate-key-data").as_bytes())
+            .contains("private-key-data")
+    );
+}
+
 fn port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()

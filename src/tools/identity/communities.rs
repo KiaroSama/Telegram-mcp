@@ -1,5 +1,6 @@
 use super::base::*;
 use crate::backend::Telegram;
+use anyhow::bail;
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -180,9 +181,6 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                     json!({"community":c,"participant":p}),
                 )
                 .await?;
-            if banned == false {
-                return Ok(json!({"banned":false,"removed_from_chats":[]}));
-            }
             let ids = joined
                 .get("joined_chat_ids")
                 .and_then(Value::as_array)
@@ -196,22 +194,46 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 .flatten()
                 .filter(|chat| ids.contains(&chat["id"]))
             {
-                let result = if kind(chat) == "channel" {
-                    api.invoke("channels.editBanned",json!({"channel":{"_":"inputChannel","channel_id":chat["id"],"access_hash":req(chat,"access_hash")?},"participant":p,"banned_rights":{"_":"chatBannedRights","until_date":0,"view_messages":true}})).await
-                } else {
-                    ensure!(
-                        kind(chat) == "chat",
-                        "Unknown joined chat type; remaining removals were not attempted"
-                    );
-                    api.invoke(
-                        "messages.deleteChatUser",
-                        json!({"chat_id":chat["id"],"user_id":user(&p)?}),
-                    )
-                    .await
+                let request = (|| -> Result<(&str, Value)> {
+                    match kind(chat) {
+                        "channel" => Ok((
+                            "channels.editBanned",
+                            json!({"channel":{"_":"inputChannel","channel_id":req(chat,"id")?,"access_hash":req(chat,"access_hash")?},"participant":p,"banned_rights":{"_":"chatBannedRights","until_date":0,"view_messages":true}}),
+                        )),
+                        "chat" => Ok((
+                            "messages.deleteChatUser",
+                            json!({"chat_id":req(chat,"id")?,"user_id":user(&p)?}),
+                        )),
+                        _ => bail!("Unknown joined chat type"),
+                    }
+                })();
+                let (removed, reason) = match request {
+                    Err(_) => (
+                        json!(false),
+                        Some(
+                            "Chat metadata is incomplete or unsupported; no removal was attempted",
+                        ),
+                    ),
+                    Ok((method, params)) => match api.invoke(method, params).await {
+                        Ok(_) => (json!(true), None),
+                        Err(error)
+                            if error
+                                .chain()
+                                .any(|cause| cause.to_string().starts_with("Telegram RPC ")) =>
+                        {
+                            (json!(false), Some("Telegram rejected this chat removal"))
+                        }
+                        Err(_) => (
+                            Value::Null,
+                            Some("Chat removal outcome is unknown; it was not retried"),
+                        ),
+                    },
                 };
-                removals.push(json!({"chat_id":chat["id"],"removed":result.is_ok()}));
+                removals.push(json!({"chat_id":chat["id"],"removed":removed,"reason":reason}));
             }
-            Ok(json!({"banned":true,"removed_from_chats":removals,"also_from_chats":also}))
+            Ok(
+                json!({"banned":if banned==true {json!(true)} else {Value::Null},"ban_changed":banned,"reason":if banned==true {None} else {Some("Telegram did not confirm a ban change; current ban status is unverified")},"removed_from_chats":removals,"also_from_chats":also}),
+            )
         }
         _ => unreachable!(),
     }

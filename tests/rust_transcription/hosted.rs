@@ -45,7 +45,14 @@ async fn server(status: u16, body: Value, location: Option<String>) -> Server {
                         .filter(|(key, _)| key.eq_ignore_ascii_case("content-length"))
                         .and_then(|(_, v)| v.trim().parse::<usize>().ok())
                 })
-                .unwrap();
+                .unwrap_or(0);
+            // Record the method before reading any body, including redirected GETs.
+            let index = {
+                let mut requests = recorded.lock().unwrap();
+                let index = requests.len();
+                requests.push((header.clone(), vec![]));
+                index
+            };
             if len > 1_048_576 {
                 return;
             }
@@ -53,7 +60,7 @@ async fn server(status: u16, body: Value, location: Option<String>) -> Server {
             if socket.read_exact(&mut data).await.is_err() {
                 return;
             }
-            recorded.lock().unwrap().push((header, data));
+            recorded.lock().unwrap()[index].1 = data;
             let text = body.to_string();
             let redirect = location
                 .as_ref()
@@ -80,10 +87,6 @@ async fn hosted_multipart_preserves_audio_model_language_and_utf8_text() {
     let config = settings(
         &[
             ("TELEGRAM_TRANSCRIBE_OPENAI_URL", &server.url),
-            (
-                "TELEGRAM_TRANSCRIBE_OPENAI_API_KEY",
-                "synthetic-transcription-key",
-            ),
             ("TELEGRAM_TRANSCRIBE_OPENAI_MODEL", "fixture-model"),
             ("TELEGRAM_TRANSCRIBE_LANGUAGE", "fa"),
         ],
@@ -98,10 +101,10 @@ async fn hosted_multipart_preserves_audio_model_language_and_utf8_text() {
     let requests = server.requests.lock().unwrap();
     assert!(requests[0].0.starts_with("POST /v1/audio/transcriptions "));
     assert!(
-        requests[0]
+        !requests[0]
             .0
             .to_ascii_lowercase()
-            .contains("authorization: bearer synthetic-transcription-key")
+            .contains("authorization:")
     );
     let body = &requests[0].1;
     for expected in [
@@ -119,16 +122,7 @@ async fn endpoint_failures_never_echo_keys_or_provider_body() {
     let server = server(401, json!({"error":"provider-private-detail"}), None).await;
     let api = Api::new("unused");
     let request = json!({"chat_id":7,"message_id":10,"engine":"openai"});
-    let config = settings(
-        &[
-            ("TELEGRAM_TRANSCRIBE_OPENAI_URL", &server.url),
-            (
-                "TELEGRAM_TRANSCRIBE_OPENAI_API_KEY",
-                "synthetic-private-key",
-            ),
-        ],
-        &request,
-    );
+    let config = settings(&[("TELEGRAM_TRANSCRIBE_OPENAI_URL", &server.url)], &request);
     let error = transcribe::transcribe_with(&api, &config, &request)
         .await
         .unwrap_err()
@@ -154,6 +148,10 @@ async fn uploaded_recording_is_never_forwarded_through_redirects() {
     );
     assert_eq!(redirect.requests.lock().unwrap().len(), 1);
     assert!(target.requests.lock().unwrap().is_empty());
+    assert!(
+        !target.task.is_finished(),
+        "Target recorder must remain alive rather than hide a task panic"
+    );
 }
 #[tokio::test]
 async fn distinct_hosted_models_cannot_share_cached_text() {
@@ -184,4 +182,15 @@ async fn distinct_hosted_models_cannot_share_cached_text() {
         false
     );
     assert_eq!(server.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn recorder_observes_bodyless_redirect_gets() {
+    let server = server(200, json!({}), None).await;
+    reqwest::get(&server.url).await.unwrap();
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].0.starts_with("GET "));
+    assert!(requests[0].1.is_empty());
+    assert!(!server.task.is_finished());
 }

@@ -8,6 +8,22 @@ use tokio::{
 };
 
 pub const DEADLINE: Duration = Duration::from_secs(20);
+pub fn stderr_diagnostic(bytes: &[u8]) -> String {
+    let mut text = String::from_utf8_lossy(bytes).into_owned();
+    for pattern in [
+        r"(?s)-----BEGIN [^-]*PRIVATE KEY-----.*?(?:-----END [^-]*PRIVATE KEY-----|\z)",
+        r"(?i)\bbearer\s+[A-Za-z0-9_+./=-]+",
+        r#"(?i)(?:token|auth_key|api_hash|api_key|password|secret|private_key|session_string)["']?\s*[:=]\s*["']?[^\s"',;\]}]+"#,
+        r"\b[0-9a-fA-F]{32,}\b",
+        r"[A-Za-z0-9_+/=-]{96,}",
+    ] {
+        text = regex::Regex::new(pattern)
+            .unwrap()
+            .replace_all(&text, "[REDACTED]")
+            .into_owned();
+    }
+    text.chars().take(4096).collect()
+}
 pub fn catalogue_names() -> std::collections::BTreeSet<String> {
     let descriptors: Vec<Value> =
         serde_json::from_str(include_str!("../../resources/tool-catalogue.json")).unwrap();
@@ -115,7 +131,15 @@ impl McpProcess {
         let mut stderr = child.stderr.take().unwrap();
         let stderr = tokio::spawn(async move {
             let mut bytes = Vec::new();
-            stderr.read_to_end(&mut bytes).await.unwrap();
+            let mut buffer = [0; 4096];
+            loop {
+                let count = stderr.read(&mut buffer).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                let retained = count.min((16usize * 1024).saturating_sub(bytes.len()));
+                bytes.extend_from_slice(&buffer[..retained]);
+            }
             bytes
         });
         Self {
@@ -137,8 +161,17 @@ impl McpProcess {
             let line = tokio::time::timeout(DEADLINE, self.output.next_line())
                 .await
                 .expect("MCP response exceeded deadline")
-                .expect("MCP stdout read failed")
-                .expect("MCP child closed stdout before responding");
+                .expect("MCP stdout read failed");
+            let Some(line) = line else {
+                let diagnostic = match tokio::time::timeout(DEADLINE, &mut self.stderr).await {
+                    Ok(Ok(bytes)) => stderr_diagnostic(&bytes),
+                    Ok(Err(_)) => "stderr collector failed".into(),
+                    Err(_) => "stderr did not close within the diagnostic deadline".into(),
+                };
+                panic!(
+                    "MCP child closed stdout before responding to request {id}; bounded child stderr: {diagnostic}"
+                );
+            };
             assert!(
                 line.len() < 8 * 1024 * 1024,
                 "MCP frame exceeded its response budget"

@@ -82,6 +82,14 @@ pub fn normalize(name: &str, args: &Value) -> Result<Value> {
             bail!("Capture region must be a nonempty rectangle with nonnegative coordinates");
         }
         check_allocation(right - left, bottom - top)?;
+        for (key, value) in [
+            ("left", left),
+            ("top", top),
+            ("right", right),
+            ("bottom", bottom),
+        ] {
+            request[key] = value.into();
+        }
     }
     Ok(request)
 }

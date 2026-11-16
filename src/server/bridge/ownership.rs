@@ -13,8 +13,18 @@ pub(super) struct Identity {
 #[cfg(target_os = "linux")]
 pub(super) fn identity(pid: u32) -> Result<Identity> {
     let root = PathBuf::from(format!("/proc/{pid}"));
-    let image = root
-        .join("exe")
+    let executable = root.join("exe");
+    let target =
+        std::fs::read_link(&executable).context("Cannot inspect shared service executable")?;
+    ensure!(
+        !target
+            .as_os_str()
+            .as_encoded_bytes()
+            .ends_with(b" (deleted)")
+            || target.exists(),
+        "Shared service runs a replaced binary; stop its owned service and retry attachment"
+    );
+    let image = executable
         .canonicalize()
         .context("Cannot verify shared service executable")?;
     let stat = std::fs::read_to_string(root.join("stat"))?;

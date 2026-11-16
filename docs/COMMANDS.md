@@ -19,12 +19,14 @@ permissions and file-root restrictions apply independently of read-only annotati
 | `telegram-mcp session-validate` | Validate a legacy authorization read from stdin without network |
 | `telegram-mcp session-health --env-file PATH --key KEY --json` | Check an exact configured source via the shared service |
 | `telegram-mcp rename-account --from LABEL --to LABEL` | Recoverable private-state rename |
+| `telegram-mcp remove-account --account LABEL --env-file FILE --key KEY` | Archive private account records and remove the exact file-owned configuration key |
 | `telegram-mcp serve --http 127.0.0.1:8765` | Authenticated shared `/mcp` service |
 | `telegram-mcp bridge` | Attach a stdio client to the shared service |
 | `telegram-mcp login --account LABEL` | Interactive native authorization |
 | `telegram-mcp accounts --json` | Credential-free account inventory |
 | `telegram-mcp health --json` | Local readiness evidence |
 | `telegram-mcp state-path` | Actual private state directory |
+| `telegram-mcp bind-address` | Resolved shared-service address from the selected configuration |
 | `telegram-mcp approve FINGERPRINT` | Separate human-terminal approval |
 | `emoji-studio sheet`, `gif`, `index`, `refresh`, `nearest` | Actual emoji images, animation and visual search |
 | `emoji-studio lines`, `insert` | Inspect and compose messages through authenticated MCP |

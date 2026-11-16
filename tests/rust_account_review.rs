@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use telegram_mcp::{
     account_manager::{
         begin_login, config_digest, parse_config, read_config, recover_logins, recover_rename,
-        write_env_value,
+        remove_account, write_env_value,
     },
     state::State,
 };
@@ -34,6 +34,389 @@ fn bound() -> Value {
         config_digest("work")
     ));
     value
+}
+
+#[test]
+fn legacy_bare_dollar_names_remain_literal_while_braced_names_expand() {
+    let values = parse_config(
+        "ARCHIVE=archive\nBARE=/tmp/$ARCHIVE\nQUOTED=\"$ARCHIVE/${ARCHIVE}\"\n",
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(values["BARE"], "/tmp/$ARCHIVE");
+    assert_eq!(values["QUOTED"], "$ARCHIVE/archive");
+}
+
+#[test]
+fn shared_bind_address_resolves_selected_file_interpolation_and_process_precedence() {
+    if let Some(path) = std::env::var_os("TG_TEST_BIND_CONFIG") {
+        telegram_mcp::account_manager::select_source(std::path::Path::new(&path)).unwrap();
+        telegram_mcp::account_manager::capture_process_config();
+        assert_eq!(
+            telegram_mcp::account_manager::bind_address()
+                .unwrap()
+                .to_string(),
+            std::env::var("TG_TEST_BIND_EXPECTED").unwrap()
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let env = dir.path().join("selected.env");
+    std::fs::write(
+        &env,
+        "BIND_HOST=127.0.0.1\nMCP_HOST=${BIND_HOST}\nMCP_PORT=45678\n",
+    )
+    .unwrap();
+    for override_process in [false, true] {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "shared_bind_address_resolves_selected_file_interpolation_and_process_precedence",
+                "--nocapture",
+            ])
+            .env("TG_TEST_BIND_CONFIG", &env)
+            .env_remove("MCP_HOST")
+            .env_remove("MCP_PORT");
+        if override_process {
+            child
+                .env("MCP_HOST", "::1")
+                .env("MCP_PORT", "9876")
+                .env("TG_TEST_BIND_EXPECTED", "[::1]:9876");
+        } else {
+            child.env("TG_TEST_BIND_EXPECTED", "127.0.0.1:45678");
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn login_rejects_labels_without_a_valid_configuration_key_before_staging() {
+    let (dir, state) = fixture();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "OTHER=kept\n").unwrap();
+    assert!(begin_login(state.clone(), "work-test", &env, None, None, None).is_err());
+    assert_eq!(std::fs::read_to_string(env).unwrap(), "OTHER=kept\n");
+    assert!(!std::fs::read_dir(state.root()).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("login")
+    }));
+}
+
+#[test]
+fn pending_login_cannot_be_renamed_away_from_its_recovery_journal() {
+    let (dir, state) = fixture();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "OTHER=kept\n").unwrap();
+    let installed = bound();
+    state.write_json("work.session.json", &installed).unwrap();
+    let marker = login_marker(&state, &env, installed.clone());
+    assert!(telegram_mcp::account_manager::rename_account(&state, "work", "other").is_err());
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        installed
+    );
+    assert!(state.root().join(marker).is_file());
+    assert!(!state.root().join("other.session.json").exists());
+    recover_logins(&state).unwrap();
+    assert!(!state.root().join("work.session.json").exists());
+}
+
+#[tokio::test]
+async fn unprobed_legacy_file_session_is_unknown_instead_of_invalid() {
+    let (dir, state) = fixture();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=work\n").unwrap();
+    std::fs::write(dir.path().join("work.session"), b"unprobed legacy fixture").unwrap();
+    let answer = telegram_mcp::account_manager::session_health_with_state(
+        &state,
+        &env,
+        "TELEGRAM_SESSION_NAME_WORK",
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["status"], "unknown");
+    assert_eq!(answer["repairable"], false);
+    assert!(!state.root().join("work.session.json").exists());
+}
+
+#[tokio::test]
+async fn supported_loopback_https_discovery_reports_transport_failure_as_unverified() {
+    let (dir, state) = fixture();
+    let env = dir.path().join(".env");
+    std::fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=work\n").unwrap();
+    let original = bound();
+    state.write_json("work.session.json", &original).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    state
+        .write_json(
+            "http-service.json",
+            &json!({
+                "url":format!("https://{address}/mcp"), "token":"h".repeat(64),
+            }),
+        )
+        .unwrap();
+    let answer = telegram_mcp::account_manager::session_health_with_state(
+        &state,
+        &env,
+        "TELEGRAM_SESSION_NAME_WORK",
+    )
+    .await
+    .unwrap();
+    assert_eq!(answer["status"], "busy");
+    assert_eq!(answer["repairable"], false);
+}
+
+#[test]
+fn removal_archives_authorization_and_scoped_records_before_freeing_the_label() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    std::fs::write(
+        &env,
+        "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=\"first\nsecond\"\n",
+    )
+    .unwrap();
+    let original = bound();
+    state.write_json("work.session.json", &original).unwrap();
+    state
+        .write_json(
+            "ghost.json",
+            &json!({"accounts":{"work":true,"personal":false}}),
+        )
+        .unwrap();
+    let result = remove_account(&state, "work", &env, "TELEGRAM_SESSION_NAME_WORK").unwrap();
+    let archive = result["archived"].as_str().unwrap();
+    assert!(archive.starts_with("__removed_work_"));
+    assert!(archive.len() <= 64);
+    assert_eq!(result["removed"], true);
+    assert!(!state.root().join("work.session.json").exists());
+    let saved = state
+        .read_json(&format!("{archive}.session.json"), Value::Null)
+        .unwrap();
+    assert_eq!(saved["dc_options"], original["dc_options"]);
+    assert_eq!(
+        state.read_json("ghost.json", Value::Null).unwrap()["accounts"][archive],
+        true
+    );
+    assert_eq!(
+        state.read_json("ghost.json", Value::Null).unwrap()["accounts"]["personal"],
+        false
+    );
+    let config = read_config(&env).unwrap();
+    assert!(!config.values.contains_key("TELEGRAM_SESSION_NAME_WORK"));
+    assert_eq!(config.values["OTHER"], "first\nsecond");
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+}
+
+#[test]
+fn removal_refuses_a_process_owned_account_without_changing_files_or_authorization() {
+    if let Some(root) = std::env::var_os("TG_TEST_REMOVAL_PROCESS_ROOT") {
+        let root = std::path::PathBuf::from(root);
+        let state = State::at(root.join("private"), Vec::new()).unwrap();
+        let env = root.join("selected.env");
+        let original = std::fs::read(&env).unwrap();
+        let session = state.read_json("work.session.json", Value::Null).unwrap();
+        assert!(remove_account(&state, "work", &env, "TELEGRAM_SESSION_NAME_WORK").is_err());
+        assert_eq!(std::fs::read(env).unwrap(), original);
+        assert_eq!(
+            state.read_json("work.session.json", Value::Null).unwrap(),
+            session
+        );
+        assert!(
+            !state
+                .root()
+                .join("account-rename-transaction.json")
+                .exists()
+        );
+        return;
+    }
+    let (dir, state) = fixture();
+    std::fs::write(
+        dir.path().join("selected.env"),
+        "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=kept\n",
+    )
+    .unwrap();
+    state.write_json("work.session.json", &bound()).unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "removal_refuses_a_process_owned_account_without_changing_files_or_authorization",
+            "--nocapture",
+        ])
+        .env("TG_TEST_REMOVAL_PROCESS_ROOT", dir.path())
+        .env("TELEGRAM_SESSION_NAME_WORK", "process-owned-work")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn removal_refuses_an_active_account_and_symlinked_configuration_before_archival() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    std::fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=kept\n").unwrap();
+    state.write_json("work.session.json", &bound()).unwrap();
+    let lease = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(state.root().join("work.session.lock"))
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&lease).unwrap();
+    assert!(remove_account(&state, "work", &env, "TELEGRAM_SESSION_NAME_WORK").is_err());
+    assert!(state.root().join("work.session.json").is_file());
+    assert_eq!(
+        read_config(&env).unwrap().values["TELEGRAM_SESSION_NAME_WORK"],
+        "work"
+    );
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+    drop(lease);
+    #[cfg(unix)]
+    {
+        let link = dir.path().join("linked.env");
+        std::os::unix::fs::symlink(&env, &link).unwrap();
+        assert!(remove_account(&state, "work", &link, "TELEGRAM_SESSION_NAME_WORK").is_err());
+        assert!(state.root().join("work.session.json").is_file());
+        assert!(
+            !state
+                .root()
+                .join("account-rename-transaction.json")
+                .exists()
+        );
+    }
+}
+
+fn interrupted_removal(
+    state: &State,
+    env: &std::path::Path,
+    moved: bool,
+) -> (&'static str, Value, Value) {
+    let archive = "__removed_work_fixture";
+    let before = json!({"accounts":{"work":true,"personal":false}});
+    let after = json!({"accounts":{archive:true,"personal":false}});
+    state
+        .write_json("work.session.json", &snapshot(42, 7))
+        .unwrap();
+    state
+        .write_json("ghost.json", if moved { &after } else { &before })
+        .unwrap();
+    if moved {
+        std::fs::rename(
+            state.root().join("work.session.json"),
+            state.root().join(format!("{archive}.session.json")),
+        )
+        .unwrap();
+    }
+    state.write_json("account-rename-transaction.json", &json!({
+        "from":"work", "to":archive,
+        "files":[["work.session.json",format!("{archive}.session.json")]],
+        "rewrites":[{"name":"ghost.json","before":before,"after":after}],
+        "removal":{"env_file":env,"key":"TELEGRAM_SESSION_NAME_WORK","digest":config_digest("work")},
+    })).unwrap();
+    (archive, before, after)
+}
+
+#[test]
+fn interrupted_removal_rolls_back_archival_but_preserves_unrelated_configuration_edits() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    std::fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=concurrent\n").unwrap();
+    let (archive, before, _) = interrupted_removal(&state, &env, true);
+    recover_rename(&state).unwrap();
+    assert!(state.root().join("work.session.json").is_file());
+    assert!(
+        !state
+            .root()
+            .join(format!("{archive}.session.json"))
+            .exists()
+    );
+    assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), before);
+    assert_eq!(read_config(&env).unwrap().values["OTHER"], "concurrent");
+    assert_eq!(
+        read_config(&env).unwrap().values["TELEGRAM_SESSION_NAME_WORK"],
+        "work"
+    );
+}
+
+#[test]
+fn committed_removal_finishes_archival_after_a_crash_without_restoring_the_deleted_key() {
+    for moved in [false, true] {
+        let (dir, state) = fixture();
+        let env = dir.path().join("selected.env");
+        std::fs::write(&env, "OTHER=concurrent\n").unwrap();
+        let (archive, _, after) = interrupted_removal(&state, &env, moved);
+        recover_rename(&state).unwrap();
+        assert!(!state.root().join("work.session.json").exists());
+        assert!(
+            state
+                .root()
+                .join(format!("{archive}.session.json"))
+                .is_file()
+        );
+        assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), after);
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), "OTHER=concurrent\n");
+        assert!(
+            !state
+                .root()
+                .join("account-rename-transaction.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn removal_recovery_preserves_a_replaced_or_missing_configuration_and_its_journal() {
+    for content in [Some("TELEGRAM_SESSION_NAME_WORK=replaced\n"), None] {
+        let (dir, state) = fixture();
+        let env = dir.path().join("selected.env");
+        if let Some(content) = content {
+            std::fs::write(&env, content).unwrap();
+        }
+        let (archive, _, after) = interrupted_removal(&state, &env, true);
+        assert!(recover_rename(&state).is_err());
+        assert!(!state.root().join("work.session.json").exists());
+        assert!(
+            state
+                .root()
+                .join(format!("{archive}.session.json"))
+                .is_file()
+        );
+        assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), after);
+        assert!(
+            state
+                .root()
+                .join("account-rename-transaction.json")
+                .is_file()
+        );
+        if let Some(content) = content {
+            assert_eq!(std::fs::read_to_string(&env).unwrap(), content);
+        }
+    }
 }
 
 #[test]
@@ -418,6 +801,7 @@ finally { $stream.Dispose() }
 #[cfg(windows)]
 #[test]
 fn a_readonly_old_backup_cannot_fail_an_already_committed_new_login() {
+    use std::os::windows::fs::OpenOptionsExt;
     struct Restore(std::path::PathBuf);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -447,6 +831,17 @@ fn a_readonly_old_backup_cannot_fail_an_already_committed_new_login() {
     let mut permissions = std::fs::metadata(&restore.0).unwrap().permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&restore.0, permissions).unwrap();
+    // Rust 1.100 can delete readonly Windows files using POSIX deletion. Keep
+    // a real open handle that denies delete sharing to force cleanup failure.
+    let held_backup = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0x00000001 | 0x00000002)
+        .open(&restore.0)
+        .unwrap();
+    assert!(
+        std::fs::remove_file(&restore.0).is_err(),
+        "The fixture must create a real cleanup failure"
+    );
     let transaction = begin_login(state.clone(), "work", &env, None, None, None).unwrap();
     state
         .write_json(
@@ -461,4 +856,15 @@ fn a_readonly_old_backup_cannot_fail_an_already_committed_new_login() {
     );
     assert!(state.root().join("work.session.json").is_file());
     assert!(restore.0.exists());
+    write_env_value(&env, "TELEGRAM_SESSION_NAME_PERSONAL", "updated", None).unwrap();
+    assert_eq!(
+        read_config(&env).unwrap().values["TELEGRAM_SESSION_NAME_PERSONAL"],
+        "updated"
+    );
+    assert_eq!(
+        read_config(&env).unwrap().values["TELEGRAM_SESSION_NAME_WORK"],
+        "work"
+    );
+    assert!(restore.0.exists());
+    drop(held_backup);
 }

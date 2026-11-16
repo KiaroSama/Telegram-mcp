@@ -102,10 +102,27 @@ fn release_package_refuses_missing_helper_before_creating_output() {
 #[test]
 fn release_package_cannot_upload_stale_or_owner_files() {
     let root = tempfile::TempDir::new().unwrap();
+    let source = root.path().join("release");
+    fs::create_dir(&source).unwrap();
+    for name in ["telegram-mcp", "emoji-studio", "operator-plugin"] {
+        fs::write(source.join(name), format!("synthetic-{name}")).unwrap();
+    }
+    for name in ["LICENSE", "NOTICE", "README.md"] {
+        fs::write(root.path().join(name), name).unwrap();
+    }
+    package_files(
+        &source,
+        &root.path().join("valid-control"),
+        root.path(),
+        "",
+        serde_json::json!({}),
+    )
+    .unwrap();
     let output = root.path().join("package");
     fs::create_dir(&output).unwrap();
     fs::write(output.join("owner.txt"), "preserve").unwrap();
-    assert!(package_files(root.path(), &output, root.path(), "", serde_json::json!({})).is_err());
+    assert!(package_files(&source, &output, root.path(), "", serde_json::json!({})).is_err());
+    assert_eq!(fs::read_dir(&output).unwrap().count(), 1);
     assert_eq!(
         fs::read_to_string(output.join("owner.txt")).unwrap(),
         "preserve"

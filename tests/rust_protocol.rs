@@ -406,9 +406,12 @@ fn reserved_bytes_length_marker_is_refused() {
 }
 #[test]
 fn oversized_vector_is_refused_before_allocation() {
-    let mut bytes = 0x1cb5c415u32.to_le_bytes().to_vec();
-    bytes.extend(100001u32.to_le_bytes());
-    assert!(Schema::global().decode("Vector<int>", &bytes).is_err());
+    let bytes = vec![0i32; 100001].to_bytes();
+    let error = Schema::global().decode("Vector<int>", &bytes).unwrap_err();
+    assert!(
+        error.to_string().contains("Telegram vector exceeds limit"),
+        "{error}"
+    );
 }
 #[test]
 fn wrong_vector_constructor_is_refused() {

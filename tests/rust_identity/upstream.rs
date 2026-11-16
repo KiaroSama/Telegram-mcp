@@ -177,17 +177,21 @@ async fn upgrade_alias_refuses_broadcast_channels() {
 
 #[tokio::test]
 async fn generic_promotion_supports_basic_groups_without_inventing_granular_rights() {
-    let m = Mock::new();
-    let result = run(
-        &m,
-        "promote_admin",
-        json!({"group_id":9,"user_id":8,"rights":{"ban_users":false}}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result["granular_rights_applied"], false);
-    assert_eq!(m.sent("messages.editChatAdmin")[0]["is_admin"], true);
-    assert!(m.sent("channels.editAdmin").is_empty());
+    for accepted in [true, false] {
+        let m = Mock::new();
+        m.reply("messages.editChatAdmin", json!(accepted));
+        let result = run(
+            &m,
+            "promote_admin",
+            json!({"group_id":9,"user_id":8,"rights":{"ban_users":false}}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["accepted"], accepted);
+        assert_eq!(result["granular_rights_applied"], false);
+        assert_eq!(m.sent("messages.editChatAdmin")[0]["is_admin"], true);
+        assert!(m.sent("channels.editAdmin").is_empty());
+    }
 }
 
 #[tokio::test]

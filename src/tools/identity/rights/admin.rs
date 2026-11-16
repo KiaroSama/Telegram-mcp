@@ -88,6 +88,21 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Val
         let info = chat_info(api, &p).await?;
         (p, info)
     };
+    if demote && kind(&p) == "inputPeerChat" {
+        let u = peer(api, a, "user_id").await?;
+        let result = api
+            .invoke(
+                "messages.editChatAdmin",
+                json!({"chat_id":entity_id(&p)?,"user_id":user(&u)?,"is_admin":false}),
+            )
+            .await?;
+        let accepted = result.as_bool().context(
+            "Telegram returned an unexpected admin response; the role change outcome is unverified",
+        )?;
+        return Ok(
+            json!({"accepted":accepted,"admin_level":"basic_group","granular_rights_applied":false,"result":result}),
+        );
+    }
     if generic {
         for field in ADMIN {
             if let Some(value) = a.get(*field).filter(|value| !value.is_null()) {
@@ -110,8 +125,9 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Val
                     json!({"chat_id":entity_id(&p)?,"user_id":user(&u)?,"is_admin":true}),
                 )
                 .await?;
+            let accepted=result.as_bool().context("Telegram returned an unexpected admin response; the role change outcome is unverified")?;
             return Ok(
-                json!({"accepted":true,"admin_level":"basic_group","granular_rights_applied":false,"result":result}),
+                json!({"accepted":accepted,"admin_level":"basic_group","granular_rights_applied":false,"result":result}),
             );
         }
         kind_name = if info["broadcast"] == true {

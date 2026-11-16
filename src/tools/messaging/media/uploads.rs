@@ -290,27 +290,35 @@ pub async fn run_with_state(
         !values.is_empty() && values.len() <= 10,
         "An album must contain 1 to 10 files"
     );
-    let album = name == "send_album" || values.len() > 1;
+    ensure!(
+        matches!(name, "send_file" | "send_album") || values.len() == 1,
+        "This operation accepts exactly one file"
+    );
+    let album = name == "send_album";
     ensure!(
         !(name == "send_disappearing_media"
             && args::boolean(a, "as_voice", false)?
             && args::boolean(a, "as_video_note", false)?),
         "A disappearing file cannot be both a voice note and a video note"
     );
-    let caption = a["caption"].as_str().unwrap_or("");
+    let raw_caption = a["caption"].as_str().unwrap_or("");
+    let (caption, formatting) =
+        if let Some(raw) = a.get("caption_entities").filter(|v| !v.is_null()) {
+            ensure!(
+                a.get("parse_mode").is_none_or(|v| v.is_null()),
+                "caption_entities and parse_mode cannot be combined"
+            );
+            (
+                raw_caption.to_owned(),
+                build_entities(api, raw_caption, raw).await?,
+            )
+        } else {
+            crate::backend::parse_text(raw_caption, a["parse_mode"].as_str())?
+        };
     ensure!(
         caption.encode_utf16().count() <= 1024,
         "Caption exceeds 1024 UTF-16 units"
     );
-    let caption_entities = if let Some(raw) = a.get("caption_entities").filter(|v| !v.is_null()) {
-        ensure!(
-            a.get("parse_mode").is_none_or(|v| v.is_null()),
-            "caption_entities and parse_mode cannot be combined"
-        );
-        Some(entities(caption, raw)?)
-    } else {
-        None
-    };
     let mut paths: Vec<(PathBuf, String)> = vec![];
     for (index, raw) in values.iter().enumerate() {
         let path = state.resolve_file(
@@ -340,7 +348,7 @@ pub async fn run_with_state(
                 .map(str::to_owned)
                 .unwrap_or_else(|| infer_kind(&path)),
         };
-        validate_kind(&path, &kind, if index == 0 { caption } else { "" })?;
+        validate_kind(&path, &kind, if index == 0 { &caption } else { "" })?;
         if album {
             ensure!(
                 !matches!(
@@ -395,11 +403,7 @@ pub async fn run_with_state(
         );
     }
     let p = args::peer(api, a, "chat_id").await?;
-    let (caption, formatting) = if let Some(entities) = caption_entities {
-        (caption.to_owned(), entities)
-    } else {
-        crate::backend::parse_text(caption, a["parse_mode"].as_str())?
-    };
+    let kinds: Vec<_> = paths.iter().map(|(_, kind)| kind.clone()).collect();
     let mut media = vec![];
     for (path, kind) in paths {
         media.push(uploaded(api, &path, &kind, ttl).await?);
@@ -410,7 +414,14 @@ pub async fn run_with_state(
         if a.get("caption").is_none_or(|v| v.is_null()) {
             let current = fetch(api, &p, mid).await?;
             req["message"] = current["message"].clone();
-            req["entities"] = current.get("entities").cloned().unwrap_or(json!([]));
+            req["entities"] = json!(
+                build_entities(
+                    api,
+                    current["message"].as_str().unwrap_or(""),
+                    current.get("entities").unwrap_or(&json!([]))
+                )
+                .await?
+            );
         } else {
             req["message"] = json!(caption);
             req["entities"] = json!(formatting);
@@ -424,31 +435,60 @@ pub async fn run_with_state(
     if let Some(send_as) = a.get("send_as").filter(|v| !v.is_null()) {
         req["send_as"] = api.resolve_peer(send_as).await?;
     }
-    if album {
-        let mut singles = vec![];
-        for (index, item) in media.into_iter().enumerate() {
-            let uploaded = api
-                .invoke("messages.uploadMedia", json!({"peer":p,"media":item}))
-                .await?;
-            let item = if let Some(photo) = uploaded.get("photo") {
-                json!({"_":"inputMediaPhoto","id":{"_":"inputPhoto","id":photo["id"],"access_hash":photo["access_hash"],"file_reference":photo["file_reference"]}})
-            } else {
-                let document = &uploaded["document"];
-                ensure!(
-                    !document.is_null(),
-                    "Telegram omitted uploaded media references"
-                );
-                json!({"_":"inputMediaDocument","id":{"_":"inputDocument","id":document["id"],"access_hash":document["access_hash"],"file_reference":document["file_reference"]}})
-            };
-            singles.push(json!({"_":"inputSingleMedia","media":item,"random_id":args::random_id(),"message":if index==0{caption.as_str()}else{""},"entities":if index==0{formatting.clone()}else{vec![]}}));
+    let group = |kind: &str| match kind {
+        "photo" | "video" => Some(0),
+        "audio" => Some(1),
+        "document" => Some(2),
+        _ => None,
+    };
+    let mut completed = vec![];
+    let mut index = 0;
+    while index < media.len() {
+        let start = index;
+        index += 1;
+        if let Some(kind) = group(&kinds[start]) {
+            while index < media.len() && group(&kinds[index]) == Some(kind) {
+                index += 1;
+            }
         }
-        req["multi_media"] = json!(singles);
-        api.invoke("messages.sendMultiMedia", req).await
-    } else {
-        req["media"] = media.remove(0);
-        req["message"] = json!(caption);
-        req["entities"] = json!(formatting);
-        req["random_id"] = args::random_id();
-        api.invoke("messages.sendMedia", req).await
+        let mut request = req.clone();
+        let outcome: Result<Value> = async {
+            if album || index - start > 1 {
+                let mut singles = vec![];
+                for (offset, item) in media[start..index].iter().enumerate() {
+                    let uploaded = api.invoke("messages.uploadMedia", json!({"peer":p,"media":item})).await?;
+                    let item = if let Some(photo) = uploaded.get("photo") {
+                        json!({"_":"inputMediaPhoto","id":{"_":"inputPhoto","id":photo["id"],"access_hash":photo["access_hash"],"file_reference":photo["file_reference"]}})
+                    } else {
+                        let document = &uploaded["document"];
+                        ensure!(!document.is_null(), "Telegram omitted uploaded media references");
+                        json!({"_":"inputMediaDocument","id":{"_":"inputDocument","id":document["id"],"access_hash":document["access_hash"],"file_reference":document["file_reference"]}})
+                    };
+                    singles.push(json!({"_":"inputSingleMedia","media":item,"random_id":args::random_id(),"message":if start+offset==0{caption.as_str()}else{""},"entities":if start+offset==0{formatting.clone()}else{vec![]}}));
+                }
+                request["multi_media"] = json!(singles);
+                api.invoke("messages.sendMultiMedia", request).await
+            } else {
+                request["media"] = media[start].clone();
+                request["message"] = json!(if start == 0 { caption.as_str() } else { "" });
+                request["entities"] = json!(if start == 0 { formatting.clone() } else { vec![] });
+                request["random_id"] = args::random_id();
+                api.invoke("messages.sendMedia", request).await
+            }
+        }.await;
+        match outcome {
+            Ok(value) => completed.push(value),
+            Err(error) if completed.is_empty() => return Err(error),
+            Err(_) => {
+                return Ok(
+                    json!({"partial":true,"completed":completed,"failed_file_index":start,"outcome":"The current group may have an unknown send outcome; earlier groups completed. Do not retry the entire request."}),
+                );
+            }
+        }
     }
+    Ok(if completed.len() == 1 {
+        completed.remove(0)
+    } else {
+        json!({"results":completed})
+    })
 }

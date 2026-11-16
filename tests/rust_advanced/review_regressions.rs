@@ -97,7 +97,9 @@ async fn folder_reordering_round_trips_snapshot_default_folder_zero() {
 
 #[tokio::test]
 async fn folder_membership_removal_excludes_implicitly_included_peers() {
-    let api = Mock::new().respond("messages.getDialogFilters", folder(json!([]), json!([])));
+    let api = Mock::new()
+        .respond("messages.getDialogFilters", folder(json!([]), json!([])))
+        .respond("messages.getDialogFilters", folder(json!([]), json!([])));
     let result = run(
         &api,
         "remove_chat_from_folder",
@@ -116,7 +118,9 @@ async fn folder_membership_removal_excludes_implicitly_included_peers() {
 async fn folder_membership_add_removes_an_existing_exclusion() {
     let mut definition = folder(json!([]), json!([]));
     definition["filters"][0]["exclude_peers"] = json!([Mock::new().peer]);
-    let api = Mock::new().respond("messages.getDialogFilters", definition);
+    let api = Mock::new()
+        .respond("messages.getDialogFilters", definition.clone())
+        .respond("messages.getDialogFilters", definition);
     run(
         &api,
         "add_chat_to_folder",
@@ -281,6 +285,70 @@ async fn sticker_references_are_scoped_to_the_authenticated_session() {
 }
 
 struct StoryApi(Mutex<Option<std::path::PathBuf>>);
+
+#[tokio::test]
+async fn folder_membership_refuses_external_title_rule_changes_and_removal() {
+    for variant in 0..3 {
+        let original = folder(json!([]), json!([]));
+        let mut changed = original.clone();
+        match variant {
+            0 => changed["filters"][0]["title"]["text"] = json!("Renamed"),
+            1 => changed["filters"][0]["groups"] = json!(false),
+            _ => changed["filters"] = json!([]),
+        }
+        let api = Mock::new()
+            .respond("messages.getDialogFilters", original)
+            .respond("messages.getDialogFilters", changed);
+        let error = run(
+            &api,
+            "add_chat_to_folder",
+            json!({"folder_id":2,"chat_id":7}),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("Folder changed"));
+        assert_eq!(api.count("messages.updateDialogFilter"), 0);
+    }
+}
+
+#[tokio::test]
+async fn formatted_poll_limits_measure_displayed_utf16_text_before_rpc() {
+    let api = Mock::new();
+    let question = format!("<b>{}</b>", "q".repeat(255));
+    let option = format!("<i>{}</i>", "a".repeat(100));
+    let explanation = format!("<u>{}</u>", "e".repeat(200));
+    run(&api,"create_poll",json!({"chat_id":7,"question":question,"options":[option,"B"],"parse_mode":"html","quiz_mode":true,"correct_option_index":0,"explanation":explanation})).await.unwrap();
+    let sent = api.request("messages.sendMedia");
+    assert_eq!(sent["media"]["poll"]["question"]["text"], "q".repeat(255));
+    assert_eq!(
+        sent["media"]["poll"]["answers"][0]["text"]["text"],
+        "a".repeat(100)
+    );
+    assert_eq!(sent["media"]["solution"], "e".repeat(200));
+    assert!(
+        !sent["media"]["solution_entities"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    for (question, option) in [
+        ("<b></b>".to_owned(), "A".to_owned()),
+        ("Q".to_owned(), "<i></i>".to_owned()),
+        ("Q".to_owned(), format!("<b>{}</b>", "🙂".repeat(51))),
+    ] {
+        let invalid = Mock::new();
+        assert!(
+            run(
+                &invalid,
+                "create_poll",
+                json!({"chat_id":7,"question":question,"options":[option,"B"],"parse_mode":"html"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(invalid.all().is_empty());
+    }
+}
 #[async_trait]
 impl Telegram for StoryApi {
     async fn invoke(&self, method: &str, args: Value) -> Result<Value> {

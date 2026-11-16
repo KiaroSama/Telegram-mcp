@@ -86,7 +86,7 @@ pub fn check_deferred_custody_with_config(
     if owners.is_empty() {
         return Ok(());
     }
-    let keys = authorization::fingerprints(state, label, config, false)
+    let keys = authorization::load(state, label, config, false)
         .map_err(|_| anyhow::anyhow!("Cannot verify candidate authorization against deferred custody; no connection was opened"))?;
     if keys.is_empty() {
         // An existing native snapshot without an authorization cannot consume
@@ -94,14 +94,14 @@ pub fn check_deferred_custody_with_config(
         return Ok(());
     }
     for owner in owners {
-        let owned = authorization::fingerprints(state, &owner, config, true)
+        let owned = authorization::load(state, &owner, config, true)
             .map_err(|_| anyhow::anyhow!("Cannot identify an existing deferred-custody authorization; no connection was opened"))?;
         if owned.is_empty() {
             bail!(
                 "Cannot identify an existing deferred-custody authorization; no connection was opened"
             );
         }
-        if !keys.is_disjoint(&owned) {
+        if keys.intersects(&owned) {
             bail!(
                 "This authorization has existing secret-chat custody under an account label. Keep its legacy authorization untouched until the separate Rust secret backend is ready, or use a fresh native authorization"
             );

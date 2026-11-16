@@ -8,8 +8,8 @@ use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT},
     Graphics::Gdi::{
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, ClientToScreen,
-        CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC,
-        GetWindowDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
+        CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush,
+        GetDC, GetWindowDC, HBITMAP, HDC, HGDIOBJ, ReleaseDC, SRCCOPY, SelectObject,
     },
     Storage::Xps::PrintWindow,
     System::Threading::{
@@ -253,6 +253,8 @@ fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)
         rect.bottom += origin.y;
         rect.left = origin.x;
         rect.top = origin.y;
+    } else if unsafe { GetWindowRect(handle, &mut rect) } == 0 {
+        bail!("Telegram window rectangle is unavailable");
     }
     let (width, height) = (
         i64::from(rect.right) - i64::from(rect.left),
@@ -328,6 +330,9 @@ fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)
     };
     if success == 0 {
         bail!("Telegram refused capture; restore the window or try method=screen");
+    }
+    if unsafe { GdiFlush() } == 0 {
+        bail!("Capture drawing could not be synchronized");
     }
     // A top-down 32-bit DIB has width*4-byte rows, with no extra alignment.
     // The pixel-count bound was checked before allocating this buffer.

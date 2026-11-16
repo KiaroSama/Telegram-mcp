@@ -2,6 +2,55 @@ use super::common::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn deleting_an_already_left_basic_group_finishes_history_cleanup() {
+    let m = Mock::new();
+    m.fail_with(
+        "messages.deleteChatUser",
+        "Telegram RPC 400 USER_NOT_PARTICIPANT",
+    );
+    m.reply("messages.deleteHistory", json!({"offset":2}));
+    m.reply("messages.deleteHistory", json!({"offset":0}));
+    let result = run(&m, "delete_chat", json!({"chat":9,"both_sides":false}))
+        .await
+        .unwrap();
+    assert_eq!(result["complete"], true);
+    assert_eq!(m.sent("messages.deleteHistory").len(), 2);
+}
+
+#[tokio::test]
+async fn unknown_or_other_leave_failures_do_not_start_history_deletion() {
+    for reason in [
+        "Telegram transport failed; USER_NOT_PARTICIPANT outcome unknown",
+        "Telegram RPC 400 CHAT_ADMIN_REQUIRED",
+    ] {
+        let m = Mock::new();
+        m.fail_with("messages.deleteChatUser", reason);
+        assert!(
+            run(&m, "delete_chat", json!({"chat":9,"both_sides":false}))
+                .await
+                .is_err()
+        );
+        assert!(m.sent("messages.deleteHistory").is_empty());
+    }
+}
+
+#[tokio::test]
+async fn basic_group_demotion_uses_the_basic_group_admin_model() {
+    for accepted in [true, false] {
+        let m = Mock::new();
+        m.reply("messages.editChatAdmin", json!(accepted));
+        let result = run(&m, "demote_admin", json!({"group_id":9,"user_id":8}))
+            .await
+            .unwrap();
+        assert_eq!(result["accepted"], accepted);
+        assert_eq!(result["admin_level"], "basic_group");
+        assert_eq!(m.sent("messages.editChatAdmin")[0]["is_admin"], false);
+        assert!(m.sent("channels.editAdmin").is_empty());
+        assert!(m.sent("channels.getParticipant").is_empty());
+    }
+}
+
+#[tokio::test]
 async fn missing_both_sides_refuses_history_deletion_before_network() {
     let m = Mock::new();
     assert!(

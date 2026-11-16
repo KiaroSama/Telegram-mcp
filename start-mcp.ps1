@@ -79,32 +79,48 @@ function Get-NativeBinary {
 }
 
 function Get-StateDirectory {
-    <#
-      Where runtime state goes: NOT beside the source. `logs/` next to the script
-      lands inside the git checkout, gets committed or synced, and inherits
-      whatever the repository directory grants. Same rule as
-      `telegram_mcp.aliases.aliases_file_path`, so there is one place to lock down.
-    #>
-    if ($env:TELEGRAM_STATE_DIR) { return $env:TELEGRAM_STATE_DIR }
-    # Let the native parser resolve .env-owned state settings once; the process
-    # environment alone does not contain settings loaded by the child executable.
-    $cached = Get-Variable -Name NativeStateDirectory -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    # Ask the native parser for its canonical root, using the same selector as serve.
     $sourceRoot = Get-Variable -Name ProjectRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-    $signature = "$sourceRoot|$env:XDG_STATE_HOME"
+    if (-not $sourceRoot) { $sourceRoot = $PSScriptRoot }
+    $selector = $null
+    $forwarded = Get-Variable -Name ServerArguments -ValueOnly -ErrorAction SilentlyContinue
+    $forwarded = @($forwarded)
+    for ($index = 0; $index -lt $forwarded.Count; $index++) {
+        if ($forwarded[$index] -eq '--config') {
+            if ($index + 1 -ge $forwarded.Count) { throw '--config requires a configuration path.' }
+            $index++
+            $selector = $forwarded[$index]
+        }
+        elseif ($forwarded[$index] -like '--config=*') { $selector = $forwarded[$index].Substring(9) }
+    }
+    if (-not $selector -and -not $env:TELEGRAM_ENV_FILE) {
+        $selector = Get-Variable -Name envPath -ValueOnly -ErrorAction SilentlyContinue
+    }
+    $selection = if ($selector) { @('--config', $selector) } else { @() }
+    $signature = "$sourceRoot|$env:TELEGRAM_STATE_DIR|$env:XDG_STATE_HOME|$selector|$env:TELEGRAM_ENV_FILE"
+    $cached = Get-Variable -Name NativeStateDirectory -Scope Script -ValueOnly -ErrorAction SilentlyContinue
     $cachedSignature = Get-Variable -Name NativeStateDirectorySignature -Scope Script -ValueOnly -ErrorAction SilentlyContinue
     if ($cached -and $cachedSignature -eq $signature) { return $cached }
+    $native = $null
     try {
-        $native = Get-NativeBinary -Root $script:ProjectRoot
-        Push-Location -LiteralPath $script:ProjectRoot
-        try { $value = (& $native state-path 2>$null | Select-Object -Last 1) }
-        finally { Pop-Location }
-        if ($LASTEXITCODE -eq 0 -and $value -and [IO.Path]::IsPathRooted("$value".Trim())) {
-            $script:NativeStateDirectory = "$value".Trim()
-            $script:NativeStateDirectorySignature = $signature
-            return $script:NativeStateDirectory
+        $native = Get-NativeBinary -Root $sourceRoot
+        Push-Location -LiteralPath $sourceRoot
+        try {
+            $value = (& $native state-path @selection 2>$null | Select-Object -Last 1)
+            $code = $LASTEXITCODE
         }
+        finally { Pop-Location }
+        if ($code -ne 0 -or -not $value -or -not [IO.Path]::IsPathRooted("$value".Trim())) {
+            throw 'The native private state directory could not be resolved.'
+        }
+        $script:NativeStateDirectory = "$value".Trim()
+        $script:NativeStateDirectorySignature = $signature
+        return $script:NativeStateDirectory
     }
-    catch { }
+    catch { if ($native) { throw } }
+    # This permits diagnostics before the executable is installed. Serving itself
+    # still requires native discovery and cannot proceed through this fallback.
+    if ($env:TELEGRAM_STATE_DIR) { return $env:TELEGRAM_STATE_DIR }
     if ($env:XDG_STATE_HOME) { return Join-Path $env:XDG_STATE_HOME 'telegram-mcp' }
     return Join-Path (Join-Path $HOME '.local/state') 'telegram-mcp'
 }
@@ -256,11 +272,15 @@ function Stop-OtherInstances {
         $walk = $parents[$walk]
     }
 
-    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|(?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe)'
+    $checkout = [regex]::Escape($Root.TrimEnd('\', '/'))
+    $launcherPattern = $checkout + '[\\/]start-mcp\.ps1(?:"|\s|$)'
+    $nativePattern = $checkout + '[\\/](?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe"?\s+serve(?:\s|$)'
     $runners = 'pwsh.exe', 'powershell.exe', 'telegram-mcp.exe'
     $targets = @($processes | Where-Object {
             $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
-            -not $protected.ContainsKey([int] $_.ProcessId) -and $_.CommandLine -match $pattern
+            -not $protected.ContainsKey([int] $_.ProcessId) -and
+            (($_.Name.ToLowerInvariant() -eq 'telegram-mcp.exe' -and $_.CommandLine -match $nativePattern) -or
+                ($_.Name.ToLowerInvariant() -ne 'telegram-mcp.exe' -and $_.CommandLine -match $launcherPattern))
         })
     $targetIds = @($targets | ForEach-Object { [int] $_.ProcessId })
     # The top of each tree only; its children go with it.
@@ -398,7 +418,7 @@ try {
     # connected directly to the MCP client and never passes through a tee.
     $previousLogFile = $env:TELEGRAM_MCP_LOG_FILE
     $previousLogLimit = $env:TELEGRAM_MCP_LOG_MAX_BYTES
-    $env:TELEGRAM_MCP_LOG_FILE = if ($logPath) { $logPath } else { '' }
+    $env:TELEGRAM_MCP_LOG_FILE = if ($logPath) { $logPath } else { 'off' }
     $env:TELEGRAM_MCP_LOG_MAX_BYTES = "$script:LogMaxBytes"
     Push-Location -LiteralPath $PSScriptRoot
     try {

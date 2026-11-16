@@ -18,7 +18,10 @@ async fn list(api: &dyn Telegram, p: &Value, source: &str, limit: i64) -> Result
                 json!({"user_id":input_user(p)?,"offset":0,"max_id":"0","limit":limit}),
             )
             .await?;
-        return Ok(result["photos"].as_array().cloned().unwrap_or_default());
+        return Ok(result["photos"]
+            .as_array()
+            .map(|photos| photos.iter().take(limit as usize).cloned().collect())
+            .unwrap_or_default());
     }
     let mut req = history_request(p.clone(), limit, 0, 0);
     req.as_object_mut().unwrap().remove("offset_date");
@@ -29,6 +32,7 @@ async fn list(api: &dyn Telegram, p: &Value, source: &str, limit: i64) -> Result
     let result = api.invoke("messages.search", req).await?;
     let mut photos: Vec<Value> = result_messages(&result)
         .into_iter()
+        .take(limit as usize)
         .filter_map(|message| {
             message["media"]
                 .get("photo")
@@ -122,11 +126,22 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     ensure!(!photos.is_empty(), "No photos were found");
     let mut images = vec![];
+    let mut retained = 0usize;
     for photo in &photos {
         let data = downloads::download_bytes(api, downloads::download_location(photo)?, cap as u64)
             .await?;
+        // Retain only sheet-sized cells, rather than every full-resolution original.
+        let image = crate::tools::visual::images::decode_image(&data)?;
+        let (cell, _) = crate::tools::visual::images::encode_image(&image, "png", 256, 85, false)?;
+        retained = retained
+            .checked_add(cell.len())
+            .context("Photo sheet byte budget overflow")?;
+        ensure!(
+            retained <= 32 * 1024 * 1024,
+            "Photo sheet cells exceed the 32 MiB aggregate budget"
+        );
         images.push((
-            data,
+            cell,
             photo["id"]
                 .as_str()
                 .map(str::to_owned)

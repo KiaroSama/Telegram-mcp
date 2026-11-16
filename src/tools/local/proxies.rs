@@ -91,6 +91,7 @@ pub fn parse_proxy(input: &str) -> Result<Proxy> {
                     "socks" | "socks5" | "socks5h" => "socks5",
                     "socks4" | "socks4a" => "socks4",
                     "http" => "http",
+                    "https" => "https",
                     _ => bail!("Unsupported proxy protocol"),
                 };
                 (

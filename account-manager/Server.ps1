@@ -24,11 +24,15 @@ function Get-ServerTrees {
         $protected[$walk] = $true
         $walk = $parents[$walk]
     }
-    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|(?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe)'
+    $checkout = [regex]::Escape($Root.TrimEnd('\', '/'))
+    $launcherPattern = $checkout + '[\\/]start-mcp\.ps1(?:"|\s|$)'
+    $nativePattern = $checkout + '[\\/](?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe"?\s+serve(?:\s|$)'
     $runners = 'pwsh.exe', 'powershell.exe', 'telegram-mcp.exe'
     $matched = @($processes | Where-Object {
             $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
-            -not $protected.ContainsKey([int] $_.ProcessId) -and $_.CommandLine -match $pattern
+            -not $protected.ContainsKey([int] $_.ProcessId) -and
+            (($_.Name.ToLowerInvariant() -eq 'telegram-mcp.exe' -and $_.CommandLine -match $nativePattern) -or
+                ($_.Name.ToLowerInvariant() -ne 'telegram-mcp.exe' -and $_.CommandLine -match $launcherPattern))
         })
     $ids = @($matched | ForEach-Object { [int] $_.ProcessId })
     return @($matched | Where-Object { $ids -notcontains [int] $_.ParentProcessId } |
@@ -70,15 +74,12 @@ function Start-TelegramServer {
     $shell = Get-Command pwsh.exe -ErrorAction SilentlyContinue
     if (-not $shell) { throw 'PowerShell 7 (pwsh.exe) is required to restart the server.' }
     $launcher = Join-Path $Root 'start-mcp.ps1'
-    $hostName = if ($env:MCP_HOST) { $env:MCP_HOST } else { '127.0.0.1' }
-    $port = if ($env:MCP_PORT) { $env:MCP_PORT } else { '8765' }
-    foreach ($line in Get-EnvLines) {
-        if (-not $env:MCP_HOST -and $line -match '^\s*MCP_HOST\s*=\s*["'']?([^"''#\s]+)') { $hostName = $Matches[1] }
-        if (-not $env:MCP_PORT -and $line -match '^\s*MCP_PORT\s*=\s*["'']?(\d+)') { $port = $Matches[1] }
-    }
-    $address = if ($hostName.Contains(':')) { "[${hostName}]:$port" } else { "${hostName}:$port" }
+    $native = Get-NativeBinary -Root $Root
+    $address = (& $native bind-address --config $envPath | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or -not $address) { throw 'The native service address could not be resolved.' }
+    $address = "$address".Trim()
     $process = Start-Process -FilePath $shell.Source -WindowStyle Hidden -WorkingDirectory $Root -PassThru `
-        -ArgumentList ('-NoLogo -NoProfile -File "{0}" --http {1}' -f $launcher, $address)
+        -ArgumentList ('-NoLogo -NoProfile -File "{0}" --config "{1}" --http {2}' -f $launcher, $envPath, $address)
     Write-Log "Started the MCP server again (pid $($process.Id))"
     return $process.Id
 }

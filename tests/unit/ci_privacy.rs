@@ -18,6 +18,16 @@ fn known_placeholder_and_commit_hash_are_not_credentials() {
     assert!(problems(&text, &rules().unwrap()).unwrap().is_empty());
 }
 #[test]
+fn ignored_placeholder_does_not_hide_an_adjacent_credential() {
+    for separator in ["\n", " ", ":", "•"] {
+        let candidate = format!("{}{separator}{}", PLACEHOLDERS[0], "f".repeat(32));
+        let findings = problems(&candidate, &rules().unwrap()).unwrap();
+        assert_eq!(findings.len(), 1, "Adjacent candidate escaped detection");
+        assert_eq!(findings[0].1, "Telegram API hash");
+        assert_eq!(findings[0].0, if separator == "\n" { 2 } else { 1 });
+    }
+}
+#[test]
 fn protects_accounts_but_allows_public_plugin_manifests() {
     assert!(protected(".personal/12345/identity.json"));
     assert!(protected(".env.private"));

@@ -174,6 +174,7 @@ fn subprocess(
     let state = temp.path().join("state");
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
+        .current_dir(temp.path())
         .args(["--exact", name, "--nocapture"])
         .env("TELEGRAM_LOG_TEST_CHILD", name)
         .env("TELEGRAM_STATE_DIR", &state)
@@ -325,7 +326,7 @@ fn production_tracing_events_do_not_log_raw_values_or_format_errors() {
                         }
                     }
                     let body = &text[found.end()..end];
-                    if !allowed.is_match(body) {
+                    if !log_arguments_are_static(allowed, body) {
                         offenders.push(format!(
                             "{}:{}",
                             path.display(),
@@ -338,7 +339,7 @@ fn production_tracing_events_do_not_log_raw_values_or_format_errors() {
     }
     let mut offenders = Vec::new();
     let pattern = regex::Regex::new(r"tracing::(?:error|warn|info|debug|trace)!\s*\(").unwrap();
-    let allowed=regex::Regex::new(r#"(?s)^\s*(?:(?:operation\s*=\s*"[a-z_]+"|version\s*=\s*env!\("CARGO_PKG_VERSION"\)|action)\s*,\s*)?"[^"\\]*"\s*,?\s*$"#).unwrap();
+    let allowed=regex::Regex::new(r#"(?s)^\s*(?:(?:operation\s*=\s*"[a-z_]+"|version\s*=\s*env!\("CARGO_PKG_VERSION"\)|action)\s*,\s*)?"(?P<message>[^"\\]*)"\s*,?\s*$"#).unwrap();
     scan(
         &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut offenders,
@@ -372,4 +373,56 @@ fn logging_recovers_after_rotation_replacement_open_fails() {
         std::fs::read(path.with_extension("log.1")).unwrap(),
         b"old!"
     );
+}
+
+fn log_arguments_are_static(allowed: &regex::Regex, body: &str) -> bool {
+    let Some(captures) = allowed.captures(body) else {
+        return false;
+    };
+    let mut message = captures["message"].chars();
+    while let Some(ch) = message.next() {
+        if matches!(ch, '{' | '}') && message.next() != Some(ch) {
+            return false;
+        }
+    }
+    true
+}
+
+#[test]
+fn implicit_capture_fields_are_rejected_but_escaped_literal_braces_remain_static() {
+    let allowed = regex::Regex::new(r#"(?s)^\s*(?:(?:operation\s*=\s*"[a-z_]+"|version\s*=\s*env!\("CARGO_PKG_VERSION"\)|action)\s*,\s*)?"(?P<message>[^"\\]*)"\s*,?\s*$"#).unwrap();
+    for body in [
+        r#""session={session}""#,
+        r#""value={session:?}""#,
+        r#""{value:>20}""#,
+    ] {
+        assert!(
+            !log_arguments_are_static(&allowed, body),
+            "An implicit format capture reached the static log allowlist"
+        );
+    }
+    for body in [
+        r#""Static message""#,
+        r#""Escaped {{literal}} braces""#,
+        r#"version = env!("CARGO_PKG_VERSION"), "Static event""#,
+    ] {
+        assert!(log_arguments_are_static(&allowed, body));
+    }
+}
+
+#[test]
+fn off_sentinel_disables_file_logging_without_creating_private_state() {
+    let name = "logging::tests::off_sentinel_disables_file_logging_without_creating_private_state";
+    if let Some((temp, output)) = subprocess(name, Some("off"), None) {
+        assert!(!temp.path().join("state").exists());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Portable disabled-file sentinel")
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stdout).contains("Portable disabled-file sentinel")
+        );
+        return;
+    }
+    initialize().unwrap();
+    tracing::info!(target:"telegram_mcp::logging_probe","Portable disabled-file sentinel");
 }

@@ -119,13 +119,27 @@ impl Drop for Inner {
 pub struct Native(Arc<Inner>);
 impl Native {
     pub async fn open(label: &str) -> Result<Self> {
-        let snapshot = crate::account_manager::current_config()?;
-        let api_id = config::api_id(&snapshot)?;
-        let source = config::source_from(&snapshot, label);
         let state = State::global()?;
         crate::account_manager::recover_rename(&state)?;
         crate::account_manager::recover_logins(&state)?;
-        crate::session::check_deferred_custody_with_config(&state, label, &snapshot)?;
+        let snapshot = crate::account_manager::current_config()?;
+        Self::open_snapshot(state, label, label, &snapshot, false).await
+    }
+    async fn open_snapshot(
+        state: Arc<State>,
+        label: &str,
+        policy_label: &str,
+        snapshot: &crate::account_manager::ConfigSnapshot,
+        staged: bool,
+    ) -> Result<Self> {
+        crate::session::validate_label(label)?;
+        crate::session::validate_label(policy_label)?;
+        let source = config::source_from(snapshot, label);
+        if !staged && source.is_none() {
+            bail!("Account is no longer configured; no authorization was opened");
+        }
+        let api_id = config::api_id(snapshot)?;
+        crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
         let session = Arc::new(PersistentSession::open(Arc::clone(&state), label)?);
         if !state.root().join(format!("{label}.session.json")).exists()
             && let Some((key, value)) = &source
@@ -164,7 +178,7 @@ impl Native {
         }
         // Recheck the exact imported authorization before creating a sender;
         // the selected legacy source could have changed after the first probe.
-        crate::session::check_deferred_custody_with_config(&state, label, &snapshot)?;
+        crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
         let source =
             source.map(|(key, value)| (key, crate::account_manager::config_digest(&value)));
         session.bind_source(
@@ -177,7 +191,8 @@ impl Native {
             retry_policy: Box::new(NoRetries),
             ..Default::default()
         };
-        let route = crate::proxy::route(Arc::clone(&state), &snapshot, label).await?;
+        session.check_health()?;
+        let route = crate::proxy::route(Arc::clone(&state), snapshot, policy_label).await?;
         route.configure(&mut connection);
         let SenderPool {
             runner,
@@ -201,8 +216,15 @@ impl Native {
             stats_dc: AtomicI32::new(0),
             tasks: std::sync::Mutex::new(vec![task]),
         }));
+        let watched = Arc::clone(&native.0.session);
+        let stop = native.0.handle.thin.clone();
+        let health_task = tokio::spawn(async move {
+            watched.wait_for_write_uncertainty().await;
+            stop.quit();
+        });
         let update_task = tokio::spawn(updates::run(
             client,
+            native.0.handle.clone(),
             updates,
             state,
             Arc::clone(&native.0.session),
@@ -213,7 +235,7 @@ impl Native {
             .tasks
             .lock()
             .map_err(|_| anyhow::anyhow!("Session task lock unavailable"))?
-            .push(update_task);
+            .extend([health_task, update_task]);
         Ok(native)
     }
     pub fn generation(&self) -> Option<String> {
@@ -275,6 +297,9 @@ impl Native {
         Ok(())
     }
     async fn restore_ghost(&self) {
+        if self.0.session.check_health().is_err() {
+            return;
+        }
         if self.0.state.ghost_mode(Some(&self.0.label), None)["effective"].as_bool() == Some(true) {
             let outcome = tokio::time::timeout(
                 Duration::from_secs(5),
@@ -289,6 +314,7 @@ impl Native {
         }
     }
     async fn invoke_raw(&self, method: &str, params: Value) -> Result<Value> {
+        self.0.session.check_health()?;
         let request = RawRequest(Schema::global().encode_call(method, &params)?);
         let dc = if method.starts_with("stats.") {
             self.0.stats_dc.load(Ordering::Relaxed)
@@ -345,6 +371,7 @@ impl Telegram for Native {
         let result = match method {
             "local.accounts" => accounts_snapshot(),
             "local.session_health" => {
+                self.0.session.check_health()?;
                 let requested = params["config_key"]
                     .as_str()
                     .zip(params["config_digest"].as_str());
@@ -385,21 +412,25 @@ impl Telegram for Native {
         result
     }
     async fn resolve_peer(&self, input: &Value) -> Result<Value> {
+        self.0.session.check_health()?;
         let result = self.resolve(input).await;
         self.restore_ghost().await;
         result
     }
     async fn upload(&self, path: &Path) -> Result<Value> {
+        self.0.session.check_health()?;
         let result = self.upload_file(path).await;
         self.restore_ghost().await;
         result
     }
     async fn download(&self, location: Value, destination: &Path, max_bytes: u64) -> Result<Value> {
+        self.0.session.check_health()?;
         let result = self.download_file(location, destination, max_bytes).await;
         self.restore_ghost().await;
         result
     }
     async fn download_memory(&self, location: Value, max_bytes: u64) -> Result<Vec<u8>> {
+        self.0.session.check_health()?;
         let result = self.download_in_memory(location, max_bytes).await;
         self.restore_ghost().await;
         result
@@ -456,8 +487,16 @@ pub async fn login_transaction(
         .values
         .get("TELEGRAM_API_HASH")
         .context("TELEGRAM_API_HASH is required; obtain it from my.telegram.org/apps")?;
-    let native = Native::open(transaction.stage_label()).await?;
+    let native = Native::open_snapshot(
+        State::global()?,
+        transaction.stage_label(),
+        label,
+        &snapshot,
+        true,
+    )
+    .await?;
     let phone = prompt("Phone number (international format): ")?;
+    native.0.session.check_health()?;
     let token = native
         .0
         .client
@@ -465,10 +504,12 @@ pub async fn login_transaction(
         .await
         .context("Could not request login code")?;
     let code = prompt("Telegram login code: ")?;
+    native.0.session.check_health()?;
     match native.0.client.sign_in(&token, &code).await {
         Ok(_) => {}
         Err(SignInError::PasswordRequired(token)) => {
             let password = rpassword::prompt_password("Two-step verification password: ")?;
+            native.0.session.check_health()?;
             native
                 .0
                 .client
@@ -478,6 +519,7 @@ pub async fn login_transaction(
         }
         Err(_) => bail!("Telegram sign-in failed; verify the code before trying again"),
     }
+    native.0.session.check_health()?;
     let id = native
         .0
         .client

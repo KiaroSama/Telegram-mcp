@@ -112,7 +112,10 @@ pub fn read_catalogue(root: &Path) -> Result<(BTreeMap<String, Entry>, Vec<Strin
     let index = read_json(&root.join("index.json"))?;
     let mut entries = BTreeMap::new();
     let mut problems = Vec::new();
-    for pack in index["packs"].as_array().into_iter().flatten() {
+    let catalogue = index["packs"]
+        .as_array()
+        .context("Emoji catalogue index must contain a packs array")?;
+    for pack in catalogue {
         let Some(name) = pack["set_name"].as_str().filter(|name| !name.is_empty()) else {
             continue;
         };
@@ -130,7 +133,11 @@ pub fn read_catalogue(root: &Path) -> Result<(BTreeMap<String, Entry>, Vec<Strin
                 continue;
             }
         };
-        for emoji in detail["emoji"].as_array().into_iter().flatten() {
+        let Some(items) = detail["emoji"].as_array() else {
+            problems.push(format!("{name}: catalogue has no emoji array"));
+            continue;
+        };
+        for emoji in items {
             let Some(id) = decimal_id(&emoji["custom_emoji_id"]) else {
                 problems.push(format!("{name}: invalid custom emoji id"));
                 continue;
@@ -340,7 +347,16 @@ pub async fn refresh(
     entries: &BTreeMap<String, Entry>,
     rebuild: bool,
 ) -> Refresh {
-    if rebuild {
+    refresh_complete(stored, entries, rebuild, true).await
+}
+
+pub async fn refresh_complete(
+    stored: &mut BTreeMap<String, Value>,
+    entries: &BTreeMap<String, Entry>,
+    rebuild: bool,
+    complete: bool,
+) -> Refresh {
+    if rebuild && complete {
         stored.retain(|_, value| value["src"] != "packs");
     }
     let mut counts = Refresh::default();
@@ -349,14 +365,20 @@ pub async fn refresh(
             counts.skipped += 1;
             continue;
         };
-        if stored.get(id).is_some_and(|value| {
-            value["stamp"]
-                == entry
-                    .stamp
-                    .clone()
-                    .map(Value::String)
-                    .unwrap_or(Value::Null)
-        }) {
+        if !rebuild
+            && stored.get(id).is_some_and(|value| {
+                value["stamp"]
+                    == entry
+                        .stamp
+                        .clone()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null)
+            })
+        {
+            update_metadata(
+                stored.get_mut(id).expect("Existing stamp was checked"),
+                entry,
+            );
             counts.unchanged += 1;
             continue;
         }
@@ -373,17 +395,7 @@ pub async fn refresh(
         };
         let mut value = serde_json::to_value(fingerprint)
             .expect("A bounded finite fingerprint is JSON-serializable");
-        for (key, field) in [
-            ("src", json!("packs")),
-            ("pack", json!(entry.pack)),
-            ("title", entry.title.clone()),
-            ("link", entry.link.clone()),
-            ("glyph", entry.glyph.clone()),
-            ("name", entry.name.clone()),
-            ("stamp", json!(entry.stamp)),
-        ] {
-            value[key] = field;
-        }
+        update_metadata(&mut value, entry);
         if stored.insert(id.clone(), value).is_some() {
             counts.updated += 1;
         } else {
@@ -391,13 +403,27 @@ pub async fn refresh(
         }
     }
     stored.retain(|id, value| {
-        let keep = value["src"] != "packs" || entries.contains_key(id);
+        let keep = !complete || value["src"] != "packs" || entries.contains_key(id);
         if !keep {
             counts.removed += 1;
         }
         keep
     });
     counts
+}
+
+fn update_metadata(value: &mut Value, entry: &Entry) {
+    for (key, field) in [
+        ("src", json!("packs")),
+        ("pack", json!(entry.pack)),
+        ("title", entry.title.clone()),
+        ("link", entry.link.clone()),
+        ("glyph", entry.glyph.clone()),
+        ("name", entry.name.clone()),
+        ("stamp", json!(entry.stamp)),
+    ] {
+        value[key] = field;
+    }
 }
 
 pub fn load_cache(path: &Path) -> Result<BTreeMap<String, Value>> {

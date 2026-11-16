@@ -173,6 +173,75 @@ fn missing_source_table_is_unknown_not_a_false_no_equivalent_answer() {
 }
 
 #[tokio::test]
+async fn unchanged_thumb_refresh_updates_metadata_without_changing_fingerprint() {
+    let temp = tempfile::tempdir().unwrap();
+    export(temp.path(), &[("1", "a")]);
+    let (mut entries, _) = packs::read_catalogue(temp.path()).unwrap();
+    let mut stored = BTreeMap::new();
+    packs::refresh(&mut stored, &entries, false).await;
+    let before = stored["1"]["colour"].clone();
+    let entry = entries.get_mut("1").unwrap();
+    entry.title = json!("new title");
+    entry.glyph = json!("🔥");
+    entry.name = json!("new name");
+    entry.link = json!("https://t.me/addemoji/updated");
+    let result = packs::refresh(&mut stored, &entries, false).await;
+    assert_eq!(result.unchanged, 1);
+    assert_eq!(stored["1"]["title"], "new title");
+    assert_eq!(stored["1"]["glyph"], "🔥");
+    assert_eq!(stored["1"]["name"], "new name");
+    assert_eq!(stored["1"]["link"], "https://t.me/addemoji/updated");
+    assert_eq!(stored["1"]["colour"], before);
+}
+
+#[tokio::test]
+async fn cli_index_preserves_cached_fingerprints_after_a_pack_read_fails() {
+    let temp = tempfile::tempdir().unwrap();
+    export(temp.path(), &[("1", "a")]);
+    let (entries, _) = packs::read_catalogue(temp.path()).unwrap();
+    let mut stored = BTreeMap::new();
+    packs::refresh(&mut stored, &entries, false).await;
+    let cache = temp.path().join("cache.json");
+    packs::save_cache(&cache, &stored).unwrap();
+    for invalid in [b"invalid JSON".as_slice(), b"{}".as_slice()] {
+        std::fs::write(temp.path().join("p.json"), invalid).unwrap();
+        for mode in ["index", "refresh"] {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_emoji-studio"))
+                .env("TELEGRAM_STATE_DIR", temp.path().join("private-state"))
+                .current_dir(temp.path())
+                .arg("--cache")
+                .arg(&cache)
+                .args([mode, "--packs-dir"])
+                .arg(temp.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("packs:"));
+            assert_eq!(packs::load_cache(&cache).unwrap(), stored);
+        }
+    }
+}
+
+#[test]
+fn accuracy_excludes_the_original_id_from_identical_candidate_rankings() {
+    let picture = DynamicImage::ImageRgba8(RgbaImage::from_pixel(8, 8, Rgba([255, 0, 0, 255])));
+    let fp = vision::fingerprint(&picture).unwrap();
+    let encoded = serde_json::to_value(&fp).unwrap();
+    let index = BTreeMap::from([("100".into(), encoded.clone()), ("200".into(), encoded)]);
+    let report = accuracy::measure(
+        &BTreeMap::from([("100".into(), "200".into())]),
+        &BTreeMap::from([("100".into(), fp)]),
+        &index,
+    );
+    assert_eq!(report.top_1, 1);
+    assert_eq!(report.median_rank, Some(1.0));
+}
+
+#[tokio::test]
 async fn refresh_first_pass_fingerprints_and_second_pass_only_stats() {
     let temp = tempfile::tempdir().unwrap();
     export(temp.path(), &[("1", "a"), ("2", "b")]);

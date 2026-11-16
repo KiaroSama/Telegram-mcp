@@ -2,7 +2,9 @@ use super::common::*;
 
 #[tokio::test]
 async fn folder_edit_preserves_unrelated_flags() {
-    let m = Mock::new().respond("messages.getDialogFilters", folder(json!([]), json!([])));
+    let m = Mock::new()
+        .respond("messages.getDialogFilters", folder(json!([]), json!([])))
+        .respond("messages.getDialogFilters", folder(json!([]), json!([])));
     run(
         &m,
         "add_chat_to_folder",
@@ -115,6 +117,7 @@ async fn shared_folder_rejects_url_credentials() {
 async fn saved_messages_is_stored_as_concrete_peer() {
     let mut m = Mock::new()
         .respond("messages.getDialogFilters", folder(json!([]), json!([])))
+        .respond("messages.getDialogFilters", folder(json!([]), json!([])))
         .respond("users.getUsers", json!([{"id":"4242","access_hash":"99"}]));
     m.peer = json!({"_":"inputPeerSelf"});
     run(
@@ -132,6 +135,10 @@ async fn saved_messages_is_stored_as_concrete_peer() {
 #[tokio::test]
 async fn stored_self_peer_does_not_break_other_folder_members() {
     let m = Mock::new()
+        .respond(
+            "messages.getDialogFilters",
+            folder(json!([{"_":"inputPeerSelf"}]), json!([])),
+        )
         .respond(
             "messages.getDialogFilters",
             folder(json!([{"_":"inputPeerSelf"}]), json!([])),

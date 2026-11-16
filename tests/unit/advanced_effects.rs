@@ -256,8 +256,9 @@ async fn effect_catalogue_cache_bounds_age_and_negative_misses_without_replacing
     catalogue(&api, &json!({}), None, false).await.unwrap();
     let key = api.key.as_ref().unwrap();
     {
-        let mut cache = CACHE.get().unwrap().lock().await;
-        let saved = cache.get_mut(key).unwrap();
+        let entry = CACHE.get().unwrap().lock().await.get(key).unwrap().clone();
+        let mut cached = entry.lock().await;
+        let saved = cached.as_mut().unwrap();
         saved.checked = Instant::now() - Duration::from_secs(3601);
         saved.unknown = (0..1024).collect();
     }
@@ -270,8 +271,9 @@ async fn effect_catalogue_cache_bounds_age_and_negative_misses_without_replacing
         .unwrap();
     assert_eq!(api.requests.lock().unwrap()[1]["hash"], "12");
     {
-        let cache = CACHE.get().unwrap().lock().await;
-        let saved = cache.get(key).unwrap();
+        let entry = CACHE.get().unwrap().lock().await.get(key).unwrap().clone();
+        let cached = entry.lock().await;
+        let saved = cached.as_ref().unwrap();
         assert_eq!(saved.unknown.len(), 1);
         assert!(saved.unknown.contains(&2048));
     }
@@ -290,18 +292,22 @@ async fn effect_catalogue_cache_bounds_age_and_negative_misses_without_replacing
             let k = format!("bounded-fixture-{}", cache.len());
             cache.insert(
                 k,
-                Catalogue {
+                Arc::new(tokio::sync::Mutex::new(Some(Catalogue {
                     data: data(),
                     checked: Instant::now(),
                     unknown: HashSet::new(),
-                },
+                }))),
             );
         }
     }
     let mut next = Api::new(vec![data()], vec![]);
     next.key = Some(format!("effect-new-{}", rand::random::<u64>()));
     catalogue(&next, &json!({}), None, false).await.unwrap();
-    assert_eq!(CACHE.get().unwrap().lock().await.len(), 1);
+    let cache = CACHE.get().unwrap().lock().await;
+    assert!(cache.contains_key(next.key.as_ref().unwrap()));
+    assert!(cache.len() <= 64);
+    assert!(!cache.keys().any(|key| key.starts_with("bounded-fixture-")));
+    drop(cache);
     let mut cold = Api::new(
         vec![json!({"_":"messages.availableEffectsNotModified"})],
         vec![],

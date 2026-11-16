@@ -656,3 +656,46 @@ mod event_boundaries;
 
 #[path = "server_review.rs"]
 mod review;
+
+#[tokio::test(start_paused = true)]
+async fn offline_presence_is_bounded_and_does_not_lock_other_account_access() {
+    struct PendingPresence(Arc<tokio::sync::Notify>);
+    #[async_trait]
+    impl Telegram for PendingPresence {
+        async fn invoke(&self, method: &str, _params: Value) -> Result<Value> {
+            assert_eq!(method, "account.updateStatus");
+            self.0.notify_one();
+            std::future::pending().await
+        }
+        async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+            bail!("No peer resolution expected")
+        }
+    }
+    let (mcp, _, _temp) = service(json!({}), access::AccessPolicy::default());
+    let entered = Arc::new(tokio::sync::Notify::new());
+    mcp.runtime.accounts.lock().await.insert(
+        "default".into(),
+        Arc::new(Account {
+            api: Arc::new(PendingPresence(entered.clone())),
+            serial: Mutex::new(()),
+            generation: None,
+        }),
+    );
+    let writer = mcp.clone();
+    let task = tokio::spawn(async move {
+        let mut saved = json!({"effective":true,"saved":true});
+        writer.restore_offline_presence("default", &mut saved).await;
+        saved
+    });
+    entered.notified().await;
+    tokio::time::timeout(Duration::from_millis(250), mcp.account("other"))
+        .await
+        .expect("A presence request cannot block unrelated account access")
+        .unwrap();
+    tokio::time::advance(Duration::from_secs(11)).await;
+    let saved = task.await.unwrap();
+    assert_eq!(saved["effective"], true);
+    assert_eq!(saved["saved"], true);
+    assert_eq!(saved["operation_completed"], true);
+    assert_eq!(saved["local_warnings"].as_array().unwrap().len(), 1);
+}

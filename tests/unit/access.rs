@@ -165,3 +165,60 @@ async fn public_lookup_links_are_normalized_before_allowlist_resolution() {
         );
     }
 }
+
+#[tokio::test]
+async fn topic_restricted_replies_bind_the_referenced_message_before_approval() {
+    struct Replies {
+        topic: i64,
+        reads: std::sync::atomic::AtomicUsize,
+    }
+    #[async_trait]
+    impl Telegram for Replies {
+        async fn invoke(&self, method: &str, args: Value) -> Result<Value> {
+            assert_eq!(
+                method, "channels.getMessages",
+                "Topic validation cannot send a mutation"
+            );
+            crate::tl::Schema::global().encode_call(method, &args)?;
+            self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(
+                json!({"messages":[{"_":"message","id":10,"peer_id":{"_":"peerChannel","channel_id":"7"},"reply_to":{"forum_topic":true,"reply_to_top_id":self.topic},"message":"Untrusted target text"}]}),
+            )
+        }
+        async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+            Ok(json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"70"}))
+        }
+    }
+    let policy = AccessPolicy::parse(Some("allowed:5")).unwrap();
+    for (name, mut args) in [
+        (
+            "reply_to_message",
+            json!({"chat_id":"allowed","message_id":10,"topic_id":5,"text":"Safe scoped reply"}),
+        ),
+        (
+            "send_message",
+            json!({"chat_id":"allowed","reply_to_message_id":10,"topic_id":5,"message":"Safe scoped reply"}),
+        ),
+    ] {
+        let tools = crate::server::catalogue().unwrap();
+        let schema = &tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap()
+            .input_schema;
+        crate::server::validate_arguments(&mut args, schema).unwrap();
+        for topic in [9, 5] {
+            let api = Replies {
+                topic,
+                reads: std::sync::atomic::AtomicUsize::new(0),
+            };
+            let scoped = policy.scoped(name, &args, &api).await;
+            assert_eq!(
+                scoped.is_ok(),
+                topic == 5,
+                "The valid {name} reply schema must enforce its source topic"
+            );
+            assert_eq!(api.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+    }
+}

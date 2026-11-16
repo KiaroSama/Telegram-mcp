@@ -349,3 +349,115 @@ fn feed_maintenance_recovers_an_interrupted_tail_after_restarting_state() {
     let rows = fs::read_to_string(path).unwrap();
     assert_eq!(rows.lines().count(), 2);
 }
+
+#[test]
+fn malformed_nested_ghost_maps_refuse_mutations_without_panics_or_replacement() {
+    let (_root, state) = fixture();
+    for value in [
+        json!({"accounts":[]}),
+        json!({"accounts":"invalid"}),
+        json!({"chats":[]}),
+        json!({"chats":{"work":false}}),
+    ] {
+        state.write_json("ghost.json", &value).unwrap();
+        let path = state.root().join("ghost.json");
+        let before = fs::read(&path).unwrap();
+        for scope in [1, 2, 0] {
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| match scope {
+                0 => state.set_ghost_mode(false, None, None),
+                1 => state.set_ghost_mode(false, Some("work"), None),
+                _ => state.set_ghost_mode(false, Some("work"), Some(&json!(42))),
+            }));
+            assert!(result.is_ok(), "Malformed nested ghost settings panicked");
+            assert!(result.unwrap().is_err());
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+    }
+}
+
+#[test]
+fn state_json_byte_budget_includes_its_newline_and_preserves_old_bytes_on_refusal() {
+    let (_root, state) = fixture();
+    let limit = 16 * 1024 * 1024;
+    state
+        .write_json("boundary.json", &json!({"before":true}))
+        .unwrap();
+    let path = state.root().join("boundary.json");
+    let before = fs::read(&path).unwrap();
+    let rejected = Value::String("x".repeat(limit - 2));
+    assert_eq!(serde_json::to_vec_pretty(&rejected).unwrap().len(), limit);
+    assert!(state.write_json("boundary.json", &rejected).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let accepted = Value::String("x".repeat(limit - 3));
+    state.write_json("boundary.json", &accepted).unwrap();
+    assert_eq!(fs::metadata(&path).unwrap().len(), limit as u64);
+    assert_eq!(
+        state.read_json("boundary.json", Value::Null).unwrap(),
+        accepted
+    );
+}
+
+#[test]
+fn state_writer_waits_for_a_real_contended_lock_then_commits() {
+    let (_root, state) = fixture();
+    let held = state.state_lock().unwrap();
+    let writer = Arc::clone(&state);
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let probe = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(writer.root().join("state.lock"))
+            .unwrap();
+        let contention = fs2::FileExt::try_lock_exclusive(&probe).unwrap_err();
+        assert_eq!(
+            contention.raw_os_error(),
+            fs2::lock_contended_error().raw_os_error()
+        );
+        ready_tx.send(()).unwrap();
+        done_tx
+            .send(writer.write_json("after-contention.json", &json!({"committed":true})))
+            .unwrap();
+    });
+    ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(matches!(
+        done_rx.recv_timeout(Duration::from_millis(50)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    drop(held);
+    done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    thread.join().unwrap();
+    assert_eq!(
+        state
+            .read_json("after-contention.json", Value::Null)
+            .unwrap()["committed"],
+        true
+    );
+}
+
+#[test]
+fn a_post_replace_sync_failure_is_distinct_from_an_unchanged_precommit_failure() {
+    use super::super::storage::{DurabilityUncertain, replace_and_sync};
+    use anyhow::Context;
+    let (root, _state) = fixture();
+    let destination = root.path().join("committed.json");
+    let temporary = root.path().join("pending.json");
+    fs::write(&destination, b"previous").unwrap();
+    fs::write(&temporary, b"replacement").unwrap();
+    let error = replace_and_sync(&temporary, &destination, || {
+        Err(std::io::Error::other("simulated directory sync failure"))
+    })
+    .context("session persistence failed")
+    .unwrap_err();
+    assert!(error.downcast_ref::<DurabilityUncertain>().is_some());
+    assert_eq!(fs::read(&destination).unwrap(), b"replacement");
+    assert!(!temporary.exists());
+    let before = fs::read(&destination).unwrap();
+    let error = replace_and_sync(&temporary, &destination, || Ok(())).unwrap_err();
+    assert!(error.downcast_ref::<DurabilityUncertain>().is_none());
+    assert_eq!(fs::read(destination).unwrap(), before);
+}
