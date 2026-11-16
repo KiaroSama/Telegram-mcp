@@ -139,6 +139,153 @@ jobs:
             throw 'The Rust host compiler does not match the native matrix target.'
           }
           $version | Write-Output
+      - name: Observe native Windows worker environment names and prove directory barriers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = "1.100.0-$env:EXPECTED_TARGET"
+          $version = & rustc "+$toolchain" -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The worker diagnostic must use the pinned native Rust host.'
+          }
+          $work = Join-Path $env:RUNNER_TEMP ('worker-environment-probe-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($work)
+          $version | Out-File (Join-Path $work 'rustc-version.log') -Encoding utf8
+          $source = Join-Path $work 'worker-environment.rs'
+          $program = @'
+          use std::{env, io::{self, Read, Write}, process::{Command, Stdio}};
+          #[cfg(windows)]
+          mod barrier {
+              use std::{fs::{self, OpenOptions}, io::{self, Write}, os::windows::{fs::OpenOptionsExt, io::AsRawHandle}, path::Path};
+              #[link(name = "kernel32")]
+              unsafe extern "system" {
+                  fn GetVolumeInformationByHandleW(handle: *mut std::ffi::c_void, label: *mut u16, label_len: u32,
+                      serial: *mut u32, component_len: *mut u32, flags: *mut u32, fs_name: *mut u16, fs_name_len: u32) -> i32;
+              }
+              fn sync_directory(path: &Path) -> io::Result<()> {
+                  let directory = OpenOptions::new().read(true).write(true).custom_flags(0x02000000).open(path)?;
+                  if !directory.metadata()?.is_dir() { return Err(io::Error::new(io::ErrorKind::InvalidInput, "Directory barrier requires a directory")); }
+                  let mut filesystem = [0u16; 256];
+                  let success = unsafe { GetVolumeInformationByHandleW(directory.as_raw_handle(), std::ptr::null_mut(), 0,
+                      std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), filesystem.as_mut_ptr(), 256) };
+                  if success == 0 { return Err(io::Error::last_os_error()); }
+                  let length = filesystem.iter().position(|value| *value == 0).ok_or_else(|| io::Error::other("Filesystem name is not terminated"))?;
+                  let name = String::from_utf16(&filesystem[..length]).map_err(|_| io::Error::other("Filesystem name is not UTF-16"))?;
+                  println!("Observed filesystem: {}", name);
+                  if !name.eq_ignore_ascii_case("NTFS") { return Err(io::Error::other("Durable directory barriers require NTFS")); }
+                  directory.sync_all()?;
+                  println!("Same-handle directory FlushFileBuffers: successful");
+                  Ok(())
+              }
+              pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+                  let directory = std::env::args_os().nth(2).ok_or("Missing synthetic directory")?;
+                  let directory = Path::new(&directory);
+                  fs::create_dir(directory)?;
+                  sync_directory(directory)?;
+                  let missing = sync_directory(&directory.join("missing")).expect_err("Missing directory was accepted");
+                  if missing.kind() != io::ErrorKind::NotFound { return Err(missing.into()); }
+                  println!("Missing directory refused with API error {:?}", missing.raw_os_error());
+                  let original = directory.join("synthetic-original");
+                  let renamed = directory.join("synthetic-renamed");
+                  let mut file = OpenOptions::new().create_new(true).write(true).open(&original)?;
+                  file.write_all(b"synthetic directory barrier probe")?;
+                  file.sync_all()?;
+                  drop(file);
+                  sync_directory(directory)?;
+                  let not_directory = sync_directory(&original).expect_err("A regular file was accepted as a directory");
+                  if not_directory.kind() != io::ErrorKind::InvalidInput { return Err(not_directory.into()); }
+                  println!("Regular file refused as a directory");
+                  fs::rename(&original, &renamed)?;
+                  sync_directory(directory)?;
+                  fs::remove_file(&renamed)?;
+                  sync_directory(directory)?;
+                  fs::remove_dir(directory)?;
+                  sync_directory(directory.parent().ok_or("Synthetic directory has no parent")?)?;
+                  println!("Synthetic create/rename/remove barriers: successful");
+                  Ok(())
+              }
+          }
+          fn main() -> Result<(), Box<dyn std::error::Error>> {
+              if env::args().nth(1).as_deref() == Some("--barrier") {
+                  #[cfg(windows)] { return barrier::run(); }
+                  #[cfg(not(windows))] { return Err("The native directory barrier diagnostic requires Windows".into()); }
+              }
+              if env::args().nth(1).as_deref() == Some("__document-worker") {
+                  let mut request = Vec::new();
+                  io::stdin().take(1_025).read_to_end(&mut request)?;
+                  if request.len() > 1_024 { return Err("Diagnostic input exceeded its bound".into()); }
+                  let mut keys = env::vars_os().map(|(key, _)| key).collect::<Vec<_>>();
+                  keys.sort();
+                  for key in keys { println!("{}", key.to_string_lossy()); }
+                  return Ok(());
+              }
+              let mut command = Command::new(env::current_exe()?);
+              command.env_clear();
+              for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"] {
+                  if let Some(value) = env::var_os(key) { command.env(key, value); }
+              }
+              let mut child = command.arg("__document-worker").stdin(Stdio::piped())
+                  .stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+              child.stdin.take().ok_or("Missing diagnostic input")?.write_all(b"{\"data\":\"\"}")?;
+              let mut names = Vec::new();
+              child.stdout.take().ok_or("Missing diagnostic output")?.take(65_537).read_to_end(&mut names)?;
+              if names.len() > 65_536 { let _ = child.kill(); let _ = child.wait(); return Err("Diagnostic output exceeded its bound".into()); }
+              let status = child.wait()?;
+              if !status.success() { return Err("Diagnostic child failed".into()); }
+              io::stdout().write_all(&names)?;
+              eprintln!("Diagnostic child exit: {}", status);
+              Ok(())
+          }
+          '@
+          [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
+          $executable = Join-Path $work 'worker-environment.exe'
+          & rustc "+$toolchain" --edition=2024 --crate-name worker_environment_probe $source -o $executable *> (Join-Path $work 'compile.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot compile the native worker environment diagnostic.' }
+          $stream = [IO.File]::OpenRead($executable)
+          try {
+            $reader = [IO.BinaryReader]::new($stream)
+            if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'Worker diagnostic is not a native PE image.' }
+            $stream.Position = 60
+            $offset = $reader.ReadUInt32()
+            $stream.Position = $offset
+            if ($reader.ReadUInt32() -ne 0x00004550) { throw 'Worker diagnostic has an invalid PE signature.' }
+            $machine = $reader.ReadUInt16()
+          } finally { $stream.Dispose() }
+          $expectedMachine = if ($env:EXPECTED_TARGET -eq 'aarch64-pc-windows-msvc') { 0xaa64 } else { 0x8664 }
+          if ($machine -ne $expectedMachine) { throw 'Worker diagnostic CPU does not match its native Rust host.' }
+          "Native diagnostic PE machine: 0x{0:x4}" -f $machine | Tee-Object (Join-Path $work 'native-architecture.log')
+          $oldProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+          try {
+            $env:LLVM_PROFILE_FILE = 'worker-environment-diagnostic-%p.profraw'
+            & $executable 1> (Join-Path $work 'child-key-names.log') 2> (Join-Path $work 'child-exit.log')
+            $exit = $LASTEXITCODE
+            "Diagnostic parent exit: $exit" | Out-File (Join-Path $work 'parent-exit.log') -Encoding utf8
+            if ($exit -ne 0) { throw 'The native worker environment diagnostic did not finish successfully.' }
+            Write-Output 'Observed child environment key NAMES (no allowlist assertion or values):'
+            Get-Content -LiteralPath (Join-Path $work 'child-key-names.log')
+            Get-Content -LiteralPath (Join-Path $work 'child-exit.log')
+          } finally {
+            [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $(if ($null -eq $oldProfile) { [NullString]::Value } else { $oldProfile }), 'Process')
+          }
+          & (Join-Path $env:WINDIR 'System32/whoami.exe') /priv *> (Join-Path $work 'privilege-context.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot record the native directory probe privilege context.' }
+          Write-Output 'Directory proof uses the existing hosted-runner token; it makes no unprivileged-token claim.'
+          & $executable --barrier (Join-Path $work 'directory-barrier') *> (Join-Path $work 'directory-barrier.log')
+          $barrierExit = $LASTEXITCODE
+          Get-Content -LiteralPath (Join-Path $work 'directory-barrier.log')
+          if ($barrierExit -ne 0) { throw 'The native NTFS directory durability barrier failed.' }
+      - name: Retain the native worker environment diagnostic
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        with:
+          name: worker-environment-probe-${{ matrix.label }}
+          path: ${{ runner.temp }}/worker-environment-probe-*/
+          if-no-files-found: error
+          retention-days: 7
       - name: Probe native Windows ARM64 compiler coverage
         if: matrix.target == 'aarch64-pc-windows-msvc'
         shell: pwsh

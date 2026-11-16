@@ -36,6 +36,231 @@ fn bound() -> Value {
     value
 }
 
+fn completed_login_fixture(state: &State, stage: &str, staged: &Value) -> Value {
+    use sha2::{Digest, Sha256};
+    #[cfg(unix)]
+    let path = {
+        use std::os::unix::ffi::OsStrExt;
+        state.root().as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let path = {
+        use std::os::windows::ffi::OsStrExt;
+        state
+            .root()
+            .as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    json!({"version":2,"phase":"completed","owner":format!("{:x}",Sha256::digest(path)),"account":"work","stage":stage,"stage_digest":config_digest(&serde_json::to_string(staged).unwrap()),"committed":true})
+}
+
+#[test]
+fn resurrected_completed_login_receipt_ignores_removed_config_and_preserves_later_authorization() {
+    use fs2::FileExt;
+    for replace_authorization in [false, true] {
+        let (dir, state) = fixture();
+        let env = dir.path().join("selected.env");
+        std::fs::write(&env, "OTHER=keep\n").unwrap();
+        let login = begin_login(state.clone(), "work", &env, None, None, None).unwrap();
+        let stage = login.stage_label().to_owned();
+        let staged = snapshot(42, 7);
+        state
+            .write_json(&format!("{stage}.session.json"), &staged)
+            .unwrap();
+        let receipt = completed_login_fixture(&state, &stage, &staged);
+        assert_eq!(login.commit(42).unwrap()["saved"], true);
+        assert!(
+            !state
+                .root()
+                .join("account-login-work-transaction.json")
+                .exists()
+        );
+        let mut newer = if replace_authorization {
+            snapshot(77, 9)
+        } else {
+            state.read_json("work.session.json", Value::Null).unwrap()
+        };
+        newer["updates_state"]["qts"] = json!(123);
+        state.write_json("work.session.json", &newer).unwrap();
+        std::fs::remove_file(&env).unwrap();
+        let lease = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(state.root().join("work.session.lock"))
+            .unwrap();
+        lease.try_lock_exclusive().unwrap();
+        state
+            .write_json("account-login-work-transaction.json", &receipt)
+            .unwrap();
+        recover_logins(&state).unwrap();
+        assert_eq!(
+            state.read_json("work.session.json", Value::Null).unwrap(),
+            newer
+        );
+        assert!(
+            !state
+                .root()
+                .join("account-login-work-transaction.json")
+                .exists()
+        );
+        assert!(
+            !env.exists(),
+            "Historical receipt recreated removed configuration"
+        );
+        drop(lease);
+    }
+}
+
+#[test]
+fn completed_login_cleanup_requires_its_reserved_stage_lease_and_unchanged_stage_digest() {
+    use fs2::FileExt;
+    let (_dir, state) = fixture();
+    let stage = "__login_receipt_fixture";
+    let staged = snapshot(42, 7);
+    let receipt = completed_login_fixture(&state, stage, &staged);
+    let target = snapshot(77, 9);
+    state.write_json("work.session.json", &target).unwrap();
+    state
+        .write_json(&format!("{stage}.session.json"), &staged)
+        .unwrap();
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(state.root().join(format!("{stage}.session.lock")))
+        .unwrap();
+    lease.try_lock_exclusive().unwrap();
+    state
+        .write_json("account-login-work-transaction.json", &receipt)
+        .unwrap();
+    assert!(recover_logins(&state).is_err());
+    assert_eq!(
+        state
+            .read_json(&format!("{stage}.session.json"), Value::Null)
+            .unwrap(),
+        staged
+    );
+    drop(lease);
+    for changed in [snapshot(88, 11), Value::Null, json!(false)] {
+        state
+            .write_json(&format!("{stage}.session.json"), &changed)
+            .unwrap();
+        assert!(recover_logins(&state).is_err());
+        assert!(state.root().join(format!("{stage}.session.json")).exists());
+        assert_eq!(
+            state
+                .read_json(&format!("{stage}.session.json"), Value::Null)
+                .unwrap(),
+            changed
+        );
+        assert_eq!(
+            state.read_json("work.session.json", Value::Null).unwrap(),
+            target
+        );
+        assert!(
+            state
+                .root()
+                .join("account-login-work-transaction.json")
+                .exists()
+        );
+    }
+    state
+        .write_json(&format!("{stage}.session.json"), &staged)
+        .unwrap();
+    recover_logins(&state).unwrap();
+    assert!(!state.root().join(format!("{stage}.session.json")).exists());
+    assert!(
+        !state
+            .root()
+            .join("account-login-work-transaction.json")
+            .exists()
+    );
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        target
+    );
+}
+
+#[test]
+fn malformed_or_copied_completed_login_receipts_preserve_all_native_and_staged_data() {
+    let (_dir, state) = fixture();
+    let stage = "__login_receipt_fixture";
+    let staged = snapshot(42, 7);
+    let target = snapshot(77, 9);
+    state.write_json("work.session.json", &target).unwrap();
+    state
+        .write_json(&format!("{stage}.session.json"), &staged)
+        .unwrap();
+    let valid = completed_login_fixture(&state, stage, &staged);
+    let mut invalid = Vec::new();
+    for (field, value) in [
+        ("version", json!(3)),
+        ("owner", json!("0".repeat(64))),
+        ("account", json!("personal")),
+        ("stage", json!("work")),
+        ("stage_digest", json!("invalid")),
+        ("committed", json!("true")),
+        ("phase", json!("unknown")),
+    ] {
+        let mut receipt = valid.clone();
+        receipt[field] = value;
+        invalid.push(receipt);
+    }
+    let mut missing = valid.clone();
+    missing.as_object_mut().unwrap().remove("version");
+    missing["env_file"] = json!("must-not-be-read");
+    invalid.push(missing);
+    let mut extra = valid.clone();
+    extra["installed"] = target.clone();
+    invalid.push(extra);
+    for receipt in invalid {
+        state
+            .write_json("account-login-work-transaction.json", &receipt)
+            .unwrap();
+        assert!(recover_logins(&state).is_err());
+        assert_eq!(
+            state
+                .read_json("account-login-work-transaction.json", Value::Null)
+                .unwrap(),
+            receipt
+        );
+        assert_eq!(
+            state.read_json("work.session.json", Value::Null).unwrap(),
+            target
+        );
+        assert_eq!(
+            state
+                .read_json(&format!("{stage}.session.json"), Value::Null)
+                .unwrap(),
+            staged
+        );
+    }
+    let (_other_dir, other) = fixture();
+    other.write_json("work.session.json", &target).unwrap();
+    other
+        .write_json(&format!("{stage}.session.json"), &staged)
+        .unwrap();
+    other
+        .write_json("account-login-work-transaction.json", &valid)
+        .unwrap();
+    assert!(recover_logins(&other).is_err());
+    assert_eq!(
+        other.read_json("work.session.json", Value::Null).unwrap(),
+        target
+    );
+    assert_eq!(
+        other
+            .read_json(&format!("{stage}.session.json"), Value::Null)
+            .unwrap(),
+        staged
+    );
+}
+
 #[test]
 fn legacy_bare_dollar_names_remain_literal_while_braced_names_expand() {
     let values = parse_config(
@@ -947,13 +1172,23 @@ fn backup_retention_is_per_selected_source_and_unrelated_backup_directories_are_
 #[tokio::test]
 async fn native_configuration_writer_respects_the_launchers_shared_byte_lock() {
     use std::{process::Stdio, time::Duration};
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
     #[cfg(unix)]
     if let Ok(path) = std::env::var("ACCOUNT_REVIEW_LOCK_CHILD") {
         use std::{
             io::{Read, Write},
             os::fd::AsRawFd,
         };
+        if std::env::var("ACCOUNT_REVIEW_HOLDER_PROBE").as_deref() == Ok("noisy") {
+            std::io::stderr().write_all(&vec![b'n'; 131072]).unwrap();
+            std::io::stderr().flush().unwrap();
+        }
+        println!("READY");
+        std::io::stdout().flush().unwrap();
+        if std::env::var("ACCOUNT_REVIEW_HOLDER_PROBE").as_deref() == Ok("exit") {
+            eprintln!("Synthetic holder exited before acquiring the lock.");
+            std::process::exit(19);
+        }
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -997,7 +1232,10 @@ async fn native_configuration_writer_respects_the_launchers_shared_byte_lock() {
     #[cfg(windows)]
     let mut command = {
         let script = dir.path().join("hold-lock.ps1");
-        std::fs::write(&script,r#"param([string] $Path)
+        std::fs::write(&script,r#"param([string] $Path, [string] $Probe)
+if ($Probe -eq 'noisy') { [Console]::Error.Write(('n' * 131072)); [Console]::Error.Flush() }
+[Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
+if ($Probe -eq 'exit') { [Console]::Error.WriteLine('Synthetic holder exited before acquiring the lock.'); [Console]::Error.Flush(); exit 19 }
 $stream = [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
 try { $stream.Lock(0, 1); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); [void] [Console]::ReadLine() }
 finally { $stream.Dispose() }
@@ -1006,7 +1244,9 @@ finally { $stream.Dispose() }
         c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
             .arg(script)
             .arg("-Path")
-            .arg(&lock);
+            .arg(&lock)
+            .arg("-Probe")
+            .arg(std::env::var("ACCOUNT_REVIEW_HOLDER_PROBE").unwrap_or_default());
         c
     };
     command
@@ -1015,21 +1255,65 @@ finally { $stream.Dispose() }
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = command.spawn().unwrap();
-    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    let mut stderr = child.stderr.take().unwrap();
+    let diagnostics = tokio::spawn(async move {
+        let mut retained = Vec::new();
+        let mut chunk = [0; 1024];
         loop {
-            let line = lines
-                .next_line()
-                .await
-                .unwrap()
-                .expect("Lock holder exited before acquiring the shared byte");
-            if line == "LOCKED" {
-                break;
+            match stderr.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(count) => {
+                    let keep = count.min(4096 - retained.len());
+                    retained.extend_from_slice(&chunk[..keep]);
+                    // Continue draining after the diagnostic limit: an unread
+                    // stderr pipe must not prevent the holder announcing READY.
+                }
             }
         }
-    })
-    .await
-    .unwrap();
+        retained
+    });
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let handshake = async {
+        // The latency under test is acquiring the shared byte, not starting a
+        // cold PowerShell/.NET runtime while instrumented cases share the CPU.
+        for (phase, budget) in [("READY", 30), ("LOCKED", 10)] {
+            tokio::time::timeout(Duration::from_secs(budget), async {
+                loop {
+                    let line = lines
+                        .next_line()
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| format!("Lock holder exited before {phase}"))?;
+                    if line == phase {
+                        return Ok::<(), String>(());
+                    }
+                }
+            })
+            .await
+            .map_err(|_| format!("Lock holder did not announce {phase} within {budget}s"))??;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+    if let Err(error) = handshake {
+        let mut status = child.try_wait().unwrap();
+        if status.is_none() {
+            let _ = child.start_kill();
+            if let Ok(Ok(exited)) = tokio::time::timeout(Duration::from_secs(5), child.wait()).await
+            {
+                status = Some(exited);
+            }
+        }
+        let stderr = tokio::time::timeout(Duration::from_secs(2), diagnostics)
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        panic!(
+            "{error}; child status: {status:?}; bounded holder stderr: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
     assert!(write_env_value(&path, "TELEGRAM_SESSION_NAME_WORK", "replacement", None).is_err());
     assert!(
         std::fs::read_to_string(&path)
@@ -1050,6 +1334,7 @@ finally { $stream.Dispose() }
             .unwrap()
             .success()
     );
+    diagnostics.await.unwrap();
     write_env_value(&path, "TELEGRAM_SESSION_NAME_WORK", "replacement", None).unwrap();
     assert_eq!(
         read_config(&path).unwrap().values["TELEGRAM_SESSION_NAME_WORK"],

@@ -22,6 +22,12 @@ pub(in crate::account_manager) fn lock(path: &Path) -> Result<ConfigWriteGuard> 
         .parent()
         .context("Configuration file has no parent directory")?;
     std::fs::create_dir_all(parent)?;
+    // Admit new Windows transactions only where the namespace barrier is real.
+    // This uses the native primitive directly; the account fault seam exercises
+    // failures after otherwise-supported publication, rather than admission.
+    #[cfg(windows)]
+    crate::state::storage::sync_directory(parent)
+        .context("Account configuration requires an accessible NTFS directory on Windows")?;
     let local = LOCAL
         .lock()
         .map_err(|_| anyhow::anyhow!("Account configuration is busy"))?;

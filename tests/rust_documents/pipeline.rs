@@ -190,15 +190,41 @@ async fn parent_worker_environment_contains_only_loader_and_profile_variables() 
         .filter(|key| !key.is_empty())
         .collect::<Vec<_>>();
     assert!(std::env::var_os("PATH").is_some());
+    let same_name = |key: &str, allowed: &str| {
+        if cfg!(windows) {
+            key.eq_ignore_ascii_case(allowed)
+        } else {
+            key == allowed
+        }
+    };
+    let unexpected = keys
+        .iter()
+        .filter(|key| {
+            !["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"]
+                .iter()
+                .any(|allowed| same_name(key, allowed))
+        })
+        .collect::<Vec<_>>();
     assert!(
-        keys.iter()
-            .all(|key| ["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"].contains(key))
+        unexpected.is_empty(),
+        "Unexpected worker environment KEY NAMES: {unexpected:?}"
     );
-    assert!(!keys.contains(&"PATH"));
-    assert!(!keys.contains(&"HOME"));
+    assert!(!keys.iter().any(|key| same_name(key, "PATH")));
+    assert!(!keys.iter().any(|key| same_name(key, "HOME")));
+    let forbidden = keys
+        .iter()
+        .filter(|key| {
+            let key = if cfg!(windows) {
+                key.to_ascii_uppercase()
+            } else {
+                key.to_string()
+            };
+            key.starts_with("TELEGRAM_") || key.starts_with("CARGO_")
+        })
+        .collect::<Vec<_>>();
     assert!(
-        keys.iter()
-            .all(|key| !key.starts_with("TELEGRAM_") && !key.starts_with("CARGO_"))
+        forbidden.is_empty(),
+        "Inherited worker environment KEY NAMES: {forbidden:?}"
     );
 }
 

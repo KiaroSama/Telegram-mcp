@@ -1,6 +1,7 @@
 use super::config::{
     ConfigWriteGuard, Publication, config_write_lock, confirm_configuration, file_values,
-    remove_env_value_locked, rename_env_key_locked, sync_directory, validate_env_key_rename,
+    remove_env_value_locked, rename_env_key_locked, state_owner, sync_directory,
+    validate_env_key_rename,
 };
 use crate::state::State;
 use anyhow::{Context, Result, bail};
@@ -10,6 +11,81 @@ use std::fs::OpenOptions;
 use std::path::{Component, Path};
 
 const JOURNAL: &str = "account-rename-transaction.json";
+
+fn is_completed(state: &State, journal: &Value) -> Result<bool> {
+    if journal.get("version").is_none() {
+        if ["phase", "owner", "legacy_recovery"]
+            .iter()
+            .any(|key| journal.get(*key).is_some())
+        {
+            bail!("Account transaction completion version is missing");
+        }
+        return Ok(false); // Legacy journals retain their original recovery rules.
+    }
+    if journal["version"].as_u64() != Some(2) || journal["owner"] != state_owner(state) {
+        bail!("Account transaction version or private state ownership is invalid");
+    }
+    if journal.get("legacy_recovery").is_some() {
+        if journal["phase"] == "completed"
+            && journal["legacy_recovery"] == true
+            && journal.as_object().is_some_and(|fields| fields.len() == 4)
+        {
+            return Ok(true);
+        }
+        bail!("Legacy account completion envelope is invalid");
+    }
+    for field in ["from", "to"] {
+        let label = journal[field]
+            .as_str()
+            .context("Invalid account transaction label")?;
+        crate::session::validate_label(label)?;
+        if label != label.to_ascii_lowercase() {
+            bail!("Account transaction labels are not canonical");
+        }
+    }
+    if journal["from"] == journal["to"] {
+        bail!("Account transaction labels must differ");
+    }
+    match journal["phase"].as_str() {
+        Some("prepared") => Ok(false),
+        Some("completed") if journal.as_object().is_some_and(|fields| fields.len() == 5) => {
+            Ok(true)
+        }
+        _ => bail!("Account transaction completion envelope is invalid"),
+    }
+}
+
+fn completion_receipt(state: &State, journal: &Value) -> Result<Value> {
+    let receipt = if journal.get("version").is_none() {
+        // Older journals did not always record labels. They may acquire this
+        // closed cleanup-only envelope only after their recovery is durable.
+        json!({"version":2,"phase":"completed","owner":state_owner(state),"legacy_recovery":true})
+    } else {
+        json!({"version":2,"phase":"completed","owner":state_owner(state),"from":journal["from"],"to":journal["to"]})
+    };
+    is_completed(state, &receipt)?;
+    Ok(receipt)
+}
+
+fn retire_completed(state: &State) -> Result<()> {
+    // Also confirms a receipt whose atomic replacement previously reported an
+    // uncertain directory sync. Never delete the only completion evidence first.
+    sync_directory(state.root()).context("Completed account receipt durability is unconfirmed")?;
+    std::fs::remove_file(state.root().join(JOURNAL))?;
+    if sync_directory(state.root()).is_err() {
+        // The durable completed receipt can only reappear as cleanup-only. Its
+        // removal uncertainty must never undo or fail the acknowledged operation.
+        tracing::warn!(
+            "Completed account receipt is removed; its retirement durability is unconfirmed"
+        );
+    }
+    Ok(())
+}
+
+fn complete_recovery(state: &State, journal: &Value) -> Result<()> {
+    state.write_json_transaction_unlocked(JOURNAL, &completion_receipt(state, journal)?)?;
+    retire_completed(state)
+}
 
 fn configuration_plan(journal: &Value) -> Option<&Value> {
     journal
@@ -58,7 +134,10 @@ fn local_path(state: &State, name: &str) -> Result<std::path::PathBuf> {
     Ok(full)
 }
 
-fn sync_move_parents(state: &State, files: &[(String, String)]) -> Result<()> {
+fn move_parents(
+    state: &State,
+    files: &[(String, String)],
+) -> Result<std::collections::BTreeSet<std::path::PathBuf>> {
     let mut parents = std::collections::BTreeSet::from([state.root().to_owned()]);
     for (source, target) in files {
         for name in [source, target] {
@@ -70,7 +149,11 @@ fn sync_move_parents(state: &State, files: &[(String, String)]) -> Result<()> {
             );
         }
     }
-    for parent in parents {
+    Ok(parents)
+}
+
+fn sync_move_parents(state: &State, files: &[(String, String)]) -> Result<()> {
+    for parent in move_parents(state, files)? {
         sync_directory(&parent).context("Could not confirm account state move durability")?;
     }
     Ok(())
@@ -438,9 +521,18 @@ fn rename_with_config(
             rewrites.push(json!({"name":name,"before":before,"after":{}}));
         }
     }
-    state.write_json_transaction_unlocked(JOURNAL, &json!({"from":from,"to":to,"files":files,"rewrites":rewrites,"configuration":configuration.map(|(_,plan)|plan)}))?;
-    let result = (|| -> Result<Vec<String>> {
-        let mut changed = Vec::new();
+    // Admission probes the real Windows capability before creating intent or
+    // changing any account file, including preserved stores in nested parents.
+    #[cfg(windows)]
+    for parent in move_parents(state, &files)? {
+        crate::state::storage::sync_directory(&parent)
+            .context("Account state requires accessible NTFS directories on Windows")?;
+    }
+    let journal = json!({"version":2,"phase":"prepared","owner":state_owner(state),"from":from,"to":to,"files":files,"rewrites":rewrites,"configuration":configuration.map(|(_,plan)|plan)});
+    state.write_json_transaction_unlocked(JOURNAL, &journal)?;
+    let mut changed = Vec::new();
+    let mut recovery_pending = false;
+    let result = (|| -> Result<()> {
         for (source, target) in &files {
             std::fs::rename(local_path(state, source)?, local_path(state, target)?)?;
             changed.push(source.clone());
@@ -471,26 +563,42 @@ fn rename_with_config(
             Publication::Durable
         };
         if publication == Publication::Uncertain {
-            tracing::warn!(
-                "Account configuration transaction is published; its private intent is retained until directory durability is confirmed"
-            );
-            return Ok(changed);
-        }
-        if let Err(error) = std::fs::remove_file(state.root().join(JOURNAL)) {
-            if configuration.is_none() {
-                return Err(error.into());
-            }
-            tracing::warn!(
-                "Account configuration transaction completed; its private recovery marker could not be removed"
+            recovery_pending = true;
+            bail!(
+                "Account changes and configuration were published; recovery pending because directory durability is unconfirmed. Do not repeat the operation; retry recovery after the storage issue is resolved"
             );
         }
-        Ok(changed)
+        if let Err(error) =
+            state.write_json_transaction_unlocked(JOURNAL, &completion_receipt(state, &journal)?)
+        {
+            recovery_pending = true;
+            return Err(error.context(
+                "Account changes were published; recovery pending because completion durability is unconfirmed. Do not repeat the operation; retry recovery after the storage issue is resolved",
+            ));
+        }
+        if retire_completed(state).is_err() {
+            tracing::warn!(
+                "Account transaction completed; its private completion receipt is retained for cleanup"
+            );
+        }
+        Ok(())
     })();
-    if result.is_err() {
-        recover_unlocked(state, configuration.map(|(config,_)|config)).context("Account rename failed; rollback could not finish, retain the private transaction journal")?;
+    if let Err(error) = result {
+        // Once publication has occurred, an unconfirmed configuration or
+        // completion receipt must retain ownership for explicit recovery. A
+        // normal precommit rollback could erase the visible committed state.
+        if recovery_pending {
+            return Err(error);
+        }
+        let completed = is_completed(state, &state.read_json_unlocked(JOURNAL, Value::Null)?)?;
+        recover_unlocked(state, configuration.map(|(config, _)| config))
+            .context("Account rename needs recovery; retain its private transaction journal")?;
+        if !completed {
+            return Err(error);
+        }
     }
     drop(leases);
-    result
+    Ok(changed)
 }
 
 pub fn recover_rename(state: &State) -> Result<()> {
@@ -498,6 +606,13 @@ pub fn recover_rename(state: &State) -> Result<()> {
         return Ok(());
     }
     let initial = state.read_json(JOURNAL, Value::Null)?;
+    if is_completed(state, &initial)? {
+        let _lock = state.state_lock()?;
+        if state.read_json_unlocked(JOURNAL, Value::Null)? != initial {
+            bail!("Completed account receipt changed while acquiring ownership");
+        }
+        return retire_completed(state);
+    }
     let config = if let Some(plan) = configuration_plan(&initial) {
         let path = plan["env_file"]
             .as_str()
@@ -528,6 +643,9 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
     let journal = state.read_json_unlocked(JOURNAL, Value::Null)?;
     if journal.is_null() {
         return Ok(());
+    }
+    if is_completed(state, &journal)? {
+        return retire_completed(state);
     }
     let committed = if let Some(plan) = configuration_plan(&journal) {
         let config = config.context("Account recovery needs its configuration lock")?;
@@ -660,8 +778,7 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
         }
         sync_move_parents(state, &files)?;
         confirm_recovery_configuration(config)?;
-        std::fs::remove_file(state.root().join(JOURNAL))?;
-        return Ok(());
+        return complete_recovery(state, &journal);
     }
     for row in journal["rewrites"]
         .as_array()
@@ -695,8 +812,7 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
     }
     sync_move_parents(state, &files)?;
     confirm_recovery_configuration(config)?;
-    std::fs::remove_file(state.root().join(JOURNAL))?;
-    Ok(())
+    complete_recovery(state, &journal)
 }
 
 fn confirm_recovery_configuration(config: Option<&ConfigWriteGuard>) -> Result<()> {

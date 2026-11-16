@@ -309,6 +309,11 @@ impl State {
         if bytes.len() as u64 > MAX_STATE_BYTES {
             bail!("Private state record exceeds its byte limit");
         }
+        // Refuse an unsupported volume before a new journal or record exists.
+        // Repeating the same real barrier after replacement confirms publication.
+        #[cfg(windows)]
+        sync_directory(&self.root)
+            .context("Private state requires an accessible NTFS directory on Windows")?;
         let temporary = self
             .root
             .join(format!(".pending-{:016x}.tmp", rand::rng().random::<u64>()));
@@ -325,9 +330,7 @@ impl State {
                         "Synthetic post-replacement directory sync failure",
                     ));
                 }
-                #[cfg(unix)]
-                File::open(&self.root)?.sync_all()?;
-                Ok(())
+                sync_directory(&self.root)
             })?;
             Ok(())
         })();
@@ -336,6 +339,67 @@ impl State {
         }
         result
     }
+}
+
+/// Confirm directory-entry metadata independently of file-content flushing.
+/// Files must be flushed before replacement. Windows MS-FSA 2.1.5.7 specifies
+/// DirectoryStream persistence, but Appendix A footnote 80 limits it to NTFS:
+/// other filesystems may report success while performing no directory flush.
+pub(crate) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let directory = File::open(path)?;
+    #[cfg(windows)]
+    let directory = {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+        // FlushFileBuffers requires GENERIC_WRITE. BACKUP_SEMANTICS admits an
+        // owned directory; no volume handle or privilege enabling is requested.
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?
+    };
+    if !directory.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "The durability barrier requires a directory",
+        ));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::GetVolumeInformationByHandleW;
+        let mut file_system = [0u16; 256];
+        // SAFETY: this owned handle stays open; the name buffer is writable for
+        // its stated capacity and all omitted optional outputs are null.
+        if unsafe {
+            GetVolumeInformationByHandleW(
+                directory.as_raw_handle(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                file_system.as_mut_ptr(),
+                file_system.len() as u32,
+            )
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let end = file_system
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| std::io::Error::other("Filesystem name was not terminated"))?;
+        if !String::from_utf16_lossy(&file_system[..end]).eq_ignore_ascii_case("NTFS") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Durable Windows directory transactions require NTFS",
+            ));
+        }
+    }
+    directory.sync_all()
 }
 
 pub(super) fn replace_and_sync(

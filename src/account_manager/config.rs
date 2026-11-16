@@ -22,11 +22,16 @@ pub(super) enum Publication {
 
 #[cfg(test)]
 thread_local! {
-    static FAILED_SYNC: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static FAILED_SYNC: std::cell::RefCell<Option<SyncFault>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+struct SyncFault {
+    path: PathBuf,
+    skip: usize,
 }
 #[cfg(test)]
 struct SyncFailureGuard {
-    previous: Option<PathBuf>,
+    previous: Option<SyncFault>,
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 #[cfg(test)]
@@ -39,8 +44,13 @@ impl Drop for SyncFailureGuard {
 /// A scoped, thread-local fault at one configuration publication or directory sync.
 #[cfg(test)]
 pub(crate) fn fail_configuration_sync_for_test(path: &Path) -> impl Drop {
+    fail_configuration_sync_after_for_test(path, 0)
+}
+
+#[cfg(test)]
+pub(crate) fn fail_configuration_sync_after_for_test(path: &Path, skip: usize) -> impl Drop {
     let path = std::path::absolute(path).expect("Synthetic configuration path must be absolute");
-    let previous = FAILED_SYNC.with(|slot| slot.replace(Some(path)));
+    let previous = FAILED_SYNC.with(|slot| slot.replace(Some(SyncFault { path, skip })));
     SyncFailureGuard {
         previous,
         _thread: std::marker::PhantomData,
@@ -67,7 +77,18 @@ pub(super) fn confirm_configuration(path: &Path) -> Publication {
 
 fn check_sync_fault(path: &Path) -> std::io::Result<()> {
     #[cfg(test)]
-    if FAILED_SYNC.with(|slot| slot.borrow().as_deref() == Some(path)) {
+    if FAILED_SYNC.with(|slot| {
+        let mut fault = slot.borrow_mut();
+        let Some(fault) = fault.as_mut().filter(|fault| fault.path == path) else {
+            return false;
+        };
+        if fault.skip == 0 {
+            true
+        } else {
+            fault.skip -= 1;
+            false
+        }
+    }) {
         return Err(std::io::Error::other(
             "Synthetic account directory sync failure",
         ));
@@ -78,9 +99,7 @@ fn check_sync_fault(path: &Path) -> std::io::Result<()> {
 
 pub(super) fn sync_directory(path: &Path) -> std::io::Result<()> {
     check_sync_fault(path)?;
-    #[cfg(unix)]
-    std::fs::File::open(path)?.sync_all()?;
-    Ok(())
+    crate::state::storage::sync_directory(path)
 }
 
 fn process_values() -> BTreeMap<String, String> {
@@ -124,6 +143,25 @@ pub fn capture_process_config() {
 
 pub fn config_digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))
+}
+
+pub(super) fn state_owner(state: &crate::state::State) -> String {
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::ffi::OsStrExt;
+        state.root().as_os_str().as_bytes().to_vec()
+    };
+    #[cfg(windows)]
+    let bytes = {
+        use std::os::windows::ffi::OsStrExt;
+        state
+            .root()
+            .as_os_str()
+            .encode_wide()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    };
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 /// Resolve the shared service address with the same file and process precedence.

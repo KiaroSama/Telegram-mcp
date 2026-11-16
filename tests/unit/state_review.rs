@@ -1,5 +1,8 @@
 use super::*;
 use std::{fs, panic::AssertUnwindSafe};
+#[cfg(windows)]
+#[path = "../common/windows_acl.rs"]
+mod windows_barrier_acl;
 
 fn fixture() -> (tempfile::TempDir, Arc<State>) {
     let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
@@ -9,10 +12,356 @@ fn fixture() -> (tempfile::TempDir, Arc<State>) {
     (root, Arc::new(state))
 }
 
+#[test]
+fn directory_barrier_confirms_namespace_changes_and_refuses_missing_or_regular_paths() {
+    use crate::state::storage::sync_directory;
+    use std::io::Write;
+    let (root, _state) = fixture();
+    let parent = root.path().join("barrier");
+    fs::create_dir(&parent).unwrap();
+    sync_directory(&parent).unwrap();
+    let old = parent.join("old");
+    let new = parent.join("new");
+    let mut file = fs::File::create(&old).unwrap();
+    file.write_all(b"namespace-canary").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    fs::rename(&old, &new).unwrap();
+    sync_directory(&parent).unwrap();
+    assert_eq!(fs::read(&new).unwrap(), b"namespace-canary");
+    fs::remove_file(&new).unwrap();
+    sync_directory(&parent).unwrap();
+    fs::remove_dir(&parent).unwrap();
+    assert_eq!(
+        sync_directory(&parent).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    fs::write(&parent, b"preserve-regular-file").unwrap();
+    assert_eq!(
+        sync_directory(&parent).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    assert_eq!(fs::read(parent).unwrap(), b"preserve-regular-file");
+}
+
+#[cfg(windows)]
+#[test]
+fn denied_directory_barrier_refuses_new_account_and_state_publication_before_changes() {
+    use crate::account_manager::{begin_login, rename_configured_account, write_env_value};
+    use crate::state::storage::sync_directory;
+    let (root, state) = fixture();
+    let parent = root.path().join("configuration");
+    fs::create_dir(&parent).unwrap();
+    let env = parent.join("selected.env");
+    let original = "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=keep\n";
+    fs::write(&env, original).unwrap();
+    let native = authorized_account_snapshot();
+    state.write_json("work.session.json", &native).unwrap();
+    let mut denied = windows_barrier_acl::ReadDenied::new(&parent).unwrap();
+    let before = denied.current_acl().unwrap();
+    assert_eq!(
+        sync_directory(&parent).unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert!(write_env_value(&env, "TELEGRAM_SESSION_NAME_NEW", "new", None).is_err());
+    assert!(begin_login(state.clone(), "new", &env, None, None, None).is_err());
+    assert!(
+        rename_configured_account(&state, "work", "office", &env, "TELEGRAM_SESSION_NAME_WORK")
+            .is_err()
+    );
+    assert_eq!(denied.current_acl().unwrap(), before);
+    denied.restore().unwrap();
+    assert_eq!(denied.current_acl().unwrap(), denied.original_acl());
+    assert_eq!(fs::read_to_string(&env).unwrap(), original);
+    assert_eq!(
+        fs::read_dir(&parent).unwrap().count(),
+        1,
+        "Admission created a lock, backup, or pending configuration record"
+    );
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+    assert!(!state.root().join("office.session.json").exists());
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        native
+    );
+    let mut denied = windows_barrier_acl::ReadDenied::new(state.root()).unwrap();
+    let before = denied.current_acl().unwrap();
+    assert!(
+        state
+            .write_json("new-record.json", &json!({"never":"published"}))
+            .is_err()
+    );
+    assert_eq!(denied.current_acl().unwrap(), before);
+    denied.restore().unwrap();
+    assert_eq!(denied.current_acl().unwrap(), denied.original_acl());
+    assert!(!state.root().join("new-record.json").exists());
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        native
+    );
+    sync_directory(state.root()).unwrap();
+}
+
 fn authorized_account_snapshot() -> Value {
+    account_snapshot(42, 7)
+}
+
+fn account_snapshot(user: i64, key: u8) -> Value {
     let mut data = grammers_session::SessionData::default();
-    data.dc_options.get_mut(&data.home_dc).unwrap().auth_key = Some([7; 256]);
-    json!({"home_dc":data.home_dc,"dc_options":data.dc_options.values().collect::<Vec<_>>(),"peer_infos":[grammers_session::types::PeerInfo::User{id:42,auth:None,bot:Some(false),is_self:Some(true)}],"updates_state":data.updates_state})
+    data.dc_options.get_mut(&data.home_dc).unwrap().auth_key = Some([key; 256]);
+    json!({"home_dc":data.home_dc,"dc_options":data.dc_options.values().collect::<Vec<_>>(),"peer_infos":[grammers_session::types::PeerInfo::User{id:user,auth:None,bot:Some(false),is_self:Some(true)}],"updates_state":data.updates_state})
+}
+
+fn retained_rename_receipt(state: &State, configuration: Option<&std::path::Path>) -> Value {
+    use crate::account_manager::{
+        fail_configuration_sync_after_for_test, rename_account, rename_configured_account,
+    };
+    let fault = fail_configuration_sync_after_for_test(state.root(), 1);
+    let moved = match configuration {
+        Some(path) => {
+            rename_configured_account(state, "work", "office", path, "TELEGRAM_SESSION_NAME_WORK")
+        }
+        None => rename_account(state, "work", "office"),
+    }
+    .unwrap();
+    assert!(moved.iter().any(|name| name == "work.session.json"));
+    drop(fault);
+    let receipt = state
+        .read_json("account-rename-transaction.json", Value::Null)
+        .unwrap();
+    assert_eq!(receipt["version"], 2);
+    assert_eq!(receipt["phase"], "completed");
+    assert!(receipt.get("files").is_none() && receipt.get("rewrites").is_none());
+    receipt
+}
+
+#[test]
+fn acknowledged_state_only_receipt_resurrection_preserves_new_accounts_and_cache_writes() {
+    use crate::account_manager::recover_rename;
+    use fs2::FileExt;
+    let (_root, state) = fixture();
+    state
+        .write_json("work.session.json", &authorized_account_snapshot())
+        .unwrap();
+    state.set_ghost_mode(false, Some("work"), None).unwrap();
+    let receipt = retained_rename_receipt(&state, None);
+    let journal = state.root().join("account-rename-transaction.json");
+    fs::remove_file(&journal).unwrap();
+    let mut newer = authorized_account_snapshot();
+    newer["peer_infos"].as_array_mut().unwrap().push(json!(
+        grammers_session::types::PeerInfo::User {
+            id: 99,
+            auth: None,
+            bot: Some(false),
+            is_self: Some(false)
+        }
+    ));
+    state.write_json("office.session.json", &newer).unwrap();
+    state
+        .write_json("work.session.json", &account_snapshot(88, 9))
+        .unwrap();
+    state.set_ghost_mode(true, Some("office"), None).unwrap();
+    let before = ["office.session.json", "work.session.json", "ghost.json"]
+        .map(|name| (name, fs::read(state.root().join(name)).unwrap()));
+    state
+        .write_json("account-rename-transaction.json", &receipt)
+        .unwrap();
+    let leases = ["work", "office"].map(|label| {
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(state.root().join(format!("{label}.session.lock")))
+            .unwrap();
+        FileExt::try_lock_exclusive(&file).unwrap();
+        file
+    });
+    recover_rename(&state).unwrap();
+    assert!(!journal.exists());
+    for (name, bytes) in before {
+        assert_eq!(fs::read(state.root().join(name)).unwrap(), bytes);
+    }
+    drop(leases);
+}
+
+#[test]
+fn completed_configured_receipt_cleanup_ignores_removed_configuration_and_active_leases() {
+    use crate::account_manager::recover_rename;
+    use fs2::FileExt;
+    let (root, state) = fixture();
+    let env = root.path().join("selected.env");
+    fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=work\n").unwrap();
+    state
+        .write_json("work.session.json", &authorized_account_snapshot())
+        .unwrap();
+    let receipt = retained_rename_receipt(&state, Some(&env));
+    let journal = state.root().join("account-rename-transaction.json");
+    fs::remove_file(&journal).unwrap();
+    fs::remove_file(&env).unwrap();
+    let newer = account_snapshot(77, 11);
+    state.write_json("office.session.json", &newer).unwrap();
+    state
+        .write_json("account-rename-transaction.json", &receipt)
+        .unwrap();
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(state.root().join("office.session.lock"))
+        .unwrap();
+    FileExt::try_lock_exclusive(&lease).unwrap();
+    recover_rename(&state).unwrap();
+    assert!(!journal.exists());
+    assert!(!env.exists());
+    assert_eq!(
+        state.read_json("office.session.json", Value::Null).unwrap(),
+        newer
+    );
+}
+
+#[test]
+fn copied_or_malformed_completed_receipts_fail_closed_without_rewriting_records() {
+    use crate::account_manager::recover_rename;
+    let (_root, state) = fixture();
+    state
+        .write_json("work.session.json", &authorized_account_snapshot())
+        .unwrap();
+    let valid = retained_rename_receipt(&state, None);
+    let journal = state.root().join("account-rename-transaction.json");
+    let session = fs::read(state.root().join("office.session.json")).unwrap();
+    let mut variants = Vec::new();
+    for (field, value) in [
+        ("version", json!(3)),
+        ("version", json!("2")),
+        ("phase", json!("future")),
+        ("phase", Value::Null),
+        ("owner", json!("0".repeat(64))),
+        ("from", json!("WORK")),
+        ("to", json!("work")),
+        ("from", json!("../work")),
+    ] {
+        let mut marker = valid.clone();
+        marker[field] = value;
+        variants.push(marker);
+    }
+    for field in ["version", "from", "phase", "owner"] {
+        let mut marker = valid.clone();
+        marker.as_object_mut().unwrap().remove(field);
+        variants.push(marker);
+    }
+    let mut marker = valid.clone();
+    marker["unexpected"] = json!(true);
+    variants.push(marker);
+    // A malformed new marker must not masquerade as an old rollback journal.
+    let mut marker = valid.clone();
+    marker.as_object_mut().unwrap().remove("version");
+    marker["files"] = json!([["work.session.json", "office.session.json"]]);
+    marker["rewrites"] = json!([]);
+    variants.push(marker);
+    for marker in variants {
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        fs::write(&journal, &bytes).unwrap();
+        assert!(recover_rename(&state).is_err());
+        assert_eq!(fs::read(&journal).unwrap(), bytes);
+        assert_eq!(
+            fs::read(state.root().join("office.session.json")).unwrap(),
+            session
+        );
+        assert!(!state.root().join("work.session.json").exists());
+    }
+    let (_other_root, other) = fixture();
+    other
+        .write_json("office.session.json", &account_snapshot(66, 13))
+        .unwrap();
+    other
+        .write_json("account-rename-transaction.json", &valid)
+        .unwrap();
+    let before = fs::read(other.root().join("office.session.json")).unwrap();
+    assert!(recover_rename(&other).is_err());
+    assert_eq!(
+        fs::read(other.root().join("office.session.json")).unwrap(),
+        before
+    );
+    assert!(
+        other
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+}
+
+#[test]
+fn legacy_unversioned_recovery_without_labels_remains_rollback_compatible() {
+    use crate::account_manager::recover_rename;
+    let (_root, state) = fixture();
+    let native = authorized_account_snapshot();
+    state.write_json("office.session.json", &native).unwrap();
+    let before = json!({"default":true,"accounts":{"work":false},"chats":{}});
+    let after = json!({"default":true,"accounts":{"office":false},"chats":{}});
+    state.write_json("ghost.json", &after).unwrap();
+    state.write_json("account-rename-transaction.json", &json!({"files":[["work.session.json","office.session.json"]],"rewrites":[{"name":"ghost.json","before":before,"after":after}]})).unwrap();
+    recover_rename(&state).unwrap();
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        native
+    );
+    assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), before);
+    assert!(!state.root().join("office.session.json").exists());
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn uncertain_completion_publication_retains_fenced_receipt_until_a_real_retry_confirms_it() {
+    use crate::account_manager::recover_rename;
+    let (_root, state) = fixture();
+    state
+        .write_json("work.session.json", &authorized_account_snapshot())
+        .unwrap();
+    let mut prepared = retained_rename_receipt(&state, None);
+    prepared["phase"] = json!("prepared");
+    prepared["files"] = json!([["work.session.json", "office.session.json"]]);
+    prepared["rewrites"] = json!([]);
+    fs::write(
+        state.root().join("account-rename-transaction.json"),
+        serde_json::to_vec(&prepared).unwrap(),
+    )
+    .unwrap();
+    state.fail_next_directory_sync_for_test();
+    assert!(recover_rename(&state).is_err());
+    let receipt = state
+        .read_json("account-rename-transaction.json", Value::Null)
+        .unwrap();
+    assert_eq!(receipt["phase"], "completed");
+    assert!(state.root().join("work.session.json").exists());
+    assert!(!state.root().join("office.session.json").exists());
+    assert!(
+        state
+            .write_json("unrelated.json", &json!({"must":"wait"}))
+            .is_err()
+    );
+    recover_rename(&state).unwrap();
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+    state
+        .write_json("unrelated.json", &json!({"resumed":true}))
+        .unwrap();
 }
 
 #[test]
@@ -105,8 +454,10 @@ fn configured_rename_retains_intent_until_configuration_directory_is_durable() {
     )
     .unwrap();
     let fault = fail_configuration_sync_for_test(&env);
-    rename_configured_account(&state, "work", "office", &env, "TELEGRAM_SESSION_NAME_WORK")
-        .unwrap();
+    let error =
+        rename_configured_account(&state, "work", "office", &env, "TELEGRAM_SESSION_NAME_WORK")
+            .unwrap_err();
+    assert!(error.to_string().contains("recovery pending"), "{error:#}");
     let journal = state.root().join("account-rename-transaction.json");
     assert!(
         journal.exists(),
@@ -182,8 +533,12 @@ fn account_removal_retains_archive_and_intent_until_configuration_is_durable() {
     let original = authorized_account_snapshot();
     state.write_json("work.session.json", &original).unwrap();
     let fault = fail_configuration_sync_for_test(&env);
-    let removed = remove_account(&state, "work", &env, "TELEGRAM_SESSION_NAME_WORK").unwrap();
-    let archived = format!("{}.session.json", removed["archived"].as_str().unwrap());
+    let error = remove_account(&state, "work", &env, "TELEGRAM_SESSION_NAME_WORK").unwrap_err();
+    assert!(error.to_string().contains("recovery pending"), "{error:#}");
+    let intent = state
+        .read_json("account-rename-transaction.json", Value::Null)
+        .unwrap();
+    let archived = format!("{}.session.json", intent["to"].as_str().unwrap());
     assert_eq!(state.read_json(&archived, Value::Null).unwrap(), original);
     let journal = state.root().join("account-rename-transaction.json");
     assert!(
@@ -218,7 +573,8 @@ fn new_login_retains_published_authorization_until_configuration_is_durable() {
         )
         .unwrap();
     let fault = fail_configuration_sync_for_test(&env);
-    assert_eq!(login.commit(42).unwrap()["saved"], true);
+    let error = login.commit(42).unwrap_err();
+    assert!(error.to_string().contains("recovery pending"), "{error:#}");
     let journal = state.root().join("account-login-work-transaction.json");
     assert!(
         journal.exists(),
@@ -239,6 +595,48 @@ fn new_login_retains_published_authorization_until_configuration_is_durable() {
         installed
     );
     assert!(fs::read_to_string(env).unwrap().contains("OTHER=keep"));
+}
+
+#[test]
+fn confirmed_login_retains_its_actual_cleanup_only_receipt_when_stage_cleanup_is_unconfirmed() {
+    use crate::account_manager::{begin_login, fail_configuration_sync_for_test, recover_logins};
+    let (root, state) = fixture();
+    let env = root.path().join("selected.env");
+    fs::write(&env, "OTHER=keep\n").unwrap();
+    let login = begin_login(state.clone(), "work", &env, None, None, None).unwrap();
+    let stage = format!("{}.session.json", login.stage_label());
+    state
+        .write_json(&stage, &authorized_account_snapshot())
+        .unwrap();
+    // State publication uses the real storage barrier. This account-manager
+    // barrier fails only after the durable completion receipt has been written.
+    let fault = fail_configuration_sync_for_test(state.root());
+    assert_eq!(login.commit(42).unwrap()["saved"], true);
+    let name = "account-login-work-transaction.json";
+    let receipt = state.read_json(name, Value::Null).unwrap();
+    assert_eq!(receipt["version"], 2);
+    assert_eq!(receipt["phase"], "completed");
+    assert_eq!(receipt["account"], "work");
+    assert_eq!(receipt["committed"], true);
+    assert_eq!(receipt.as_object().unwrap().len(), 7);
+    for field in ["installed", "env_file", "config_key", "config_digest"] {
+        assert!(receipt.get(field).is_none(), "obsolete {field} retained");
+    }
+    assert!(!state.root().join(stage).exists());
+    let installed = fs::read(state.root().join("work.session.json")).unwrap();
+    let published_config = fs::read(&env).unwrap();
+    assert_eq!(
+        crate::account_manager::read_config(&env).unwrap().values["TELEGRAM_SESSION_NAME_WORK"],
+        "work"
+    );
+    drop(fault);
+    recover_logins(&state).unwrap();
+    assert!(!state.root().join(name).exists());
+    assert_eq!(
+        fs::read(state.root().join("work.session.json")).unwrap(),
+        installed
+    );
+    assert_eq!(fs::read(env).unwrap(), published_config);
 }
 
 #[test]

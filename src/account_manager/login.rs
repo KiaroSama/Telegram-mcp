@@ -1,5 +1,7 @@
-use super::config::{Publication, config_write_lock, write_env_value_locked};
-use super::recovery::{journal_name, recover_locked, value_digest};
+use super::config::{Publication, config_write_lock, state_owner, write_env_value_locked};
+use super::recovery::{
+    cleanup_completed_locked, completion_receipt, journal_name, recover_locked, value_digest,
+};
 use super::{config_digest, label_for, read_config};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
@@ -49,6 +51,13 @@ pub fn begin_login(
     } else {
         std::env::current_dir()?.join(env_file)
     };
+    // Reject unsupported Windows configuration storage before interactive
+    // authorization creates a new staging session. The guard is not held while
+    // the owner enters login credentials; commit rechecks the actual source.
+    #[cfg(windows)]
+    {
+        let _admission = config_write_lock(&env_file)?;
+    }
     let snapshot = read_config(&env_file)?;
     if replace_key.is_none()
         && snapshot.values.iter().any(|(key, value)| {
@@ -250,7 +259,7 @@ impl LoginTransaction {
                 );
             }
             let name = journal_name(&self.account);
-            let journal = json!({"account":self.account,"stage":self.stage,"stage_digest":stage_digest,"env_file":config.path,"config_key":key,"config_digest":config_digest(&self.account),"installed":staged});
+            let journal = json!({"version":2,"phase":"prepared","owner":state_owner(&self.state),"account":self.account,"stage":self.stage,"stage_digest":stage_digest,"env_file":config.path,"config_key":key,"config_digest":config_digest(&self.account),"installed":staged});
             let publication = (|| -> Result<Publication> {
                 self.state.write_json_unlocked(&name, &journal)?;
                 self.state.write_json_unlocked(&target_name, &staged)?;
@@ -258,20 +267,33 @@ impl LoginTransaction {
             })();
             match publication {
                 Ok(Publication::Uncertain) => {
-                    tracing::warn!(
-                        "Account login is published; its private intent is retained until configuration directory durability is confirmed"
+                    bail!(
+                        "Account authorization and configuration were published; recovery pending because directory durability is unconfirmed. Do not repeat login; retry recovery after the storage issue is resolved"
                     );
                 }
                 Ok(Publication::Durable) => {
-                    if std::fs::remove_file(self.state.root().join(&name)).is_err() {
+                    let receipt = completion_receipt(&self.state, &name, &journal, true)?;
+                    if self.state.write_json_unlocked(&name, &receipt).is_err() {
+                        bail!(
+                            "Account authorization and configuration were published; recovery pending because completion durability is unconfirmed. Do not repeat login; retry recovery after the storage issue is resolved"
+                        );
+                    }
+                    if cleanup_completed_locked(&self.state, &name, &receipt).is_err() {
                         tracing::warn!(
-                            "Account login committed; its private recovery marker could not be removed"
+                            "Account login is confirmed; its private completed-stage cleanup receipt is retained"
                         );
                     }
                 }
                 Err(error) => {
                     if self.state.root().join(&name).exists() {
-                        if recover_locked(&self.state, &name, &journal, &config)?.committed {
+                        let recovered=recover_locked(&self.state, &name, &journal, &config)
+                            .context("Account login recovery pending; do not repeat login until recovery completes")?;
+                        if recovered.committed {
+                            if !recovered.durable {
+                                bail!(
+                                    "Account authorization and configuration were published; recovery pending because directory durability is unconfirmed. Do not repeat login; retry recovery after the storage issue is resolved"
+                                );
+                            }
                             tracing::warn!(
                                 "Account login committed before a post-publication error"
                             );
@@ -299,6 +321,18 @@ impl LoginTransaction {
 
 impl Drop for LoginTransaction {
     fn drop(&mut self) {
+        // Pending or completed intent owns exact stage cleanup. In particular,
+        // never let this fallback delete a changed stage after receipt recovery
+        // deliberately preserved it. Uninspectable intent is also preserved.
+        match self
+            .state
+            .root()
+            .join(journal_name(&self.account))
+            .symlink_metadata()
+        {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return,
+        }
         // An unfinished sender can still own the authorization key. Preserve its
         // files when that owner has not released the lease, including error exits.
         let Ok(lease) = lock_stage(&self.state, &self.stage) else {

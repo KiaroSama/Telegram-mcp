@@ -128,10 +128,10 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A clean post-review Linux checkpoint passed all **1,839 tests**, with
+identical code. A clean post-review Linux checkpoint passed all **1,849 tests**, with
 zero failures or skips and actual rlottie rendering required. Unique physical-line
-coverage measured **88.03% reviewed core (16,767 of 19,046 executable source lines)**
-and **85.52% all production (22,892 of 26,767 executable source lines)**. Exact source
+coverage measured **88.03% reviewed core (16,970 of 19,277 executable source lines)**
+and **85.54% all production (23,095 of 26,998 executable source lines)**. Exact source
 fingerprints and original test-run identifiers remain in the
 individual reports. This is single-platform evidence; the combined CI gate requires
 actual reports from every configured OS/architecture leg. Reviewed inventories for
@@ -190,6 +190,26 @@ bytes and opaque secret-chat sidecars remain unchanged. Active/WAL, incompatible
 changed-generation or conflicting authorization refuses import rather than resetting
 it. Staged login/repair additionally binds the actual configuration key/digest and
 expected Telegram identity before committing a replacement.
+
+**Windows persistence:** directory barriers open a writable directory handle, verify
+that the same handle belongs to NTFS, then flush it. The barrier covers private journal
+publication, affected move parents, configuration publication and recovery cleanup.
+Unsupported filesystems and access failures are rejected before new transactions;
+post-publication uncertainty preserves recovery intent. Microsoft
+[MS-FSA 2.1.5.7](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/0de7dc40-9627-437e-a4df-c4696cdc3d02)
+defines persistence of the directory structure, while
+[footnote 80](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fsa/4e3695bd-7574-4f24-a223-b4679c065b63#Appendix_A_80)
+limits this guarantee to NTFS. A successful no-op on another filesystem is not treated
+as durable. The implementation uses ordinary directory access rather than a privileged
+whole-volume flush.
+
+Journaled account creation, rename and removal report success after their data,
+configuration and completion receipt are durable. A published operation whose
+durability is still unconfirmed returns a recovery-pending error and retains its intent;
+do not repeat the login or
+mutation until recovery completes. Completed receipts only authorize cleanup, so a
+receipt that reappears after a crash cannot undo an acknowledged operation or replace
+newer account data.
 
 **Rendered evidence:** structured Telegram metadata and rendered images are separate.
 Native window capture is Windows-specific; other platforms report that restriction.

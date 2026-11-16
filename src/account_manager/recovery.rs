@@ -2,7 +2,7 @@
 use super::{
     config::{
         ConfigWriteGuard, Publication, config_write_lock, confirm_configuration, file_values,
-        sync_directory,
+        state_owner, sync_directory,
     },
     config_digest,
     login::lock_stage,
@@ -18,6 +18,100 @@ pub(super) fn journal_name(account: &str) -> String {
 }
 pub(super) fn value_digest(value: &Value) -> Result<String> {
     Ok(config_digest(&serde_json::to_string(value)?))
+}
+
+fn read_stage(state: &State, name: &str) -> Result<Option<Value>> {
+    match state.root().join(name).symlink_metadata() {
+        Ok(_) => Ok(Some(state.read_json_unlocked(name, Value::Null)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(super) fn is_completed(state: &State, name: &str, journal: &Value) -> Result<bool> {
+    if journal.get("version").is_none() {
+        if journal.get("phase").is_some() || journal.get("owner").is_some() {
+            bail!("Login completion envelope is missing its version");
+        }
+        return Ok(false);
+    }
+    if journal["version"].as_u64() != Some(2) || journal["owner"] != state_owner(state) {
+        bail!("Login transaction version or private state ownership is invalid");
+    }
+    match journal["phase"].as_str() {
+        Some("prepared") => Ok(false),
+        Some("completed") => {
+            if !journal.as_object().is_some_and(|fields| fields.len() == 7)
+                || !journal["committed"].is_boolean()
+            {
+                bail!("Login completion envelope is invalid");
+            }
+            let account = journal["account"]
+                .as_str()
+                .context("Invalid completed login account")?;
+            crate::session::validate_label(account)?;
+            if account != account.to_ascii_lowercase()
+                || account.starts_with("__login_")
+                || name != journal_name(account)
+            {
+                bail!("Completed login receipt does not match its account");
+            }
+            let stage = journal["stage"]
+                .as_str()
+                .context("Invalid completed login stage")?;
+            crate::session::validate_label(stage)?;
+            if !stage.starts_with("__login_") || stage == account {
+                bail!("Completed login receipt does not identify a private stage");
+            }
+            if !journal["stage_digest"].as_str().is_some_and(|digest| {
+                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }) {
+                bail!("Completed login staging digest is invalid");
+            }
+            Ok(true)
+        }
+        _ => bail!("Login transaction phase is invalid"),
+    }
+}
+
+pub(super) fn completion_receipt(
+    state: &State,
+    name: &str,
+    journal: &Value,
+    committed: bool,
+) -> Result<Value> {
+    let receipt = serde_json::json!({"version":2,"phase":"completed","owner":state_owner(state),"account":journal["account"],"stage":journal["stage"],"stage_digest":journal["stage_digest"],"committed":committed});
+    is_completed(state, name, &receipt)?;
+    Ok(receipt)
+}
+
+/// Caller holds state_lock and the reserved stage lease. A receipt is historical
+/// cleanup evidence, so this path never reads configuration or the native target.
+pub(super) fn cleanup_completed_locked(state: &State, name: &str, receipt: &Value) -> Result<()> {
+    if !is_completed(state, name, receipt)? {
+        bail!("A completed login receipt is required");
+    }
+    let stage = receipt["stage"]
+        .as_str()
+        .context("Invalid completed login stage")?;
+    let stage_name = format!("{stage}.session.json");
+    if let Some(staged) = read_stage(state, &stage_name)? {
+        if Some(value_digest(&staged)?.as_str()) != receipt["stage_digest"].as_str() {
+            bail!(
+                "Completed login staging data changed; retain it and its private cleanup receipt"
+            );
+        }
+        std::fs::remove_file(state.root().join(stage_name))?;
+    }
+    // Confirm both receipt publication and any stage deletion before retiring
+    // recovery evidence. Its durable completed phase is harmless if resurrected.
+    sync_directory(state.root())
+        .context("Completed login cleanup is pending directory confirmation")?;
+    std::fs::remove_file(state.root().join(name))?;
+    if sync_directory(state.root()).is_err() {
+        tracing::warn!("Completed login receipt is removed; retirement durability is unconfirmed");
+    }
+    Ok(())
 }
 
 fn same_authorization(current: &Value, installed: &Value) -> bool {
@@ -49,6 +143,19 @@ pub(super) fn recover_locked(
     journal: &Value,
     config: &ConfigWriteGuard,
 ) -> Result<RecoveryOutcome> {
+    if is_completed(state, name, journal)? {
+        sync_directory(state.root())
+            .context("Login completion was published; recovery pending, do not repeat login")?;
+        if cleanup_completed_locked(state, name, journal).is_err() {
+            tracing::warn!(
+                "Login completion is confirmed; its private stage cleanup receipt is retained"
+            );
+        }
+        return Ok(RecoveryOutcome {
+            committed: journal["committed"].as_bool().unwrap_or(false),
+            durable: true,
+        });
+    }
     if state
         .root()
         .join("account-rename-transaction.json")
@@ -108,9 +215,9 @@ pub(super) fn recover_locked(
         bail!("Login recovery snapshot has no matching authorization");
     }
     let stage_name = format!("{stage}.session.json");
-    let staged = state.read_json_unlocked(&stage_name, Value::Null)?;
-    if !staged.is_null()
-        && Some(value_digest(&staged)?.as_str()) != journal["stage_digest"].as_str()
+    let staged = read_stage(state, &stage_name)?;
+    if let Some(staged) = &staged
+        && Some(value_digest(staged)?.as_str()) != journal["stage_digest"].as_str()
     {
         bail!("The login staging snapshot changed; recovery retained its private journal");
     }
@@ -133,7 +240,7 @@ pub(super) fn recover_locked(
         }
         std::fs::remove_file(state.root().join(&target))?;
     }
-    if !staged.is_null() {
+    if staged.is_some() {
         std::fs::remove_file(state.root().join(stage_name))?;
     }
     sync_directory(state.root())
@@ -146,10 +253,14 @@ pub(super) fn recover_locked(
             durable: false,
         });
     }
-    // Both files now describe a completed commit or a completed rollback.
-    // Failing to prune its marker must not report that committed files rolled back.
-    if std::fs::remove_file(state.root().join(name)).is_err() {
-        tracing::warn!("Account login completed; its private recovery marker could not be removed");
+    // Resolve legacy prepared intent into a durable, target-independent cleanup
+    // receipt before unlinking. A resurrected receipt never replays rollback.
+    let receipt = completion_receipt(state, name, journal, committed)?;
+    state.write_json_unlocked(name, &receipt)?;
+    if cleanup_completed_locked(state, name, &receipt).is_err() {
+        tracing::warn!(
+            "Login recovery is confirmed; its private completed-stage cleanup receipt is retained"
+        );
     }
     Ok(RecoveryOutcome {
         committed,
@@ -172,6 +283,18 @@ pub fn recover_logins(state: &State) -> Result<()> {
     names.sort();
     for name in names {
         let initial = state.read_json(&name, Value::Null)?;
+        if is_completed(state, &name, &initial)? {
+            let stage = initial["stage"]
+                .as_str()
+                .context("Invalid completed login stage")?;
+            let _stage = lock_stage(state, stage)?;
+            let _state = state.state_lock()?;
+            if state.read_json_unlocked(&name, Value::Null)? != initial {
+                bail!("Completed login receipt changed while acquiring ownership");
+            }
+            cleanup_completed_locked(state, &name, &initial)?;
+            continue;
+        }
         let env = Path::new(
             initial["env_file"]
                 .as_str()

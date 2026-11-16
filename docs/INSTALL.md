@@ -145,6 +145,11 @@ logs there. Keep the directory private to the owner. Back it up only through a r
 local process that protects authorization credentials; a content export is a separate
 artifact. Do not delete locks or private stores to solve a second-instance error.
 
+On Windows, keep private state and editable account configuration on NTFS, with
+directory write access for the account running the service. Transactions check this
+capability before publishing recovery intent or moving account files. Other file
+systems cannot provide the directory durability guarantee used by this backend.
+
 `TELEGRAM_FILE_ROOTS` defines the local directories tools may access. Prefer a JSON
 array for an unambiguous cross-platform value, for example `["/path/to/telegram/files"]`.
 Platform path-list syntax is also supported. The directories must already exist.

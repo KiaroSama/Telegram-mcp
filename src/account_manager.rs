@@ -5,12 +5,12 @@ mod login;
 mod recovery;
 mod rename;
 use base64::Engine;
-#[cfg(test)]
-pub(crate) use config::fail_configuration_sync_for_test;
 pub use config::{
     ConfigSnapshot, bind_address, capture_process_config, config_digest, current_config, label_for,
     parse_config, read_config, select_source, write_env_value,
 };
+#[cfg(test)]
+pub(crate) use config::{fail_configuration_sync_after_for_test, fail_configuration_sync_for_test};
 pub(crate) use health::authenticated_health_request;
 pub use health::{session_health, session_health_with_state};
 pub use login::{LoginTransaction, begin_login};
