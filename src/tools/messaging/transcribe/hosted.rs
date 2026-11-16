@@ -36,10 +36,21 @@ pub(super) async fn transcribe(
     if let Some(language) = &settings.language {
         form = form.text("language", language.clone());
     }
-    let client = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(settings.timeout)
         .connect_timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
+        .redirect(reqwest::redirect::Policy::none());
+    let loopback = match endpoint.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        _ => false,
+    };
+    if endpoint.scheme() == "http" && settings.key.is_none() && loopback {
+        // The plaintext exception is local-only even when the owner process
+        // inherits a remote HTTP_PROXY/ALL_PROXY. HTTPS keeps normal proxies.
+        builder = builder.no_proxy();
+    }
+    let client = builder
         .build()
         .context("Cannot initialize the transcription HTTP client")?;
     let mut request = client.post(endpoint.clone()).multipart(form);

@@ -348,6 +348,46 @@ async fn formatted_poll_limits_measure_displayed_utf16_text_before_rpc() {
         );
         assert!(invalid.all().is_empty());
     }
+    let open_poll = || {
+        let mut poll = poll();
+        poll["open_answers"] = json!(true);
+        with_poll(poll)
+    };
+    let added = open_poll();
+    run(
+        &added,
+        "add_poll_option",
+        json!({"chat_id":7,"message_id":20,"text":format!("<b>{}</b>","x".repeat(100)),"parse_mode":"html"}),
+    )
+    .await
+    .unwrap();
+    let sent = added.request("messages.addPollAnswer");
+    assert_eq!(sent["msg_id"], 20);
+    assert_eq!(sent["answer"]["text"]["text"], "x".repeat(100));
+    assert_eq!(
+        sent["answer"]["text"]["entities"],
+        json!([{"_":"messageEntityBold","offset":0,"length":100}])
+    );
+    for text in [
+        "<b></b>".to_owned(),
+        format!("<b>{}</b>", "x".repeat(101)),
+        format!("<b>{}</b>", "🙂".repeat(51)),
+    ] {
+        let invalid = open_poll();
+        assert!(
+            run(
+                &invalid,
+                "add_poll_option",
+                json!({"chat_id":7,"message_id":20,"text":text,"parse_mode":"html"})
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            invalid.all().is_empty(),
+            "Invalid displayed text must be refused before any Telegram RPC"
+        );
+    }
 }
 #[async_trait]
 impl Telegram for StoryApi {

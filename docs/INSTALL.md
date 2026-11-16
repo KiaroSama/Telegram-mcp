@@ -60,6 +60,8 @@ inspection use the Rust pipeline. Local Whisper transcription additionally needs
 explicitly configured native `whisper-cli` and local model; no model is downloaded automatically.
 
 Hosted transcription requires HTTPS for remote services and all API keys. Credential-free HTTP is accepted only for literal loopback endpoints such as `http://127.0.0.1:8080/v1`; `localhost` aliases are not trusted as loopback destinations.
+Local HTTP transcription connects directly and bypasses inherited system proxies.
+HTTPS services retain normal proxy support and certificate validation.
 
 Proxy URLs support SOCKS4, SOCKS5, HTTP CONNECT, verified HTTPS CONNECT and MTProxy. Use `https://proxy.example:443` and private username/password settings for authenticated remote HTTP proxies; HTTPS checks the hostname and operating system trust store. Authenticated plaintext HTTP/SOCKS is accepted only when the actual connected socket is loopback, for an owner-managed local tunnel. Anonymous remote HTTP/SOCKS routes remain available.
 

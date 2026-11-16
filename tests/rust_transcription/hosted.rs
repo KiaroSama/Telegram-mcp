@@ -16,9 +16,15 @@ impl Drop for Server {
     }
 }
 async fn server(status: u16, body: Value, location: Option<String>) -> Server {
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    server_on(std::net::Ipv4Addr::LOCALHOST.into(), status, body, location).await
+}
+async fn server_on(
+    ip: std::net::IpAddr,
+    status: u16,
+    body: Value,
+    location: Option<String>,
+) -> Server {
+    let listener = TcpListener::bind((ip, 0)).await.unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let requests = Arc::new(Mutex::new(vec![]));
     let recorded = Arc::clone(&requests);
@@ -78,6 +84,143 @@ async fn server(status: u16, body: Value, location: Option<String>) -> Server {
         requests,
         task,
     }
+}
+
+async fn proxy_probe_child(mode: &str) -> bool {
+    if std::env::var("TELEGRAM_TEST_ASR_PROXY_MODE").as_deref() != Ok(mode) {
+        return false;
+    }
+    let endpoint = std::env::var("TELEGRAM_TEST_ASR_PROXY_ENDPOINT").unwrap();
+    let api = Api::new("unused");
+    let request = json!({"chat_id":7,"message_id":10,"engine":"openai"});
+    let mut values = vec![("TELEGRAM_TRANSCRIBE_OPENAI_URL", endpoint.as_str())];
+    if mode == "https" {
+        values.push(("TELEGRAM_TRANSCRIBE_OPENAI_API_KEY", "synthetic-asr-key"));
+    }
+    let result = transcribe::transcribe_with(&api, &settings(&values, &request), &request).await;
+    if mode == "http" {
+        assert_eq!(result.unwrap()["text"], "local endpoint");
+    } else {
+        assert!(result.is_err(), "The synthetic HTTPS proxy refuses CONNECT");
+    }
+    true
+}
+
+async fn run_proxy_probe(name: &str, mode: &str, endpoint: &str, proxy: &str) {
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if name.starts_with("TELEGRAM_")
+            || matches!(name.as_ref(), "OPENAI_API_KEY" | "GROQ_API_KEY")
+        {
+            child.env_remove(key);
+        }
+    }
+    child
+        .args(["--exact", name, "--nocapture", "--test-threads=1"])
+        .env("TELEGRAM_TEST_ASR_PROXY_MODE", mode)
+        .env("TELEGRAM_TEST_ASR_PROXY_ENDPOINT", endpoint)
+        .env("HTTP_PROXY", proxy)
+        .env("http_proxy", proxy)
+        .env("HTTPS_PROXY", proxy)
+        .env("https_proxy", proxy)
+        .env("ALL_PROXY", "")
+        .env("all_proxy", "")
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .env_remove("REQUEST_METHOD")
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), child.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "isolated ASR proxy probe failed; stdout: {}; stderr: {}",
+        String::from_utf8_lossy(&output.stdout[..output.stdout.len().min(4096)]),
+        String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(4096)])
+    );
+}
+
+fn nonloopback_address() -> std::net::IpAddr {
+    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    route.connect("192.0.2.1:9").unwrap(); // Select an interface; no datagram is sent.
+    let address = route.local_addr().unwrap().ip();
+    assert!(!address.is_loopback());
+    address
+}
+
+#[tokio::test]
+async fn loopback_hosted_transcription_bypasses_ambient_remote_proxy() {
+    if proxy_probe_child("http").await {
+        return;
+    }
+    let endpoint = server(200, json!({"text":"local endpoint"}), None).await;
+    let proxy = server_on(
+        nonloopback_address(),
+        200,
+        json!({"text":"wrong proxy"}),
+        None,
+    )
+    .await;
+    run_proxy_probe(
+        "hosted_tests::loopback_hosted_transcription_bypasses_ambient_remote_proxy",
+        "http",
+        &endpoint.url,
+        proxy.url.trim_end_matches("/v1"),
+    )
+    .await;
+    assert!(
+        proxy.requests.lock().unwrap().is_empty(),
+        "A loopback-only recording reached an ambient nonloopback proxy"
+    );
+    let requests = endpoint.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].0.starts_with("POST /v1/audio/transcriptions "));
+    assert!(
+        !requests[0]
+            .0
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+    let audio = b"OggS synthetic voice fixture, not a real recording";
+    assert!(
+        requests[0]
+            .1
+            .windows(audio.len())
+            .any(|bytes| bytes == audio)
+    );
+    assert!(
+        requests[0]
+            .1
+            .windows(13)
+            .any(|bytes| bytes == b"name=\"model\"\r")
+    );
+}
+
+#[tokio::test]
+async fn https_hosted_transcription_retains_proxy_routing_without_exposing_audio_or_key() {
+    if proxy_probe_child("https").await {
+        return;
+    }
+    let proxy = server_on(nonloopback_address(), 502, json!({}), None).await;
+    run_proxy_probe("hosted_tests::https_hosted_transcription_retains_proxy_routing_without_exposing_audio_or_key", "https", "https://asr.example.invalid/v1", proxy.url.trim_end_matches("/v1")).await;
+    let requests = proxy.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(
+        requests[0]
+            .0
+            .starts_with("CONNECT asr.example.invalid:443 HTTP/1.1\r\n")
+    );
+    assert!(requests[0].1.is_empty());
+    assert!(
+        !requests[0]
+            .0
+            .to_ascii_lowercase()
+            .contains("authorization:")
+    );
+    assert!(!requests[0].0.contains("synthetic-asr-key"));
 }
 #[tokio::test]
 async fn hosted_multipart_preserves_audio_model_language_and_utf8_text() {

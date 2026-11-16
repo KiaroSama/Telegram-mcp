@@ -320,6 +320,17 @@ async fn create(api: &dyn Telegram, args: &Value) -> Result<Value> {
     api.invoke("messages.sendMedia",json!({"peer":p,"media":media,"message":caption["text"],"entities":caption["entities"],"random_id":a::random_id()})).await
 }
 async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
+    let added_option = if name == "add_poll_option" {
+        let text = parsed(a::text(args, "text")?, args)?;
+        nonempty(
+            text["text"].as_str().unwrap_or_default(),
+            100,
+            "Poll option",
+        )?;
+        text
+    } else {
+        Value::Null
+    };
     let p = a::peer(api, args, "chat_id").await?;
     if name == "list_unread_poll_votes" {
         return api.invoke("messages.getUnreadPollVotes",json!({"peer":p,"offset_id":0,"add_offset":0,"limit":a::limit(args,"limit",50,200)?,"max_id":0,"min_id":0})).await;
@@ -379,8 +390,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
         }
         "add_poll_option"=>{
             ensure!(poll["open_answers"].as_bool()==Some(true)&&poll["closed"].as_bool()!=Some(true),"This poll does not accept added options");
-            let body=a::text(args,"text")?;nonempty(body,100,"Poll option")?;
-            let mut answer=json!({"_":"inputPollAnswer","text":parsed(body,args)?});
+            let mut answer=json!({"_":"inputPollAnswer","text":added_option});
             if let Some(path)=args.get("file_path").and_then(Value::as_str){answer["media"]=attachment(api,&p,path).await?;}
             api.invoke("messages.addPollAnswer",json!({"peer":p,"msg_id":mid,"answer":answer})).await
         }
