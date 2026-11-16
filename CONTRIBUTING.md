@@ -1,95 +1,124 @@
 # Contributing
 
-This is a Telegram MCP server: Telethon talks to Telegram, the MCP SDK's `MCPServer` exposes the tools to an
-MCP client. It is GPL-3.0-or-later, and what you contribute is under that licence too.
+The service and its tooling use Rust 2024, with the checked-in Rust toolchain and
+`Cargo.lock`. Windows launcher scripts are the explicit PowerShell exception.
+Contributions are GPL-3.0-or-later; retain the notices for adapted upstream work.
 
-## Setup
+## Work on the native implementation
 
-Follow [Quick Start](README.md#quick-start) in the README. This file deliberately does not
-repeat those steps: a second copy of them is a second thing that can go stale.
+Build with `cargo build --locked`. Change the source module that owns a behavior,
+including its tool schema, validation, output, tests and documentation. Tools depend
+on the mockable `backend::Telegram` interface; tests must prove request construction,
+refusals, pagination and outcomes without using a real account.
 
-## Two rules a first change is likely to trip
+Keep RPC results and user-controlled content out of diagnostics. Never log session
+strings, auth keys, login codes, passwords, Mini App launch credentials, raw MCP
+arguments or incoming Telegram content. Use explicit UTF-8 for text artifacts and
+preserve entity offsets in UTF-16 code units.
 
-Both sit in the README's [Development](README.md#development) section, low in a long file.
+## Required local checks
 
-**Patch a module at its source, not through `runtime`.** Every tool module opens with
-`from telegram_mcp.runtime import *`, so a name exists in two places at once; rebinding the
-re-exported one leaves the code reading its own. `tests/test_tool_registry.py` guards that.
-It will go red — but it cannot tell you that patching the wrong name is what you did, so it
-is worth knowing before you see it.
-
-**Run the suite through `scripts/run_tests_guarded.py`, never bare `pytest`.** A raw
-`pytest` has no wall ceiling, no no-progress ceiling and no process-tree cleanup. This
-project drives ffmpeg, ffprobe and a native rlottie decoder, each of which can wedge
-without exiting, and a wedged child outlives the pytest process that started it — so the
-run either sits there or reports success over a live orphan. The guarded runner bounds both
-clocks and is not done until everything the suite spawned is gone.
-
-## CI dispatch
-
-Verification workflows start manually through GitHub Actions (`workflow_dispatch`),
-not on pushes, pull requests or schedules. Dispatch the final completed branch once;
-verify the exact commit SHA and all required jobs before merging. The test matrix,
-coverage and artifact checks are unchanged.
-
-## Commands
+Use a disposable checkout without live Telegram credentials. Set `TELEGRAM_STATE_DIR`
+to a private test directory and `TELEGRAM_FILE_ROOTS` to a JSON array of existing
+fixture directories before running behavioral tests. CI creates these directories
+separately for each leg under `RUNNER_TEMP`; tests must not share live account state.
 
 ```bash
-uv run python scripts/run_tests_guarded.py --
-uv run black --check .
-uv run flake8 .
+cargo fmt --all --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo test --locked --all-features -- --test-threads=1
+cargo build --locked --release --bin telegram-mcp
+cargo run --locked --bin ci -- privacy
+cargo run --locked --bin ci -- privacy-history
 ```
 
-**Touch `pyproject.toml`, re-lock.** CI runs `uv lock --check` and then
-`git diff --exit-code` over the two files, and every other job invokes `uv run --locked`,
-so a manifest the lockfile no longer describes fails the build rather than being quietly
-re-resolved into something nobody reviewed:
+The standard Cargo runner runs these tests serially because Unix subprocess tests
+can briefly inherit a sibling test's open file lease before `exec` closes it.
+This can make an immediate close/reopen assertion observe temporary contention.
+CI uses Nextest's separate process for each case, preserving parallel execution
+without sharing incidental lease descriptors between cases. For CI's bounded
+runner, install the versions declared in `tests.yml` and run:
 
 ```bash
-uv lock
+cargo nextest run --locked --all-features --profile ci
+cargo run --locked --bin ci -- record linux-x86_64 target/nextest/ci/junit.xml cases/linux-x86_64.json
 ```
 
-**Adding or removing a CI leg means updating `.github/expected-legs.txt`.** It names
-the six legs a run must produce and the interpreter each is for, and a test holds it
-against the workflow's own matrix - so a matrix entry added without it fails, rather
-than producing a leg nothing checks. The same file is what stops two legs of six
-agreeing with each other and being mistaken for a complete run.
+This example uses Linux x86_64. Select your actual OS/architecture label from
+`.github/expected-native-legs.json`; another compiler host cannot be relabeled as that
+target. The runner applies a three-minute stalled-test
+ceiling. Tests that exercise external processes must also prove cleanup of their owned
+children; stopping a test process alone is not proof its descendants exited.
 
-**Adding or removing a test FILE means updating `.github/expected-suites.txt`** in the
-same commit. It holds one integer — how many `tests/test_*.py` this repository tracks —
-and it is what stops a suite being deleted everywhere at once without anyone noticing:
-every leg then agrees on the smaller number and CI is green. Adding tests to an existing
-file changes nothing. A tracked file that collects no case at all also fails, so a broken
-import cannot make a suite disappear quietly either.
+## Preserve verification types
 
-**Every CI leg must collect the same number of cases.** A dropped test file is identical
-to success in every other number, so the six legs are compared against each other rather
-than against a stored baseline. SKIPPING differs between them by design - the Windows leg
-has the `lottie` renderer and skips fewer - and is not gated. COLLECTING differently is:
-if you gate a test file at module level so it is not collected on some platforms, prefer
-`@pytest.mark.skipif` on the tests, which keeps them counted everywhere.
+`resources/migration-baseline.json` records the pre-migration commit, suite inventory
+and actual collected parameterized cases. The owner explicitly waived exact test-count
+parity: replace language-specific tests with meaningful Rust behavior tests. Do not
+inflate the count with repeated names, no-op tests or metadata-only assertions.
 
-The launchers have their own PowerShell suites, which pytest does not see. On Windows:
+`.github/native-verification.json` names real executed tests for each critical behavior
+category. `ci parity` checks their JUnit evidence. The catalogue dispatch test verifies
+every ordinary-chat tool has a native route; domain tests must separately prove actual
+requests, refusals and outcomes. Category membership and counts cannot establish
+semantic equivalence, so reviewers must inspect assertions and known gaps.
 
-```powershell
-Get-ChildItem tests -Filter 'test_*.ps1' | ForEach-Object { pwsh -NoProfile -File $_.FullName }
-```
+Every base/renderer leg must match its reviewed operating-system inventory. Rust cfg
+cases may differ across platforms; those differences must remain explicit. OS records
+contain the tested commit, actual CPU architecture/native compiler host, lock digest,
+case identities and outcomes.
+`.github/expected-native-legs.json` declares the exact Linux/macOS/Windows base and
+renderer set for both architectures. `.github/expected-native-tests.json` maps each OS to its reviewed native
+case identities so deletion on all systems cannot silently pass. Update it when adding
+or deliberately renaming tests. Missing records and unreviewed changes fail.
 
-That is discovery rather than a list, and CI does the same, so a suite you add as
-`tests/test_*.ps1` is picked up without touching a workflow. Two exist today:
-`tests/test_launchers.ps1` and `tests/test_account_manager.ps1`.
+Four preserved PowerShell suites are discovered as `tests/test_*.ps1` on both Windows
+architectures. Each Unix architecture leg separately parses the retained scripts and
+runs the portable health/launcher behavior plus a real release-CLI handoff. Run
+all of them after launcher changes; they must exercise the compiled Rust executable.
+Do not remove a verification type merely because the application language changed.
 
-## Commits
+## CI and coverage
 
-A conventional prefix and a short subject line. Write a body only when `git log --oneline`
-would mislead someone without it; the diff already carries the detail. From this history:
+Pushes and PRs always build release binaries for ARM64 and x86_64 on all three operating systems before
+behavioral parity is evaluated. Tests, formatting, Clippy, advisory audit, CodeQL,
+privacy, Gitleaks current-tree/introduction scans, container replacement and Compose checks remain separate evidence.
+The gated native coverage metric is executable application-core source lines: the
+union of base and real-renderer reports from all six OS/architecture combinations must reach
+85%. `.github/coverage-scope.json` records every source path and its original measurement
+basis, including deterministic helpers now located inside tool modules. CI separately
+publishes all-production coverage, including API adapters and development/skill helpers.
+Scope changes require explicit review; new unclassified source fails the gate. This is
+a different measurement from Python's former line/branch collector and must not be
+presented as an unchanged numeric result.
+Generated third-party protocol code is a dependency, not evidence of application tests.
 
-```text
-test: prove a helper's descendants die with the call
-```
+Before instrumentation, CI runs `cargo llvm-cov clean --workspace` to remove stale
+workspace objects/profiles while retaining dependencies. Coverage DA lines outside the
+current reviewed source file are rejected.
 
-## Tests
+The status reporter checks the actual run, attempt, job identities and head SHA before
+publishing commit statuses. Push and pull-request contexts are distinct, so one
+trigger cannot overwrite the other trigger's pending/final result. Do not replace a failing, skipped or missing job with an
+unrelated successful workflow. Changes to job names must update
+`.github/ci-status-jobs.json` in the same commit.
 
-A test that passes against the code as it stood before your fix is not a test of your fix.
-Where a change repairs a defect, write the test first and watch it fail — that failure is
-the only evidence it is attached to the bug and not to what the code already did.
+## Dependency updates and reproduction
+
+After changing `Cargo.toml`, resolve and review `Cargo.lock`; do not use an unlocked CI
+build to hide drift. grammers' Codeberg source revision is explicit. Read current
+release notes and source before updating it or its Telegram layer; protocol-codec and
+adapter tests must follow schema changes together. Dependabot watches Cargo, Actions
+and Docker.
+
+The always-run Gitleaks gate scans every regular tracked source file and the exact
+PR/push introduction range, including merge diffs. A separate manual historical audit
+scans all fetched refs and can report inherited findings without rewriting history.
+The custom reachable-blob shape scanner retains its original bounded-buffer and
+exact verified synthetic-Qt-blob exception; it never exempts a path or rule family.
+
+The manual reproduction workflow archives tracked source, a Git bundle and vendored
+locked Rust dependencies, then proves an offline rebuild with an empty Cargo cache.
+It does not export home directories, local configuration, sessions, environment dumps
+or logs. A compatible Rust toolchain, native linker and system libraries are still
+required; the artifact is not an operating-system image.

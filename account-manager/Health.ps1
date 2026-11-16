@@ -2,10 +2,8 @@
 
 function Get-SessionHealth {
     param([Parameter(Mandatory)] [string] $Key)
-    $python = Join-Path $script:ProjectRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        return [pscustomobject] @{ status = 'unknown'; repairable = $false }
-    }
+    try { $native = Get-NativeBinary -Root $script:ProjectRoot }
+    catch { return [pscustomobject] @{ status = 'unknown'; repairable = $false } }
     $stdout = $null
     $stderr = $null
     $process = $null
@@ -16,8 +14,8 @@ function Get-SessionHealth {
         $id = [Guid]::NewGuid().ToString('N')
         $stdout = Join-Path $folder "$id.out"
         $stderr = Join-Path $folder "$id.err"
-        $arguments = @('-m', 'telegram_mcp.session_health', '--env-file', "`"$envPath`"", '--key', $Key)
-        $process = Start-Process -FilePath $python -ArgumentList $arguments -WorkingDirectory $script:ProjectRoot `
+        $arguments = @('session-health', '--json', '--env-file', "`"$envPath`"", '--key', $Key)
+        $process = Start-Process -FilePath $native -ArgumentList $arguments -WorkingDirectory $script:ProjectRoot `
             -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
         if (-not $process.WaitForExit(45000)) {
             & taskkill /PID $process.Id /T /F 2>$null | Out-Null

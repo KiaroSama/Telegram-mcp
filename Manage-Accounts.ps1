@@ -1,11 +1,10 @@
-#Requires -Version 5.1
+#Requires -Version 7.0
 <#
     Add, remove and inspect the Telegram accounts this server exposes.
 
-    Accounts live in `.env` as TELEGRAM_SESSION_STRING_<LABEL> lines, one per
-    account, plus the unsuffixed TELEGRAM_SESSION_STRING which the server labels
-    "default". This menu edits exactly those lines and leaves every other line in
-    the file byte-for-byte alone.
+    Accounts use TELEGRAM_SESSION_NAME_<LABEL> for native authorization or
+    TELEGRAM_SESSION_STRING_<LABEL> for legacy imports. Unsuffixed keys name
+    "default". The manager preserves every unrelated configuration record.
 
     Two rules shape the whole script, because a session string is a live login to
     a Telegram account and is worth more than a password:
@@ -15,9 +14,9 @@
       * `.env` is copied to .env.backup-<UTC> before any rewrite, so a mistake
         here costs one rename rather than every configured account.
 
-    Adding an account needs a session string, which comes from
-    `session_string_generator.py`. This script offers to run that for you, but the
-    QR scan or the phone code is yours to complete - nothing here logs you in.
+    Native `telegram-mcp login` saves private authorization and its configuration
+    together. Existing legacy session strings can also be imported. QR scans,
+    phone codes and passwords are completed by the person using this console.
 #>
 
 [CmdletBinding()]
@@ -43,8 +42,8 @@ $script:MaxBackupCollisions = 100
 # Dot-sourced rather than imported as a module: these run in THIS scope, so the
 # `$script:` state above and `$envPath` are visible to them without being passed
 # around. `$PSScriptRoot` is per-FILE, which is why every function that resolves
-# the project root - the ones that call the venv - stayed in this file.
-foreach ($piece in 'FileSafety', 'EnvFile', 'Console', 'Server', 'Health') {
+# the project root - the ones that call the native executable - stayed in this file.
+foreach ($piece in 'FileSafety', 'EnvFile', 'Console', 'Native', 'Server', 'Health') {
     $module = Join-Path $PSScriptRoot (Join-Path 'account-manager' "$piece.ps1")
     if (-not (Test-Path -LiteralPath $module)) {
         Write-Host "Missing $module - this launcher needs the lib folder beside it." -ForegroundColor Red
@@ -87,7 +86,7 @@ function Show-Accounts {
 
 function Invoke-SessionGenerator {
     param(
-        [string] $Label,
+        [Parameter(Mandatory)] [string] $Label,
         # Add-Account has just asked whether to generate one. Asking again here is
         # the same question twice in a row, which is what a caller reports as noise.
         [switch] $AlreadyConfirmed,
@@ -101,53 +100,39 @@ function Invoke-SessionGenerator {
     if ($ReplaceKey) { Write-Host 'Log in to the same account you are repairing.' }
     else { Write-Host 'Log in as the account you want to ADD, not one already configured.' }
     if ($Label) {
-        Write-Hint "It will save the result as '$Label' - press Enter when it offers to."
+        Write-Hint "Successful login saves private authorization as '$Label'."
     }
     Write-Host ''
     if (-not $AlreadyConfirmed -and -not (Read-Confirmation 'Run the session generator now?')) { return }
 
-    # No --qr / --phone here on purpose: without a flag the generator asks, so the
-    # choice always matches whatever methods it actually supports.
-    $script = 'session_string_generator.py'
-    # The label it would otherwise ask for. Passing it is what stops the same
-    # question being put twice, once by each half of this flow.
-    $arguments = @($script)
+    $native = Get-NativeBinary -Root $script:ProjectRoot
+    $account = $Label
+    $arguments = @('login', '--account', $account, '--env-file', $envPath, '--no-echo')
     if ($ReplaceKey) {
-        $arguments += @('--replace-key', $ReplaceKey, '--no-echo')
+        if ($ExpectedUserId -le 0 -or -not $ExpectedConfigDigest) {
+            $health = Get-SessionHealth -Key $ReplaceKey
+            if ($ExpectedUserId -le 0 -and $health.PSObject.Properties['user_id']) {
+                $ExpectedUserId = [long] $health.user_id
+            }
+            if (-not $ExpectedConfigDigest -and $health.PSObject.Properties['config_digest']) {
+                $ExpectedConfigDigest = [string] $health.config_digest
+            }
+        }
+        $arguments += @('--replace-key', $ReplaceKey)
         if ($ExpectedConfigDigest) { $arguments += @('--expected-config-digest', $ExpectedConfigDigest) }
         if ($ExpectedUserId -gt 0) { $arguments += @('--expected-user-id', "$ExpectedUserId") }
     }
-    elseif ($Label) { $arguments += @('--label', $Label, '--no-echo') }
-    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-
-    Push-Location -LiteralPath $PSScriptRoot
+    $restartService = $false
+    if ($ReplaceKey) { $restartService = Stop-TelegramServer -Root $script:ProjectRoot }
+    Push-Location -LiteralPath $script:ProjectRoot
     try {
-        $script:GeneratorExitCode = $null
-        if (Test-Path -LiteralPath $python -PathType Leaf) {
-            # Straight to the interpreter. `uv run` would rebuild and reinstall the
-            # project first whenever a source file has changed, printing build and
-            # wheel-install progress on top of the login prompt.
-            & $python @arguments
-            $script:GeneratorExitCode = $LASTEXITCODE
-        }
-        else {
-            $uv = Get-Command uv -ErrorAction SilentlyContinue
-            if (-not $uv) {
-                throw "Neither .venv\Scripts\python.exe nor uv was found. Create the virtual environment, or install uv, then try again."
-            }
-            Write-Hint 'No .venv found - falling back to uv, which may build the project first.'
-            # UV_LINK_MODE is uv's own advice for the hardlink warning it prints when
-            # the cache and the target sit on different filesystems.
-            $previousLinkMode = $env:UV_LINK_MODE
-            $env:UV_LINK_MODE = 'copy'
-            try {
-                & $uv.Path run --quiet @arguments
-                $script:GeneratorExitCode = $LASTEXITCODE
-            }
-            finally { $env:UV_LINK_MODE = $previousLinkMode }
-        }
+        & $native @arguments
+        $script:GeneratorExitCode = $LASTEXITCODE
     }
-    finally { Pop-Location }
+    finally {
+        Pop-Location
+        if ($restartService) { Start-TelegramServer -Root $script:ProjectRoot | Out-Null }
+    }
 
     if ($script:GeneratorExitCode -ne 0) {
         Write-Host ''
@@ -157,42 +142,6 @@ function Invoke-SessionGenerator {
     }
 }
 
-function Test-SessionString {
-    <#
-      Ask Telethon whether this parses as a session, rather than guessing from its
-      length. A 42-character paste sailed past the old `length -lt 40` check and
-      was written to .env as a working account; `StringSession` rejects it outright.
-
-      The value goes in on STDIN, never as an argument: a command line is visible
-      to anything that can list processes.
-    #>
-    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Value)
-
-    # An empty value is a session with no auth key; say so rather than throwing on
-    # the parameter binding, which is what a Mandatory [string] does to ''.
-    if ([string]::IsNullOrWhiteSpace($Value)) { return 'empty' }
-
-    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) { return 'unchecked' }
-
-    $probe = @'
-import sys
-from telethon.sessions import StringSession
-raw = sys.stdin.read().strip()
-try:
-    session = StringSession(raw)
-except Exception:
-    print("invalid")
-else:
-    print("valid" if session.auth_key and session.dc_id else "empty")
-'@
-    try {
-        $verdict = ($Value | & $python -c $probe 2>$null | Select-Object -Last 1)
-        if ($LASTEXITCODE -ne 0) { return 'unchecked' }
-        return "$verdict".Trim()
-    }
-    catch { return 'unchecked' }
-}
 
 
 function Add-Account {
@@ -208,7 +157,7 @@ function Add-Account {
 
     Write-Host ''
     Write-Host (Get-Painted -Text 'A session string authorises full access to that Telegram account.' -ColorName 'NoteYellow')
-    if (Read-Confirmation 'Do you need to generate one first?') {
+    if (Read-Confirmation 'Log in and save native authorization now?') {
         if ($accounts.Contains($label)) {
             Invoke-SessionGenerator -Label $label -ReplaceKey $accounts[$label] -AlreadyConfirmed
         }
@@ -240,12 +189,12 @@ function Add-Account {
             return
         }
         'invalid' {
-            Write-Failure 'Telethon cannot read that as a session string, so it would never load.'
+            Write-Failure 'The native parser cannot read that legacy session string.'
             Write-Host 'Check you copied the whole line the generator printed. Nothing was saved.'
             return
         }
         default {
-            Write-Note 'Could not verify the session string (no .venv to check it with).'
+            Write-Note 'Could not verify the session string (native executable unavailable).'
             if (-not (Read-Confirmation 'Save it unverified?')) { Write-Host 'Cancelled.'; return }
         }
     }
@@ -355,38 +304,65 @@ function Remove-Account {
     Write-Host 'session from Telegram: Settings > Devices.'
     if (-not (Read-Confirmation "Remove '$label'?")) { Write-Host 'Cancelled.'; return }
 
-    $backup = Remove-EnvKey -Key $accounts[$label]
+    # Native removal journals the archive and exact configuration deletion as
+    # one operation, including recovery after this PowerShell process terminates.
+    $restartService = Stop-TelegramServer -Root $PSScriptRoot
+    $backup = $null
+    try {
+        Remove-AccountState -Label $label -Key $accounts[$label] | Out-Null
+    }
+    finally {
+        if ($restartService) { Start-TelegramServer -Root $PSScriptRoot | Out-Null }
+    }
     Remove-SecretChatKeys -Label $label
-    Write-Log "Removed account '$label' ($($accounts[$label]))"
+    Write-Log "Removed account '$label' ($($accounts[$label])); state archived privately"
     Write-Host ''
     Write-Host "Removed '$label'." -ForegroundColor Green
     if ($backup) { Write-Host "Previous .env kept as $(Split-Path -Leaf $backup)" }
     Write-Host 'A running server picks this up on its own - no restart needed.' -ForegroundColor Cyan
 }
 
+function Remove-AccountState {
+    param(
+        [Parameter(Mandatory)] [string] $Label,
+        [Parameter(Mandatory)] [string] $Key
+    )
+    $native = Get-NativeBinary -Root $PSScriptRoot
+    Push-Location -LiteralPath $PSScriptRoot
+    try {
+        $output = @(& $native remove-account --state-dir (Get-StateDirectory) --env-file $envPath --account $Label --key $Key 2>&1 | ForEach-Object { "$_" })
+        $code = $LASTEXITCODE
+    }
+    finally { Pop-Location }
+    if ($code -ne 0) { throw 'Account removal failed; its private transaction will recover before serving.' }
+    return $output
+}
+
 function Move-AccountState {
     <#
       Move everything the server stored under a label - secret-chat keys, history
       and files, ghost mode, proxy route, approvals, contact aliases - to another
-      label (telegram_mcp.account_rename). All or nothing; throws on a refusal or a
-      failure, having changed nothing. Returns what moved.
+      label through the native transaction. An optional configuration key joins
+      the same recovery journal. Returns the committed moved-item metadata.
     #>
     param(
         [Parameter(Mandatory)] [string] $From,
-        [Parameter(Mandatory)] [string] $To
+        [Parameter(Mandatory)] [string] $To,
+        [string] $ConfigurationKey
     )
-    $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
-    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-        throw "No .venv\Scripts\python.exe, so the account's stored state cannot be moved; nothing was renamed."
-    }
+    $native = Get-NativeBinary -Root $PSScriptRoot
     Push-Location -LiteralPath $PSScriptRoot
     try {
-        $output = @(& $python -m telegram_mcp.account_rename (Get-StateDirectory) $From $To 2>&1 | ForEach-Object { "$_" })
+        $arguments = @('rename-account', '--state-dir', (Get-StateDirectory), '--from', $From, '--to', $To)
+        if ($ConfigurationKey) { $arguments += @('--env-file', $envPath, '--key', $ConfigurationKey) }
+        $output = @(& $native @arguments 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
     }
     finally { Pop-Location }
-    if ($code -ne 0) { throw "Moving the stored state failed: $(($output -join ' ').Trim())" }
-    return $output
+    if ($code -ne 0) { throw "Moving stored state failed; the configuration was not renamed: $(($output -join ' ').Trim())" }
+    $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+    if (-not $result.renamed) { throw 'The native account transaction returned no committed rename.' }
+    return @($result.moved)
 }
 
 function Rename-Account {
@@ -438,16 +414,7 @@ function Rename-Account {
     $backup = $null
     $registry = $false
     try {
-        $moved = @(Move-AccountState -From $from -To $to)
-        try {
-            # One write. The value is never read into a variable here - it moves inside
-            # the transform, so nothing in this scope ever holds a session string.
-            $backup = Rename-EnvKey -From $oldKey -To $newKey
-        }
-        catch {
-            $null = Move-AccountState -From $to -To $from
-            throw
-        }
+        $moved = @(Move-AccountState -From $from -To $to -ConfigurationKey $oldKey)
         try {
             $registry = Rename-SecretsEntry -Path (Join-Path $PSScriptRoot 'secrets.md') `
                 -OldKey $oldKey -NewKey $newKey -OldLabel $from -NewLabel $to
@@ -480,7 +447,7 @@ $script:MenuItems = [ordered] @{
     '2' = 'Add an account'
     '3' = 'Remove an account'
     '4' = 'Rename an account'
-    '5' = 'Generate a session string only'
+    '5' = 'Log in and save a new account'
     '6' = 'Check session health / re-login'
 }
 
@@ -530,7 +497,10 @@ try {
             '2' { Add-Account }
             '3' { Remove-Account }
             '4' { Rename-Account }
-            '5' { Invoke-SessionGenerator }
+            '5' {
+                $label = Read-Label 'Label for the account to log in - blank to cancel'
+                if ($label) { Invoke-SessionGenerator -Label $label }
+            }
             '6' { Test-AccountSessions }
             default { Write-Failure "Enter a menu number from 1 to $($script:MenuItems.Count), or exit." }
         }

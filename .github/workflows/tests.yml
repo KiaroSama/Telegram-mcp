@@ -1,18 +1,27 @@
-name: Tests & Coverage
+name: Rust tests and builds
 
 on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
+  group: rust-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_LLVM_COV_TARGET_DIR: ${{ github.workspace }}/target/coverage
+  VALIDATED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   status_begin:
     name: CI status pending
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/ci-status.yml
     permissions:
       contents: read
@@ -22,10 +31,1192 @@ jobs:
       phase: begin
       workflow: tests.yml
 
+  lock:
+    name: Lockfile matches manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      - name: Resolve only the committed dependency graph
+        run: cargo metadata --locked --format-version 1 > /dev/null
+      - name: Prove the manifest and lock did not change
+        run: git diff --exit-code -- Cargo.toml Cargo.lock
+
+  native:
+    name: Native release and tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            label: macos-x86_64
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            label: macos-aarch64
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            label: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            label: windows-aarch64
+            target: aarch64-pc-windows-msvc
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0-${{ matrix.target }}
+          targets: ${{ matrix.target }}
+          components: llvm-tools-preview
+      - name: Select the native Windows C and C++ toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP ('native-msvc-' + [guid]::NewGuid().ToString('N') + '.cmd')
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $llvmCandidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $llvmCandidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+            & clang --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C compiler did not run.' }
+            & clang-cl --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C++ compiler did not run.' }
+          }
+      - name: Verify the compiler and shell run on the requested native architecture
+        shell: pwsh
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualShell = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($actualShell -ne $env:RUNNER_ARCH) { throw 'The PowerShell host is running under another CPU architecture.' }
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The Rust host compiler does not match the native matrix target.'
+          }
+          $version | Write-Output
+      - name: Observe native Windows worker environment names and prove directory barriers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = "1.100.0-$env:EXPECTED_TARGET"
+          $version = & rustc "+$toolchain" -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The worker diagnostic must use the pinned native Rust host.'
+          }
+          $work = Join-Path $env:RUNNER_TEMP ('worker-environment-probe-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($work)
+          $version | Out-File (Join-Path $work 'rustc-version.log') -Encoding utf8
+          $source = Join-Path $work 'worker-environment.rs'
+          $program = @'
+          use std::{env, io::{self, Read, Write}, process::{Command, Stdio}};
+          #[cfg(windows)]
+          mod barrier {
+              use std::{fs::{self, OpenOptions}, io::{self, Write}, os::windows::{fs::OpenOptionsExt, io::AsRawHandle}, path::Path};
+              #[link(name = "kernel32")]
+              unsafe extern "system" {
+                  fn GetVolumeInformationByHandleW(handle: *mut std::ffi::c_void, label: *mut u16, label_len: u32,
+                      serial: *mut u32, component_len: *mut u32, flags: *mut u32, fs_name: *mut u16, fs_name_len: u32) -> i32;
+              }
+              fn sync_directory(path: &Path) -> io::Result<()> {
+                  let directory = OpenOptions::new().read(true).write(true).custom_flags(0x02000000).open(path)?;
+                  if !directory.metadata()?.is_dir() { return Err(io::Error::new(io::ErrorKind::InvalidInput, "Directory barrier requires a directory")); }
+                  let mut filesystem = [0u16; 256];
+                  let success = unsafe { GetVolumeInformationByHandleW(directory.as_raw_handle(), std::ptr::null_mut(), 0,
+                      std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), filesystem.as_mut_ptr(), 256) };
+                  if success == 0 { return Err(io::Error::last_os_error()); }
+                  let length = filesystem.iter().position(|value| *value == 0).ok_or_else(|| io::Error::other("Filesystem name is not terminated"))?;
+                  let name = String::from_utf16(&filesystem[..length]).map_err(|_| io::Error::other("Filesystem name is not UTF-16"))?;
+                  println!("Observed filesystem: {}", name);
+                  if !name.eq_ignore_ascii_case("NTFS") { return Err(io::Error::other("Durable directory barriers require NTFS")); }
+                  directory.sync_all()?;
+                  println!("Same-handle directory FlushFileBuffers: successful");
+                  Ok(())
+              }
+              pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+                  let directory = std::env::args_os().nth(2).ok_or("Missing synthetic directory")?;
+                  let directory = Path::new(&directory);
+                  fs::create_dir(directory)?;
+                  sync_directory(directory)?;
+                  let missing = sync_directory(&directory.join("missing")).expect_err("Missing directory was accepted");
+                  if missing.kind() != io::ErrorKind::NotFound { return Err(missing.into()); }
+                  println!("Missing directory refused with API error {:?}", missing.raw_os_error());
+                  let original = directory.join("synthetic-original");
+                  let renamed = directory.join("synthetic-renamed");
+                  let mut file = OpenOptions::new().create_new(true).write(true).open(&original)?;
+                  file.write_all(b"synthetic directory barrier probe")?;
+                  file.sync_all()?;
+                  drop(file);
+                  sync_directory(directory)?;
+                  let not_directory = sync_directory(&original).expect_err("A regular file was accepted as a directory");
+                  if not_directory.kind() != io::ErrorKind::InvalidInput { return Err(not_directory.into()); }
+                  println!("Regular file refused as a directory");
+                  fs::rename(&original, &renamed)?;
+                  sync_directory(directory)?;
+                  fs::remove_file(&renamed)?;
+                  sync_directory(directory)?;
+                  fs::remove_dir(directory)?;
+                  sync_directory(directory.parent().ok_or("Synthetic directory has no parent")?)?;
+                  println!("Synthetic create/rename/remove barriers: successful");
+                  Ok(())
+              }
+          }
+          fn main() -> Result<(), Box<dyn std::error::Error>> {
+              if env::args().nth(1).as_deref() == Some("--barrier") {
+                  #[cfg(windows)] { return barrier::run(); }
+                  #[cfg(not(windows))] { return Err("The native directory barrier diagnostic requires Windows".into()); }
+              }
+              if env::args().nth(1).as_deref() == Some("__document-worker") {
+                  let mut request = Vec::new();
+                  io::stdin().take(1_025).read_to_end(&mut request)?;
+                  if request.len() > 1_024 { return Err("Diagnostic input exceeded its bound".into()); }
+                  let mut keys = env::vars_os().map(|(key, _)| key).collect::<Vec<_>>();
+                  keys.sort();
+                  for key in keys { println!("{}", key.to_string_lossy()); }
+                  return Ok(());
+              }
+              let mut command = Command::new(env::current_exe()?);
+              command.env_clear();
+              for key in ["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"] {
+                  if let Some(value) = env::var_os(key) { command.env(key, value); }
+              }
+              let mut child = command.arg("__document-worker").stdin(Stdio::piped())
+                  .stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+              child.stdin.take().ok_or("Missing diagnostic input")?.write_all(b"{\"data\":\"\"}")?;
+              let mut names = Vec::new();
+              child.stdout.take().ok_or("Missing diagnostic output")?.take(65_537).read_to_end(&mut names)?;
+              if names.len() > 65_536 { let _ = child.kill(); let _ = child.wait(); return Err("Diagnostic output exceeded its bound".into()); }
+              let status = child.wait()?;
+              if !status.success() { return Err("Diagnostic child failed".into()); }
+              io::stdout().write_all(&names)?;
+              eprintln!("Diagnostic child exit: {}", status);
+              Ok(())
+          }
+          '@
+          [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
+          $executable = Join-Path $work 'worker-environment.exe'
+          & rustc "+$toolchain" --edition=2024 --crate-name worker_environment_probe $source -o $executable *> (Join-Path $work 'compile.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot compile the native worker environment diagnostic.' }
+          $stream = [IO.File]::OpenRead($executable)
+          try {
+            $reader = [IO.BinaryReader]::new($stream)
+            if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'Worker diagnostic is not a native PE image.' }
+            $stream.Position = 60
+            $offset = $reader.ReadUInt32()
+            $stream.Position = $offset
+            if ($reader.ReadUInt32() -ne 0x00004550) { throw 'Worker diagnostic has an invalid PE signature.' }
+            $machine = $reader.ReadUInt16()
+          } finally { $stream.Dispose() }
+          $expectedMachine = if ($env:EXPECTED_TARGET -eq 'aarch64-pc-windows-msvc') { 0xaa64 } else { 0x8664 }
+          if ($machine -ne $expectedMachine) { throw 'Worker diagnostic CPU does not match its native Rust host.' }
+          "Native diagnostic PE machine: 0x{0:x4}" -f $machine | Tee-Object (Join-Path $work 'native-architecture.log')
+          $oldProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+          try {
+            $env:LLVM_PROFILE_FILE = 'worker-environment-diagnostic-%p.profraw'
+            & $executable 1> (Join-Path $work 'child-key-names.log') 2> (Join-Path $work 'child-exit.log')
+            $exit = $LASTEXITCODE
+            "Diagnostic parent exit: $exit" | Out-File (Join-Path $work 'parent-exit.log') -Encoding utf8
+            if ($exit -ne 0) { throw 'The native worker environment diagnostic did not finish successfully.' }
+            Write-Output 'Observed child environment key NAMES (no allowlist assertion or values):'
+            Get-Content -LiteralPath (Join-Path $work 'child-key-names.log')
+            Get-Content -LiteralPath (Join-Path $work 'child-exit.log')
+          } finally {
+            [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $(if ($null -eq $oldProfile) { [NullString]::Value } else { $oldProfile }), 'Process')
+          }
+          & (Join-Path $env:WINDIR 'System32/whoami.exe') /priv *> (Join-Path $work 'privilege-context.log')
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot record the native directory probe privilege context.' }
+          Write-Output 'Directory proof uses the existing hosted-runner token; it makes no unprivileged-token claim.'
+          & $executable --barrier (Join-Path $work 'directory-barrier') *> (Join-Path $work 'directory-barrier.log')
+          $barrierExit = $LASTEXITCODE
+          Get-Content -LiteralPath (Join-Path $work 'directory-barrier.log')
+          if ($barrierExit -ne 0) { throw 'The native NTFS directory durability barrier failed.' }
+      - name: Retain the native worker environment diagnostic
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        with:
+          name: worker-environment-probe-${{ matrix.label }}
+          path: ${{ runner.temp }}/worker-environment-probe-*/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Probe native Windows ARM64 compiler coverage
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        id: arm64_coverage_probe
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $toolchain = '1.100.0-aarch64-pc-windows-msvc'
+          $version = & rustc "+$toolchain" -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains 'host: aarch64-pc-windows-msvc')) {
+            throw 'The coverage probe must use the pinned native ARM64 Rust host.'
+          }
+          $sysroot = (& rustc "+$toolchain" --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot.' }
+          $llvmBin = Join-Path $sysroot 'lib/rustlib/aarch64-pc-windows-msvc/bin'
+          $profdata = Join-Path $llvmBin 'llvm-profdata.exe'
+          $llvmCov = Join-Path $llvmBin 'llvm-cov.exe'
+          foreach ($tool in @($profdata, $llvmCov)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw 'A bundled coverage tool is missing.' }
+          }
+          $work = Join-Path $env:RUNNER_TEMP ('native-arm64-coverage-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($work)
+          $version | Out-File (Join-Path $work 'rustc-version.log') -Encoding utf8
+          $source = Join-Path $work 'smoke.rs'
+          $program = '#[inline(never)] fn branch(v: bool) -> u64 { if v { 42 } else { 7 } } fn main() { println!("{}", branch(std::env::args().nth(1).is_some())); }'
+          [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
+          function Invoke-LoggedProbeCommand {
+            param([string] $Program, [string[]] $Arguments, [string] $Log)
+            & $Program @Arguments *> $Log
+            if ($LASTEXITCODE -ne 0) { throw "Probe command failed with exit status $LASTEXITCODE; inspect its retained diagnostic." }
+          }
+          function Read-SmokeSourceCoverage {
+            param([string] $MappingFile, [string] $SourcePath)
+            $mapping = Get-Content -LiteralPath $MappingFile -Raw | ConvertFrom-Json -Depth 100
+            $files = @($mapping.data | ForEach-Object files | Where-Object { [IO.Path]::GetFullPath($_.filename) -eq [IO.Path]::GetFullPath($SourcePath) })
+            $executable = ($files | ForEach-Object { $_.summary.lines.count } | Measure-Object -Sum).Sum
+            $covered = ($files | ForEach-Object { $_.summary.lines.covered } | Measure-Object -Sum).Sum
+            if ($files.Count -eq 0 -or $executable -le 0 -or $covered -le 0 -or $covered -gt $executable) {
+              throw 'The real smoke source has no valid executable and covered source mapping.'
+            }
+            return [pscustomobject] @{ executable = $executable; covered = $covered }
+          }
+          $results = @()
+          foreach ($kind in @('default-msvc', 'bundled-rust-lld')) {
+            $directory = Join-Path $work $kind
+            [void] [IO.Directory]::CreateDirectory($directory)
+            $result = [ordered] @{ kind = $kind; accepted = $false; target = 'aarch64-pc-windows-msvc' }
+            $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+            try {
+              $linkFlags = @()
+              if ($kind -eq 'bundled-rust-lld') {
+                $linker = Join-Path $llvmBin 'rust-lld.exe'
+                if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'The pinned bundled linker is missing.' }
+                Invoke-LoggedProbeCommand -Program $linker -Arguments @('-flavor', 'link', '--version') -Log (Join-Path $directory 'linker-version.log')
+                $linkFlags = @('-C', "linker=$linker", '-C', 'linker-flavor=lld-link')
+              } else {
+                $linker = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+                $linkFlags = @('-C', "linker=$linker")
+              }
+              $result.linker = $linker
+              $result.linker_sha256 = (Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash.ToLowerInvariant()
+              $result.flags = $linkFlags
+              $binary = Join-Path $directory 'smoke.exe'
+              $merged = Join-Path $directory 'smoke.profdata'
+              $compile = @("+$toolchain", '--edition=2024', '--target=aarch64-pc-windows-msvc', '-C', 'instrument-coverage', '-C', 'opt-level=0', '-C', 'debuginfo=1') + $linkFlags + @($source, '-o', $binary)
+              Invoke-LoggedProbeCommand -Program 'rustc' -Arguments $compile -Log (Join-Path $directory 'compile.log')
+              $pe = [IO.File]::ReadAllBytes($binary)
+              if ($pe.Length -lt 64 -or [BitConverter]::ToUInt16($pe, 0) -ne 0x5a4d) { throw 'The actual smoke executable is not PE.' }
+              $header = [BitConverter]::ToUInt32($pe, 0x3c)
+              if ($header -gt $pe.Length - 6 -or [BitConverter]::ToUInt32($pe, $header) -ne 0x4550 -or [BitConverter]::ToUInt16($pe, $header + 4) -ne 0xaa64) {
+                throw 'The actual smoke executable is not native ARM64.'
+              }
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'first-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @() -Log (Join-Path $directory 'first-run.log')
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'second-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @('exercise-second-branch') -Log (Join-Path $directory 'second-run.log')
+              $raw = @(Get-ChildItem -LiteralPath $directory -Filter '*.profraw' -File)
+              if ($raw.Count -ne 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) { throw 'Both real processes must emit their own nonempty profiles.' }
+              $result.profiles = @($raw | Select-Object Name, Length)
+              $mergeArguments = @('merge', '-sparse') + @($raw | ForEach-Object FullName) + @('-o', $merged)
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments $mergeArguments -Log (Join-Path $directory 'merge.log')
+              $counterLog = Join-Path $directory 'function-counters.log'
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments @('show', '--all-functions', '--counts', $merged) -Log $counterLog
+              if ([IO.File]::ReadAllText($counterLog) -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') { throw 'No actual function counter was executed.' }
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('report', $binary, "--instr-profile=$merged", $source) -Log (Join-Path $directory 'source-report.log')
+              $mappingFile = Join-Path $directory 'source-coverage.json'
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('export', $binary, "--instr-profile=$merged", $source) -Log $mappingFile
+              $sourceCoverage = Read-SmokeSourceCoverage -MappingFile $mappingFile -SourcePath $source
+              $result.executable_source_lines = $sourceCoverage.executable
+              $result.covered_source_lines = $sourceCoverage.covered
+              $result.accepted = $true
+            } catch {
+              $result.error = $_.Exception.Message
+            } finally {
+              if ($null -eq $priorProfile) { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', [NullString]::Value, 'Process') }
+              else { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process') }
+            }
+            $result | ConvertTo-Json -Depth 12 | Out-File (Join-Path $directory 'result.json') -Encoding utf8
+            $results += [pscustomobject] $result
+            Write-Host "$kind coverage validation accepted: $($result.accepted)"
+          }
+          $results | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'all-results.json') -Encoding utf8
+          $selected = $results | Where-Object accepted | Select-Object -First 1
+          if (-not $selected) { throw 'Neither native linker produced valid real source-coverage evidence; inspect both retained diagnostics.' }
+          $selected | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'selected-linker.json') -Encoding utf8
+          "kind=$($selected.kind)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "linker=$($selected.linker)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha256=$($selected.linker_sha256)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Verified native coverage linker: $($selected.kind), SHA256 $($selected.linker_sha256)"
+      - name: Retain actual Windows ARM64 compiler coverage evidence
+        if: always() && matrix.target == 'aarch64-pc-windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiler-coverage-probe-${{ matrix.label }}
+          path: ${{ runner.temp }}/native-arm64-coverage-*/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.target }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152,cargo-llvm-cov@0.9.1
+      # Build precedes every behavioral gate, so a parity failure never suppresses it.
+      - name: Build the native release binary
+        id: release
+        if: always()
+        run: cargo build --locked --release --all-features --target ${{ matrix.target }} --bin telegram-mcp --bin emoji-studio --bin operator-plugin
+      - name: Execute all three actual native release CLIs
+        id: release_smoke
+        if: always() && steps.release.outcome == 'success'
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          foreach ($name in @('telegram-mcp', 'emoji-studio', 'operator-plugin')) {
+            $binary = Join-Path $env:GITHUB_WORKSPACE "target/$env:NATIVE_TARGET/release/$name$suffix"
+            $help = (& $binary --help) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $help -notmatch '(?m)^Usage:') {
+              throw "The actual native $name release could not execute its help command."
+            }
+            Write-Host "Executed actual $env:NATIVE_TARGET release: $name --help"
+          }
+      - name: Package the actual release and provenance
+        id: package
+        if: always() && steps.release.outcome == 'success' && steps.release_smoke.outcome == 'success'
+        run: cargo run --locked --bin ci -- package ${{ matrix.target }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.package.outcome == 'success'
+        with:
+          name: telegram-mcp-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/
+          if-no-files-found: error
+      - name: Install actual native media tools for behavioral fixtures
+        uses: ./.github/actions/media-tools
+      - name: Create disposable private state and file roots for tests
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scratch = Join-Path $env:RUNNER_TEMP ('telegram-native-tests-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($scratch)
+          if ($IsWindows) {
+            $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetOwner($owner)
+            $acl.SetAccessRuleProtection($true, $false)
+            $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new($owner, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            [void] $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $scratch -AclObject $acl
+          } else {
+            & chmod 700 $scratch
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the disposable test root.' }
+          }
+          $state = Join-Path $scratch 'state'
+          $files = Join-Path $scratch 'files'
+          foreach ($directory in @($state, $files)) {
+            [void] [IO.Directory]::CreateDirectory($directory)
+            if (-not $IsWindows) {
+              & chmod 700 $directory
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot protect a disposable test directory.' }
+            }
+          }
+          "TELEGRAM_STATE_DIR=$state" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TELEGRAM_FILE_ROOTS=$files" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'Native tests use fresh private state and an existing disposable file root.'
+      - name: Select a canonical coverage directory and per-process profiles
+        shell: pwsh
+        env:
+          VERIFIED_COVERAGE_KIND: ${{ steps.arm64_coverage_probe.outputs.kind }}
+          VERIFIED_COVERAGE_LINKER: ${{ steps.arm64_coverage_probe.outputs.linker }}
+          VERIFIED_COVERAGE_SHA256: ${{ steps.arm64_coverage_probe.outputs.sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($IsWindows -and $env:RUNNER_ARCH -eq 'ARM64') {
+            function Set-VerifiedCoverageEnvironment {
+              param([string] $Name, [string] $Value)
+              [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+              $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N')
+              while ($Value.Contains($delimiter)) { $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N') }
+              "$Name<<$delimiter`n$Value`n$delimiter" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+            function Assert-UnambiguousCoverageFlags {
+              param([string] $EncodedName, [string] $RawName)
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $active = if ($null -ne $encoded) { $encoded.Replace([char] 31, ' ') } else { "$raw" }
+              if ($active -match '(?:^|\s)@') { throw 'Opaque caller response-file flags prevent verification of the selected linker.' }
+              if ($active -match '(?i)(?:^|\s)(?:-C\s*|--codegen(?:=|\s+))linker(?:-flavor)?=') {
+                throw 'Caller flags override the linker; no unverified coverage-linker identity will be claimed.'
+              }
+            }
+            function Add-VerifiedLinkerFlavor {
+              param([string] $EncodedName, [string] $RawName)
+              Assert-UnambiguousCoverageFlags $EncodedName $RawName
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $flavor = '-Clinker-flavor=lld-link'
+              if ($null -ne $encoded) {
+                $value = if ($encoded.Length) { $encoded + [char] 31 + $flavor } else { $flavor }
+                Set-VerifiedCoverageEnvironment $EncodedName $value
+              } else {
+                $value = if ($raw) { "$raw $flavor" } else { $flavor }
+                Set-VerifiedCoverageEnvironment $RawName $value
+              }
+            }
+            if ($env:VERIFIED_COVERAGE_KIND -notin @('default-msvc', 'bundled-rust-lld') -or
+                -not (Test-Path -LiteralPath $env:VERIFIED_COVERAGE_LINKER -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $env:VERIFIED_COVERAGE_LINKER -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:VERIFIED_COVERAGE_SHA256) {
+              throw 'The accepted native coverage linker or its exact hash is missing.'
+            }
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            if ($env:VERIFIED_COVERAGE_KIND -eq 'bundled-rust-lld') {
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            }
+            Set-VerifiedCoverageEnvironment 'CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER' $env:VERIFIED_COVERAGE_LINKER
+            Write-Host "Coverage, recorder and documentation builds use verified $env:VERIFIED_COVERAGE_KIND (SHA256 $env:VERIFIED_COVERAGE_SHA256)."
+          }
+          Write-Host "Logical processors: $([Environment]::ProcessorCount)"
+          $coverageEnvironmentArguments = @('llvm-cov', 'show-env', '--export-prefix')
+          if ($IsWindows) { $coverageEnvironmentArguments += '--no-rustc-wrapper' }
+          $defaultProfileEnvironment = & cargo @coverageEnvironmentArguments
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the default profiler environment.' }
+          $defaultProfileEnvironment | Where-Object { $_ -match '^(export )?LLVM_PROFILE_FILE=' } | ForEach-Object { Write-Host "Default profiler: $_" }
+          $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
+          "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Remove stale workspace coverage objects while preserving dependency caches
+        run: cargo llvm-cov clean --workspace
+      - name: Run all native tests with coverage instrumentation
+        shell: pwsh
+        run: |
+          $coverageArguments = @('llvm-cov', 'nextest', '--locked', '--all-features', '--profile', 'ci', '--no-report')
+          if ($IsWindows) {
+            # llvm-cov0.9.1's wrapper does not expand Cargo1.100 @argfiles.
+            # Official fix: https://github.com/taiki-e/cargo-llvm-cov/pull/533
+            $coverageArguments += '--no-rustc-wrapper'
+          }
+          & cargo @coverageArguments
+          exit $LASTEXITCODE
+      - name: Require actual profiling evidence before recording cases
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles before case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Native tests produced no profile files; coverage cannot be claimed.' }
+      - name: Record the cases this operating system actually ran
+        if: always()
+        run: cargo run --locked --bin ci -- record ${{ matrix.label }} target/nextest/ci/junit.xml cases/${{ matrix.label }}.json
+      - name: Verify profiling evidence survived the case recorder
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles after case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Native profile files disappeared; coverage cannot be claimed.' }
+      - name: Export this operating system's actual coverage
+        if: always()
+        run: cargo llvm-cov report --lcov --output-path coverage-${{ matrix.label }}.info
+      - name: Run documentation examples
+        run: cargo test --locked --all-features --doc
+      - name: Verify the retained PowerShell launchers on native Unix
+        if: always() && runner.os != 'Windows' && steps.release.outcome == 'success'
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          TELEGRAM_MCP_BINARY: ${{ github.workspace }}/target/${{ matrix.target }}/release/telegram-mcp
+          TELEGRAM_STATE_DIR: ${{ runner.temp }}/native-launcher-${{ matrix.label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-Item -LiteralPath 'start-mcp.ps1', 'Manage-Accounts.ps1') +
+            @(Get-ChildItem account-manager -Filter '*.ps1' -File) +
+            @(Get-ChildItem tests -Filter 'test_*.ps1' -File)
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref] $tokens, [ref] $errors) | Out-Null
+            if ($errors.Count -ne 0) { throw "PowerShell syntax errors in $($file.Name)." }
+          }
+          & pwsh -NoLogo -NoProfile -File tests/test_account_health.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'The portable account-health and native Unix launcher behaviors failed.' }
+          $nativeHelp = (& pwsh -NoLogo -NoProfile -NonInteractive -File start-mcp.ps1 -NoLogToFile --help) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $nativeHelp -notmatch 'Usage:\s+telegram-mcp serve') {
+            throw 'The retained Unix launcher did not invoke the actual compiled native server CLI.'
+          }
+          Write-Host "Parsed $($files.Count) retained scripts and executed the portable Unix launcher suite. The other three full suites exercise Windows ACL/CIM behavior in both Windows architecture jobs."
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: case-record-${{ matrix.label }}
+          path: cases/${{ matrix.label }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-${{ matrix.label }}
+          path: coverage-${{ matrix.label }}.info
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-${{ matrix.label }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: error
+
+  renderer:
+    name: Native renderer tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            label: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+            library: librlottie.so
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            library: librlottie.so
+          - os: macos-15-intel
+            label: macos-x86_64
+            target: x86_64-apple-darwin
+            library: librlottie.dylib
+          - os: macos-latest
+            label: macos-aarch64
+            target: aarch64-apple-darwin
+            library: librlottie.dylib
+          - os: windows-latest
+            label: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            library: rlottie.dll
+          - os: windows-11-arm
+            label: windows-aarch64
+            target: aarch64-pc-windows-msvc
+            library: rlottie.dll
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
+      TELEGRAM_REQUIRE_LOTTIE: "1"
+      TELEGRAM_RLOTTIE_LIBRARY: ${{ github.workspace }}/.ci-rlottie-runtime/${{ matrix.library }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0-${{ matrix.target }}
+          components: llvm-tools-preview
+      - name: Select the native Windows C and C++ toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP ('native-msvc-' + [guid]::NewGuid().ToString('N') + '.cmd')
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $llvmCandidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $llvmCandidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+            & clang --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C compiler did not run.' }
+            & clang-cl --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C++ compiler did not run.' }
+          }
+      - name: Verify the compiler and shell run on the requested native architecture
+        shell: pwsh
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualShell = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($actualShell -ne $env:RUNNER_ARCH) { throw 'The PowerShell host is running under another CPU architecture.' }
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The Rust host compiler does not match the native matrix target.'
+          }
+          $version | Write-Output
+      - name: Probe native Windows ARM64 compiler coverage
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        id: arm64_coverage_probe
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $toolchain = '1.100.0-aarch64-pc-windows-msvc'
+          $version = & rustc "+$toolchain" -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains 'host: aarch64-pc-windows-msvc')) {
+            throw 'The coverage probe must use the pinned native ARM64 Rust host.'
+          }
+          $sysroot = (& rustc "+$toolchain" --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot.' }
+          $llvmBin = Join-Path $sysroot 'lib/rustlib/aarch64-pc-windows-msvc/bin'
+          $profdata = Join-Path $llvmBin 'llvm-profdata.exe'
+          $llvmCov = Join-Path $llvmBin 'llvm-cov.exe'
+          foreach ($tool in @($profdata, $llvmCov)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw 'A bundled coverage tool is missing.' }
+          }
+          $work = Join-Path $env:RUNNER_TEMP ('native-arm64-coverage-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($work)
+          $version | Out-File (Join-Path $work 'rustc-version.log') -Encoding utf8
+          $source = Join-Path $work 'smoke.rs'
+          $program = '#[inline(never)] fn branch(v: bool) -> u64 { if v { 42 } else { 7 } } fn main() { println!("{}", branch(std::env::args().nth(1).is_some())); }'
+          [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
+          function Invoke-LoggedProbeCommand {
+            param([string] $Program, [string[]] $Arguments, [string] $Log)
+            & $Program @Arguments *> $Log
+            if ($LASTEXITCODE -ne 0) { throw "Probe command failed with exit status $LASTEXITCODE; inspect its retained diagnostic." }
+          }
+          function Read-SmokeSourceCoverage {
+            param([string] $MappingFile, [string] $SourcePath)
+            $mapping = Get-Content -LiteralPath $MappingFile -Raw | ConvertFrom-Json -Depth 100
+            $files = @($mapping.data | ForEach-Object files | Where-Object { [IO.Path]::GetFullPath($_.filename) -eq [IO.Path]::GetFullPath($SourcePath) })
+            $executable = ($files | ForEach-Object { $_.summary.lines.count } | Measure-Object -Sum).Sum
+            $covered = ($files | ForEach-Object { $_.summary.lines.covered } | Measure-Object -Sum).Sum
+            if ($files.Count -eq 0 -or $executable -le 0 -or $covered -le 0 -or $covered -gt $executable) {
+              throw 'The real smoke source has no valid executable and covered source mapping.'
+            }
+            return [pscustomobject] @{ executable = $executable; covered = $covered }
+          }
+          $results = @()
+          foreach ($kind in @('default-msvc', 'bundled-rust-lld')) {
+            $directory = Join-Path $work $kind
+            [void] [IO.Directory]::CreateDirectory($directory)
+            $result = [ordered] @{ kind = $kind; accepted = $false; target = 'aarch64-pc-windows-msvc' }
+            $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+            try {
+              $linkFlags = @()
+              if ($kind -eq 'bundled-rust-lld') {
+                $linker = Join-Path $llvmBin 'rust-lld.exe'
+                if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'The pinned bundled linker is missing.' }
+                Invoke-LoggedProbeCommand -Program $linker -Arguments @('-flavor', 'link', '--version') -Log (Join-Path $directory 'linker-version.log')
+                $linkFlags = @('-C', "linker=$linker", '-C', 'linker-flavor=lld-link')
+              } else {
+                $linker = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+                $linkFlags = @('-C', "linker=$linker")
+              }
+              $result.linker = $linker
+              $result.linker_sha256 = (Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash.ToLowerInvariant()
+              $result.flags = $linkFlags
+              $binary = Join-Path $directory 'smoke.exe'
+              $merged = Join-Path $directory 'smoke.profdata'
+              $compile = @("+$toolchain", '--edition=2024', '--target=aarch64-pc-windows-msvc', '-C', 'instrument-coverage', '-C', 'opt-level=0', '-C', 'debuginfo=1') + $linkFlags + @($source, '-o', $binary)
+              Invoke-LoggedProbeCommand -Program 'rustc' -Arguments $compile -Log (Join-Path $directory 'compile.log')
+              $pe = [IO.File]::ReadAllBytes($binary)
+              if ($pe.Length -lt 64 -or [BitConverter]::ToUInt16($pe, 0) -ne 0x5a4d) { throw 'The actual smoke executable is not PE.' }
+              $header = [BitConverter]::ToUInt32($pe, 0x3c)
+              if ($header -gt $pe.Length - 6 -or [BitConverter]::ToUInt32($pe, $header) -ne 0x4550 -or [BitConverter]::ToUInt16($pe, $header + 4) -ne 0xaa64) {
+                throw 'The actual smoke executable is not native ARM64.'
+              }
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'first-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @() -Log (Join-Path $directory 'first-run.log')
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'second-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @('exercise-second-branch') -Log (Join-Path $directory 'second-run.log')
+              $raw = @(Get-ChildItem -LiteralPath $directory -Filter '*.profraw' -File)
+              if ($raw.Count -ne 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) { throw 'Both real processes must emit their own nonempty profiles.' }
+              $result.profiles = @($raw | Select-Object Name, Length)
+              $mergeArguments = @('merge', '-sparse') + @($raw | ForEach-Object FullName) + @('-o', $merged)
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments $mergeArguments -Log (Join-Path $directory 'merge.log')
+              $counterLog = Join-Path $directory 'function-counters.log'
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments @('show', '--all-functions', '--counts', $merged) -Log $counterLog
+              if ([IO.File]::ReadAllText($counterLog) -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') { throw 'No actual function counter was executed.' }
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('report', $binary, "--instr-profile=$merged", $source) -Log (Join-Path $directory 'source-report.log')
+              $mappingFile = Join-Path $directory 'source-coverage.json'
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('export', $binary, "--instr-profile=$merged", $source) -Log $mappingFile
+              $sourceCoverage = Read-SmokeSourceCoverage -MappingFile $mappingFile -SourcePath $source
+              $result.executable_source_lines = $sourceCoverage.executable
+              $result.covered_source_lines = $sourceCoverage.covered
+              $result.accepted = $true
+            } catch {
+              $result.error = $_.Exception.Message
+            } finally {
+              if ($null -eq $priorProfile) { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', [NullString]::Value, 'Process') }
+              else { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process') }
+            }
+            $result | ConvertTo-Json -Depth 12 | Out-File (Join-Path $directory 'result.json') -Encoding utf8
+            $results += [pscustomobject] $result
+            Write-Host "$kind coverage validation accepted: $($result.accepted)"
+          }
+          $results | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'all-results.json') -Encoding utf8
+          $selected = $results | Where-Object accepted | Select-Object -First 1
+          if (-not $selected) { throw 'Neither native linker produced valid real source-coverage evidence; inspect both retained diagnostics.' }
+          $selected | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'selected-linker.json') -Encoding utf8
+          "kind=$($selected.kind)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "linker=$($selected.linker)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha256=$($selected.linker_sha256)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Verified native coverage linker: $($selected.kind), SHA256 $($selected.linker_sha256)"
+      - name: Retain actual Windows ARM64 compiler coverage evidence
+        if: always() && matrix.target == 'aarch64-pc-windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiler-coverage-probe-renderer-${{ matrix.label }}
+          path: ${{ runner.temp }}/native-arm64-coverage-*/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: renderer-${{ matrix.label }}
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-nextest@0.9.152,cargo-llvm-cov@0.9.1
+      - name: Fetch the reviewed native renderer dependency
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Samsung/rlottie
+          ref: ea06d2f29ba01b8d06c00a838d107f5e484ae59b
+          path: .ci-rlottie
+          persist-credentials: false
+      - name: Build the native dependency outside this project's source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = Join-Path $env:GITHUB_WORKSPACE '.ci-rlottie-runtime'
+          $cmakeArguments = @(
+            '-S', '.ci-rlottie', '-B', '.ci-rlottie-build',
+            '-DBUILD_SHARED_LIBS=ON', '-DLOTTIE_MODULE=OFF',
+            '-DLOTTIE_THREAD=OFF', '-DLOTTIE_CACHE=OFF',
+            '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
+            '-DCMAKE_EXPORT_NO_PACKAGE_REGISTRY=ON',
+            '-DCMAKE_EXPORT_PACKAGE_REGISTRY=OFF',
+            '-DCMAKE_BUILD_TYPE=Release',
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$runtime",
+            "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$runtime",
+            "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=$runtime",
+            "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$runtime"
+          )
+          if (-not $IsWindows -and $env:RUNNER_ARCH -eq 'ARM64') {
+            # This pinned upstream supplies the pixman NEON helper assembly
+            # only for ARM32. Use its official scalar path on native ARM64.
+            $cmakeArguments += '-DCMAKE_CXX_FLAGS=-U__ARM_NEON__'
+          }
+          if ($IsWindows) {
+            if ($env:CMAKE_GENERATOR -and $env:CMAKE_GENERATOR -notmatch '^Visual Studio ') {
+              throw 'The renderer requires a Visual Studio generator with an explicit native platform.'
+            }
+            $platform = if ($env:RUNNER_ARCH -eq 'ARM64') { 'ARM64' } else { 'x64' }
+            $cmakeArguments += @('-A', $platform)
+          }
+          & cmake @cmakeArguments
+          if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
+          cmake --build .ci-rlottie-build --target rlottie --config Release --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Native renderer build failed.' }
+          if (-not (Test-Path $env:TELEGRAM_RLOTTIE_LIBRARY -PathType Leaf)) { throw 'The native renderer library is missing.' }
+      - name: Install actual native media tools for behavioral fixtures
+        uses: ./.github/actions/media-tools
+      - name: Create disposable private state and file roots for tests
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scratch = Join-Path $env:RUNNER_TEMP ('telegram-native-tests-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($scratch)
+          if ($IsWindows) {
+            $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetOwner($owner)
+            $acl.SetAccessRuleProtection($true, $false)
+            $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new($owner, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            [void] $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $scratch -AclObject $acl
+          } else {
+            & chmod 700 $scratch
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the disposable test root.' }
+          }
+          $state = Join-Path $scratch 'state'
+          $files = Join-Path $scratch 'files'
+          foreach ($directory in @($state, $files)) {
+            [void] [IO.Directory]::CreateDirectory($directory)
+            if (-not $IsWindows) {
+              & chmod 700 $directory
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot protect a disposable test directory.' }
+            }
+          }
+          "TELEGRAM_STATE_DIR=$state" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TELEGRAM_FILE_ROOTS=$files" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'Native tests use fresh private state and an existing disposable file root.'
+      - name: Select a canonical coverage directory and per-process profiles
+        shell: pwsh
+        env:
+          VERIFIED_COVERAGE_KIND: ${{ steps.arm64_coverage_probe.outputs.kind }}
+          VERIFIED_COVERAGE_LINKER: ${{ steps.arm64_coverage_probe.outputs.linker }}
+          VERIFIED_COVERAGE_SHA256: ${{ steps.arm64_coverage_probe.outputs.sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($IsWindows -and $env:RUNNER_ARCH -eq 'ARM64') {
+            function Set-VerifiedCoverageEnvironment {
+              param([string] $Name, [string] $Value)
+              [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+              $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N')
+              while ($Value.Contains($delimiter)) { $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N') }
+              "$Name<<$delimiter`n$Value`n$delimiter" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+            function Assert-UnambiguousCoverageFlags {
+              param([string] $EncodedName, [string] $RawName)
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $active = if ($null -ne $encoded) { $encoded.Replace([char] 31, ' ') } else { "$raw" }
+              if ($active -match '(?:^|\s)@') { throw 'Opaque caller response-file flags prevent verification of the selected linker.' }
+              if ($active -match '(?i)(?:^|\s)(?:-C\s*|--codegen(?:=|\s+))linker(?:-flavor)?=') {
+                throw 'Caller flags override the linker; no unverified coverage-linker identity will be claimed.'
+              }
+            }
+            function Add-VerifiedLinkerFlavor {
+              param([string] $EncodedName, [string] $RawName)
+              Assert-UnambiguousCoverageFlags $EncodedName $RawName
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $flavor = '-Clinker-flavor=lld-link'
+              if ($null -ne $encoded) {
+                $value = if ($encoded.Length) { $encoded + [char] 31 + $flavor } else { $flavor }
+                Set-VerifiedCoverageEnvironment $EncodedName $value
+              } else {
+                $value = if ($raw) { "$raw $flavor" } else { $flavor }
+                Set-VerifiedCoverageEnvironment $RawName $value
+              }
+            }
+            if ($env:VERIFIED_COVERAGE_KIND -notin @('default-msvc', 'bundled-rust-lld') -or
+                -not (Test-Path -LiteralPath $env:VERIFIED_COVERAGE_LINKER -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $env:VERIFIED_COVERAGE_LINKER -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:VERIFIED_COVERAGE_SHA256) {
+              throw 'The accepted native coverage linker or its exact hash is missing.'
+            }
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            if ($env:VERIFIED_COVERAGE_KIND -eq 'bundled-rust-lld') {
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            }
+            Set-VerifiedCoverageEnvironment 'CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER' $env:VERIFIED_COVERAGE_LINKER
+            Write-Host "Coverage, recorder and documentation builds use verified $env:VERIFIED_COVERAGE_KIND (SHA256 $env:VERIFIED_COVERAGE_SHA256)."
+          }
+          Write-Host "Logical processors: $([Environment]::ProcessorCount)"
+          $coverageEnvironmentArguments = @('llvm-cov', 'show-env', '--export-prefix')
+          if ($IsWindows) { $coverageEnvironmentArguments += '--no-rustc-wrapper' }
+          $defaultProfileEnvironment = & cargo @coverageEnvironmentArguments
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the default profiler environment.' }
+          $defaultProfileEnvironment | Where-Object { $_ -match '^(export )?LLVM_PROFILE_FILE=' } | ForEach-Object { Write-Host "Default profiler: $_" }
+          $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
+          "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Remove stale workspace coverage objects while preserving dependency caches
+        run: cargo llvm-cov clean --workspace
+      - name: Run the whole native suite with rendering required
+        shell: pwsh
+        run: |
+          $coverageArguments = @('llvm-cov', 'nextest', '--locked', '--all-features', '--profile', 'ci', '--no-report')
+          if ($IsWindows) {
+            # llvm-cov0.9.1's wrapper does not expand Cargo1.100 @argfiles.
+            # Official fix: https://github.com/taiki-e/cargo-llvm-cov/pull/533
+            $coverageArguments += '--no-rustc-wrapper'
+          }
+          & cargo @coverageArguments
+          exit $LASTEXITCODE
+      - name: Require actual profiling evidence before recording cases
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles before case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Renderer tests produced no profile files; coverage cannot be claimed.' }
+      - name: Record real renderer-leg cases
+        if: always()
+        run: cargo run --locked --bin ci -- record renderer-${{ matrix.label }} target/nextest/ci/junit.xml cases/renderer-${{ matrix.label }}.json
+      - name: Verify profiling evidence survived the case recorder
+        if: always()
+        shell: pwsh
+        run: |
+          $profiles = @(Get-ChildItem -LiteralPath $env:CARGO_LLVM_COV_TARGET_DIR -Filter '*.profraw' -File -ErrorAction SilentlyContinue)
+          Write-Host "Profiles after case recorder: $($profiles.Count)"
+          if ($profiles.Count -eq 0) { throw 'Renderer profile files disappeared; coverage cannot be claimed.' }
+      - name: Export native-renderer coverage
+        if: always()
+        run: cargo llvm-cov report --lcov --output-path coverage-renderer-${{ matrix.label }}.info
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: case-record-renderer-${{ matrix.label }}
+          path: cases/renderer-${{ matrix.label }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: coverage-renderer-${{ matrix.label }}
+          path: coverage-renderer-${{ matrix.label }}.info
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: junit-renderer-${{ matrix.label }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: error
+
+  launchers:
+    name: PowerShell launcher tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            label: windows-aarch64
+            target: aarch64-pc-windows-msvc
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0-${{ matrix.target }}
+      - name: Select the native Windows C and C++ toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP ('native-msvc-' + [guid]::NewGuid().ToString('N') + '.cmd')
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $llvmCandidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $llvmCandidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+            & clang --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C compiler did not run.' }
+            & clang-cl --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C++ compiler did not run.' }
+          }
+      - name: Verify the compiler and shell run on the requested native architecture
+        shell: pwsh
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualShell = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($actualShell -ne $env:RUNNER_ARCH) { throw 'The PowerShell host is running under another CPU architecture.' }
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The Rust host compiler does not match the native matrix target.'
+          }
+          $version | Write-Output
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: launchers-${{ matrix.target }}
+      - name: Build the executable the launchers invoke
+        run: cargo build --locked --bin telegram-mcp
+      - name: Discover and run every preserved launcher suite
+        shell: pwsh
+        env:
+          TELEGRAM_MCP_BINARY: ${{ github.workspace }}/target/debug/telegram-mcp.exe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suites = @(Get-ChildItem tests -Filter 'test_*.ps1' -File | Sort-Object Name)
+          if ($suites.Count -eq 0) { throw 'No PowerShell launcher suites were found.' }
+          $failed = @()
+          foreach ($suite in $suites) {
+            & pwsh -NoLogo -NoProfile -File $suite.FullName
+            if ($LASTEXITCODE -ne 0) { $failed += $suite.Name }
+          }
+          if ($failed.Count -gt 0) { throw "Launcher suites failed: $($failed -join ', ')" }
+          Write-Host "All $($suites.Count) PowerShell launcher suites passed."
+
+  audit:
+    name: Locked dependencies have no known advisory
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        with:
+          tool: cargo-audit@0.23.0
+      - run: cargo audit --deny warnings
+
+  case_counts:
+    name: Every operating system matches reviewed case inventory
+    if: always()
+    needs: [native, renderer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: case-record-*
+          path: case-records
+          merge-multiple: true
+      - run: cargo run --locked --bin ci -- compare case-records
+
+  parity:
+    name: Critical native behavior categories are verified
+    if: always()
+    needs: [native, renderer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: case-record-*
+          path: case-records
+          merge-multiple: true
+      - run: cargo run --locked --bin ci -- parity case-records
+
+  coverage:
+    name: Combined coverage gate
+    if: always()
+    needs: [native, renderer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          path: coverage-records
+          merge-multiple: true
+      - run: cargo run --locked --bin ci -- coverage coverage-records
+
   status_finish:
     name: CI status final
-    if: always()
-    needs: [status_begin, lock, test, lottie, launchers, audit, case_counts, coverage]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    needs: [status_begin, lock, native, renderer, launchers, audit, case_counts, parity, coverage]
     uses: ./.github/workflows/ci-status.yml
     permissions:
       contents: read
@@ -34,478 +1225,3 @@ jobs:
     with:
       phase: finish
       workflow: tests.yml
-
-  # Before anything resolves: is uv.lock still a lockfile FOR this pyproject?
-  # Docker builds with `--frozen`, which installs whatever the lock says even
-  # when the manifest has moved on - so a stale lock used to build and test
-  # green while the declared dependencies said something else. `--check` is the
-  # opposite question, and it is the one that catches drift.
-  lock:
-    name: Lockfile Matches The Manifest
-    needs: status_begin
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-
-      - name: Point uv at the interpreter this job installed
-        shell: bash
-        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          version: "0.13.0"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Refuse a lock that no longer matches pyproject
-        run: uv lock --check
-
-      # `--locked` on every other job makes a rewrite impossible rather than
-      # merely unlikely; this proves the file on disk is the file CI resolved.
-      - name: Prove no step rewrote the lock
-        run: git diff --exit-code -- uv.lock pyproject.toml
-
-  test:
-    name: Pytest With Coverage
-    needs: status_begin
-    runs-on: ubuntu-latest
-    # A hung decoder would otherwise hold a runner for GitHub's 6-hour default.
-    # The guarded runner below bounds the run itself; this bounds the job around it.
-    timeout-minutes: 20
-
-    # The supported floor and ceiling are exercised, including the container's
-    # Python 3.15 runtime; no older supported interpreter is dropped.
-    #
-    # 3.14 was added only after the suite was actually run on it, not on the
-    # strength of the version being released: the resolve, every import, all 181
-    # tool registrations and the full suite were checked in a throwaway 3.14 venv
-    # first. That run earned its keep immediately - it caught a fragile budget in
-    # test_guarded_runner (pytest's cold import costs 6.09s on 3.14 against 4.10s
-    # on 3.13, and the test allowed 6.0s of silence), which 3.13 had been passing
-    # on under two seconds of margin.
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ['3.11', '3.12', '3.13', '3.14', '3.15']
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@v7
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      # Without this, `uv run` reads .python-version and resolves the project's
-      # own pin - so a leg labelled 3.11 installed 3.11, ran 3.13 and reported a
-      # pass for an interpreter it never touched. UV_PYTHON names the exact
-      # executable this leg installed, not a version range uv may satisfy some
-      # other way.
-      - name: Point uv at the interpreter this leg installed
-        shell: bash
-        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
-
-      # Without the cache every push re-resolves and re-downloads the whole tree -
-      # telethon, pillow, regex, plus the native rlottie wheel - once per job, on
-      # two platforms. Keyed on uv.lock, so a dependency change still gets a cold
-      # resolve rather than a stale environment.
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          # The resolver itself is a dependency of every result below. Pinned so
-          # a uv release cannot change what CI resolved without a commit saying so.
-          version: "0.13.0"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      # --cov-fail-under=0 overrides the floor in pyproject FOR THIS JOB. The
-      # floor is a claim about the project and no single runner can execute the
-      # whole project: telegram_mcp.visual.capture is Win32 and cannot run here.
-      # The `coverage` job applies the floor once, to the combined data.
-      # Before pytest, from inside the resolved environment. A leg that cannot
-      # prove its own label is worth less than no leg, because it also hides the
-      # gap it leaves in the matrix.
-      - name: Prove this leg is running the interpreter it is named after
-        run: uv run --locked python scripts/ci_record.py --label "py${{ matrix.python-version }}"
-          --require "${{ matrix.python-version }}"
-
-      - name: Run tests with coverage
-        env:
-          TELEGRAM_API_ID: "12345"
-          TELEGRAM_API_HASH: "dummy_hash"
-          TELEGRAM_SESSION_NAME: "test_session"
-          COVERAGE_FILE: .coverage.linux-py${{ matrix.python-version }}
-        run: >
-          uv run --locked python scripts/run_tests_guarded.py --
-          --cov --cov-report=term-missing --cov-fail-under=0
-          --junitxml=junit-linux-py${{ matrix.python-version }}.xml
-
-      # Counts, not a green tick: a leg that collected nothing passed too, and a
-      # leg that lost ONE file is short by a number nothing else reports.
-      - name: Record what this leg actually ran
-        if: always()
-        run: uv run --locked python scripts/ci_record.py --label "py${{ matrix.python-version }}"
-          --require "${{ matrix.python-version }}"
-          --junit "junit-linux-py${{ matrix.python-version }}.xml"
-          --emit "cases/cases-linux-py${{ matrix.python-version }}.json"
-          --all-suites
-
-      - name: Upload this leg's case record
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: case-record-linux-py${{ matrix.python-version }}
-          path: cases/cases-linux-py${{ matrix.python-version }}.json
-          if-no-files-found: error
-
-      - name: Upload this leg's coverage data
-        uses: actions/upload-artifact@v7
-        with:
-          # Must be unique per matrix leg: upload-artifact@v4 refuses a second
-          # upload to the same name, so a static name fails the 3.13 job.
-          name: coverage-data-linux-py${{ matrix.python-version }}
-          path: .coverage.linux-py${{ matrix.python-version }}
-          # The data file starts with a dot, and v4 drops hidden files unless
-          # told otherwise - which would leave the combine step short a leg.
-          include-hidden-files: true
-          # An upload that found nothing is a leg that will be missing from
-          # the comparison below, and the comparison cannot tell that from a
-          # leg that never ran.
-          if-no-files-found: error
-
-  # The job above installs the base package, where the .tgs tests skip - which is
-  # also the proof that the base install works without the optional renderer. This
-  # job installs the extra so that code path is actually exercised somewhere.
-  # Run on Windows as well as Linux: rlottie-python is a NATIVE optional
-  # dependency, so "it installs and renders" is a per-platform fact, not a
-  # per-project one — and the visual half of this fork is Windows-first, which is
-  # exactly where an rlottie wheel failing to build would go unnoticed otherwise.
-  lottie:
-    name: Pytest With Lottie Renderer (${{ matrix.os }})
-    needs: status_begin
-    runs-on: ${{ matrix.os }}
-    # The native rlottie decoder is exactly the kind of child that wedges
-    # without exiting, so this job needs the ceiling more than the others.
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.11'
-
-      # The same pin as the matrix job, for the same reason: this leg is named
-      # after 3.11 and must not quietly resolve the project's own.
-      - name: Point uv at the interpreter this leg installed
-        shell: bash
-        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          # The resolver itself is a dependency of every result below. Pinned so
-          # a uv release cannot change what CI resolved without a commit saying so.
-          version: "0.13.0"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Prove this leg is running the interpreter it is named after
-        run: uv run --locked --extra lottie python scripts/ci_record.py
-          --label "lottie-${{ matrix.os }}" --require "3.11"
-
-      - name: Fail if the lottie extra did not install
-        run: >
-          uv run --locked --extra lottie python -c
-          "from telegram_mcp.visual.frames import lottie_available;
-          assert lottie_available(), 'rlottie-python is missing: the .tgs tests would silently skip'"
-
-      # The whole suite, not a file list. Selecting by path re-creates the exact
-      # hole the guard above exists to close: a renderer-gated test added to any
-      # unlisted file would run with the renderer nowhere and skip silently
-      # everywhere. Running everything under the extra cannot drift.
-      # Measured here too. This is the only job that runs on Windows, so it is
-      # the only place the Win32 capture module executes at all - and the only
-      # place the .tgs renderer does. Both belong in the combined total.
-      - name: Run the whole suite with the renderer available
-        env:
-          TELEGRAM_API_ID: "12345"
-          TELEGRAM_API_HASH: "dummy_hash"
-          TELEGRAM_SESSION_NAME: "test_session"
-          COVERAGE_FILE: .coverage.lottie-${{ matrix.os }}
-        run: >
-          uv run --locked --extra lottie python scripts/run_tests_guarded.py --
-          -q --cov --cov-report= --cov-fail-under=0
-          --junitxml=junit-lottie-${{ matrix.os }}.xml
-
-      - name: Record what this leg actually ran
-        if: always()
-        run: uv run --locked --extra lottie python scripts/ci_record.py
-          --label "lottie-${{ matrix.os }}" --require "3.11"
-          --junit "junit-lottie-${{ matrix.os }}.xml"
-          --emit "cases/cases-lottie-${{ matrix.os }}.json"
-          --all-suites
-
-      - name: Upload this leg's case record
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: case-record-lottie-${{ matrix.os }}
-          path: cases/cases-lottie-${{ matrix.os }}.json
-          if-no-files-found: error
-
-      - name: Upload this leg's coverage data
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-data-lottie-${{ matrix.os }}
-          path: .coverage.lottie-${{ matrix.os }}
-          include-hidden-files: true
-          # An upload that found nothing is a leg that will be missing from
-          # the comparison below, and the comparison cannot tell that from a
-          # leg that never ran.
-          if-no-files-found: error
-
-  # The launchers are PowerShell and Windows-only, and nothing ran their tests
-  # until now - which is how `tests/test_update_menu.ps1` was able to outlive the
-  # script it tested. Discovery, not a list, for exactly that reason: a suite
-  # added here is picked up, and one whose subject is deleted fails loudly.
-  launchers:
-    name: PowerShell Launcher Tests
-    needs: status_begin
-    runs-on: windows-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      # Launcher fixtures use fake uv, but still exercise the real installed
-      # interpreter prerequisite; never relax production startup for a CI host.
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.11'
-
-      - name: Install uv for launcher integration
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          version: "0.13.0"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Prepare locked launcher integration environment
-        run: uv sync --locked --all-extras --group dev --python 3.11
-
-      - name: Run every PowerShell suite
-        shell: pwsh
-        env:
-          TELEGRAM_API_ID: '12345'
-          TELEGRAM_API_HASH: 'synthetic-ci-api-hash'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $suites = @(Get-ChildItem -Path tests -Filter 'test_*.ps1' -File | Sort-Object Name)
-          if ($suites.Count -eq 0) { throw 'No PowerShell suites found under tests/ - discovery is broken.' }
-          Write-Host "Found $($suites.Count) suite(s): $(($suites.Name) -join ', ')"
-
-          $failed = @()
-          foreach ($suite in $suites) {
-              Write-Host "::group::$($suite.Name)"
-              & pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File $suite.FullName
-              $code = $LASTEXITCODE
-              Write-Host '::endgroup::'
-              if ($code -ne 0) { $failed += "$($suite.Name) (exit $code)" }
-          }
-          if ($failed.Count -gt 0) { throw "PowerShell suites failed: $($failed -join '; ')" }
-          Write-Host "All $($suites.Count) PowerShell suite(s) passed."
-
-  # A locked dependency graph is only as safe as the last time anyone looked at
-  # it. Dependabot proposes upgrades; this asks the separate question of whether
-  # what is pinned RIGHT NOW has a known advisory against it, transitive
-  # dependencies included - which a version bump nobody has merged does not
-  # answer.
-  #
-  # Against the exported lockfile rather than an installed environment, so the
-  # answer is about what this project resolves to and not about whatever else the
-  # runner happens to have. `--no-dev`: a vulnerability in a test-only tool is
-  # worth knowing and is not a vulnerability in what ships.
-  audit:
-    name: Locked Dependencies Have No Known Advisory
-    needs: status_begin
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        id: python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-
-      - name: Point uv at the interpreter this job installed
-        shell: bash
-        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          version: "0.13.0"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Export exactly what the lockfile resolves to
-        run: uv export --locked --no-dev --no-emit-project --format requirements-txt
-          --output-file locked-production.txt
-
-      # pip-audit refuses a VCS requirement outright - "we don't have a way to hash
-      # version control repositories" - and fails the whole file rather than that one
-      # line. `kiaro-telethon-secret-chat` is the owner's package, pinned by git to its
-      # repository (it is not on PyPI), so the pin is not negotiable here.
-      #
-      # The owner's package has no index release; its own repository scans its source.
-      # Telethon's official development pin still declares 1.45.0: audit that release
-      # for published advisories. This does not audit the development source delta,
-      # which needs source review and the compatibility tests in the suite.
-      # All other third-party requirements are audited unchanged.
-      - name: Translate git pins for release advisory matching
-        run: |
-          grep -c '^kiaro-telethon-secret-chat @ git+' locked-production.txt
-          grep -c '^telethon @ git+' locked-production.txt
-          grep -v -E '^(kiaro-telethon-secret-chat|telethon) @ git+' locked-production.txt > audited.txt
-          # Audit the source pin's declared release; pip-audit cannot hash VCS URLs.
-          printf '\ntelethon==1.45.0 --hash=sha256:339e24c83aedc9f12cbe389264627edc49779e4289c535aa90aafc4ce62f7972\n' >> audited.txt
-          mv audited.txt locked-production.txt
-
-      # Pinned, like every other tool here: an auditor that changes underneath
-      # the project turns a green run into a claim about a different checker.
-      - name: Refuse a known advisory in the locked graph
-        run: uvx pip-audit==2.9.0 --requirement locked-production.txt --strict --progress-spinner off
-
-  # Every leg ran the same suite on the same commit, so they must agree on how
-  # many cases exist. A dropped file is identical to success in every other
-  # number - nothing goes red, the total is simply short.
-  #
-  # Deliberately not a stored baseline: cross-leg agreement needs no state
-  # carried between runs and no number to maintain, so adding tests never breaks
-  # it and losing a file on one leg always does.
-  case_counts:
-    name: Every Leg Collected The Same Cases
-    runs-on: ubuntu-latest
-    needs: [test, lottie]
-    timeout-minutes: 5
-
-    steps:
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-
-      # Every record is named after its own leg, so merge-multiple cannot lose
-      # one to a basename collision - the same rule the coverage data files follow.
-      - name: Collect every leg's case record
-        uses: actions/download-artifact@v8
-        with:
-          pattern: case-record-*
-          path: case-records
-          merge-multiple: true
-
-      # Two questions, one step. `--compare`: did the legs agree with each other
-      # (a suite lost on ONE leg). `--suites`: is the number of tracked suites
-      # still the declared one (a suite deleted on ALL of them, where every leg
-      # agrees perfectly on the smaller number and the run is green).
-      - name: Refuse a run missing legs, disagreeing, or dropping a suite
-        run: python scripts/ci_record.py --compare case-records
-          --legs .github/expected-legs.txt
-          --suites .github/expected-suites.txt
-          --expect-commit "${{ github.sha }}"
-          --expect-lock
-
-  # The floor, applied once, to everything that ran.
-  #
-  # Neither runner can execute the whole project. telegram_mcp.visual.capture
-  # is Win32 (PrintWindow) and 110 of its lines cannot run on Linux; the POSIX
-  # branches of handles.py, owner_only.py and singleton.py cannot run on
-  # Windows. Measured on the first CI runs this repository ever had, the same
-  # commit read 85.49% on windows-latest and 81.90% on ubuntu-latest - so
-  # gating either number alone gates the runner, not the suite.
-  #
-  # No separate 'did every leg upload' check: a missing leg takes its platform's
-  # exclusive modules down to near zero, which puts the total under the floor
-  # and fails right here. The floor is its own guard.
-  coverage:
-    name: Combined Coverage Gate
-    runs-on: ubuntu-latest
-    needs: [test, lottie]
-    timeout-minutes: 10
-
-    steps:
-      # `coverage report` reads the source to say which lines were missed, so
-      # the checkout is load-bearing here, not habit.
-      - name: Check out repository code
-        uses: actions/checkout@v7
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: '3.13'
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          # The resolver itself is a dependency of every result below. Pinned so
-          # a uv release cannot change what CI resolved without a commit saying so.
-          version: "0.13.0"
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      # `merge-multiple` extracts every matched artifact into ONE directory, and
-      # the collision it silently loses to is on the FILE basename inside each
-      # artifact, not on the artifact name. Same-named files overwrite each other,
-      # a concurrent extraction can leave one half-written, and the combined
-      # number comes out lower with nothing failing to say so.
-      #
-      # Safe here only because every leg names its data file after itself:
-      # .coverage.linux-py3.11, .coverage.linux-py3.13, .coverage.lottie-ubuntu-latest,
-      # .coverage.lottie-windows-latest. Do not collapse those to a constant name.
-      - name: Collect every leg's coverage data
-        uses: actions/download-artifact@v8
-        with:
-          pattern: coverage-data-*
-          path: coverage-data
-          merge-multiple: true
-
-      - name: Combine the platforms and apply the floor
-        run: |
-          uv run --locked python -m coverage combine coverage-data
-          uv run --locked python -m coverage report
-          uv run --locked python -m coverage xml
-
-      - name: Upload the combined report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: coverage-xml-combined
-          path: coverage.xml

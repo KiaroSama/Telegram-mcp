@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: assertive
+  # The single migration PR removes hundreds of legacy Python files. Review
+  # current executable code and regression tests within CodeRabbit's 300-file
+  # service limit. Generated catalogues, historical documents and controlled
+  # subprocess fixtures/shared harnesses and module-only test entrypoints remain
+  # validated by the native CI gates and peer review. Every application file and
+  # every regression test body is included.
+  path_filters:
+    - "**/*.rs"
+    - "**/*.ps1"
+    - "*.ps1"
+    - ".github/workflows/**"
+    - ".github/actions/**"
+    - ".github/codeql/**"
+    - "Cargo.toml"
+    - "docker-compose.yml"
+    - "!tests/fixtures/**"
+    - "!tests/common/**"
+    - "!tests/local_dispatch_support/**"
+    - "!tests/local_support/**"
+    - "!tests/rust_advanced.rs"
+    - "!tests/rust_advanced/common.rs"
+    - "!tests/rust_documents.rs"
+    - "!tests/rust_identity.rs"
+    - "!tests/rust_identity/common.rs"
+    - "!tests/rust_mcp_transport.rs"
+    - "!tests/rust_mcp_transport/common.rs"
+    - "!tests/rust_media_pipeline.rs"
+    - "!tests/rust_messaging_branches.rs"
+    - "!tests/rust_messaging_branches/support.rs"
+    - "!tests/rust_proxy_transport/support.rs"
+    - "!.github/workflows/python-lint-format.yml"
+    # These unchanged build/audit wrappers were reviewed in the preceding
+    # migration round. Their actual build/scanner gates continue to run; keep
+    # the service's review slots for all Rust/PowerShell code and test bodies.
+    - "!.github/workflows/gitleaks-history-audit.yml"
+  path_instructions:
+    - path: "src/**"
+      instructions: >-
+        Review this native Rust migration against its documented account,
+        approval, filesystem and Telegram behavior contracts. Pay particular
+        attention to authorization ownership, crash-safe session persistence,
+        scheduled versus sent message namespaces, chat and topic restrictions,
+        bounded native workers, unknown mutation outcomes and Windows/macOS
+        behavior. Secret-chat integration is explicitly deferred. The retained
+        PowerShell launchers must invoke the native binaries.

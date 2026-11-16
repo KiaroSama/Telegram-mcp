@@ -1,49 +1,32 @@
 repos:
-  - repo: https://github.com/psf/black
-    rev: 26.10.1
-    hooks:
-      - id: black
-        language_version: python3
-
-  - repo: https://github.com/pycqa/flake8
-    rev: 7.5.0
-    hooks:
-      - id: flake8
-        args: ["--count", "--select=E9,F63,F7,F82", "--show-source", "--statistics"]
-
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: check-merge-conflict
-
-  - repo: https://github.com/hadolint/hadolint
-    rev: v2.12.0
-    hooks:
-      - id: hadolint-docker
-        args: ["--failure-threshold", "error", "Dockerfile"]
-
   - repo: local
     hooks:
-      - id: secret-scan
-        name: refuse to publish a credential or a private path
-        entry: python scripts/secret_scan.py
+      - id: rust-format
+        name: Rust formatting
+        entry: cargo fmt --all --check
         language: system
         pass_filenames: false
-        # pre-push, not pre-commit: a local commit is recoverable, a push to a
-        # public repository is not - GitHub's own guidance is that data reaching
-        # a fork cannot be removed from it by the owner or by Support.
+      - id: rust-clippy
+        name: Rust Clippy
+        entry: cargo clippy --locked --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
         stages: [pre-push]
-      - id: docker-compose-config
-        name: docker compose config
-        entry: docker compose --env-file .env.example config
+      - id: rust-tests
+        name: Native Rust behavioral tests
+        entry: cargo test --locked --all-features
         language: system
         pass_filenames: false
-        stages: [pre-commit]
-      - id: pytest-coverage-ci
-        name: pytest with coverage (ci parity)
-        entry: uv run --env-file .env.example python scripts/run_tests_guarded.py -- --cov --cov-report=term-missing --cov-report=xml
+        stages: [pre-push]
+      - id: publication-privacy
+        name: Refuse credentials private paths and unmigrated source
+        entry: cargo run --locked --bin ci -- privacy
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: publication-history
+        name: Scan reachable history before publication
+        entry: cargo run --locked --bin ci -- privacy-history
         language: system
         pass_filenames: false
         stages: [pre-push]

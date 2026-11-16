@@ -1,7 +1,7 @@
 {
   "name": "telegram-mcp",
-  "version": "1.0.0",
-  "description": "Connect to your existing local Telegram MCP service.",
+  "version": "2.0.0",
+  "description": "Connect to the authenticated native Rust Telegram MCP service. Configure its bearer token privately.",
   "mcpServers": {
     "telegram-mcp": {
       "httpUrl": "http://127.0.0.1:8765/mcp"

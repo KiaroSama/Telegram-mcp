@@ -15,7 +15,9 @@ registries. Personal content stays in approved private storage, not this plugin,
 public repository or unapproved external destination.
 
 Read [verification.md](references/verification.md). Settings are dated read-only
-evidence, not guaranteed restore input. Check secret_chat_status for secret chats:
+evidence, not guaranteed restore input. Secret-chat integration is deferred in the Rust migration. If the connected server
+actually exposes secret_chat_status after the owner supplies the separate Rust backend,
+check it for secret chats:
 device-local history can be missing, and protocol capabilities differ. Content
 export is not crypto custody/account restoration. Never copy live protocol stores
 or restore stale counters; stopped-service crypto backup is separate authorized work.

@@ -1,0 +1,84 @@
+[package]
+name = "telegram-mcp"
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.100"
+description = "Native Rust Telegram MCP server powered by grammers"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/KiaroSama/Telegram-mcp"
+publish = false
+default-run = "telegram-mcp"
+
+[dependencies]
+aes = "0.9"
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+crc32fast = "1"
+ctr = "0.10"
+clap = { version = "4", features = ["derive", "env"] }
+fs2 = "0.4"
+flate2 = "1"
+futures-util = "0.3"
+grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", features = ["markdown", "html", "proxy"] }
+grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", features = ["proxy"] }
+grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
+grammers-session = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", default-features = false, features = ["serde"] }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+hmac = "0.12"
+libc = "0.2"
+libloading = "0.8"
+md5 = "0.8"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+lopdf = { version = "0.47", default-features = false }
+rand = "0.9"
+regex = "1"
+reqwest = { version = "0.13", features = ["json", "query", "multipart"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+rustls-platform-verifier = "=0.7.1"
+rmcp = { version = "3.10", features = ["server", "client", "transport-io", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }
+roxmltree = "0.21"
+rusqlite = { version = "0.43", default-features = false, features = ["bundled", "limits", "hooks"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
+subtle = "=2.6.1"
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws_lc_rs", "tls12"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"
+url = "2"
+zip = { version = "9.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+x25519-dalek = "3"
+zeroize = "=1.9.1"
+axum-server = { version = "=0.9.2", features = ["tls-rustls"] }
+
+[dev-dependencies]
+rcgen = "0.14"
+tokio = { version = "1", features = ["test-util"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_JobObjects", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Xps", "Win32_UI_HiDpi"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
