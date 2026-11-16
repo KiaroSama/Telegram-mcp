@@ -93,13 +93,58 @@ fn dropping_the_supervisor_joins_its_thread_before_releasing_captured_state() {
 const MEMORY_PROBE_OUTPUT_LIMIT: usize = 4096;
 const MEMORY_PROBE_READY: &[u8] = b"supervisor-ready-before-input";
 
+struct MemoryProbeOutput {
+    total: u64,
+    prefix: Vec<u8>,
+    tail: Vec<u8>,
+}
+
+impl MemoryProbeOutput {
+    fn new() -> Self {
+        Self {
+            total: 0,
+            prefix: Vec::with_capacity(MEMORY_PROBE_OUTPUT_LIMIT / 2),
+            tail: Vec::with_capacity(MEMORY_PROBE_OUTPUT_LIMIT / 2),
+        }
+    }
+
+    fn retain(&mut self, bytes: &[u8]) {
+        self.total = self.total.saturating_add(bytes.len() as u64);
+        let part_limit = MEMORY_PROBE_OUTPUT_LIMIT / 2;
+        let prefix = bytes.len().min(part_limit - self.prefix.len());
+        self.prefix.extend_from_slice(&bytes[..prefix]);
+        let bytes = &bytes[prefix..];
+        if bytes.len() >= part_limit {
+            self.tail.clear();
+            self.tail
+                .extend_from_slice(&bytes[bytes.len() - part_limit..]);
+        } else {
+            let discard = (self.tail.len() + bytes.len()).saturating_sub(part_limit);
+            self.tail.drain(..discard);
+            self.tail.extend_from_slice(bytes);
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryProbeOutput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{} bytes drained; prefix: {:?}; tail: {:?}",
+            self.total,
+            String::from_utf8_lossy(&self.prefix),
+            String::from_utf8_lossy(&self.tail)
+        )
+    }
+}
+
 struct DrainedMemoryChild {
     child: std::process::Child,
-    readers: Vec<std::thread::JoinHandle<io::Result<Vec<u8>>>>,
+    readers: Vec<std::thread::JoinHandle<io::Result<MemoryProbeOutput>>>,
 }
 
 impl DrainedMemoryChild {
-    fn join_output(&mut self) -> Vec<io::Result<Vec<u8>>> {
+    fn join_output(&mut self) -> Vec<io::Result<MemoryProbeOutput>> {
         self.readers
             .drain(..)
             .map(|reader| {
@@ -122,9 +167,9 @@ impl Drop for DrainedMemoryChild {
 fn drain_memory_probe_output(
     mut pipe: impl io::Read + Send + 'static,
     mut ready: Option<std::sync::mpsc::SyncSender<()>>,
-) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
+) -> std::thread::JoinHandle<io::Result<MemoryProbeOutput>> {
     std::thread::spawn(move || {
-        let mut retained = Vec::with_capacity(MEMORY_PROBE_OUTPUT_LIMIT);
+        let mut retained = MemoryProbeOutput::new();
         let mut marker = Vec::with_capacity(MEMORY_PROBE_READY.len() + 1024);
         let mut chunk = [0; 1024];
         loop {
@@ -132,8 +177,7 @@ fn drain_memory_probe_output(
             if count == 0 {
                 return Ok(retained);
             }
-            let keep = count.min(MEMORY_PROBE_OUTPUT_LIMIT - retained.len());
-            retained.extend_from_slice(&chunk[..keep]);
+            retained.retain(&chunk[..count]);
             if ready.is_some() {
                 marker.extend_from_slice(&chunk[..count]);
                 if marker
@@ -179,24 +223,7 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
             std::thread::sleep(Duration::from_secs(10));
             panic!("Native Darwin accounting did not enforce its physical-memory budget");
         }
-        if mode == "panic" {
-            let original = std::panic::take_hook();
-            std::panic::set_hook(Box::new(move |info| {
-                // Exceed both pipe capacities before catch_unwind can return.
-                // This proves that both readers keep draining past retention.
-                let chunk = [b'p'; 4096];
-                for mut output in [
-                    Box::new(std::io::stdout()) as Box<dyn std::io::Write>,
-                    Box::new(std::io::stderr()) as Box<dyn std::io::Write>,
-                ] {
-                    for _ in 0..32 {
-                        std::io::Write::write_all(&mut output, &chunk).unwrap();
-                    }
-                    std::io::Write::flush(&mut output).unwrap();
-                }
-                original(info);
-            }));
-        }
+        let stress_output = mode == "panic";
         let count = AtomicUsize::new(0);
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = Arc::clone(&ready);
@@ -213,6 +240,21 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
             }
         })
         .unwrap();
+        if stress_output {
+            // Exercise both drains before arming the sampler. Deliberately slow
+            // diagnostic IO belongs to startup, not the guard's reaction clock.
+            // The real sampler panic below retains Rust's default panic hook.
+            let chunk = [b'p'; 4096];
+            for mut output in [
+                Box::new(std::io::stdout()) as Box<dyn std::io::Write>,
+                Box::new(std::io::stderr()) as Box<dyn std::io::Write>,
+            ] {
+                for _ in 0..32 {
+                    std::io::Write::write_all(&mut output, &chunk).unwrap();
+                }
+                std::io::Write::flush(&mut output).unwrap();
+            }
+        }
         // Model a caller descheduled after guard startup. Polling must not
         // activate the synthetic failure before its readiness marker exists.
         std::thread::sleep(Duration::from_millis(30));
@@ -278,24 +320,23 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
         let output = probe.join_output();
         let stdout = output[0].as_ref().unwrap();
         let stderr = output[1].as_ref().unwrap();
-        assert!(stdout.len() <= MEMORY_PROBE_OUTPUT_LIMIT);
-        assert!(stderr.len() <= MEMORY_PROBE_OUTPUT_LIMIT);
+        assert!(stdout.prefix.len() + stdout.tail.len() <= MEMORY_PROBE_OUTPUT_LIMIT);
+        assert!(stderr.prefix.len() + stderr.tail.len() <= MEMORY_PROBE_OUTPUT_LIMIT);
         let status = outcome.unwrap_or_else(|error| {
-            panic!(
-                "{error}; bounded stdout: {}; bounded stderr: {}",
-                String::from_utf8_lossy(stdout),
-                String::from_utf8_lossy(stderr)
-            )
+            panic!("{error}; bounded stdout: {stdout}; bounded stderr: {stderr}")
         });
-        assert_eq!(
-            status.code(),
-            Some(MEMORY_EXIT),
-            "{mode}: {}",
-            String::from_utf8_lossy(stderr)
-        );
+        assert_eq!(status.code(), Some(MEMORY_EXIT), "{mode}: {stderr}");
         if *mode == "panic" {
-            assert_eq!(stdout.len(), MEMORY_PROBE_OUTPUT_LIMIT);
-            assert_eq!(stderr.len(), MEMORY_PROBE_OUTPUT_LIMIT);
+            assert_eq!(
+                stdout.prefix.len() + stdout.tail.len(),
+                MEMORY_PROBE_OUTPUT_LIMIT
+            );
+            assert_eq!(
+                stderr.prefix.len() + stderr.tail.len(),
+                MEMORY_PROBE_OUTPUT_LIMIT
+            );
+            assert!(stdout.total >= 128 * 1024);
+            assert!(stderr.total >= 128 * 1024);
         }
     }
 }

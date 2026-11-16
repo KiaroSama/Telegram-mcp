@@ -130,8 +130,8 @@ source contributes to these percentages. This is an explicit metric change from 
 old Python line/branch collector, not a claim that the two percentages measure
 identical code. A clean post-review Linux checkpoint passed all **1,853 tests**, with
 zero failures or skips and actual rlottie rendering required. Unique physical-line
-coverage measured **88.07% reviewed core (17,000 of 19,303 executable source lines)**
-and **85.58% all production (23,133 of 27,032 executable source lines)**. Exact source
+coverage measured **88.06% reviewed core (16,999 of 19,303 executable source lines)**
+and **85.57% all production (23,132 of 27,032 executable source lines)**. Exact source
 fingerprints and original test-run identifiers remain in the
 individual reports. This is single-platform evidence; the combined CI gate requires
 actual reports from every configured OS/architecture leg. Reviewed inventories for
