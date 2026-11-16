@@ -1,22 +1,37 @@
 {
   "tests.yml": [
     "Lockfile matches manifest",
-    "Native release and tests (linux)",
-    "Native release and tests (macos)",
-    "Native release and tests (windows)",
-    "Native renderer tests (linux)",
-    "Native renderer tests (macos)",
-    "Native renderer tests (windows)",
-    "PowerShell launcher tests",
+    "Native release and tests (linux-x86_64)",
+    "Native release and tests (linux-aarch64)",
+    "Native release and tests (macos-x86_64)",
+    "Native release and tests (macos-aarch64)",
+    "Native release and tests (windows-x86_64)",
+    "Native release and tests (windows-aarch64)",
+    "Native renderer tests (linux-x86_64)",
+    "Native renderer tests (linux-aarch64)",
+    "Native renderer tests (macos-x86_64)",
+    "Native renderer tests (macos-aarch64)",
+    "Native renderer tests (windows-x86_64)",
+    "Native renderer tests (windows-aarch64)",
+    "PowerShell launcher tests (windows-x86_64)",
+    "PowerShell launcher tests (windows-aarch64)",
     "Locked dependencies have no known advisory",
     "Every operating system matches reviewed case inventory",
     "Critical native behavior categories are verified",
     "Combined coverage gate"
   ],
-  "rust-lint-format.yml": ["Rust formatting and Clippy"],
-  "secret-scan.yml": ["Refuse credentials private paths and unmigrated source"],
-  "codeql.yml": ["Analyse Rust and Actions"],
-  "gitleaks.yml": ["Gitleaks secret scan"],
+  "rust-lint-format.yml": [
+    "Rust formatting and Clippy"
+  ],
+  "secret-scan.yml": [
+    "Refuse credentials private paths and unmigrated source"
+  ],
+  "codeql.yml": [
+    "Analyse Rust and Actions"
+  ],
+  "gitleaks.yml": [
+    "Gitleaks secret scan"
+  ],
   "docker-build.yml": [
     "Build native Docker image",
     "State survives container replacement",

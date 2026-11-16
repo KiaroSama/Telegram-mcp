@@ -116,12 +116,19 @@ async fn revoked_link_delete_failure_reports_revocation_succeeded() {
 #[tokio::test]
 async fn qr_is_a_real_mcp_png_image_with_quiet_border_without_network() {
     let m = Mock::new();
-    let r = run(
-        &m,
-        "get_invite_link_qr",
-        json!({"link":"https://t.me/+abc"}),
+    let temp = tempfile::tempdir().unwrap();
+    let files = temp.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let state = telegram_mcp::state::State::at_with_installation(
+        temp.path().join("state"),
+        vec![files],
+        temp.path().to_owned(),
     )
-    .await
+    .unwrap();
+    let r = telegram_mcp::tools::identity::invite_link_qr_in(
+        &state,
+        &json!({"link":"https://t.me/+abc"}),
+    )
     .unwrap();
     assert_eq!(r["content"][0]["type"], "image");
     assert_eq!(r["content"][0]["mimeType"], "image/png");
@@ -130,6 +137,13 @@ async fn qr_is_a_real_mcp_png_image_with_quiet_border_without_network() {
         .decode(r["content"][0]["data"].as_str().unwrap())
         .unwrap();
     let image = image::load_from_memory(&bytes).unwrap().into_luma8();
+    let published = std::path::Path::new(
+        r["path"]
+            .as_str()
+            .expect("QR must return its published path"),
+    );
+    assert!(published.starts_with(state.default_downloads().unwrap()));
+    assert_eq!(std::fs::read(published).unwrap(), bytes);
     assert!(image.width() >= 256);
     assert_eq!(image.width(), image.height());
     assert_eq!(image.get_pixel(0, 0).0, [255]);

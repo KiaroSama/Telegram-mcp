@@ -4,6 +4,15 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::watch;
 
+#[derive(Debug)]
+pub(crate) struct Cancelled;
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Export cancelled")
+    }
+}
+impl std::error::Error for Cancelled {}
+
 #[derive(Clone)]
 struct Job {
     record: Value,
@@ -20,7 +29,7 @@ pub fn start(
     api: Arc<dyn crate::backend::Telegram>,
     kind: &str,
     args: Value,
-    settings: super::settings::Settings,
+    mut settings: super::settings::Settings,
 ) -> Result<Value> {
     let id = format!(
         "export-{}",
@@ -29,6 +38,7 @@ pub fn start(
             .context("Random identifier was not a string")?
     );
     let (cancel, receiver) = watch::channel(false);
+    let reservation = settings.reserve()?;
     let record = json!({"job_id":id,"kind":kind,"chat_id":args["chat_id"],"folder":settings.path,
         "status":"running","messages_so_far":0,"files_so_far":0,"started_at":chrono::Utc::now().to_rfc3339()});
     {
@@ -51,15 +61,16 @@ pub fn start(
     }
     let kind = kind.to_owned();
     tokio::spawn(async move {
-        let result = super::run(api.as_ref(), &kind, &args, &settings, receiver, &id).await;
+        let result =
+            super::run_inner(api.as_ref(), &kind, &args, &settings, receiver, &id, true).await;
+        drop(reservation);
         if let Ok(mut all) = jobs().lock()
             && let Some(job) = all.get_mut(&id)
         {
-            let cancelled = *job.cancel.borrow();
-            job.record["status"] = if cancelled {
-                "cancelled"
-            } else if result.is_ok() {
+            job.record["status"] = if result.is_ok() {
                 "done"
+            } else if result.as_ref().is_err_and(|error| error.is::<Cancelled>()) {
+                "cancelled"
             } else {
                 "failed"
             }

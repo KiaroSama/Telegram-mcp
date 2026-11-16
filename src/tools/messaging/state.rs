@@ -40,7 +40,23 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     };
     match name {
         "pin_message"|"unpin_message"=>api.invoke("messages.updatePinnedMessage",json!({"peer":p,"id":mid,"unpin":name=="unpin_message","silent":!args::boolean(a,"notify",false)?})).await,
-        "unpin_all_messages"=>api.invoke("messages.unpinAllMessages",json!({"peer":p})).await,
+        "unpin_all_messages"=>{
+            let deadline=tokio::time::Instant::now()+std::time::Duration::from_secs(30);
+            let mut last=Value::Null;
+            for pass in 1..=20 {
+                let outcome=tokio::time::timeout_at(deadline,api.invoke("messages.unpinAllMessages",json!({"peer":p}))).await;
+                match outcome {
+                    Ok(Ok(result))=>{
+                        let offset=result["offset"].as_i64().ok_or_else(||anyhow::anyhow!("Unpin response omitted its continuation offset; inspect pins before retrying"))?;
+                        last=result;
+                        if offset==0{return Ok(json!({"completed":true,"passes":pass,"result":last}))}
+                        ensure!(offset>0,"Unpin response has an invalid continuation offset");
+                    },
+                    _=>return Ok(json!({"completed":false,"passes":pass,"result":last,"outcome":"Unpin continuation failed or timed out; the current batch may have completed. Inspect pins before retrying."})),
+                }
+            }
+            Ok(json!({"completed":false,"passes":20,"result":last,"outcome":"Unpin continuation reached the bounded batch ceiling; pins remain to inspect."}))
+        },
         "send_reaction"|"remove_reaction"=>{
             let mut reactions=vec![];
             if name=="send_reaction"{

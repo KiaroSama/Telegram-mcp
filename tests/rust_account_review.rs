@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use telegram_mcp::{
     account_manager::{
         begin_login, config_digest, parse_config, read_config, recover_logins, recover_rename,
-        remove_account, write_env_value,
+        remove_account, rename_configured_account, write_env_value,
     },
     state::State,
 };
@@ -162,7 +162,7 @@ async fn supported_loopback_https_discovery_reports_transport_failure_as_unverif
         .write_json(
             "http-service.json",
             &json!({
-                "url":format!("https://{address}/mcp"), "token":"h".repeat(64),
+                "url":format!("https://{address}/mcp"), "token":"h".repeat(64), "health_protocol":2,
             }),
         )
         .unwrap();
@@ -417,6 +417,195 @@ fn removal_recovery_preserves_a_replaced_or_missing_configuration_and_its_journa
             assert_eq!(std::fs::read_to_string(&env).unwrap(), content);
         }
     }
+}
+
+#[test]
+fn configured_rename_commits_the_source_key_and_native_binding_without_rewriting_values() {
+    use base64::Engine;
+    for prefix in ["TELEGRAM_SESSION_NAME", "TELEGRAM_SESSION_STRING"] {
+        let (dir, state) = fixture();
+        let env = dir.path().join("selected.env");
+        let key = format!("{prefix}_WoRk");
+        let target = format!("{prefix}_OFFICE");
+        let value = if prefix.ends_with("NAME") {
+            r"C:\Fixtures\work.session".to_owned()
+        } else {
+            let mut bytes = vec![2, 149, 154, 167, 41, 1, 187];
+            bytes.extend([7; 256]);
+            format!(
+                "1{}",
+                base64::engine::general_purpose::URL_SAFE.encode(bytes)
+            )
+        };
+        let original = format!(
+            "\u{feff}# retained\r\nexport {key} = '{value}' # original spelling\r\nOTHER=\"first\r\nsecond\"\r\n"
+        );
+        std::fs::write(&env, &original).unwrap();
+        let mut session = snapshot(42, 7);
+        session["authorization_source"] = json!(format!("{key}:{}", config_digest(&value)));
+        state.write_json("work.session.json", &session).unwrap();
+        rename_configured_account(&state, "work", "office", &env, &key).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&env).unwrap(),
+            original.replace(&key, &target)
+        );
+        assert!(!state.root().join("work.session.json").exists());
+        let renamed = state.read_json("office.session.json", Value::Null).unwrap();
+        assert_eq!(renamed["dc_options"], session["dc_options"]);
+        assert_eq!(
+            renamed["authorization_source"],
+            format!("{target}:{}", config_digest(&value))
+        );
+        assert!(
+            !state
+                .root()
+                .join("account-rename-transaction.json")
+                .exists()
+        );
+    }
+}
+
+fn interrupted_configured_rename(
+    state: &State,
+    env: &std::path::Path,
+    moved: bool,
+) -> (Value, Value) {
+    let before = json!({"accounts":{"work":true}});
+    let after = json!({"accounts":{"office":true}});
+    state
+        .write_json("work.session.json", &snapshot(42, 7))
+        .unwrap();
+    state
+        .write_json("ghost.json", if moved { &after } else { &before })
+        .unwrap();
+    if moved {
+        std::fs::rename(
+            state.root().join("work.session.json"),
+            state.root().join("office.session.json"),
+        )
+        .unwrap();
+    }
+    state.write_json("account-rename-transaction.json",&json!({
+        "from":"work","to":"office","files":[["work.session.json","office.session.json"]],
+        "rewrites":[{"name":"ghost.json","before":before,"after":after}],
+        "configuration":{"env_file":env,"key":"TELEGRAM_SESSION_NAME_WORK","digest":config_digest("work"),"new_key":"TELEGRAM_SESSION_NAME_OFFICE"},
+    })).unwrap();
+    (before, after)
+}
+
+#[test]
+fn configured_rename_recovery_rolls_back_state_before_the_key_commit_without_clobbering_env() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    let current = "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=concurrent\n";
+    std::fs::write(&env, current).unwrap();
+    let (before, _) = interrupted_configured_rename(&state, &env, true);
+    recover_rename(&state).unwrap();
+    assert!(state.root().join("work.session.json").is_file());
+    assert!(!state.root().join("office.session.json").exists());
+    assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), before);
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), current);
+}
+
+#[test]
+fn configured_rename_recovery_finishes_state_after_the_exact_key_commit() {
+    for moved in [false, true] {
+        let (dir, state) = fixture();
+        let env = dir.path().join("selected.env");
+        let current = "TELEGRAM_SESSION_NAME_OFFICE=work\nOTHER=concurrent\n";
+        std::fs::write(&env, current).unwrap();
+        let (_, after) = interrupted_configured_rename(&state, &env, moved);
+        recover_rename(&state).unwrap();
+        assert!(!state.root().join("work.session.json").exists());
+        assert!(state.root().join("office.session.json").is_file());
+        assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), after);
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), current);
+        assert!(
+            !state
+                .root()
+                .join("account-rename-transaction.json")
+                .exists()
+        );
+    }
+}
+
+#[test]
+fn configured_rename_recovery_preserves_conflicting_or_ambiguous_configuration() {
+    for current in [
+        "TELEGRAM_SESSION_NAME_WORK=changed\n",
+        "TELEGRAM_SESSION_NAME_OFFICE=changed\n",
+        "OTHER=kept\n",
+        "TELEGRAM_SESSION_NAME_WORK=work\nTELEGRAM_SESSION_NAME_OFFICE=work\n",
+    ] {
+        let (dir, state) = fixture();
+        let env = dir.path().join("selected.env");
+        std::fs::write(&env, current).unwrap();
+        let (_, after) = interrupted_configured_rename(&state, &env, true);
+        assert!(recover_rename(&state).is_err());
+        assert!(state.root().join("office.session.json").is_file());
+        assert_eq!(state.read_json("ghost.json", Value::Null).unwrap(), after);
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), current);
+        assert!(
+            state
+                .root()
+                .join("account-rename-transaction.json")
+                .is_file()
+        );
+    }
+}
+
+#[test]
+fn configured_rename_refuses_a_destination_source_before_publishing_any_state() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    let current = "TELEGRAM_SESSION_NAME_WORK=work\nTELEGRAM_SESSION_NAME_OFFICE=other\n";
+    std::fs::write(&env, current).unwrap();
+    state
+        .write_json("work.session.json", &snapshot(42, 7))
+        .unwrap();
+    assert!(
+        rename_configured_account(&state, "work", "office", &env, "TELEGRAM_SESSION_NAME_WORK")
+            .is_err()
+    );
+    assert!(state.root().join("work.session.json").is_file());
+    assert!(!state.root().join("office.session.json").exists());
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), current);
+}
+
+#[test]
+fn configured_rename_preserves_a_native_snapshot_bound_to_an_unrelated_account() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    let current = "TELEGRAM_SESSION_NAME_WORK=work\nOTHER=kept\n";
+    std::fs::write(&env, current).unwrap();
+    let mut original = snapshot(42, 7);
+    original["authorization_source"] = json!(format!(
+        "TELEGRAM_SESSION_NAME_PERSONAL:{}",
+        config_digest("work")
+    ));
+    state.write_json("work.session.json", &original).unwrap();
+    assert!(
+        rename_configured_account(&state, "work", "office", &env, "TELEGRAM_SESSION_NAME_WORK")
+            .is_err()
+    );
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        original
+    );
+    assert!(!state.root().join("office.session.json").exists());
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), current);
 }
 
 #[test]

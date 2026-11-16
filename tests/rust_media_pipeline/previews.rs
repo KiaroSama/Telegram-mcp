@@ -163,3 +163,93 @@ async fn invalid_thumbnail_pixels_and_transfer_budgets_return_honest_errors() {
     );
     assert!(w.downloads.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn an_oversized_custom_emoji_does_not_discard_other_valid_previews() {
+    let mut big = document(3, "large.webp", 5000);
+    big["mime_type"] = json!("image/webp");
+    let mut good = document(4, "small.png", 100);
+    good["mime_type"] = json!("image/png");
+    let w = MediaWire::new(
+        vec![("messages.getCustomEmojiDocuments", json!([big, good]))],
+        png(),
+    );
+    let result = run(
+        &w,
+        "get_custom_emoji",
+        json!({"document_ids":["3","4"],"max_bytes":4096}),
+    )
+    .await
+    .unwrap();
+    assert!(result["metadata"]["emoji"][0]["error"].is_string());
+    assert_eq!(result["metadata"]["emoji"][1]["document_id"], "4");
+    assert_eq!(result["content"].as_array().unwrap().len(), 1);
+    assert_eq!(w.downloads.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn video_frames_sample_the_full_clip_instead_of_only_its_opening_seconds() {
+    use std::{ffi::OsStr, process::Stdio};
+    let name = "rust_media_pipeline::previews::video_frames_sample_the_full_clip_instead_of_only_its_opening_seconds";
+    if std::env::var("TEST_NATIVE_VIDEO_SPAN").as_deref() != Ok("child") {
+        let (_dir, state) = crate::local_support::fixture();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture"])
+            .env("TEST_NATIVE_VIDEO_SPAN", "child")
+            .env("TELEGRAM_STATE_DIR", state.root())
+            .env(
+                "TELEGRAM_FILE_ROOTS",
+                serde_json::to_string(state.file_roots()).unwrap(),
+            )
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("span.mp4");
+    ffmpeg(&[
+        OsStr::new("-f"),
+        OsStr::new("lavfi"),
+        OsStr::new("-i"),
+        OsStr::new("color=c=red:s=32x32:r=1:d=3"),
+        OsStr::new("-f"),
+        OsStr::new("lavfi"),
+        OsStr::new("-i"),
+        OsStr::new("color=c=blue:s=32x32:r=1:d=3"),
+        OsStr::new("-filter_complex"),
+        OsStr::new("[0:v][1:v]concat=n=2:v=1:a=0"),
+        OsStr::new("-c:v"),
+        OsStr::new("mpeg4"),
+        path.as_os_str(),
+    ]);
+    let result = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(media::previews::render(
+            &std::fs::read(path).unwrap(),
+            2,
+            128,
+        ))
+        .unwrap();
+    assert!(
+        result["metadata"]["frame_metadata"][1]["timestamp"]
+            .as_f64()
+            .unwrap_or(0.0)
+            >= 3.0,
+        "The second still must sample the later blue half"
+    );
+    use base64::Engine;
+    let pixels = base64::engine::general_purpose::STANDARD
+        .decode(result["content"][0]["data"].as_str().unwrap())
+        .unwrap();
+    let image = image::load_from_memory(&pixels).unwrap().to_rgb8();
+    assert!(
+        image.pixels().any(|p| p[2] > 150 && p[0] < 70),
+        "The actual contact sheet must include blue pixels from the latter half"
+    );
+}

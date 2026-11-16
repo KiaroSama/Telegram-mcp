@@ -8,11 +8,55 @@ use std::{
     process::Command,
 };
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct NativeLeg {
+    pub platform: String,
+    pub architecture: String,
+    pub target: String,
+}
+
+const NATIVE_TARGETS: [(&str, &str, &str); 6] = [
+    ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
+    ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
+    ("macos", "x86_64", "x86_64-apple-darwin"),
+    ("macos", "aarch64", "aarch64-apple-darwin"),
+    ("windows", "x86_64", "x86_64-pc-windows-msvc"),
+    ("windows", "aarch64", "aarch64-pc-windows-msvc"),
+];
+
+pub(super) fn native_legs() -> Result<BTreeMap<String, NativeLeg>> {
+    let legs = serde_json::from_slice(&fs::read(".github/expected-native-legs.json")?)?;
+    validate_leg_manifest(&legs)?;
+    Ok(legs)
+}
+
+fn validate_leg_manifest(legs: &BTreeMap<String, NativeLeg>) -> Result<()> {
+    let mut required = BTreeMap::new();
+    for (platform, architecture, target) in NATIVE_TARGETS {
+        let leg = NativeLeg {
+            platform: platform.into(),
+            architecture: architecture.into(),
+            target: target.into(),
+        };
+        for prefix in ["", "renderer-"] {
+            required.insert(format!("{prefix}{platform}-{architecture}"), leg.clone());
+        }
+    }
+    ensure!(
+        legs == &required,
+        "Native evidence must include both architectures and renderers for all three operating systems"
+    );
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Record {
     schema_version: u32,
     label: String,
     platform: String,
+    architecture: String,
+    target: String,
     rustc: String,
     commit: String,
     lock_sha256: String,
@@ -40,7 +84,10 @@ pub(super) fn summary(message: &str) -> Result<()> {
 
 pub fn record(label: &str, junit: &Path, destination: &Path) -> Result<()> {
     ensure!(
-        !label.is_empty() && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'),
+        !label.is_empty()
+            && label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')),
         "Invalid CI leg label"
     );
     let document =
@@ -53,12 +100,25 @@ pub fn record(label: &str, junit: &Path, destination: &Path) -> Result<()> {
             "The tested checkout is not the requested commit"
         );
     }
+    let compiler = process::text(Command::new("rustc").arg("-vV"), 15)?;
+    let target = compiler
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .context("The actual native compiler host is missing")?;
+    ensure!(
+        NATIVE_TARGETS.contains(&(env::consts::OS, env::consts::ARCH, target)),
+        "The case recorder is not using a supported native compiler host"
+    );
     let record = Record {
-        schema_version: 1,
+        schema_version: 2,
         label: label.to_owned(),
         platform: env::consts::OS.to_owned(),
-        rustc: process::text(Command::new("rustc").arg("--version"), 15)?
-            .trim()
+        architecture: env::consts::ARCH.to_owned(),
+        target: target.to_owned(),
+        rustc: compiler
+            .lines()
+            .next()
+            .context("Native compiler version is missing")?
             .to_owned(),
         commit,
         lock_sha256: process::digest(Path::new("Cargo.lock"))?,
@@ -73,10 +133,27 @@ pub fn record(label: &str, junit: &Path, destination: &Path) -> Result<()> {
     }
     fs::write(destination, serde_json::to_vec_pretty(&record)?)?;
     summary(&format!(
-        "### {}\n\nCommit: `{}`\n\n{} native tests, {} failed, {} skipped; {}.\n",
-        label, record.commit, record.total, failed, skipped, record.platform
+        "### {}\n\nCommit: `{}`\n\n{} native tests, {} failed, {} skipped; {} / {} / `{}`.\n",
+        label,
+        record.commit,
+        record.total,
+        failed,
+        skipped,
+        record.platform,
+        record.architecture,
+        record.target
     ))?;
-    require_complete_execution(&record)
+    require_complete_execution(&record)?;
+    ensure!(
+        native_legs()?.get(label)
+            == Some(&NativeLeg {
+                platform: record.platform,
+                architecture: record.architecture,
+                target: record.target,
+            }),
+        "The actual native compiler host does not match this reviewed CI architecture label"
+    );
+    Ok(())
 }
 
 fn require_complete_execution(record: &Record) -> Result<()> {
@@ -155,7 +232,7 @@ fn records(directory: &Path) -> Result<Vec<Record>> {
         if path.extension().is_some_and(|e| e == "json") {
             let record: Record = serde_json::from_slice(&fs::read(path)?)?;
             ensure!(
-                record.schema_version == 1
+                record.schema_version == 2
                     && record.total > 0
                     && record.cases.len() == record.total,
                 "Invalid native test record"
@@ -171,24 +248,64 @@ fn records(directory: &Path) -> Result<Vec<Record>> {
 }
 
 pub fn compare(directory: &Path) -> Result<()> {
-    let expected: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(".github/expected-native-legs.json")?)?;
+    let records = validated_records(directory)?;
+    let checkout = process::git(&["rev-parse", "HEAD"])?.trim().to_owned();
+    let mut counts = BTreeMap::new();
+    for record in &records {
+        counts.insert(record.platform.as_str(), record.total);
+    }
+    let counts = counts
+        .iter()
+        .map(|(platform, count)| format!("{platform}: {count}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    summary(&format!(
+        "### Native case agreement\n\nAll {} base/renderer architecture legs match their reviewed operating-system inventories at `{checkout}`. Counts: {counts}. Both ARM64 and x86_64 compiler hosts and target identities were verified; platform-specific Rust cfg cases remain explicit.\n",
+        records.len()
+    ))
+}
+
+fn validated_records(directory: &Path) -> Result<Vec<Record>> {
+    let expected = native_legs()?;
     let records = records(directory)?;
-    let mut actual = BTreeMap::new();
     let checkout = process::git(&["rev-parse", "HEAD"])?.trim().to_owned();
     let lock = process::digest(Path::new("Cargo.lock"))?;
     let expected_cases: BTreeMap<String, Vec<String>> = serde_json::from_slice(
         &fs::read(".github/expected-native-tests.json")
             .context("Expected native case inventory is missing")?,
     )?;
+    validate_record_set(&records, &expected, &expected_cases, &checkout, &lock)?;
+    Ok(records)
+}
+
+fn validate_record_set(
+    records: &[Record],
+    expected: &BTreeMap<String, NativeLeg>,
+    expected_cases: &BTreeMap<String, Vec<String>>,
+    checkout: &str,
+    lock: &str,
+) -> Result<()> {
+    validate_leg_manifest(expected)?;
     ensure!(
         !expected_cases.is_empty(),
         "Expected native case inventory is empty"
     );
-    for record in &records {
+    let mut actual = BTreeMap::new();
+    for record in records {
+        ensure!(
+            record.schema_version == 2 && record.total > 0 && record.total == record.cases.len(),
+            "Invalid native case record version or count"
+        );
         ensure!(
             actual
-                .insert(record.label.clone(), record.platform.clone())
+                .insert(
+                    record.label.clone(),
+                    NativeLeg {
+                        platform: record.platform.clone(),
+                        architecture: record.architecture.clone(),
+                        target: record.target.clone()
+                    }
+                )
                 .is_none(),
             "Duplicate CI leg record"
         );
@@ -207,18 +324,10 @@ pub fn compare(directory: &Path) -> Result<()> {
         );
     }
     ensure!(
-        actual == expected,
-        "Native test records are missing an expected operating-system leg"
+        &actual == expected,
+        "Native records are missing a required architecture, contain a mislabeled compiler target, or belong to the wrong native runner"
     );
-    let counts = expected_cases
-        .iter()
-        .map(|(platform, cases)| format!("{platform}: {}", cases.len()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    summary(&format!(
-        "### Native case agreement\n\nAll {} base/renderer legs match their reviewed operating-system inventories at `{checkout}`. Counts: {counts}. Platform-specific Rust cfg cases remain explicit.\n",
-        records.len()
-    ))
+    Ok(())
 }
 
 pub fn parity(directory: &Path) -> Result<()> {
@@ -233,7 +342,7 @@ pub fn parity(directory: &Path) -> Result<()> {
     let categories = ledger["categories"]
         .as_object()
         .context("Native verification categories are missing")?;
-    let native: BTreeSet<String> = records(directory)?
+    let native: BTreeSet<String> = validated_records(directory)?
         .into_iter()
         .flat_map(|r| r.executed)
         .collect();
@@ -315,6 +424,9 @@ fn package_files(
         !destination.exists(),
         "Release package destination already exists; stale or owner files will not be overwritten"
     );
+    let target = metadata["target"]
+        .as_str()
+        .context("Release package provenance has no target triple")?;
     let mut binaries = serde_json::Map::new();
     for name in ["telegram-mcp", "emoji-studio", "operator-plugin"] {
         let filename = format!("{name}{suffix}");
@@ -325,6 +437,7 @@ fn package_files(
             file.is_file() && !file.file_type().is_symlink() && file.len() > 0,
             "A native release executable is invalid"
         );
+        process::verify_binary_target(&path, target)?;
         binaries.insert(name.into(), serde_json::json!({"filename":filename,"sha256":process::digest(&path)?,"bytes":file.len()}));
     }
     fs::create_dir_all(destination)?;

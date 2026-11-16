@@ -206,7 +206,8 @@ fn day(v: &Value) -> Value {
 fn daily(name: &str, graph: &Value, days: usize) -> Value {
     let (x, ys) = columns(graph);
     let window = days.min(x.len());
-    let previous = x.len() >= days * 2;
+    let level = name == "growth_graph";
+    let previous = x.len() >= days * 2 + usize::from(level);
     let mut out = json!({"from":if window>0{day(&x[x.len()-window])}else{Value::Null},"to":x.last().map(day),"series":{}});
     let mut grand = 0.0;
     for (label, values) in ys {
@@ -217,15 +218,18 @@ fn daily(name: &str, graph: &Value, days: usize) -> Value {
         } else {
             None
         };
-        let level = name == "growth_graph";
         let mut row = json!({});
         if level {
-            row["start"] = json!(current.first());
+            let baseline =
+                (x.len() > days && values.len() > days).then(|| values[values.len() - days - 1]);
+            let old_baseline =
+                (previous && values.len() > days * 2).then(|| values[values.len() - days * 2 - 1]);
+            row["start"] = json!(baseline);
             row["end"] = json!(current.last());
-            row["change"] = json!(current.first().zip(current.last()).map(|(a, b)| b - a));
-            if let Some(b) = before {
-                row["previous_change"] = json!(b.last().zip(b.first()).map(|(b, a)| b - a));
-            }
+            row["change"] = json!(baseline.zip(current.last()).map(|(a, b)| b - a));
+            row["previous_change"] = json!(old_baseline.zip(baseline).map(|(a, b)| b - a));
+            row["period_complete"] = json!(baseline.is_some());
+            row["comparison_complete"] = json!(old_baseline.is_some());
         } else {
             let total: f64 = current.iter().sum();
             grand += total;

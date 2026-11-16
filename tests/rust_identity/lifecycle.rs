@@ -2,6 +2,131 @@ use super::common::*;
 use serde_json::json;
 
 #[tokio::test]
+async fn cancelled_member_removal_holds_account_serialization_until_cleanup_finishes() {
+    use async_trait::async_trait;
+    use serde_json::Value;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use telegram_mcp::{backend::Telegram, tools::identity};
+    struct Owned {
+        mock: Arc<Mock>,
+        token: Option<Arc<dyn Send + Sync>>,
+        calls: Arc<AtomicUsize>,
+        cleanup: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+    #[async_trait]
+    impl Telegram for Owned {
+        async fn resolve_peer(&self, p: &Value) -> anyhow::Result<Value> {
+            self.mock.resolve_peer(p).await
+        }
+        async fn invoke(&self, name: &str, args: Value) -> anyhow::Result<Value> {
+            if name == "channels.editBanned" && self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                self.cleanup.notify_one();
+                self.release.notified().await;
+            }
+            self.mock.invoke(name, args).await
+        }
+        fn operation_guard(&self) -> Option<Arc<dyn Send + Sync>> {
+            self.token.clone()
+        }
+        fn clone_handle(&self) -> Option<Arc<dyn Telegram>> {
+            Some(Arc::new(Self {
+                mock: self.mock.clone(),
+                token: None,
+                calls: self.calls.clone(),
+                cleanup: self.cleanup.clone(),
+                release: self.release.clone(),
+            }))
+        }
+    }
+    let serial = Arc::new(tokio::sync::Mutex::new(()));
+    let cleanup = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let api = Owned {
+        mock: Arc::new(Mock::new()),
+        token: Some(Arc::new(serial.clone().lock_owned().await)),
+        calls: Arc::new(AtomicUsize::new(0)),
+        cleanup: cleanup.clone(),
+        release: release.clone(),
+    };
+    let caller = tokio::spawn(async move {
+        identity::call(&api, "kick_user", &json!({"chat_id":7,"user_id":8}))
+            .await
+            .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), cleanup.notified())
+        .await
+        .unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert!(
+        serial.try_lock().is_err(),
+        "A later ban could run before the detached cleanup"
+    );
+    release.notify_one();
+    let _released = tokio::time::timeout(std::time::Duration::from_secs(2), serial.lock())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_lost_invitation_response_is_unknown_and_does_not_invite_a_retry() {
+    let m = Mock::new();
+    m.fail_with(
+        "messages.addChatUser",
+        "Telegram transport failed; operation outcome may be unknown and was not retried",
+    );
+    let result = run(&m, "invite_to_group", json!({"group_id":9,"user_ids":[8]}))
+        .await
+        .unwrap();
+    assert!(result["results"][0]["success"].is_null());
+    assert!(
+        result["results"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("membership")
+    );
+    assert_eq!(m.sent("messages.addChatUser").len(), 1);
+}
+
+#[tokio::test]
+async fn replacing_a_chat_photo_collects_all_pages_and_removes_every_prior_photo_in_batches() {
+    for group in [7, 9] {
+        let m = Mock::new();
+        let first=(102..=201).rev().map(|id|json!({"_":"messageService","id":id,"action":{"_":"messageActionChatEditPhoto"}})).collect::<Vec<_>>();
+        m.reply("messages.search", json!({"messages":first}));
+        m.reply("messages.search",json!({"messages":[{"_":"messageService","id":101,"action":{"_":"messageActionChatEditPhoto"}}]}));
+        let result = run(
+            &m,
+            "replace_chat_photo",
+            json!({"chat_id":group,"file_path":"new.png"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(m.sent("messages.search").len(), 2);
+        assert_eq!(m.sent("messages.search")[1]["offset_id"], 102);
+        let method = if group == 7 {
+            "channels.deleteMessages"
+        } else {
+            "messages.deleteMessages"
+        };
+        let calls = m.sent(method);
+        assert_eq!(calls.len(), 2);
+        let removed = calls
+            .iter()
+            .flat_map(|call| call["id"].as_array().unwrap().iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(removed.len(), 101);
+        assert!(removed.contains(&json!(101)));
+        assert_eq!(result["history_removed"], true);
+    }
+}
+
+#[tokio::test]
 async fn deleting_an_already_left_basic_group_finishes_history_cleanup() {
     let m = Mock::new();
     m.fail_with(

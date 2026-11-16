@@ -225,6 +225,10 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         .map(|v| int_value(v, "until_date"))
         .transpose()?;
     ensure!(
+        name == "set_group_permissions" || seconds.is_none() && boosts.is_none() && stars.is_none(),
+        "Slow mode, boosters and message price are group settings; use set_group_permissions"
+    );
+    ensure!(
         until.is_none_or(|n| n >= 0),
         "until_date must be zero or a Unix timestamp"
     );
@@ -336,8 +340,9 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     if given.is_empty() {
         ensure!(own.is_object(), "This member has no exception to expire");
+        let until = until.context("Pass until_date to change this member's expiry")?;
         let mut rights = own.clone();
-        rights["until_date"] = json!(until.unwrap_or(0));
+        rights["until_date"] = json!(until);
         return api
             .invoke(
                 "channels.editBanned",

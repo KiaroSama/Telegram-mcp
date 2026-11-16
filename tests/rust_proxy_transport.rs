@@ -465,3 +465,115 @@ async fn failed_route_telemetry_cannot_discard_a_verified_owner_connection() {
         "telegram_transport_verified"
     );
 }
+
+#[tokio::test]
+async fn one_failed_datacenter_does_not_backoff_another_reachable_destination() {
+    let (_temp, state) = state();
+    let failed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let failed_target = failed.local_addr().unwrap();
+    let (working, _server, _) = telegram(false).await;
+    drop(failed);
+    let route = proxy::route(state, &snapshot(&[]), "default")
+        .await
+        .unwrap();
+    assert!(connect_gateway(&route, failed_target).await.is_err());
+    let mut owner = connect_gateway(&route, working).await.unwrap();
+    owner
+        .write_all(&mtproxy::full_frame(b"owner payload!!!", 0).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        mtproxy::read_full(&mut owner, 0).await.unwrap(),
+        b"owner payload!!!"
+    );
+}
+
+#[test]
+fn invalid_pool_entries_cannot_disable_direct_or_other_valid_candidates() {
+    let (_temp, state) = state();
+    let mut invalid = proxy("mtproto", "127.0.0.1:8080".parse().unwrap());
+    invalid.secret = Some(format!(
+        "ee{}{}",
+        synthetic_secret(1),
+        b"bad_domain"
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    ));
+    let valid = proxy("http", "127.0.0.1:8081".parse().unwrap());
+    state.write_json("proxies-v1.json",&json!({"bad":{"proxy":invalid,"pool":"shared"},"good":{"proxy":valid,"pool":"shared"}})).unwrap();
+    let choices = proxy::candidates(&state, &snapshot(&[]), "default").unwrap();
+    assert_eq!(
+        choices.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        vec!["direct", "good"]
+    );
+}
+
+#[test]
+fn proxy_management_rejects_an_invalid_faketls_domain_before_insertion() {
+    let secret = format!(
+        "ee{}{}",
+        synthetic_secret(1),
+        b"bad_domain"
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    assert!(
+        telegram_mcp::tools::local::proxies::parse_proxy(&format!(
+            "tg://proxy?server=proxy.example&port=443&secret={secret}"
+        ))
+        .is_err()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_private_state_lock_cannot_stall_the_gateway_runtime_thread() {
+    use fs2::FileExt;
+    let (_temp, state) = state();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(state.root().join("state.lock"))
+        .unwrap();
+    FileExt::lock_exclusive(&lock).unwrap();
+    let (signal, received) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        let progress = received.recv_timeout(Duration::from_secs(2)).is_ok();
+        drop(lock);
+        progress
+    });
+    let config = snapshot(&[]);
+    let connection = proxy::route(state, &config, "default");
+    let ticker = async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        signal.send(()).unwrap();
+    };
+    let (route, ()) = tokio::join!(connection, ticker);
+    assert!(route.is_ok());
+    assert!(
+        holder.join().unwrap(),
+        "The async reactor must progress while private candidate state is locked"
+    );
+}
+
+#[test]
+fn an_invalid_account_pool_does_not_shadow_a_valid_shared_pool() {
+    let (_temp, state) = state();
+    let mut invalid = proxy("mtproto", "127.0.0.1:8080".parse().unwrap());
+    invalid.secret = Some("invalid".to_owned());
+    let valid = proxy("http", "127.0.0.1:8081".parse().unwrap());
+    state
+        .write_json(
+            "proxies-v1.json",
+            &json!({"bad":{"proxy":invalid,"pool":"work"},"good":{"proxy":valid,"pool":"shared"}}),
+        )
+        .unwrap();
+    let choices = proxy::candidates(&state, &snapshot(&[]), "work").unwrap();
+    assert_eq!(
+        choices.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
+        vec!["direct", "good"]
+    );
+}

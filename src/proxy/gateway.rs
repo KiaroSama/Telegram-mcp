@@ -34,7 +34,7 @@ pub(super) async fn start(
             process_keys: snapshot.process_keys.clone(),
         },
         status: Arc::clone(&status),
-        failed_until: Mutex::new(None),
+        failed_until: Mutex::new(std::collections::HashMap::new()),
     });
     let task = tokio::spawn(async move {
         let mut tasks = JoinSet::new();
@@ -179,12 +179,22 @@ async fn select(context: &Arc<ContextState>, target: SocketAddr) -> Result<tunne
         .failed_until
         .lock()
         .map_err(|_| anyhow::anyhow!("Proxy route state is unavailable"))?
-        .is_some_and(|until| until > Instant::now())
+        .get(&target)
+        .is_some_and(|until| *until > Instant::now())
     {
         bail!("Every proxy route failed recently; retry after the 30 second backoff")
     }
     let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
-    let choices = super::candidates(&context.state, &context.snapshot, &context.label)?;
+    let load_context = Arc::clone(context);
+    let choices = tokio::task::spawn_blocking(move || {
+        super::candidates(
+            &load_context.state,
+            &load_context.snapshot,
+            &load_context.label,
+        )
+    })
+    .await
+    .context("Proxy candidate worker failed")??;
     for candidate in &choices {
         if tokio::time::Instant::now() >= deadline {
             break;
@@ -196,7 +206,12 @@ async fn select(context: &Arc<ContextState>, target: SocketAddr) -> Result<tunne
                 .as_ref()
                 .is_some_and(|proxy| proxy.kind == "mtproto")
             {
-                datacenter(&context.state, &context.label, target)?
+                let context = Arc::clone(context);
+                tokio::task::spawn_blocking(move || {
+                    datacenter(&context.state, &context.label, target)
+                })
+                .await
+                .context("Datacenter state worker failed")??
             } else {
                 2
             };
@@ -228,11 +243,21 @@ async fn select(context: &Arc<ContextState>, target: SocketAddr) -> Result<tunne
             }
         }
     }
-    *context
+    let mut failed = context
         .failed_until
         .lock()
-        .map_err(|_| anyhow::anyhow!("Proxy route state is unavailable"))? =
-        Some(Instant::now() + Duration::from_secs(30));
+        .map_err(|_| anyhow::anyhow!("Proxy route state is unavailable"))?;
+    let now = Instant::now();
+    failed.retain(|_, until| *until > now);
+    if failed.len() >= 128
+        && let Some(oldest) = failed
+            .iter()
+            .min_by_key(|(_, until)| **until)
+            .map(|(target, _)| *target)
+    {
+        failed.remove(&oldest);
+    }
+    failed.insert(target, now + Duration::from_secs(30));
     bail!(
         "No configured proxy, direct connection or pool route reached Telegram within the connection budget"
     )

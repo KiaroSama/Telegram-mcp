@@ -369,3 +369,32 @@ async fn inline_queries_refuse_non_bots_and_unparseable_query_handles() {
     }
     assert!(api.calls().is_empty());
 }
+
+#[tokio::test]
+async fn a_reply_fetch_failure_preserves_the_completed_send_and_does_not_retry_it() {
+    let api = Api::new(vec![
+        (
+            "messages.getHistory",
+            messages(vec![keyboard(json!({"_":"buttonTypeDefault"}))]),
+        ),
+        ("messages.sendMessage", updates()),
+    ]);
+    api.error("messages.getHistory", "synthetic polling failure");
+    let mut args = keyboard_args();
+    args["wait_seconds"] = json!(1.0);
+    let result = run(&api, "press_reply_button", args).await.unwrap();
+    assert_eq!(result["sent"], updates());
+    assert!(
+        result["reply_fetch_warning"]
+            .as_str()
+            .unwrap()
+            .contains("repeat")
+    );
+    assert_eq!(
+        api.calls()
+            .iter()
+            .filter(|(name, _)| name == "messages.sendMessage")
+            .count(),
+        1
+    );
+}

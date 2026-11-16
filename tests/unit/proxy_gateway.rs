@@ -108,7 +108,10 @@ async fn failed_route_backoff_is_immediate_and_does_not_attempt_a_socket() {
             process_keys: Default::default(),
         },
         status: Arc::new(Mutex::new(Value::Null)),
-        failed_until: Mutex::new(Some(Instant::now() + Duration::from_secs(30))),
+        failed_until: Mutex::new(std::collections::HashMap::from([(
+            "127.0.0.1:1".parse().unwrap(),
+            Instant::now() + Duration::from_secs(30),
+        )])),
     });
     let error = select(&context, "127.0.0.1:1".parse().unwrap())
         .await
@@ -189,10 +192,10 @@ async fn exhausting_every_route_sets_backoff_without_publishing_a_successful_rou
             process_keys: Default::default(),
         },
         status: Arc::new(Mutex::new(Value::Null)),
-        failed_until: Mutex::new(None),
+        failed_until: Mutex::new(std::collections::HashMap::new()),
     });
     assert!(select(&context, target).await.is_err());
-    assert!(context.failed_until.lock().unwrap().is_some());
+    assert!(context.failed_until.lock().unwrap().contains_key(&target));
     assert_eq!(*context.status.lock().unwrap(), Value::Null);
     assert!(
         select(&context, target)

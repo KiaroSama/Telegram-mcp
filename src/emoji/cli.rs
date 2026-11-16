@@ -299,9 +299,10 @@ pub async fn run() -> Result<()> {
                 .await?;
             let record = message_record(&response.payload)?;
             let entities = record["entities"].as_array().cloned().unwrap_or_default();
+            let expected_source = json!({"text":message_text(record),"entities":entities});
             let (text, entities) =
                 compose::insert_emoji(message_text(record), &entities, *line, &glyph, id, where_)?;
-            let arguments = json!({"chat_id":chat,"message_id":message,"new_text":text,"entities":entities,"parse_mode":"none"});
+            let arguments = json!({"chat_id":chat,"message_id":message,"new_text":text,"entities":entities,"parse_mode":"none","expected_source":expected_source});
             if *preview {
                 println!("{}", serde_json::to_string_pretty(&arguments)?);
             } else {

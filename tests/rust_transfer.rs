@@ -5,6 +5,64 @@ use serde_json::json;
 use std::path::Path;
 use telegram_mcp::transfer::{Transfers, validate_base, validate_filename};
 
+#[tokio::test]
+async fn download_body_ownership_bounds_open_streams_and_returns_permits() {
+    use axum::{
+        extract::{Path as AxumPath, State},
+        http::StatusCode,
+    };
+    use std::sync::Arc;
+    let (_directory, state) = local_support::fixture();
+    let file = state.file_roots()[0].join("bounded.bin");
+    std::fs::write(&file, b"owned stream bytes").unwrap();
+    let transfers = Arc::new(Transfers::new(state));
+    let link = transfers
+        .download_link(&file, "http://127.0.0.1:1")
+        .unwrap();
+    let token = url::Url::parse(link["url"].as_str().unwrap())
+        .unwrap()
+        .path()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_owned();
+    let mut held = Vec::new();
+    let mut rejected = false;
+    for _ in 0..65 {
+        let response = telegram_mcp::transfer::http::download(
+            State(transfers.clone()),
+            AxumPath(token.clone()),
+        )
+        .await;
+        if response.status() == StatusCode::SERVICE_UNAVAILABLE {
+            rejected = true;
+            break;
+        }
+        assert_eq!(response.status(), StatusCode::OK);
+        held.push(response);
+    }
+    assert!(
+        rejected,
+        "One reusable capability must not open unbounded download files"
+    );
+    assert!(!held.is_empty());
+    drop(held.pop());
+    let response =
+        telegram_mcp::transfer::http::download(State(transfers.clone()), AxumPath(token.clone()))
+            .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 64)
+        .await
+        .unwrap();
+    assert_eq!(bytes.as_ref(), b"owned stream bytes");
+    let response = telegram_mcp::transfer::http::download(State(transfers), AxumPath(token)).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "EOF must release the stream permit"
+    );
+}
+
 #[test]
 fn filenames_reject_path_traversal_and_portable_device_names() {
     for name in [

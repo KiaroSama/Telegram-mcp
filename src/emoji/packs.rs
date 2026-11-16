@@ -271,6 +271,12 @@ pub fn video_arguments(input: &Path, output: &Path) -> Vec<std::ffi::OsString> {
         "file,pipe",
         "-format_whitelist",
         "matroska,webm",
+        "-threads",
+        "1",
+        "-filter_threads",
+        "1",
+        "-filter_complex_threads",
+        "1",
         "-c:v",
         "libvpx-vp9",
         "-i",
@@ -356,9 +362,6 @@ pub async fn refresh_complete(
     rebuild: bool,
     complete: bool,
 ) -> Refresh {
-    if rebuild && complete {
-        stored.retain(|_, value| value["src"] != "packs");
-    }
     let mut counts = Refresh::default();
     for (id, entry) in entries {
         let Some(path) = entry.thumb.as_ref() else {

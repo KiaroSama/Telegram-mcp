@@ -89,7 +89,7 @@ async fn live(
         return Ok(None);
     }
     let record = state.read_json("http-service.json", Value::Null)?;
-    let (url, token, pid) = descriptor(&record, None)?;
+    let (url, _, pid) = descriptor(&record, None)?;
     if let Some(expected) = expected_pid {
         ensure!(
             pid == expected,
@@ -99,38 +99,12 @@ async fn live(
     let identity = ownership::verified(pid, executable)?;
     let mut health_url = url.clone();
     health_url.set_path("/health");
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(1))
-        .timeout(Duration::from_secs(2))
-        .build()?;
-    let mut response = client
-        .get(health_url)
-        .bearer_auth(token)
-        .send()
-        .await
-        .context("The owned shared service is not ready; it was not replaced")?;
-    ensure!(
-        response.status().is_success(),
-        "The owned shared service refused readiness; it was not replaced"
-    );
-    ensure!(
-        response
-            .content_length()
-            .is_none_or(|size| size <= 64 * 1024),
-        "Shared service readiness response exceeds its byte bound"
-    );
-    let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        ensure!(
-            bytes.len() + chunk.len() <= 64 * 1024,
-            "Shared service readiness response exceeds its byte bound"
-        );
-        bytes.extend_from_slice(&chunk);
-    }
-    let health: Value =
-        serde_json::from_slice(&bytes).context("Invalid shared service readiness response")?;
+    let health = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::account_manager::authenticated_health_request(health_url, &record),
+    )
+    .await
+    .context("Shared service readiness exceeded its time budget")??;
     ensure!(
         health["ready"] == true
             && health["backend"] == "grammers"

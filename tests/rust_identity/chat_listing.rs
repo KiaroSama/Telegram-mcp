@@ -2,6 +2,18 @@ use super::common::*;
 use serde_json::{Value, json};
 
 #[tokio::test]
+async fn a_basic_group_and_channel_with_the_same_bare_id_keep_separate_names_and_types() {
+    let m = Mock::new();
+    m.reply("messages.getDialogs",json!({"dialogs":[{"_":"dialog","peer":{"_":"peerChannel","channel_id":"42"}},{"_":"dialog","peer":{"_":"peerChat","chat_id":"42"}}],"chats":[{"_":"chat","id":"42","title":"Basic42"},{"_":"channel","id":"42","access_hash":"420","title":"Channel42","broadcast":true}]}));
+    let result = run(&m, "list_chats", json!({})).await.unwrap();
+    assert_eq!(result["results"][0]["name"], "Channel42");
+    assert_eq!(result["results"][0]["id"], "-1000000000042");
+    assert_eq!(result["results"][0]["type"], "channel");
+    assert_eq!(result["results"][1]["name"], "Basic42");
+    assert_eq!(result["results"][1]["id"], "-42");
+}
+
+#[tokio::test]
 async fn malformed_folder_selectors_cannot_widen_search_or_change_global_pins() {
     for folder in [json!(4), json!(false), json!({}), json!([])] {
         for name in ["pin_chat", "unpin_chat", "search_my_chats"] {

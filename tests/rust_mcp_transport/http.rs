@@ -262,13 +262,11 @@ async fn nonloopback_tls_uses_real_encryption_certificate_validation_and_existin
         catalogue_names()
     );
     remote.cancel().await.unwrap();
-    let bridge = cli(&fixture, &["bridge"], None).await;
-    assert!(
-        !bridge.status.success(),
-        "The HTTP-only native bridge must not downgrade a TLS owner"
-    );
-    assert!(bridge.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&bridge.stderr).contains("loopback HTTP MCP endpoint"));
+    let mut bridge = McpProcess::start(fixture.command(&["bridge"]));
+    bridge.initialize("2024-11-05").await;
+    let listed = bridge.request(2, "tools/list", json!({})).await;
+    assert_catalogue(tools(&listed));
+    assert!(bridge.finish().await.is_empty());
     let record: Value =
         serde_json::from_slice(&std::fs::read(fixture.state.join("http-service.json")).unwrap())
             .unwrap();
@@ -370,6 +368,183 @@ fn client() -> reqwest::Client {
         .timeout(DEADLINE)
         .build()
         .unwrap()
+}
+
+#[tokio::test]
+async fn real_health_v2_proofs_bind_nonce_target_body_and_rotating_generation_credentials() {
+    use hmac::{Hmac, Mac};
+    use rmcp::{
+        ServiceExt,
+        transport::{
+            StreamableHttpClientTransport,
+            streamable_http_client::StreamableHttpClientTransportConfig,
+        },
+    };
+    use sha2::Sha256;
+
+    // Build the public wire format independently of the private production
+    // signer/verifier, including framing and the two-byte network-order status.
+    fn sign(
+        key: &str,
+        purpose: &str,
+        nonce: &str,
+        target: &str,
+        status: u16,
+        body: &[u8],
+    ) -> String {
+        let mut wire =
+            format!("telegram-mcp-health-v2\0{purpose}\0{nonce}\0{target}\0").into_bytes();
+        wire.extend_from_slice(&status.to_be_bytes());
+        wire.extend_from_slice(body);
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes()).unwrap();
+        mac.update(&wire);
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    const EXTERNAL: &str = "synthetic-configured-external-bearer-over-thirty-two-characters";
+    let fixture = Fixture::new();
+    let mut command = fixture.command(&["serve", "--http", "127.0.0.1:0"]);
+    command.env("TELEGRAM_HTTP_TOKEN", EXTERNAL);
+    let server = HttpServer::start_with(&fixture, command, false).await;
+    let first_generation = server.token.clone();
+    let discovery: Value =
+        serde_json::from_slice(&std::fs::read(fixture.state.join("http-service.json")).unwrap())
+            .unwrap();
+    assert_eq!(discovery["health_protocol"], 2);
+    assert!(
+        first_generation != EXTERNAL,
+        "Discovery reused a configured external bearer"
+    );
+    assert!(
+        first_generation.len() == 64
+            && first_generation
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+    );
+
+    let nonce = "0123456789abcdef".repeat(4);
+    let request_proof = sign(&first_generation, "request", &nonce, "/health", 0, &[]);
+    let client = client();
+    let request = client
+        .get(server.health_url())
+        .header("x-telegram-health-nonce", &nonce)
+        .header("x-telegram-health-proof", &request_proof)
+        .build()
+        .unwrap();
+    assert!(
+        !request
+            .headers()
+            .contains_key(reqwest::header::AUTHORIZATION)
+    );
+    let response = client.execute(request).await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let status = response.status().as_u16();
+    let proof = response
+        .headers()
+        .get("x-telegram-health-proof")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let body = response.bytes().await.unwrap();
+    assert!(
+        proof
+            == sign(
+                &first_generation,
+                "response",
+                &nonce,
+                "/health",
+                status,
+                &body
+            ),
+        "The real server response did not authenticate the complete protocol2 transcript"
+    );
+    let answer: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(answer["ready"], true);
+    assert_eq!(answer["pid"], server.pid);
+
+    for (changed_nonce, target, changed_proof) in [
+        ("f0".repeat(32), "/health", request_proof.clone()),
+        (nonce.clone(), "/health?account=work", request_proof.clone()),
+        (nonce.clone(), "/health", proof),
+    ] {
+        let url = format!("{}{target}", server.url.strip_suffix("/mcp").unwrap());
+        let refused = client
+            .get(url)
+            .header("x-telegram-health-nonce", changed_nonce)
+            .header("x-telegram-health-proof", changed_proof)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    // The explicitly configured credential remains usable by direct MCP clients.
+    let transport = StreamableHttpClientTransport::with_client(
+        client.clone(),
+        StreamableHttpClientTransportConfig::with_uri(server.url.clone()).auth_header(EXTERNAL),
+    );
+    let remote = tokio::time::timeout(DEADLINE, ().serve(transport))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!remote.list_all_tools().await.unwrap().is_empty());
+    remote.cancel().await.unwrap();
+    server.stop(&fixture).await;
+
+    let mut command = fixture.command(&["serve", "--http", "127.0.0.1:0"]);
+    command.env("TELEGRAM_HTTP_TOKEN", EXTERNAL);
+    let restarted = HttpServer::start_with(&fixture, command, false).await;
+    let second_generation = restarted.token.clone();
+    assert!(
+        second_generation != first_generation && second_generation != EXTERNAL,
+        "A service restart retained its old generation credential"
+    );
+    let old = client
+        .get(restarted.health_url())
+        .header("x-telegram-health-nonce", &nonce)
+        .header("x-telegram-health-proof", request_proof)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let fresh = client
+        .get(restarted.health_url())
+        .header("x-telegram-health-nonce", &nonce)
+        .header(
+            "x-telegram-health-proof",
+            sign(&second_generation, "request", &nonce, "/health", 0, &[]),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fresh.status(), reqwest::StatusCode::OK);
+    let status = fresh.status().as_u16();
+    let proof = fresh
+        .headers()
+        .get("x-telegram-health-proof")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let body = fresh.bytes().await.unwrap();
+    assert!(
+        proof
+            == sign(
+                &second_generation,
+                "response",
+                &nonce,
+                "/health",
+                status,
+                &body
+            )
+    );
+    fixture.assert_logs_omit(&[EXTERNAL, &first_generation, &second_generation]);
+    restarted.stop(&fixture).await;
 }
 
 #[tokio::test]

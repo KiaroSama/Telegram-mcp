@@ -107,3 +107,57 @@ pub fn digest(path: &std::path::Path) -> Result<String> {
         Sha256::digest(std::fs::read(path).context("Required digest input unavailable")?)
     ))
 }
+
+/// Check the actual image format and machine before attaching target provenance.
+/// File names and a successful cross-build command alone cannot prove its ABI.
+pub fn verify_binary_target(path: &std::path::Path, target: &str) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    let (format, machine) = match target {
+        "x86_64-unknown-linux-gnu" => ("elf", 62),
+        "aarch64-unknown-linux-gnu" => ("elf", 183),
+        "x86_64-apple-darwin" => ("macho", 0x01000007),
+        "aarch64-apple-darwin" => ("macho", 0x0100000c),
+        "x86_64-pc-windows-msvc" => ("pe", 0x8664),
+        "aarch64-pc-windows-msvc" => ("pe", 0xaa64),
+        _ => bail!("Unsupported native release target"),
+    };
+    let mut file = std::fs::File::open(path).context("Native release image is unavailable")?;
+    let mut header = [0u8; 64];
+    file.read_exact(&mut header)
+        .context("Native release image header is truncated")?;
+    let valid = match format {
+        "elf" => {
+            &header[..7] == b"\x7fELF\x02\x01\x01"
+                && matches!(u16::from_le_bytes(header[16..18].try_into()?), 2 | 3)
+                && u32::from(u16::from_le_bytes(header[18..20].try_into()?)) == machine
+        }
+        "macho" => {
+            u32::from_le_bytes(header[..4].try_into()?) == 0xfeedfacf
+                && u32::from_le_bytes(header[4..8].try_into()?) == machine
+                && u32::from_le_bytes(header[12..16].try_into()?) == 2
+        }
+        "pe" if &header[..2] == b"MZ" => {
+            let offset = u64::from(u32::from_le_bytes(header[60..64].try_into()?));
+            let length = file.metadata()?.len();
+            if offset < 64 || length.saturating_sub(offset) < 26 {
+                false
+            } else {
+                file.seek(SeekFrom::Start(offset))?;
+                let mut coff = [0u8; 26];
+                file.read_exact(&mut coff)?;
+                let optional_size = u64::from(u16::from_le_bytes(coff[20..22].try_into()?));
+                let characteristics = u16::from_le_bytes(coff[22..24].try_into()?);
+                &coff[..4] == b"PE\0\0"
+                    && u32::from(u16::from_le_bytes(coff[4..6].try_into()?)) == machine
+                    && characteristics & 2 != 0
+                    && characteristics & 0x2000 == 0
+                    && optional_size >= 112
+                    && length.saturating_sub(offset + 24) >= optional_size
+                    && u16::from_le_bytes(coff[24..26].try_into()?) == 0x20b
+            }
+        }
+        _ => false,
+    };
+    anyhow::ensure!(valid, "Native release header does not match its target");
+    Ok(())
+}

@@ -10,11 +10,14 @@ fn bridge_descriptor_accepts_only_verified_loopback_mcp_urls() {
         "http://127.0.0.1:8765/mcp",
         "http://[::1]:8765/mcp",
         "http://localhost:80/mcp",
+        "https://127.0.0.1:8765/mcp",
+        "https://localhost:443/mcp",
     ] {
         assert!(descriptor(&record(endpoint), None).is_ok(), "{endpoint}");
     }
     for endpoint in [
-        "https://127.0.0.1:8765/mcp",
+        "https://192.0.2.1:8765/mcp",
+        "https://localhost/mcp",
         "http://192.0.2.1:8765/mcp",
         "http://localhost/mcp",
         "http://user@127.0.0.1:8765/mcp",

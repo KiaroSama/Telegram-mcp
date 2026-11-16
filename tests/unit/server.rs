@@ -97,6 +97,152 @@ struct Probe {
     calls: StdMutex<Vec<(String, Value)>>,
     reply: Value,
 }
+
+#[tokio::test]
+async fn global_export_controls_do_not_open_an_account_when_several_are_configured() {
+    const CHILD: &str = "TELEGRAM_GLOBAL_EXPORT_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("multiple.env");
+        let files = temporary.path().join("files");
+        std::fs::create_dir(&files).unwrap();
+        std::fs::write(
+            &source,
+            "TELEGRAM_SESSION_NAME_ONE=one\nTELEGRAM_SESSION_NAME_TWO=two\n",
+        )
+        .unwrap();
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "server::tests::global_export_controls_do_not_open_an_account_when_several_are_configured", "--nocapture"]).kill_on_drop(true);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("TELEGRAM_")
+                || key.to_string_lossy().starts_with("MCP_")
+            {
+                command.env_remove(key);
+            }
+        }
+        command
+            .env(CHILD, &source)
+            .env("TELEGRAM_STATE_DIR", temporary.path().join("state"))
+            .env(
+                "TELEGRAM_FILE_ROOTS",
+                serde_json::to_string(&[files]).unwrap(),
+            );
+        let output = tokio::time::timeout(Duration::from_secs(20), command.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    crate::account_manager::select_source(std::path::Path::new(&std::env::var_os(CHILD).unwrap()))
+        .unwrap();
+    let (mcp, _, temporary) = service(json!({}), access::AccessPolicy::default());
+    let _temporary = temporary;
+    mcp.runtime.accounts.lock().await.clear();
+    let listed = mcp.execute("export_status", json!({})).await.unwrap();
+    assert!(listed.is_array());
+    let cancelled = mcp
+        .execute("cancel_export", json!({"job_id":"nonexistent-owned-job"}))
+        .await
+        .unwrap();
+    assert_eq!(cancelled["cancelled"], false);
+    assert!(
+        mcp.runtime.accounts.lock().await.is_empty(),
+        "Global job management must not initialize Telegram authorization"
+    );
+}
+
+#[tokio::test]
+async fn only_explicit_mutation_cleanup_retains_the_owned_account_guard() {
+    struct CloneOnly;
+    #[async_trait]
+    impl Telegram for CloneOnly {
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+            bail!("No RPC expected");
+        }
+        async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+            bail!("No peer expected");
+        }
+        fn clone_handle(&self) -> Option<Arc<dyn Telegram>> {
+            Some(Arc::new(CloneOnly))
+        }
+    }
+    let serial = Arc::new(Mutex::new(()));
+    let guard = Arc::new(serial.clone().lock_owned().await);
+    let scoped = recipient::with_operation_guard(Arc::new(CloneOnly), guard);
+    let retained = scoped.operation_guard().unwrap();
+    let background = scoped
+        .clone_handle()
+        .expect("A background clone must exist for this lifetime check");
+    drop(scoped);
+    assert!(
+        serial.try_lock().is_err(),
+        "Owned cleanup must retain actual account serialization"
+    );
+    assert!(
+        background.operation_guard().is_none(),
+        "Ordinary background clones cannot retain an operation indefinitely"
+    );
+    drop(retained);
+    assert!(serial.try_lock().is_ok());
+    drop(background);
+}
+
+#[tokio::test(start_paused = true)]
+async fn recipient_preflight_deadline_releases_the_account_without_dispatching() {
+    struct PendingResolver(Arc<tokio::sync::Notify>);
+    #[async_trait]
+    impl Telegram for PendingResolver {
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+            panic!("No mutation may start while recipient preflight is pending");
+        }
+        async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+            self.0.notify_one();
+            std::future::pending().await
+        }
+    }
+    let (mcp, _, _temp) = service(json!({}), access::AccessPolicy::default());
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let slot = Arc::new(Account {
+        api: Arc::new(PendingResolver(entered.clone())),
+        serial: Arc::new(Mutex::new(())),
+        generation: None,
+    });
+    mcp.runtime
+        .accounts
+        .lock()
+        .await
+        .insert("default".into(), slot.clone());
+    let writer = mcp.clone();
+    let mut operation = tokio::spawn(async move {
+        writer
+            .execute(
+                "send_message",
+                json!({"account":"default","chat_id":7,"message":"Preflight deadline regression"}),
+            )
+            .await
+    });
+    entered.notified().await;
+    tokio::time::advance(Duration::from_secs(56)).await;
+    let result = tokio::time::timeout(Duration::from_secs(1), &mut operation).await;
+    if result.is_err() {
+        operation.abort();
+    }
+    let error = result
+        .expect("Recipient resolution must share the tool deadline")
+        .unwrap()
+        .unwrap_err();
+    assert!(error.to_string().contains("no mutation was dispatched"));
+    assert!(!error.to_string().contains("outcome may be unknown"));
+    assert!(
+        slot.serial.try_lock().is_ok(),
+        "Preflight timeout must release account serialization"
+    );
+}
 #[async_trait]
 impl Telegram for Probe {
     async fn invoke(&self, name: &str, args: Value) -> Result<Value> {
@@ -128,7 +274,7 @@ fn service(reply: Value, policy: access::AccessPolicy) -> (Mcp, Arc<Probe>, Temp
             label.into(),
             Arc::new(Account {
                 api: api.clone(),
-                serial: Mutex::new(()),
+                serial: Arc::new(Mutex::new(())),
                 generation: None,
             }),
         );
@@ -147,6 +293,45 @@ fn service(reply: Value, policy: access::AccessPolicy) -> (Mcp, Arc<Probe>, Temp
         api,
         temp,
     )
+}
+
+#[tokio::test]
+async fn dropping_plaintext_serve_cancels_already_initialized_mcp_sessions() {
+    use rmcp::transport::{
+        StreamableHttpClientTransport, streamable_http_client::StreamableHttpClientTransportConfig,
+    };
+    let (server, _api, _temporary) = service(Value::Null, Default::default());
+    let state = Arc::clone(&server.runtime.state);
+    let serving = tokio::spawn(super::http::serve(server, "127.0.0.1:0".parse().unwrap()));
+    let record = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let record = state.read_json("http-service.json", Value::Null).unwrap();
+            if record["url"].is_string() {
+                break record;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let transport = StreamableHttpClientTransport::with_client(
+        reqwest::Client::new(),
+        StreamableHttpClientTransportConfig::with_uri(record["url"].as_str().unwrap().to_owned())
+            .auth_header(record["token"].as_str().unwrap().to_owned()),
+    );
+    let remote = tokio::time::timeout(Duration::from_secs(5), ().serve(transport))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!remote.list_all_tools().await.unwrap().is_empty());
+    serving.abort();
+    assert!(serving.await.unwrap_err().is_cancelled());
+    let result = tokio::time::timeout(Duration::from_secs(2), remote.list_all_tools()).await;
+    assert!(
+        !matches!(result, Ok(Ok(_))),
+        "An initialized MCP session kept dispatching after its server scope was dropped"
+    );
+    let _ = remote.cancel().await;
 }
 fn schema(value: Value) -> serde_json::Map<String, Value> {
     value.as_object().unwrap().clone()
@@ -677,7 +862,7 @@ async fn offline_presence_is_bounded_and_does_not_lock_other_account_access() {
         "default".into(),
         Arc::new(Account {
             api: Arc::new(PendingPresence(entered.clone())),
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             generation: None,
         }),
     );

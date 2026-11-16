@@ -315,7 +315,7 @@ async fn rebuild_recomputes_pack_entries_and_preserves_remote_ones() {
     let mut stored = BTreeMap::from([("remote".into(), json!({"pack":"other"}))]);
     packs::refresh(&mut stored, &entries, false).await;
     let result = packs::refresh(&mut stored, &entries, true).await;
-    assert_eq!(result.added, 1);
+    assert_eq!((result.updated, result.added), (1, 0));
     assert_eq!(result.unchanged, 0);
     assert!(stored.contains_key("remote"));
 }
@@ -328,6 +328,42 @@ fn video_thumb_names_vp9_decoder_before_input_to_preserve_alpha() {
     assert!(decoder < input);
     assert_eq!(args[decoder + 1], "libvpx-vp9");
     assert!(args.iter().any(|arg| arg == "-max_pixels"));
+}
+
+#[test]
+fn video_thumbnail_bounds_decoder_and_filter_threads_before_input() {
+    let args = packs::video_arguments(Path::new("input.webm"), Path::new("%03d.png"));
+    let input = args.iter().position(|arg| arg == "-i").unwrap();
+    for option in ["-threads", "-filter_threads", "-filter_complex_threads"] {
+        let at = args.iter().position(|arg| arg == option).expect(option);
+        assert!(at < input, "{option} must bound input work");
+        assert_eq!(args[at + 1], "1");
+    }
+}
+
+#[tokio::test]
+async fn rebuild_retains_a_failed_fingerprint_and_replaces_only_decoded_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    export(temp.path(), &[("1", "a"), ("2", "b")]);
+    let (entries, _) = packs::read_catalogue(temp.path()).unwrap();
+    let mut stored = BTreeMap::new();
+    packs::refresh(&mut stored, &entries, false).await;
+    let first = stored["1"].clone();
+    let second = stored["2"].clone();
+    stored.insert("gone".into(), json!({"src":"packs"}));
+    stored.insert("remote".into(), json!({"src":"telegram"}));
+    std::fs::write(temp.path().join(".thumbs/1.webp"), b"truncated").unwrap();
+    thumb(&temp.path().join(".thumbs/2.webp"), [0, 0, 255, 255], 8);
+    let (entries, _) = packs::read_catalogue(temp.path()).unwrap();
+    let result = packs::refresh(&mut stored, &entries, true).await;
+    assert!(
+        stored.get("1") == Some(&first),
+        "Failed decoding must preserve the previous fingerprint"
+    );
+    assert_ne!(stored["2"], second);
+    assert!(stored.contains_key("remote"));
+    assert!(!stored.contains_key("gone"));
+    assert_eq!((result.updated, result.skipped, result.removed), (1, 1, 1));
 }
 #[test]
 fn cache_round_trip_preserves_metadata_floats_and_utf8() {

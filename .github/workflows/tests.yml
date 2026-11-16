@@ -57,14 +57,25 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            label: linux
+            label: linux-x86_64
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+          - os: macos-15-intel
+            label: macos-x86_64
+            target: x86_64-apple-darwin
           - os: macos-latest
-            label: macos
+            label: macos-aarch64
             target: aarch64-apple-darwin
           - os: windows-latest
-            label: windows
+            label: windows-x86_64
             target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            label: windows-aarch64
+            target: aarch64-pc-windows-msvc
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,9 +83,137 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: 1.100.0
+          toolchain: 1.100.0-${{ matrix.target }}
           targets: ${{ matrix.target }}
           components: llvm-tools-preview
+      - name: Select the native Windows C and C++ toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP ('native-msvc-' + [guid]::NewGuid().ToString('N') + '.cmd')
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $llvmCandidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $llvmCandidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+            & clang --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C compiler did not run.' }
+            & clang-cl --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C++ compiler did not run.' }
+          }
+      - name: Verify the compiler and shell run on the requested native architecture
+        shell: pwsh
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualShell = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($actualShell -ne $env:RUNNER_ARCH) { throw 'The PowerShell host is running under another CPU architecture.' }
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The Rust host compiler does not match the native matrix target.'
+          }
+          $version | Write-Output
+      - name: Probe native Windows ARM64 compiler coverage
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        id: arm64_coverage_probe
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $toolchain = '1.100.0-aarch64-pc-windows-msvc'
+          $version = & rustc "+$toolchain" -vV
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the pinned native Rust compiler' }
+          $version | Write-Output
+          if (-not ($version -contains 'host: aarch64-pc-windows-msvc')) {
+            throw 'Coverage smoke is not using the ARM64 Rust host compiler'
+          }
+          $sysroot = (& rustc "+$toolchain" --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot' }
+          $llvmBin = Join-Path $sysroot 'lib/rustlib/aarch64-pc-windows-msvc/bin'
+          $profdata = Join-Path $llvmBin 'llvm-profdata.exe'
+          $llvmCov = Join-Path $llvmBin 'llvm-cov.exe'
+          if (-not (Test-Path -LiteralPath $profdata -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $llvmCov -PathType Leaf)) {
+            throw 'The native Rust llvm-tools-preview component is missing'
+          }
+          & $profdata --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled llvm-profdata did not run' }
+          $work = Join-Path $env:RUNNER_TEMP ('native-arm64-coverage-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $work | Out-Null
+          $source = Join-Path $work 'smoke.rs'
+          $binary = Join-Path $work 'smoke.exe'
+          $merged = Join-Path $work 'smoke.profdata'
+          $program = '#[inline(never)] fn branch(v: bool) -> u64 { if v { 42 } else { 7 } } fn main() { println!("{}", branch(std::env::args().nth(1).is_some())); }'
+          [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
+          & rustc "+$toolchain" --edition=2024 --target=aarch64-pc-windows-msvc -C instrument-coverage -C opt-level=0 -C debuginfo=1 $source -o $binary
+          if ($LASTEXITCODE -ne 0) { throw 'The pinned ARM64 compiler could not build the coverage smoke' }
+          $pe = [IO.File]::ReadAllBytes($binary)
+          $header = [BitConverter]::ToInt32($pe, 0x3c)
+          $machine = [BitConverter]::ToUInt16($pe, $header + 4)
+          if ($machine -ne 0xaa64) { throw ('Smoke executable is not native ARM64; PE Machine=0x{0:x4}' -f $machine) }
+          $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+          try {
+            $env:LLVM_PROFILE_FILE = Join-Path $work 'first-%p.profraw'
+            & $binary
+            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke execution failed' }
+            $env:LLVM_PROFILE_FILE = Join-Path $work 'second-%p.profraw'
+            & $binary exercise-second-branch
+            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke second execution failed' }
+            $raw = @(Get-ChildItem -LiteralPath $work -Filter '*.profraw' -File)
+            $raw | Select-Object Name, Length | Format-Table | Out-String | Write-Output
+            if ($raw.Count -lt 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) {
+              throw 'Both real smoke processes must produce nonempty profiles'
+            }
+            $rawPaths = @($raw | ForEach-Object FullName)
+            & $profdata merge -sparse @rawPaths -o $merged
+            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM rejected the actual ARM64 profiles; retain its diagnostic and raw files' }
+            $counters = & $profdata show --all-functions --counts $merged
+            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM could not read merged ARM64 function counters' }
+            $counters | Write-Output
+            if (($counters -join "`n") -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') {
+              throw 'The actual native profile contains no executed function counter'
+            }
+            & $llvmCov report $binary "--instr-profile=$merged" $source
+            if ($LASTEXITCODE -ne 0) { throw 'ARM64 coverage mapping/report generation failed' }
+            Write-Output "Verified native Rust 1.100 ARM64 coverage artifacts: $work"
+          } finally {
+            [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process')
+          }
+      - name: Retain actual Windows ARM64 compiler coverage evidence
+        if: always() && matrix.target == 'aarch64-pc-windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiler-coverage-probe-${{ matrix.label }}
+          path: ${{ runner.temp }}/native-arm64-coverage-*/
+          if-no-files-found: error
+          retention-days: 7
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.target }}
@@ -83,16 +222,71 @@ jobs:
           tool: cargo-nextest@0.9.152,cargo-llvm-cov@0.9.1
       # Build precedes every behavioral gate, so a parity failure never suppresses it.
       - name: Build the native release binary
+        id: release
+        if: always()
         run: cargo build --locked --release --all-features --target ${{ matrix.target }} --bin telegram-mcp --bin emoji-studio --bin operator-plugin
+      - name: Execute all three actual native release CLIs
+        id: release_smoke
+        if: always() && steps.release.outcome == 'success'
+        timeout-minutes: 2
+        shell: pwsh
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          foreach ($name in @('telegram-mcp', 'emoji-studio', 'operator-plugin')) {
+            $binary = Join-Path $env:GITHUB_WORKSPACE "target/$env:NATIVE_TARGET/release/$name$suffix"
+            $help = (& $binary --help) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $help -notmatch '(?m)^Usage:') {
+              throw "The actual native $name release could not execute its help command."
+            }
+            Write-Host "Executed actual $env:NATIVE_TARGET release: $name --help"
+          }
       - name: Package the actual release and provenance
+        id: package
+        if: always() && steps.release.outcome == 'success' && steps.release_smoke.outcome == 'success'
         run: cargo run --locked --bin ci -- package ${{ matrix.target }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always() && steps.package.outcome == 'success'
         with:
           name: telegram-mcp-${{ matrix.target }}
           path: dist/${{ matrix.target }}/
           if-no-files-found: error
       - name: Install actual native media tools for behavioral fixtures
         uses: ./.github/actions/media-tools
+      - name: Create disposable private state and file roots for tests
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scratch = Join-Path $env:RUNNER_TEMP ('telegram-native-tests-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($scratch)
+          if ($IsWindows) {
+            $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetOwner($owner)
+            $acl.SetAccessRuleProtection($true, $false)
+            $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new($owner, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            [void] $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $scratch -AclObject $acl
+          } else {
+            & chmod 700 $scratch
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the disposable test root.' }
+          }
+          $state = Join-Path $scratch 'state'
+          $files = Join-Path $scratch 'files'
+          foreach ($directory in @($state, $files)) {
+            [void] [IO.Directory]::CreateDirectory($directory)
+            if (-not $IsWindows) {
+              & chmod 700 $directory
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot protect a disposable test directory.' }
+            }
+          }
+          "TELEGRAM_STATE_DIR=$state" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TELEGRAM_FILE_ROOTS=$files" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'Native tests use fresh private state and an existing disposable file root.'
       - name: Select a canonical coverage directory and per-process profiles
         shell: pwsh
         run: |
@@ -106,6 +300,8 @@ jobs:
           $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
           "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Remove stale workspace coverage objects while preserving dependency caches
+        run: cargo llvm-cov clean --workspace
       - name: Run all native tests with coverage instrumentation
         shell: pwsh
         run: |
@@ -139,6 +335,31 @@ jobs:
         run: cargo llvm-cov report --lcov --output-path coverage-${{ matrix.label }}.info
       - name: Run documentation examples
         run: cargo test --locked --all-features --doc
+      - name: Verify the retained PowerShell launchers on native Unix
+        if: always() && runner.os != 'Windows' && steps.release.outcome == 'success'
+        shell: pwsh
+        timeout-minutes: 3
+        env:
+          TELEGRAM_MCP_BINARY: ${{ github.workspace }}/target/${{ matrix.target }}/release/telegram-mcp
+          TELEGRAM_STATE_DIR: ${{ runner.temp }}/native-launcher-${{ matrix.label }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-Item -LiteralPath 'start-mcp.ps1', 'Manage-Accounts.ps1') +
+            @(Get-ChildItem account-manager -Filter '*.ps1' -File) +
+            @(Get-ChildItem tests -Filter 'test_*.ps1' -File)
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref] $tokens, [ref] $errors) | Out-Null
+            if ($errors.Count -ne 0) { throw "PowerShell syntax errors in $($file.Name)." }
+          }
+          & pwsh -NoLogo -NoProfile -File tests/test_account_health.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'The portable account-health and native Unix launcher behaviors failed.' }
+          $nativeHelp = (& pwsh -NoLogo -NoProfile -NonInteractive -File start-mcp.ps1 -NoLogToFile --help) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $nativeHelp -notmatch 'Usage:\s+telegram-mcp serve') {
+            throw 'The retained Unix launcher did not invoke the actual compiled native server CLI.'
+          }
+          Write-Host "Parsed $($files.Count) retained scripts and executed the portable Unix launcher suite. The other three full suites exercise Windows ACL/CIM behavior in both Windows architecture jobs."
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -167,15 +388,31 @@ jobs:
       matrix:
         include:
           - os: ubuntu-24.04
-            label: linux
+            label: linux-x86_64
+            target: x86_64-unknown-linux-gnu
             library: librlottie.so
+          - os: ubuntu-24.04-arm
+            label: linux-aarch64
+            target: aarch64-unknown-linux-gnu
+            library: librlottie.so
+          - os: macos-15-intel
+            label: macos-x86_64
+            target: x86_64-apple-darwin
+            library: librlottie.dylib
           - os: macos-latest
-            label: macos
+            label: macos-aarch64
+            target: aarch64-apple-darwin
             library: librlottie.dylib
           - os: windows-latest
-            label: windows
+            label: windows-x86_64
+            target: x86_64-pc-windows-msvc
+            library: rlottie.dll
+          - os: windows-11-arm
+            label: windows-aarch64
+            target: aarch64-pc-windows-msvc
             library: rlottie.dll
     env:
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
       TELEGRAM_REQUIRE_LOTTIE: "1"
       TELEGRAM_RLOTTIE_LIBRARY: ${{ github.workspace }}/.ci-rlottie-runtime/${{ matrix.library }}
     steps:
@@ -185,8 +422,136 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: 1.100.0
+          toolchain: 1.100.0-${{ matrix.target }}
           components: llvm-tools-preview
+      - name: Select the native Windows C and C++ toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP ('native-msvc-' + [guid]::NewGuid().ToString('N') + '.cmd')
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $llvmCandidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $llvmCandidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+            & clang --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C compiler did not run.' }
+            & clang-cl --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C++ compiler did not run.' }
+          }
+      - name: Verify the compiler and shell run on the requested native architecture
+        shell: pwsh
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualShell = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($actualShell -ne $env:RUNNER_ARCH) { throw 'The PowerShell host is running under another CPU architecture.' }
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The Rust host compiler does not match the native matrix target.'
+          }
+          $version | Write-Output
+      - name: Probe native Windows ARM64 compiler coverage
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        id: arm64_coverage_probe
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $toolchain = '1.100.0-aarch64-pc-windows-msvc'
+          $version = & rustc "+$toolchain" -vV
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the pinned native Rust compiler' }
+          $version | Write-Output
+          if (-not ($version -contains 'host: aarch64-pc-windows-msvc')) {
+            throw 'Coverage smoke is not using the ARM64 Rust host compiler'
+          }
+          $sysroot = (& rustc "+$toolchain" --print sysroot).Trim()
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot' }
+          $llvmBin = Join-Path $sysroot 'lib/rustlib/aarch64-pc-windows-msvc/bin'
+          $profdata = Join-Path $llvmBin 'llvm-profdata.exe'
+          $llvmCov = Join-Path $llvmBin 'llvm-cov.exe'
+          if (-not (Test-Path -LiteralPath $profdata -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $llvmCov -PathType Leaf)) {
+            throw 'The native Rust llvm-tools-preview component is missing'
+          }
+          & $profdata --version
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled llvm-profdata did not run' }
+          $work = Join-Path $env:RUNNER_TEMP ('native-arm64-coverage-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $work | Out-Null
+          $source = Join-Path $work 'smoke.rs'
+          $binary = Join-Path $work 'smoke.exe'
+          $merged = Join-Path $work 'smoke.profdata'
+          $program = '#[inline(never)] fn branch(v: bool) -> u64 { if v { 42 } else { 7 } } fn main() { println!("{}", branch(std::env::args().nth(1).is_some())); }'
+          [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
+          & rustc "+$toolchain" --edition=2024 --target=aarch64-pc-windows-msvc -C instrument-coverage -C opt-level=0 -C debuginfo=1 $source -o $binary
+          if ($LASTEXITCODE -ne 0) { throw 'The pinned ARM64 compiler could not build the coverage smoke' }
+          $pe = [IO.File]::ReadAllBytes($binary)
+          $header = [BitConverter]::ToInt32($pe, 0x3c)
+          $machine = [BitConverter]::ToUInt16($pe, $header + 4)
+          if ($machine -ne 0xaa64) { throw ('Smoke executable is not native ARM64; PE Machine=0x{0:x4}' -f $machine) }
+          $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+          try {
+            $env:LLVM_PROFILE_FILE = Join-Path $work 'first-%p.profraw'
+            & $binary
+            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke execution failed' }
+            $env:LLVM_PROFILE_FILE = Join-Path $work 'second-%p.profraw'
+            & $binary exercise-second-branch
+            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke second execution failed' }
+            $raw = @(Get-ChildItem -LiteralPath $work -Filter '*.profraw' -File)
+            $raw | Select-Object Name, Length | Format-Table | Out-String | Write-Output
+            if ($raw.Count -lt 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) {
+              throw 'Both real smoke processes must produce nonempty profiles'
+            }
+            $rawPaths = @($raw | ForEach-Object FullName)
+            & $profdata merge -sparse @rawPaths -o $merged
+            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM rejected the actual ARM64 profiles; retain its diagnostic and raw files' }
+            $counters = & $profdata show --all-functions --counts $merged
+            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM could not read merged ARM64 function counters' }
+            $counters | Write-Output
+            if (($counters -join "`n") -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') {
+              throw 'The actual native profile contains no executed function counter'
+            }
+            & $llvmCov report $binary "--instr-profile=$merged" $source
+            if ($LASTEXITCODE -ne 0) { throw 'ARM64 coverage mapping/report generation failed' }
+            Write-Output "Verified native Rust 1.100 ARM64 coverage artifacts: $work"
+          } finally {
+            [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process')
+          }
+      - name: Retain actual Windows ARM64 compiler coverage evidence
+        if: always() && matrix.target == 'aarch64-pc-windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: compiler-coverage-probe-renderer-${{ matrix.label }}
+          path: ${{ runner.temp }}/native-arm64-coverage-*/
+          if-no-files-found: error
+          retention-days: 7
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: renderer-${{ matrix.label }}
@@ -218,10 +583,17 @@ jobs:
             "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE=$runtime",
             "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE=$runtime"
           )
-          if ($IsMacOS) {
-            # This pinned upstream does not supply the NEON assembly helper
-            # symbols on Apple ARM64. Use its official scalar path.
+          if (-not $IsWindows -and $env:RUNNER_ARCH -eq 'ARM64') {
+            # This pinned upstream supplies the pixman NEON helper assembly
+            # only for ARM32. Use its official scalar path on native ARM64.
             $cmakeArguments += '-DCMAKE_CXX_FLAGS=-U__ARM_NEON__'
+          }
+          if ($IsWindows) {
+            if ($env:CMAKE_GENERATOR -and $env:CMAKE_GENERATOR -notmatch '^Visual Studio ') {
+              throw 'The renderer requires a Visual Studio generator with an explicit native platform.'
+            }
+            $platform = if ($env:RUNNER_ARCH -eq 'ARM64') { 'ARM64' } else { 'x64' }
+            $cmakeArguments += @('-A', $platform)
           }
           & cmake @cmakeArguments
           if ($LASTEXITCODE -ne 0) { throw 'Native renderer configuration failed.' }
@@ -230,6 +602,38 @@ jobs:
           if (-not (Test-Path $env:TELEGRAM_RLOTTIE_LIBRARY -PathType Leaf)) { throw 'The native renderer library is missing.' }
       - name: Install actual native media tools for behavioral fixtures
         uses: ./.github/actions/media-tools
+      - name: Create disposable private state and file roots for tests
+        shell: pwsh
+        timeout-minutes: 1
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $scratch = Join-Path $env:RUNNER_TEMP ('telegram-native-tests-' + [guid]::NewGuid().ToString('N'))
+          [void] [IO.Directory]::CreateDirectory($scratch)
+          if ($IsWindows) {
+            $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            $acl = [Security.AccessControl.DirectorySecurity]::new()
+            $acl.SetOwner($owner)
+            $acl.SetAccessRuleProtection($true, $false)
+            $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new($owner, [Security.AccessControl.FileSystemRights]::FullControl, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            [void] $acl.AddAccessRule($rule)
+            Set-Acl -LiteralPath $scratch -AclObject $acl
+          } else {
+            & chmod 700 $scratch
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot protect the disposable test root.' }
+          }
+          $state = Join-Path $scratch 'state'
+          $files = Join-Path $scratch 'files'
+          foreach ($directory in @($state, $files)) {
+            [void] [IO.Directory]::CreateDirectory($directory)
+            if (-not $IsWindows) {
+              & chmod 700 $directory
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot protect a disposable test directory.' }
+            }
+          }
+          "TELEGRAM_STATE_DIR=$state" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          "TELEGRAM_FILE_ROOTS=$files" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host 'Native tests use fresh private state and an existing disposable file root.'
       - name: Select a canonical coverage directory and per-process profiles
         shell: pwsh
         run: |
@@ -243,6 +647,8 @@ jobs:
           $coverage = (Join-Path $env:GITHUB_WORKSPACE 'target/coverage').Replace('\', '/')
           "CARGO_LLVM_COV_TARGET_DIR=$coverage" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           'LLVM_PROFILE_FILE_NAME=telegram-mcp-%p.profraw' | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Remove stale workspace coverage objects while preserving dependency caches
+        run: cargo llvm-cov clean --workspace
       - name: Run the whole native suite with rendering required
         shell: pwsh
         run: |
@@ -294,8 +700,20 @@ jobs:
           if-no-files-found: error
 
   launchers:
-    name: PowerShell launcher tests
-    runs-on: windows-latest
+    name: PowerShell launcher tests (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - os: windows-11-arm
+            label: windows-aarch64
+            target: aarch64-pc-windows-msvc
+    env:
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -304,8 +722,63 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          toolchain: 1.100.0
+          toolchain: 1.100.0-${{ matrix.target }}
+      - name: Select the native Windows C and C++ toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP ('native-msvc-' + [guid]::NewGuid().ToString('N') + '.cmd')
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], 'Process')
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force -ErrorAction SilentlyContinue }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $llvmCandidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $llvmCandidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $env:PATH = "$llvm;$env:PATH"
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+            & clang --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C compiler did not run.' }
+            & clang-cl --version
+            if ($LASTEXITCODE -ne 0) { throw 'The ARM64 C++ compiler did not run.' }
+          }
+      - name: Verify the compiler and shell run on the requested native architecture
+        shell: pwsh
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualShell = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+          if ($actualShell -ne $env:RUNNER_ARCH) { throw 'The PowerShell host is running under another CPU architecture.' }
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains "host: $env:EXPECTED_TARGET")) {
+            throw 'The Rust host compiler does not match the native matrix target.'
+          }
+          $version | Write-Output
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: launchers-${{ matrix.target }}
       - name: Build the executable the launchers invoke
         run: cargo build --locked --bin telegram-mcp
       - name: Discover and run every preserved launcher suite

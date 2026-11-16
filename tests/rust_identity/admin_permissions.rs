@@ -1,6 +1,23 @@
 use super::common::*;
 use serde_json::json;
 
+#[tokio::test]
+async fn member_exceptions_refuse_group_only_settings_before_reading_or_changing_expiry() {
+    for setting in [
+        json!({"slow_mode":"off"}),
+        json!({"do_not_restrict_boosters":1}),
+        json!({"charge_stars_per_message":4}),
+    ] {
+        let m = Mock::new();
+        let mut args = json!({"chat_id":7,"user_id":8});
+        args.as_object_mut()
+            .unwrap()
+            .extend(setting.as_object().unwrap().clone());
+        assert!(run(&m, "set_member_exception", args).await.is_err());
+        assert!(m.methods().is_empty());
+    }
+}
+
 macro_rules! member_role{
     ($name:ident,$participant:expr,$role:literal,$admin:literal)=>{
         #[tokio::test]async fn $name(){let m=Mock::new();m.reply("channels.getParticipant",json!({"participant":$participant}));let r=run(&m,"get_member_admin_status",json!({"chat_id":7,"user_id":8})).await.unwrap();assert_eq!(r["results"][0]["role"],$role);assert_eq!(r["results"][0]["is_admin"],$admin);}

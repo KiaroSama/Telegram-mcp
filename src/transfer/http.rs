@@ -131,6 +131,11 @@ async fn download_inner(
     if current != path {
         return Err(StatusCode::FORBIDDEN);
     }
+    let permit = registry
+        .active_downloads
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
     let file = files::open_download(&registry.state, &path).map_err(|_| StatusCode::FORBIDDEN)?;
     let meta = file.metadata().map_err(|_| StatusCode::NOT_FOUND)?;
     if !meta.is_file()
@@ -156,6 +161,10 @@ async fn download_inner(
             }
         })
         .collect::<String>();
+    let stream = futures_util::stream::unfold(
+        (tokio_util::io::ReaderStream::new(file.take(length)), permit),
+        |(mut reader, permit)| async move { reader.next().await.map(|chunk| (chunk, (reader, permit))) },
+    );
     Response::builder()
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::CONTENT_LENGTH, length)
@@ -165,8 +174,6 @@ async fn download_inner(
         )
         .header(header::CACHE_CONTROL, "no-store")
         .header(header::X_CONTENT_TYPE_OPTIONS, "nosniff")
-        .body(Body::from_stream(tokio_util::io::ReaderStream::new(
-            file.take(length),
-        )))
+        .body(Body::from_stream(stream))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }

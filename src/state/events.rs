@@ -94,6 +94,45 @@ impl EventJournal {
             "message_count":burst.count,"count":burst.count,"first_message_id":burst.first_id,
             "last_message_id":burst.event.message_id,"burst_seconds":burst.last.duration_since(burst.first).as_secs_f64()})
     }
+
+    fn flush_settled(
+        &mut self,
+        settle: Duration,
+        mut append: impl FnMut(&Value) -> Result<()>,
+    ) -> Result<usize> {
+        let mut count = 0;
+        // Bound each mutex hold; the worker yields and rechecks its generation
+        // before processing another batch of already-settled conversations.
+        for _ in 0..16 {
+            let Some(key) = self
+                .bursts
+                .iter()
+                .find(|(_, burst)| !burst.event.bot && burst.last.elapsed() >= settle)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            let summary =
+                Self::summary(self.bursts.get(&key).context("Pending event disappeared")?);
+            if let Err(error) = append(&summary) {
+                if error.is::<super::storage::AppendUncertain>() {
+                    self.feed_enabled = false;
+                    self.generation = self.generation.wrapping_add(1);
+                    self.error = Some("Event feed stopped after an uncertain append; inspect its records before enabling it again. Pending events were retained".into());
+                } else {
+                    self.error = Some(
+                        "Event feed cannot write private state; pending events were retained"
+                            .into(),
+                    );
+                }
+                return Err(error);
+            }
+            self.bursts.remove(&key);
+            self.error = None;
+            count += 1;
+        }
+        Ok(count)
+    }
 }
 
 impl State {
@@ -369,46 +408,38 @@ impl State {
             let notified = self.changed.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let outcome = (|| -> Result<bool> {
+            let outcome = (|| -> Result<Option<usize>> {
                 let mut journal = self
                     .events
                     .lock()
                     .map_err(|_| anyhow::anyhow!("Event journal lock is unavailable"))?;
                 if !journal.feed_enabled || journal.generation != generation {
-                    return Ok(false);
+                    return Ok(None);
                 }
                 journal.expire();
                 if maintenance.elapsed() >= Duration::from_secs(300) {
                     self.maintain_event_feed()?;
                     maintenance = Instant::now();
                 }
-                let key = journal
-                    .bursts
-                    .iter()
-                    .find(|(_, burst)| !burst.event.bot && burst.last.elapsed() >= settle)
-                    .map(|(key, _)| key.clone());
-                if let Some(key) = key {
-                    let summary = EventJournal::summary(
-                        journal
-                            .bursts
-                            .get(&key)
-                            .context("Pending event disappeared")?,
-                    );
-                    // Remove only after durable append. A disk failure keeps the burst pending.
-                    self.append_event_line(&summary)?;
-                    journal.bursts.remove(&key);
-                    journal.error = None;
-                }
-                Ok(true)
+                journal
+                    .flush_settled(settle, |summary| self.append_event_line(summary))
+                    .map(Some)
             })();
             match outcome {
-                Ok(false) => break,
+                Ok(None) => break,
+                Ok(Some(count)) if count > 0 => {
+                    tokio::task::yield_now().await;
+                    continue;
+                }
                 Err(_) => {
                     if let Ok(mut journal) = self.events.lock() {
-                        journal.error = Some(
+                        if !journal.feed_enabled || journal.generation != generation {
+                            break;
+                        }
+                        journal.error.get_or_insert_with(|| {
                             "Event feed cannot write private state; pending events were retained"
-                                .to_owned(),
-                        );
+                                .to_owned()
+                        });
                     }
                 }
                 _ => {}

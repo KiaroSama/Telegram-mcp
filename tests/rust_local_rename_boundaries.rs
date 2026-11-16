@@ -1,6 +1,29 @@
 mod local_support;
 use local_support::fixture;
 use serde_json::{Value, json};
+
+#[test]
+fn renaming_an_account_without_aliases_preserves_empty_namespaces_and_allows_new_aliases() {
+    let (_dir, state) = fixture();
+    state
+        .write_json("aliases-v2.json", &json!({"accounts":{}}))
+        .unwrap();
+    rename_account(&state, "work", "personal").unwrap();
+    assert_eq!(
+        state.read_json("aliases-v2.json", Value::Null).unwrap(),
+        json!({"accounts":{}})
+    );
+    assert_eq!(state.aliases("personal").unwrap(), json!({}));
+    state
+        .alias_set("personal", "close friend", json!({"user_id":"42"}), false)
+        .unwrap();
+    assert!(
+        state
+            .alias_lookup("personal", "close friend")
+            .unwrap()
+            .is_some()
+    );
+}
 use telegram_mcp::account_manager::{recover_rename, rename_account};
 
 #[test]

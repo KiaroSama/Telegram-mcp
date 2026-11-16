@@ -8,6 +8,27 @@ use std::path::{Path, PathBuf};
 #[path = "../../tests/unit/export_writer.rs"]
 mod tests;
 
+pub(super) fn title_for_peer(peer: &Value, peers: &BTreeMap<String, Value>) -> String {
+    let id = peer
+        .get("user_id")
+        .or_else(|| peer.get("channel_id"))
+        .or_else(|| peer.get("chat_id"));
+    let kind = match peer["_"].as_str() {
+        Some("inputPeerUser") => "user",
+        Some("inputPeerChannel") => "channel",
+        _ => "chat",
+    };
+    id.and_then(super::numeric_id)
+        .and_then(|id| peers.get(&format!("{kind}:{id}")))
+        .map(|value| {
+            value["title"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| super::render::person_name(value))
+        })
+        .unwrap_or_else(|| "Telegram chat export".into())
+}
+
 pub struct Writer {
     path: PathBuf,
     json: Option<(tempfile::NamedTempFile, BufWriter<File>)>,

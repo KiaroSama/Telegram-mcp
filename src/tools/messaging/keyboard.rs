@@ -448,9 +448,17 @@ async fn reply_keyboard(api: &dyn Telegram, name: &str, a: &Value) -> Result<Val
     }
     let start = tokio::time::Instant::now();
     while start.elapsed().as_secs_f64() < wait {
-        let history = api
+        let history = match api
             .invoke("messages.getHistory", history_request(p.clone(), 10, 0, 0))
-            .await?;
+            .await
+        {
+            Ok(history) => history,
+            Err(_) => {
+                return Ok(
+                    json!({"sent":result,"reply":null,"reply_fetch_warning":"The action completed, but fetching its reply failed. Do not repeat the action; inspect the chat instead."}),
+                );
+            }
+        };
         if let Some(message) = result_messages(&history).into_iter().find(|m| {
             m["id"].as_i64().unwrap_or(0) > latest && !m["out"].as_bool().unwrap_or(false)
         }) {

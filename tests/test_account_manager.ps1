@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
 
 function Get-LauncherSource {
     <#
@@ -32,10 +32,10 @@ $sandbox = Join-Path ([IO.Path]::GetTempPath()) ("tg-accounts-" + [guid]::NewGui
 [void] (New-Item -ItemType Directory -Path $sandbox)
 
 try {
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'Manage-Accounts.ps1') -Destination $sandbox
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Manage-Accounts.ps1') -Destination $sandbox
     # The launcher dot-sources account-manager/*.ps1, so the sandbox is not a launcher
     # without them - and the extraction below has to see their functions too.
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'account-manager') -Destination $sandbox -Recurse
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'account-manager') -Destination $sandbox -Recurse
 
     $envPath = Join-Path $sandbox '.env'
     $original = @(
@@ -206,7 +206,12 @@ $($functions.Value -join "`n`n")
         'Backup-EnvFile'       = { $null }
         'Get-ServerTrees'      = { param($Root) @() }
         'Stop-TelegramServer'  = { param($Root) $false }
-        'Move-AccountState'    = { param($From, $To) @() }
+        'Move-AccountState'    = {
+            param($From, $To, $ConfigurationKey)
+            if ($ConfigurationKey -ne 'TELEGRAM_SESSION_NAME_ONDISK') { throw 'The original file-owned source key was not passed to native rename.' }
+            Rename-EnvKey -From $ConfigurationKey -To 'TELEGRAM_SESSION_NAME_MOVED' | Out-Null
+            @()
+        }
         'Rename-SecretsEntry'  = { param($Path, $OldKey, $NewKey, $OldLabel, $NewLabel) $false }
         # This harness leaves $PSScriptRoot empty inside the extracted functions, so
         # the secrets.md path cannot resolve here; tests/test_account_rename.ps1 covers it.
@@ -473,9 +478,13 @@ $e2e = Join-Path ([IO.Path]::GetTempPath()) ("tg-accounts-e2e-" + [guid]::NewGui
 $savedStateDirectory = $env:TELEGRAM_STATE_DIR
 $env:TELEGRAM_STATE_DIR = Join-Path $e2e 'private-state'
 try {
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'Manage-Accounts.ps1') -Destination $e2e
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'account-manager') -Destination $e2e -Recurse
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Manage-Accounts.ps1') -Destination $e2e
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'account-manager') -Destination $e2e -Recurse
     $e2eEnv = Join-Path $e2e '.env'
+    # Extracted helpers outlive the first sandbox. Give later direct state
+    # checks the same live fixture ownership as the shipped child script.
+    $script:ProjectRoot = $e2e
+    $envPath = $e2eEnv
     $before = @('TELEGRAM_API_ID=1', 'TELEGRAM_SESSION_STRING_WORK=1AAAAAwork')
     [IO.File]::WriteAllLines($e2eEnv, $before, [Text.UTF8Encoding]::new($false))
 
@@ -505,9 +514,9 @@ try {
     # stay gone - a re-introduced second sign-in would put a second device back on
     # the account, which is the exact thing Principle I forbids.
 
-    $source = Get-LauncherSource -Root $projectRoot
-    $generator = ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/backend.rs'))) +
-        ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/account_manager/login.rs')))
+    $source = Get-LauncherSource -Root $repositoryRoot
+    $generator = ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/backend.rs'))) +
+        ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/account_manager/login.rs')))
 
     foreach ($dead in @('Invoke-SecretChatLogin', 'Get-SecretChatStates', 'Get-SecretChatSummary')) {
         if ($source -match [regex]::Escape($dead)) {
@@ -698,7 +707,7 @@ try {
     Write-Host 'ok  a missing key store is not an error'
 
     # The native process and the retained launcher must agree on private state.
-    $native = Get-NativeBinary -Root $projectRoot
+    $native = Get-NativeBinary -Root $repositoryRoot
     $nativeState = (& $native state-path | Select-Object -Last 1).Trim()
     # Both resolve through native canonicalization, including junctions and
     # short names. Comparing textual GetFullPath spellings is insufficient.
@@ -724,12 +733,12 @@ try {
             throw "The launcher still tells the owner to restart for an account change: '$claim'."
         }
     }
-    $profileSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'src/tools/identity/profile.rs'))
+    $profileSource = [IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/tools/identity/profile.rs'))
     if ($profileSource -match 'Restart the MCP server') {
         throw 'Native profile tools still claim account replacement needs a restart.'
     }
-    $connection = ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/account_manager/config.rs'))) +
-        ([IO.File]::ReadAllText((Join-Path $projectRoot 'src/backend/config.rs')))
+    $connection = ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/account_manager/config.rs'))) +
+        ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/backend/config.rs')))
     if ($connection -notmatch 'current_config') {
         throw 'Native account configuration no longer refreshes its immutable file snapshot.'
     }

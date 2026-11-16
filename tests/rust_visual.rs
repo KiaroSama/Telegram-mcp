@@ -4,6 +4,32 @@ use telegram_mcp::export::{media, render, settings};
 use telegram_mcp::tools::visual::{capture, images};
 
 #[test]
+fn listed_decimal_window_handles_are_valid_public_capture_arguments() {
+    let tools = telegram_mcp::server::catalogue().unwrap();
+    for name in [
+        "get_telegram_screen",
+        "get_telegram_region",
+        "get_telegram_frames",
+    ] {
+        let tool = tools.iter().find(|tool| tool.name == name).unwrap();
+        for handle in [
+            json!("1234567890123"),
+            json!(1234567890123_i64),
+            Value::Null,
+        ] {
+            let mut args = json!({"hwnd":handle,"left":0,"top":0,"right":10,"bottom":10});
+            if name != "get_telegram_region" {
+                for key in ["left", "top", "right", "bottom"] {
+                    args.as_object_mut().unwrap().remove(key);
+                }
+            }
+            telegram_mcp::server::validate_arguments(&mut args, &tool.input_schema).unwrap();
+            assert_eq!(capture::normalize(name, &args).unwrap()["hwnd"], handle);
+        }
+    }
+}
+
+#[test]
 fn image_dimension_zero_keeps_default() {
     assert_eq!(images::bounded_dimension(0), 1568);
 }

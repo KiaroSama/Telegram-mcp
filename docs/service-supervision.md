@@ -11,7 +11,7 @@ The `/mcp` endpoint uses bearer authentication. Configure an explicit private
 32 characters and a matching PEM pair in `TELEGRAM_HTTP_TLS_CERT` and
 `TELEGRAM_HTTP_TLS_KEY`. Non-loopback HTTP is refused; it never falls back from TLS
 to plaintext. Clients must validate the service certificate and supply the bearer
-over HTTPS. The native bridge attaches stdio clients to a loopback HTTP service rather
+over HTTPS. The native bridge attaches stdio clients to a loopback HTTP or validated HTTPS service rather
 than creating an independent authenticated Telegram client per application.
 
 `telegram-mcp bridge` is also the explicit native startup entry point. If discovery
@@ -23,6 +23,12 @@ and creation identity around attachment, so a reused PID is insufficient. Other 
 API clients attach only. No caller may replace an unrelated occupied listener.
 
 ## Ownership and health
+
+Private discovery carries a fresh local credential for each service generation,
+separate from the configured external bearer. Native clients authenticate health
+responses before sending MCP credentials; a stale listener cannot forge that
+readiness proof. Restart the shared service when upgrading from an older health
+protocol, and keep its discovery file private.
 
 Authorization stores are account-scoped and exclusive. A second process must not
 ignore or delete a live account lease. Closing an MCP transport session does not mean

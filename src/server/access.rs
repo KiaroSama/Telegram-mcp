@@ -134,6 +134,11 @@ impl AccessPolicy {
         if !self.enabled {
             return Ok(scoped);
         }
+        if name == "add_contact" && args.get("username").is_none_or(|value| value.is_null()) {
+            bail!(
+                "Phone-only contact import cannot prove a permitted identity while a chat allowlist is active"
+            );
+        }
         let has_primary = [
             "chat",
             "chat_id",
@@ -260,7 +265,11 @@ impl AccessPolicy {
         }
         if matches!(
             name,
-            "resolve_username" | "lookup_username" | "lookup_peer" | "get_full_user"
+            "resolve_username"
+                | "lookup_username"
+                | "lookup_peer"
+                | "get_full_user"
+                | "add_contact"
         ) && let Some(value) = args
             .get("username")
             .or_else(|| args.get("query"))
@@ -288,12 +297,20 @@ impl AccessPolicy {
                 | "get_recent_actions"
                 | "export_recent_actions"
                 | "get_folder_snapshot"
+                | "list_folders"
+                | "get_folder"
                 | "update_folder"
+                | "get_contact_ids"
+                | "get_blocked_users"
+                | "import_contacts"
                 | "resolve_phone"
                 | "enable_incoming_feed"
                 | "incoming_feed_status"
         ) {
             bail!("This account-wide operation is unavailable while a chat allowlist is active");
+        }
+        if name == "ban_community_member" && args["also_from_chats"] == true {
+            bail!("Linked-chat community mutations cannot enforce the configured chat allowlist");
         }
         // Listing has no primary target. Resolve configured username scopes
         // using the backend, rather than trusting a username in arbitrary rows.

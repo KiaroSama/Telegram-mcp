@@ -373,6 +373,47 @@ pub(super) fn remove_env_value_locked(
     rewrite_env_locked(guard, key, None, Some(expected_digest))
 }
 
+pub(super) fn rename_env_key_locked(
+    guard: &ConfigWriteGuard,
+    key: &str,
+    target: &str,
+    expected_digest: &str,
+) -> Result<()> {
+    label_for(key)?;
+    label_for(target)?;
+    let metadata = guard.path.symlink_metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!("Refusing to rename nonregular account configuration");
+    }
+    let (bytes, _) = read_bytes(&guard.path)?;
+    let text = std::str::from_utf8(&bytes).context("Account configuration must be UTF-8")?;
+    let parsed = parse_config(text, &BTreeMap::new())?;
+    if parsed.get(key).map(|value| config_digest(value)).as_deref() != Some(expected_digest)
+        || parsed.contains_key(target)
+    {
+        bail!("Account configuration changed; no rename was written");
+    }
+    let mut result = String::new();
+    for record in logical_records(text)? {
+        let body = record.trim_start_matches('\u{feff}').trim_start();
+        let candidate = body.strip_prefix("export ").unwrap_or(body).trim_start();
+        if candidate
+            .split_once('=')
+            .map(|(name, _)| name.trim())
+            .unwrap_or(candidate.trim())
+            == key
+        {
+            let offset = record.len() - candidate.len();
+            result.push_str(&record[..offset]);
+            result.push_str(target);
+            result.push_str(&candidate[key.len()..]);
+        } else {
+            result.push_str(record);
+        }
+    }
+    persist_configuration(&guard.path, &bytes, &result)
+}
+
 fn rewrite_env_locked(
     guard: &ConfigWriteGuard,
     key: &str,
@@ -445,6 +486,13 @@ fn rewrite_env_locked(
         }
         result.push_str(&format!("{key}={quoted}{ending}"));
     }
+    persist_configuration(path, &bytes, &result)
+}
+
+fn persist_configuration(path: &Path, bytes: &[u8], result: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("Configuration file has no parent directory")?;
     let backup_prefix = format!(
         "{}.backup-",
         path.file_name()
@@ -456,7 +504,7 @@ fn rewrite_env_locked(
             "{backup_prefix}{}",
             chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S_%f_UTC")
         ));
-        private_replace(&backup, &bytes, false)?;
+        private_replace(&backup, bytes, false)?;
     }
     private_replace(path, result.as_bytes(), true)?;
     // Backups hold complete logins, so keep only the newest recoverable revision.

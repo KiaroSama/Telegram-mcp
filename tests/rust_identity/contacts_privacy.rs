@@ -63,23 +63,30 @@ async fn contact_names_omit_null_and_identify_deleted_accounts() {
 #[tokio::test]
 async fn add_username_contact_uses_resolved_input_user() {
     let m = Mock::new();
+    // The operation's peer resolver has pinned Bob, but the current Telegram
+    // username now belongs to another user. Re-resolving the username by RPC
+    // would silently add that replacement instead of the reviewed contact.
+    m.set_peer(
+        "@bob",
+        json!({"_":"inputPeerUser","user_id":"11","access_hash":"110"}),
+    );
     m.reply("contacts.resolveUsername",json!({"peer":{"_":"peerUser","user_id":"8"},"users":[{"_":"user","id":"8","access_hash":"80"}]}));
     run(
         &m,
         "add_contact",
-        json!({"username":"@bob","first_name":"Ada","last_name":"Lovelace"}),
+        json!({"username":"@bob","first_name":"Ada","last_name":"Lovelace","phone":"+15550100"}),
     )
     .await
     .unwrap();
-    assert_eq!(
-        m.methods(),
-        ["contacts.resolveUsername", "contacts.addContact"]
-    );
-    assert_eq!(m.sent("contacts.resolveUsername")[0]["username"], "bob");
+    assert_eq!(m.methods(), ["contacts.addContact"]);
+    assert_eq!(m.resolutions(), [json!("@bob")]);
     let r = &m.sent("contacts.addContact")[0];
     assert_eq!(r["id"]["_"], "inputUser");
-    assert_eq!(r["id"]["user_id"], "8");
-    assert_eq!(r["phone"], "");
+    assert_eq!(r["id"]["user_id"], "11");
+    assert_eq!(r["id"]["access_hash"], "110");
+    assert_eq!(r["first_name"], "Ada");
+    assert_eq!(r["last_name"], "Lovelace");
+    assert_eq!(r["phone"], "+15550100");
 }
 #[tokio::test]
 async fn add_phone_contact_imports_typed_contact_without_username_lookup() {
@@ -105,16 +112,17 @@ async fn add_contact_requires_identifier_before_network() {
 #[tokio::test]
 async fn resolved_channel_cannot_be_added_as_contact() {
     let m = Mock::new();
-    m.reply(
-        "contacts.resolveUsername",
-        json!({"peer":{"_":"peerChannel","channel_id":"7"},"users":[]}),
+    m.set_peer(
+        "group",
+        json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"70"}),
     );
     assert!(
         run(&m, "add_contact", json!({"username":"group"}))
             .await
             .is_err()
     );
-    assert!(m.sent("contacts.addContact").is_empty());
+    assert_eq!(m.resolutions(), [json!("group")]);
+    assert!(m.methods().is_empty());
 }
 #[tokio::test]
 async fn contact_chats_gets_direct_dialog_without_listing_every_dialog() {

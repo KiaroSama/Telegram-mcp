@@ -219,9 +219,16 @@ fn malformed_video_emoji_returns_a_bounded_error_and_removes_temporary_payloads(
         mime: "video/webm",
     };
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let error = preview(&wire, 3).await.unwrap_err().to_string();
-        assert!(error.contains("probe failed"));
+        let result = preview(&wire, 3).await.unwrap();
+        assert!(result["content"].as_array().unwrap().is_empty());
+        let error = result["metadata"]["emoji"][0]["error"].as_str().unwrap();
+        assert!(!error.is_empty() && error.len() <= 200);
         assert!(!error.contains("synthetic-private-codec-payload"));
+        assert!(
+            !result
+                .to_string()
+                .contains("synthetic-private-codec-payload")
+        );
         let root = std::path::PathBuf::from(std::env::var("TEST_VIDEO_ROOT").unwrap());
         assert_eq!(
             std::fs::read_dir(root).unwrap().count(),

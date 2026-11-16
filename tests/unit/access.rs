@@ -2,6 +2,51 @@ use super::*;
 use async_trait::async_trait;
 
 struct Peers(i64);
+
+#[tokio::test]
+async fn account_wide_readers_and_linked_community_mutations_cannot_escape_chat_scope() {
+    let policy = AccessPolicy::parse(Some("allowed")).unwrap();
+    let tools = crate::server::catalogue().unwrap();
+    for (name, mut args) in [
+        ("get_contact_ids", json!({})),
+        ("get_blocked_users", json!({})),
+        (
+            "import_contacts",
+            json!({"contacts":[{"phone":(["+44","7700900123"].concat()),"first_name":"Fixture","last_name":"Contact"}]}),
+        ),
+        ("list_folders", json!({})),
+        ("get_folder", json!({"folder_id":3})),
+        (
+            "ban_community_member",
+            json!({"community":"allowed","user":"target","also_from_chats":true}),
+        ),
+    ] {
+        let schema = &tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap()
+            .input_schema;
+        crate::server::validate_arguments(&mut args, schema).unwrap();
+        assert!(
+            policy.scoped(name, &args, &Peers(7)).await.is_err(),
+            "{name} must reject its unscoped account-wide reach before dispatch"
+        );
+        assert!(
+            AccessPolicy::default()
+                .scoped(name, &args, &Peers(7))
+                .await
+                .is_ok()
+        );
+    }
+    policy
+        .scoped(
+            "ban_community_member",
+            &json!({"community":"allowed","user":"target","also_from_chats":false}),
+            &Peers(7),
+        )
+        .await
+        .unwrap();
+}
 #[async_trait]
 impl Telegram for Peers {
     async fn invoke(&self, _: &str, _: Value) -> Result<Value> {

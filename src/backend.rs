@@ -68,6 +68,11 @@ pub trait Telegram: Send + Sync {
     fn clone_handle(&self) -> Option<Arc<dyn Telegram>> {
         None
     }
+    /// Explicitly retain an admitted mutation's serialization while its owned
+    /// cleanup continues after cancellation. Ordinary background clones do not.
+    fn operation_guard(&self) -> Option<Arc<dyn Send + Sync>> {
+        None
+    }
     fn cache_key(&self) -> Option<String> {
         None
     }

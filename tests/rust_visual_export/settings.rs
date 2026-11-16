@@ -69,6 +69,155 @@ fn unspecified_destination_uses_allowed_downloads_without_creating_a_directory()
     assert!(!parsed.path.exists());
 }
 
+#[derive(Clone, Default)]
+struct CleanupFixture {
+    inner: Fixture,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl Telegram for CleanupFixture {
+    async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
+        if method == "invokeWithTakeout" && params["query"]["_"] == "account.finishTakeoutSession" {
+            self.entered.notify_one();
+            self.release.notified().await;
+            return Ok(json!(true));
+        }
+        self.inner.invoke(method, params).await
+    }
+    async fn resolve_peer(&self, peer: &Value) -> Result<Value> {
+        self.inner.resolve_peer(peer).await
+    }
+}
+
+#[test]
+fn cancellation_during_takeout_cleanup_preserves_completed_export_success() {
+    if isolated(
+        "settings_edges::cancellation_during_takeout_cleanup_preserves_completed_export_success",
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let api = CleanupFixture::default();
+        let entered = api.entered.clone();
+        let release = api.release.clone();
+        let settings = settings("cleanup-cancel");
+        let output = settings.path.join("result.json");
+        let job = export::jobs::start(Arc::new(api), "chat", json!({"chat_id":"@test"}), settings)
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(output).unwrap()).unwrap();
+        assert_eq!(saved["messages"].as_array().unwrap().len(), 103);
+        assert_eq!(
+            export::jobs::cancel(&json!({"job_id":job["job_id"]})).unwrap()["cancelled"],
+            true
+        );
+        release.notify_one();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let status = export::jobs::status(&json!({"job_id":job["job_id"]})).unwrap();
+                if status["status"] != "running" {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(status["status"], "done");
+        assert_eq!(status["result"]["messages"], 103);
+        assert!(status.get("error").is_none());
+    });
+}
+
+#[test]
+fn concurrent_job_admission_reserves_distinct_folders_and_rolls_back_cancelled_empty_ones() {
+    if isolated(
+        "settings_edges::concurrent_job_admission_reserves_distinct_folders_and_rolls_back_cancelled_empty_ones",
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let destination = std::path::PathBuf::from(std::env::var("TEST_EXPORT_ROOT").unwrap());
+        let args = arguments(&destination);
+        let first = Settings::parse(&args).unwrap();
+        let second = Settings::parse(&args).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o750)).unwrap();
+        }
+        assert_eq!(
+            first.path, second.path,
+            "Pure planning should not mutate the filesystem"
+        );
+        let occupied = first.path.clone();
+        std::fs::create_dir(&occupied).unwrap();
+        std::fs::write(occupied.join("owner.txt"), b"earlier owner export").unwrap();
+        let api = Fixture {
+            block: true,
+            ..Default::default()
+        };
+        let first = export::jobs::start(
+            Arc::new(api.clone()),
+            "chat",
+            json!({"chat_id":"@test"}),
+            first,
+        )
+        .unwrap();
+        let second =
+            export::jobs::start(Arc::new(api), "chat", json!({"chat_id":"@test"}), second).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&destination)
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o750,
+                "Reserving a child must not change the owner's destination permissions"
+            );
+        }
+        assert_ne!(
+            first["folder"], second["folder"],
+            "Concurrent admitted jobs must own different output folders"
+        );
+        for job in [first, second] {
+            let folder = std::path::Path::new(job["folder"].as_str().unwrap());
+            assert!(
+                folder.is_dir(),
+                "A running job must already own its reserved folder"
+            );
+            assert_eq!(
+                export::jobs::cancel(&json!({"job_id":job["job_id"]})).unwrap()["cancelled"],
+                true
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while export::jobs::status(&json!({"job_id":job["job_id"]})).unwrap()["status"]
+                    == "running"
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                !folder.exists(),
+                "Cancelling before output must roll back only the empty owned reservation"
+            );
+        }
+        assert_eq!(
+            std::fs::read(occupied.join("owner.txt")).unwrap(),
+            b"earlier owner export"
+        );
+    });
+}
+
 #[test]
 fn export_settings_refuse_reversed_dates_and_invalid_numeric_budgets_before_creating_files() {
     let mut args = arguments(std::path::Path::new("unused"));

@@ -74,7 +74,7 @@ try {
     function Stop-TelegramServer { param($Root) $script:calls.Add('stop'); $true }
     function Start-TelegramServer { param($Root) $script:calls.Add('start'); 42 }
     function Backup-EnvFile { $null }
-    function Move-AccountState { param($From, $To) $script:calls.Add("move $From>$To"); throw 'Refused: taken' }
+    function Move-AccountState { param($From, $To, $ConfigurationKey) $script:calls.Add("move $From>$To"); throw 'Refused: taken' }
 
     $threw = $false
     try { Rename-Account } catch { $threw = $true }
@@ -83,15 +83,21 @@ try {
     Assert-That (($script:calls -join ',') -eq 'stop,move old>new,start') "Wrong order: $($script:calls -join ',')"
     Write-Host 'ok  a refused state move changes nothing and the server comes back'
 
-    # --- a failed .env write moves the state back ----------------------------------
+    # --- native config failure owns rollback; no split PowerShell write follows ----
     $script:calls.Clear()
-    function Move-AccountState { param($From, $To) $script:calls.Add("move $From>$To"); @('secret-chats/old') }
-    function Rename-EnvKey { param($From, $To) throw 'disk full' }
+    function Move-AccountState {
+        param($From, $To, $ConfigurationKey)
+        if ($ConfigurationKey -ne 'TELEGRAM_SESSION_STRING_OLD') { throw 'Native rename lost its exact source key.' }
+        $script:calls.Add("move $From>$To")
+        throw 'Native configuration commit failed; its journal owns recovery.'
+    }
+    function Rename-EnvKey { param($From, $To) throw 'PowerShell attempted a second configuration commit.' }
     $threw = $false
     try { Rename-Account } catch { $threw = $true }
     Assert-That $threw 'A failed .env write was not reported.'
-    Assert-That (($script:calls -join ',') -eq 'stop,move old>new,move new>old,start') "No rollback: $($script:calls -join ',')"
-    Write-Host 'ok  a failed .env write moves the stored state back'
+    Assert-That (($script:calls -join ',') -eq 'stop,move old>new,start') "Native transaction ownership was bypassed: $($script:calls -join ',')"
+    Assert-That ((Get-Content $envPath) -contains 'TELEGRAM_SESSION_STRING_OLD=abc') 'A failed native transaction changed the source configuration.'
+    Write-Host 'ok  a failed native configuration commit stays under one recovery journal'
 
     # --- removal clears every secret-chat sidecar ----------------------------------
     $chats = Join-Path $env:XDG_STATE_HOME 'telegram-mcp\secret-chats'

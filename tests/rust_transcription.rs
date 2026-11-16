@@ -25,6 +25,7 @@ struct Api {
     calls: Mutex<Vec<(String, Value)>>,
     downloads: AtomicUsize,
     text: String,
+    delay: std::time::Duration,
 }
 impl Api {
     fn new(text: &str) -> Self {
@@ -41,6 +42,7 @@ impl Api {
             calls: Mutex::new(vec![]),
             downloads: AtomicUsize::new(0),
             text: text.to_owned(),
+            delay: std::time::Duration::from_millis(1),
         }
     }
     fn count(&self, name: &str) -> usize {
@@ -62,7 +64,7 @@ impl Telegram for Api {
                 json!({"_":"messages.messages","messages":[{"_":"message","id":10,"peer_id":{"_":"peerUser","user_id":"7"},"media":{"_":"messageMediaDocument","document":self.document.lock().unwrap().clone()},"entities":[]}]}),
             ),
             "messages.transcribeAudio" => {
-                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                tokio::time::sleep(self.delay).await;
                 Ok(self.replies.lock().unwrap().pop_front().unwrap_or(json!({"_":"messages.transcribedAudio","pending":false,"text":self.text,"transcription_id":"9007199254740999"})))
             }
             "messages.rateTranscribedAudio" => Ok(json!(true)),
@@ -429,4 +431,23 @@ fn hosted_endpoint_security_rejects_cleartext_remote_audio_and_cleartext_keys() 
             .is_ok()
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn duplicate_transcription_failures_share_one_wait_and_execution_budget() {
+    let mut api = Api::new("will timeout");
+    api.delay = std::time::Duration::from_secs(2);
+    let config = settings(&[("TELEGRAM_TRANSCRIBE_TIMEOUT", "1")], &args());
+    let request = args();
+    let start = tokio::time::Instant::now();
+    let (first, second) = tokio::join!(
+        transcribe::transcribe_with(&api, &config, &request),
+        transcribe::transcribe_with(&api, &config, &request)
+    );
+    assert!(first.is_err() && second.is_err());
+    assert!(
+        start.elapsed() <= std::time::Duration::from_millis(1001),
+        "Each duplicate must include the mutex wait in its one-second deadline"
+    );
+    assert_eq!(api.count("messages.transcribeAudio"), 1);
 }

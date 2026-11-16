@@ -24,6 +24,93 @@ fn photo(id: i64) -> Value {
 }
 
 #[tokio::test]
+async fn profile_replacement_collects_all_prior_pages_before_upload_and_deletes_in_batches() {
+    let m = Mock::new();
+    m.reply(
+        "photos.getUserPhotos",
+        json!({"photos":(1..=100).map(photo).collect::<Vec<_>>()}),
+    );
+    m.reply("photos.getUserPhotos", json!({"photos":[photo(101)]}));
+    m.reply(
+        "photos.deletePhotos",
+        json!((1..=100).map(|id| id.to_string()).collect::<Vec<_>>()),
+    );
+    m.reply("photos.deletePhotos", json!(["101"]));
+    let result = run(
+        &m,
+        "set_profile_photo",
+        json!({"file_path":"new.png","replace":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(m.sent("photos.getUserPhotos").len(), 2);
+    assert_eq!(m.sent("photos.getUserPhotos")[1]["offset"], 100);
+    assert_eq!(
+        &m.methods()[..3],
+        [
+            "photos.getUserPhotos",
+            "photos.getUserPhotos",
+            "local.upload"
+        ]
+    );
+    assert_eq!(m.sent("photos.deletePhotos").len(), 2);
+    assert_eq!(result["old_photos_deleted"].as_array().unwrap().len(), 101);
+}
+
+#[tokio::test]
+async fn deleting_a_selected_bot_history_photo_is_refused_before_any_telegram_request() {
+    for (name, args) in [
+        ("delete_profile_photo", json!({"bot":8,"photo_id":77})),
+        (
+            "set_profile_photo",
+            json!({"bot":8,"replace":true,"file_path":"new.png"}),
+        ),
+    ] {
+        let m = Mock::new();
+        m.reply("photos.getUserPhotos", json!({"photos":[photo(77)]}));
+        assert!(run(&m, name, args).await.is_err());
+        assert!(m.methods().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_bounded_photo_history_scan_cannot_report_replacement_or_upload_after_stopping_early() {
+    for profile in [false, true] {
+        let m = Mock::new();
+        for page in 0..100 {
+            let ids = (1..=100).map(|index| 10001 - page * 100 - index);
+            let response = if profile {
+                json!({"photos":ids.map(photo).collect::<Vec<_>>()})
+            } else {
+                json!({"messages":ids.map(|id|json!({"_":"messageService","id":id,"action":{"_":"messageActionChatEditPhoto"}})).collect::<Vec<_>>()})
+            };
+            m.reply(
+                if profile {
+                    "photos.getUserPhotos"
+                } else {
+                    "messages.search"
+                },
+                response,
+            );
+        }
+        let result = run(
+            &m,
+            if profile {
+                "set_profile_photo"
+            } else {
+                "replace_chat_photo"
+            },
+            json!({"chat_id":7,"file_path":"new.png","replace":true}),
+        )
+        .await;
+        assert!(result.unwrap_err().to_string().contains("bounded"));
+        assert!(m.sent("local.upload").is_empty());
+        assert!(m.sent("photos.deletePhotos").is_empty());
+        assert!(m.sent("channels.deleteMessages").is_empty());
+    }
+}
+
+#[tokio::test]
 async fn profile_replacement_reports_cleanup_failure_after_the_new_photo_is_committed() {
     let m = Mock::new();
     m.reply(

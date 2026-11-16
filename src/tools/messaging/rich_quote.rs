@@ -124,6 +124,9 @@ fn sources(blocks: &[Value]) -> Vec<Source> {
                 if block["caption"].is_object() {
                     let caption = block["caption"].get("text").unwrap_or(&block["caption"]);
                     add(out, caption, index, None, None);
+                    if let Some(credit) = block["caption"].get("credit") {
+                        add(out, credit, index, None, None);
+                    }
                 }
             }
         }

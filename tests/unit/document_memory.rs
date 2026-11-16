@@ -117,9 +117,11 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
             panic!("Native Darwin accounting did not enforce its physical-memory budget");
         }
         let count = AtomicUsize::new(0);
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let gate = Arc::clone(&ready);
         let _guard = MemoryGuard::start(512, Duration::from_millis(5), move || {
             let index = count.fetch_add(1, Ordering::SeqCst);
-            if index < 2 {
+            if index < 2 || !gate.load(Ordering::SeqCst) {
                 return Ok(100);
             }
             match mode.as_str() {
@@ -130,7 +132,12 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
             }
         })
         .unwrap();
+        // Model a caller descheduled after guard startup. Polling must not
+        // activate the synthetic failure before its readiness marker exists.
+        std::thread::sleep(Duration::from_millis(30));
         println!("supervisor-ready-before-input");
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
+        ready.store(true, Ordering::SeqCst);
         std::thread::sleep(Duration::from_secs(10));
         panic!("Supervisor failed to terminate its own worker");
     }

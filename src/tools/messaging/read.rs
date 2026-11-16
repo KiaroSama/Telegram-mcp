@@ -146,6 +146,15 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         return Ok(msg);
     }
+    if name == "search_messages"
+        && a["query"].as_str().unwrap_or("").is_empty()
+        && a.get("from_user").is_some_and(|value| !value.is_null())
+        && a["media_type"]
+            .as_str()
+            .is_some_and(|kind| !kind.is_empty())
+    {
+        return bounded_sender_media(api, &p, a, bound, date_from, date_to).await;
+    }
     let mut req = history_request(p.clone(), bound, 0, offset);
     let mut method = "messages.getHistory";
     if let Some((mid, context)) = context {
@@ -244,39 +253,112 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     Ok(response)
 }
 async fn global(api: &dyn Telegram, a: &Value) -> Result<Value> {
-    let n = args::limit(a, "page_size", 20, 200)?;
+    let n = args::limit(a, "page_size", 20, 100)?;
     let page = args::integer(a, "page", 1)?;
     ensure!(page >= 1, "page must be at least 1");
     let cursor = a
         .get("cursor")
         .filter(|v| !v.is_null())
         .and_then(Value::as_str);
+    let depth = (page - 1)
+        .checked_mul(n)
+        .ok_or_else(|| anyhow::anyhow!("Global page offset is too large"))?;
     ensure!(
-        page == 1 || cursor.is_some(),
-        "Global search requires the previous response's cursor after page 1"
+        depth < 2500,
+        "Legacy global pages are bounded to2500 matches; use a cursor for deeper searches"
     );
     let mut req = json!({"q":a.get("query").cloned().unwrap_or(json!("")),"filter":media_filter(a)?,"min_date":0,"max_date":0,"offset_rate":0,"offset_peer":{"_":"inputPeerEmpty"},"offset_id":0,"limit":n});
     if let Some(cursor) = cursor {
-        let c: Value = serde_json::from_str(cursor)
-            .map_err(|_| anyhow::anyhow!("Malformed global-search cursor"))?;
-        ensure!(
-            c["query"] == req["q"]
-                && c["filter"] == req["filter"]
-                && c["account"] == a.get("account").cloned().unwrap_or(Value::Null),
-            "Search cursor belongs to another query, filter or account"
-        );
-        copy_optional(
-            &mut req,
-            &c,
-            &[
-                ("offset_rate", "offset_rate"),
-                ("offset_peer", "offset_peer"),
-                ("offset_id", "offset_id"),
-            ],
-        );
+        apply_global_cursor(&mut req, a, cursor)?;
     }
-    let mut response = api.invoke("messages.searchGlobal", req.clone()).await?;
-    if let Some(last) = result_messages(&response).last() {
+    let mut remaining = if cursor.is_some() { 0 } else { depth };
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    for _ in 0..=50 {
+        req["limit"] = json!(if remaining > 0 {
+            remaining.min(100)
+        } else {
+            n.min(2500 - depth)
+        });
+        let mut response = match tokio::time::timeout_at(
+            deadline,
+            api.invoke("messages.searchGlobal", req.clone()),
+        )
+        .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                return Ok(
+                    json!({"messages":[],"exhausted":false,"partial":true,"next_cursor":saved_global_cursor(a,&req),"legacy_page_advance_remaining":remaining}),
+                );
+            }
+        };
+        let batch = result_messages(&response);
+        let next = global_cursor(api, a, &req, &response).await?;
+        if remaining == 0 || batch.is_empty() {
+            response["exhausted"] = json!(batch.is_empty());
+            response["partial"] = json!(false);
+            if let Some(next) = next {
+                response["next_cursor"] = json!(next);
+            }
+            return Ok(response);
+        }
+        remaining = remaining.saturating_sub(batch.len() as i64);
+        let Some(next) = next else {
+            return Ok(json!({"messages":[],"exhausted":true,"partial":false}));
+        };
+        let previous = (
+            req["offset_rate"].clone(),
+            req["offset_peer"].clone(),
+            req["offset_id"].clone(),
+        );
+        apply_global_cursor(&mut req, a, &next)?;
+        if previous
+            == (
+                req["offset_rate"].clone(),
+                req["offset_peer"].clone(),
+                req["offset_id"].clone(),
+            )
+        {
+            return Ok(
+                json!({"messages":[],"exhausted":false,"partial":true,"next_cursor":next,"legacy_page_advance_remaining":remaining}),
+            );
+        }
+    }
+    let next = saved_global_cursor(a, &req);
+    Ok(
+        json!({"messages":[],"exhausted":false,"partial":true,"next_cursor":next,"legacy_page_advance_remaining":remaining}),
+    )
+}
+fn saved_global_cursor(a: &Value, req: &Value) -> String {
+    json!({"query":req["q"],"filter":req["filter"],"account":a.get("account").cloned().unwrap_or(Value::Null),"offset_rate":req["offset_rate"],"offset_peer":req["offset_peer"],"offset_id":req["offset_id"]}).to_string()
+}
+fn apply_global_cursor(req: &mut Value, a: &Value, cursor: &str) -> Result<()> {
+    let c: Value = serde_json::from_str(cursor)
+        .map_err(|_| anyhow::anyhow!("Malformed global-search cursor"))?;
+    ensure!(
+        c["query"] == req["q"]
+            && c["filter"] == req["filter"]
+            && c["account"] == a.get("account").cloned().unwrap_or(Value::Null),
+        "Search cursor belongs to another query, filter or account"
+    );
+    copy_optional(
+        req,
+        &c,
+        &[
+            ("offset_rate", "offset_rate"),
+            ("offset_peer", "offset_peer"),
+            ("offset_id", "offset_id"),
+        ],
+    );
+    Ok(())
+}
+async fn global_cursor(
+    api: &dyn Telegram,
+    a: &Value,
+    req: &Value,
+    response: &Value,
+) -> Result<Option<String>> {
+    if let Some(last) = result_messages(response).last() {
         let p = last
             .get("peer_id")
             .ok_or_else(|| anyhow::anyhow!("Telegram omitted a cursor peer"))?;
@@ -290,15 +372,179 @@ async fn global(api: &dyn Telegram, a: &Value) -> Result<Value> {
             .and_then(|s| s.parse::<i64>().ok())
             .or_else(|| identity.as_i64())
             .ok_or_else(|| anyhow::anyhow!("Cursor peer id is not a decimal integer"))?;
+        ensure!(bare > 0, "Cursor peer id must be positive");
         let marked = if p.get("channel_id").is_some() {
-            -1_000_000_000_000i64 - bare
+            (-1_000_000_000_000i64)
+                .checked_sub(bare)
+                .context("Cursor channel id exceeds its bound")?
         } else if p.get("chat_id").is_some() {
             -bare
         } else {
             bare
         };
         let peer = api.resolve_peer(&json!(marked.to_string())).await?;
-        response["next_cursor"]=json!(json!({"query":req["q"],"filter":req["filter"],"account":a.get("account").cloned().unwrap_or(Value::Null),"offset_rate":response.get("next_rate").cloned().unwrap_or(json!(0)),"offset_peer":peer,"offset_id":last["id"]}).to_string());
+        return Ok(Some(json!({"query":req["q"],"filter":req["filter"],"account":a.get("account").cloned().unwrap_or(Value::Null),"offset_rate":response.get("next_rate").cloned().unwrap_or(json!(0)),"offset_peer":peer,"offset_id":last["id"]}).to_string()));
     }
-    Ok(response)
+    Ok(None)
+}
+
+async fn bounded_sender_media(
+    api: &dyn Telegram,
+    peer: &Value,
+    a: &Value,
+    limit: i64,
+    from_date: i64,
+    to_date: i64,
+) -> Result<Value> {
+    let sender = api.resolve_peer(&a["from_user"]).await?;
+    let expected_sender = requested_peer(api, &sender).await?;
+    let expected_chat = requested_peer(api, peer).await?;
+    let topic = a
+        .get("topic_id")
+        .filter(|v| !v.is_null())
+        .map(|_| id(a, "topic_id"))
+        .transpose()?;
+    let kind = a["media_type"].as_str().unwrap_or("");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut collected = vec![];
+    let mut scanned = 0usize;
+    let mut offset = 0;
+    let mut exhausted = false;
+    let mut stalled = false;
+    while scanned < 2500 && collected.len() < limit as usize {
+        let wanted = (2500 - scanned).min(100);
+        let mut request = history_request(peer.clone(), wanted as i64, offset, 0);
+        let method = if let Some(topic) = topic {
+            request["msg_id"] = json!(topic);
+            "messages.getReplies"
+        } else {
+            "messages.getHistory"
+        };
+        let response = match tokio::time::timeout_at(deadline, api.invoke(method, request)).await {
+            Ok(value) => value?,
+            Err(_) => break,
+        };
+        let messages = result_messages(&response);
+        let count = messages.len();
+        let mut next = offset;
+        let before = scanned;
+        for message in messages.into_iter().take(wanted) {
+            scanned += 1;
+            next = message["id"].as_i64().unwrap_or(next);
+            if !same_peer(&message["peer_id"], &expected_chat) {
+                continue;
+            }
+            let actual_topic = if message["reply_to"]["forum_topic"]
+                .as_bool()
+                .unwrap_or(false)
+            {
+                message["reply_to"]["reply_to_top_id"]
+                    .as_i64()
+                    .or_else(|| message["reply_to"]["reply_to_msg_id"].as_i64())
+                    .unwrap_or(1)
+            } else {
+                1
+            };
+            if topic
+                .is_some_and(|topic| actual_topic != topic && message["id"].as_i64() != Some(topic))
+            {
+                continue;
+            }
+            let sent_by = message
+                .get("from_id")
+                .filter(|value| !value.is_null())
+                .or_else(|| {
+                    (!message["out"].as_bool().unwrap_or(false)).then_some(&message["peer_id"])
+                });
+            let implicit_self = sent_by.is_none()
+                && sender["_"] == "inputPeerSelf"
+                && message["out"].as_bool().unwrap_or(false);
+            if !implicit_self && !sent_by.is_some_and(|actual| same_peer(actual, &expected_sender))
+            {
+                continue;
+            }
+            let date = message["date"].as_i64().unwrap_or(0);
+            if from_date > 0 && date < from_date || to_date > 0 && date >= to_date {
+                continue;
+            }
+            if matches_media(&message, kind) {
+                collected.push(message);
+                if collected.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
+        if count < wanted {
+            exhausted = scanned - before == count;
+            break;
+        }
+        if next <= 0 || next == offset {
+            stalled = true;
+            break;
+        }
+        offset = next;
+    }
+    Ok(
+        json!({"messages":collected,"scanned":scanned,"scan_limit":2500,"exhausted":exhausted,"partial":stalled||!exhausted&&collected.len()<limit as usize,"effective_limit":limit,"requested_limit":a.get("limit").cloned().unwrap_or(json!(20))}),
+    )
+}
+fn matches_media(message: &Value, kind: &str) -> bool {
+    let media = &message["media"];
+    let document = media.get("document").filter(|doc| doc["_"] == "document");
+    let attributes = document.and_then(|d| d["attributes"].as_array());
+    let has = |name: &str| attributes.is_some_and(|attrs| attrs.iter().any(|a| a["_"] == name));
+    let audio = has("documentAttributeAudio");
+    let video = has("documentAttributeVideo");
+    let voice = attributes.is_some_and(|attrs| {
+        attrs
+            .iter()
+            .any(|a| a["_"] == "documentAttributeAudio" && a["voice"].as_bool().unwrap_or(false))
+    });
+    let round = attributes.is_some_and(|attrs| {
+        attrs.iter().any(|a| {
+            a["_"] == "documentAttributeVideo" && a["round_message"].as_bool().unwrap_or(false)
+        })
+    });
+    let photo = media["_"] == "messageMediaPhoto" || media.get("photo").is_some();
+    match kind {
+        "photos" => photo,
+        "videos" => video && !round,
+        "media" => photo || video && !round,
+        "files" => {
+            document.is_some()
+                && !audio
+                && !video
+                && !has("documentAttributeAnimated")
+                && !has("documentAttributeSticker")
+        }
+        "music" => audio && !voice,
+        "voice" => voice,
+        "round_voice" => voice || round,
+        "round_video" => round,
+        "gifs" => has("documentAttributeAnimated"),
+        "geo" => matches!(
+            media["_"].as_str(),
+            Some("messageMediaGeo" | "messageMediaGeoLive" | "messageMediaVenue")
+        ),
+        "contacts" => media["_"] == "messageMediaContact",
+        "phone_calls" => message["action"]["_"] == "messageActionPhoneCall",
+        "chat_photos" => matches!(
+            message["action"]["_"].as_str(),
+            Some("messageActionChatEditPhoto" | "messageActionChatDeletePhoto")
+        ),
+        "pinned" => message["pinned"].as_bool().unwrap_or(false),
+        "mentions" => message["mentioned"].as_bool().unwrap_or(false),
+        "links" => {
+            media["_"] == "messageMediaWebPage"
+                || message["entities"].as_array().is_some_and(|entities| {
+                    entities.iter().any(|e| {
+                        matches!(
+                            e["_"].as_str(),
+                            Some("messageEntityUrl" | "messageEntityTextUrl")
+                        )
+                    })
+                })
+        }
+        _ => false,
+    }
 }

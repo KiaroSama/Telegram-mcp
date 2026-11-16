@@ -29,51 +29,94 @@ pub const NAMES: &[&str] = &[
     "get_member_admin_status",
 ];
 
+async fn photo_history(api: &dyn Telegram, p: &Value) -> Result<Vec<Value>> {
+    let mut old = Vec::new();
+    let mut offset = 0;
+    for _ in 0..100 {
+        let r=api.invoke("messages.search",json!({"peer":p,"q":"","filter":{"_":"inputMessagesFilterChatPhotos"},"min_date":0,"max_date":0,"offset_id":offset,"add_offset":0,"limit":100,"max_id":0,"min_id":0,"hash":0})).await?;
+        let messages = r
+            .get("messages")
+            .and_then(Value::as_array)
+            .context("Telegram returned no chat photo history; no photo was changed")?;
+        old.extend(
+            messages
+                .iter()
+                .filter(|message| kind(&message["action"]) == "messageActionChatEditPhoto")
+                .map(|message| req(message, "id").cloned())
+                .collect::<Result<Vec<_>>>()?,
+        );
+        if messages.len() < 100 {
+            return Ok(old);
+        }
+        let next = int_value(
+            req(messages.last().context("Missing history cursor")?, "id")?,
+            "photo history cursor",
+        )?;
+        ensure!(
+            next > 0 && (offset == 0 || next < offset),
+            "Chat photo history stopped advancing; no photo was changed"
+        );
+        offset = next;
+    }
+    anyhow::bail!("Chat photo history exceeds the bounded scan; no photo was changed or deleted")
+}
+
+async fn delete_photo_messages(
+    api: &dyn Telegram,
+    p: &Value,
+    old: &[Value],
+) -> Result<(usize, Option<bool>)> {
+    let mut removed = 0;
+    for batch in old.chunks(100) {
+        let (method, request) = if is_channel(p) {
+            (
+                "channels.deleteMessages",
+                json!({"channel":channel(p)?,"id":batch}),
+            )
+        } else {
+            ("messages.deleteMessages", json!({"id":batch,"revoke":true}))
+        };
+        match api.invoke(method, request).await {
+            Ok(_) => removed += batch.len(),
+            Err(error) => {
+                return Ok((
+                    removed,
+                    if known_rpc_refusal(&error) {
+                        Some(false)
+                    } else {
+                        None
+                    },
+                ));
+            }
+        }
+    }
+    Ok((removed, Some(true)))
+}
+
 async fn chat_photo(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     let p = peer(api, a, "chat_id").await?;
     ensure!(
         is_channel(&p) || kind(&p) == "inputPeerChat",
         "Chat photos require a group or channel"
     );
-    let mut old = Vec::new();
-    if name == "replace_chat_photo" {
-        let r=api.invoke("messages.search",json!({"peer":p,"q":"","filter":{"_":"inputMessagesFilterChatPhotos"},"min_date":0,"max_date":0,"offset_id":0,"add_offset":0,"limit":100,"max_id":0,"min_id":0,"hash":0})).await?;
-        old = r
-            .get("messages")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|m| kind(&m["action"]) == "messageActionChatEditPhoto")
-            .filter_map(|m| m.get("id").cloned())
-            .collect();
-    }
+    let mut old = if name == "replace_chat_photo" {
+        photo_history(api, &p).await?
+    } else {
+        Vec::new()
+    };
     if name == "replace_chat_photo" && a.get("file_path").is_none_or(Value::is_null) {
         if !old.is_empty() {
             old.remove(0);
         }
-        if old.is_empty() {
-            return Ok(json!({"current_photo_retained":true,"old_photos_deleted":0}));
-        }
-        let count = old.len();
-        let result = if is_channel(&p) {
-            api.invoke(
-                "channels.deleteMessages",
-                json!({"channel":channel(&p)?,"id":old}),
-            )
-            .await?
-        } else {
-            api.invoke("messages.deleteMessages", json!({"id":old,"revoke":true}))
-                .await?
-        };
+        let (removed, complete) = delete_photo_messages(api, &p, &old).await?;
         return Ok(
-            json!({"current_photo_retained":true,"old_photos_deleted":count,"result":result}),
+            json!({"current_photo_retained":true,"old_photos_deleted":removed,"history_removed":complete,"warning":if complete==Some(true){None}else{Some("Photo history cleanup is incomplete or unverified; inspect the remaining photo history")}}),
         );
     }
     let photo = if name == "delete_chat_photo" {
         json!({"_":"inputChatPhotoEmpty"})
     } else {
-        let path = text(a, "file_path")?;
-        let upload = api.upload(Path::new(path)).await?;
+        let upload = api.upload(Path::new(text(a, "file_path")?)).await?;
         json!({"_":"inputChatUploadedPhoto","file":upload})
     };
     let changed = if is_channel(&p) {
@@ -89,23 +132,13 @@ async fn chat_photo(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> 
         )
         .await?
     };
-    if !old.is_empty() {
-        let cleanup = if is_channel(&p) {
-            api.invoke(
-                "channels.deleteMessages",
-                json!({"channel":channel(&p)?,"id":old}),
-            )
-            .await
-        } else {
-            api.invoke("messages.deleteMessages", json!({"id":old,"revoke":true}))
-                .await
-        };
-        // A failed service-message cleanup must never invite a second photo upload.
-        return Ok(
-            json!({"photo_changed":true,"history_removed":cleanup.is_ok(),"result":changed}),
-        );
+    if name != "replace_chat_photo" {
+        return Ok(changed);
     }
-    Ok(changed)
+    let (removed, complete) = delete_photo_messages(api, &p, &old).await?;
+    Ok(
+        json!({"photo_changed":true,"history_removed":complete,"old_photos_deleted":removed,"result":changed,"warning":if complete==Some(true){None}else{Some("The new photo is set, but prior history cleanup is incomplete or unverified; do not upload again")}}),
+    )
 }
 
 pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
@@ -213,7 +246,8 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                             }
                             results.push(result);
                         }
-                        Err(_) => results.push(json!({"user":u,"success":false,"reason":"Telegram refused this invitation"})),
+                        Err(error) if known_rpc_refusal(&error) => results.push(json!({"user":u,"success":false,"reason":"Telegram refused this invitation"})),
+                        Err(_) => results.push(json!({"user":u,"success":null,"reason":"Invitation outcome is unknown; check membership before retrying"})),
                     }
                 }
                 Ok(json!({"results":results}))
@@ -293,10 +327,12 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             }
             if kicking {
                 let channel = channel(&p)?;
+                let operation_guard = api.operation_guard();
                 if let Some(owned) = api.clone_handle() {
                     // Keep the native session alive and finish both steps even
                     // when the caller disconnects or its outer timeout fires.
                     return tokio::spawn(async move {
+                        let _operation_guard = operation_guard;
                         eject_and_clear(owned.as_ref(), channel, u).await
                     })
                     .await

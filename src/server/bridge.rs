@@ -48,12 +48,17 @@ pub async fn connect_shared() -> Result<RunningService<RoleClient, ()>> {
 pub async fn connect_shared_at(requested: Option<&str>) -> Result<RunningService<RoleClient, ()>> {
     let state = State::global()?;
     let record = state.read_json("http-service.json", Value::Null)?;
-    let (parsed, token, _) = descriptor(&record, requested)?;
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(5))
-        .build()?;
+    let (parsed, token, pid) = descriptor(&record, requested)?;
+    let mut health_url = parsed.clone();
+    health_url.set_path("/health");
+    let health = crate::account_manager::authenticated_health_request(health_url, &record).await?;
+    anyhow::ensure!(
+        health["ready"] == true
+            && health["backend"] == "grammers"
+            && health["pid"].as_u64() == Some(u64::from(pid)),
+        "Shared service readiness identity does not match its private discovery record"
+    );
+    let client = super::local_http_client(record["certificate_pem"].as_str())?;
     let mut configuration =
         StreamableHttpClientTransportConfig::with_uri(parsed.to_string()).auth_header(token);
     configuration.reinit_on_expired_session = false;
@@ -73,7 +78,8 @@ fn descriptor<'a>(record: &'a Value, requested: Option<&str>) -> Result<(url::Ur
         .context("No shared service is running; start telegram-mcp serve --http 127.0.0.1:8765")?;
     let mut parsed = url::Url::parse(url).context("Invalid shared service endpoint")?;
     let explicit_port = url
-        .strip_prefix("http://")
+        .split_once("://")
+        .map(|(_, rest)| rest)
         .and_then(|rest| rest.split('/').next())
         .and_then(|authority| authority.rsplit_once(':'))
         .and_then(|(_, port)| port.parse::<u16>().ok())
@@ -84,7 +90,7 @@ fn descriptor<'a>(record: &'a Value, requested: Option<&str>) -> Result<(url::Ur
         Some(url::Host::Domain("localhost")) => true,
         _ => false,
     };
-    if parsed.scheme() != "http"
+    if !matches!(parsed.scheme(), "http" | "https")
         || !loopback
         || !explicit_port
         || parsed.path() != "/mcp"
@@ -94,7 +100,7 @@ fn descriptor<'a>(record: &'a Value, requested: Option<&str>) -> Result<(url::Ur
         || parsed.fragment().is_some()
     {
         bail!(
-            "Shared service discovery must use a loopback HTTP MCP endpoint with an explicit port"
+            "Shared service discovery must use a loopback HTTP or HTTPS MCP endpoint with an explicit port"
         );
     }
     if let Some(requested) = requested {
@@ -102,14 +108,15 @@ fn descriptor<'a>(record: &'a Value, requested: Option<&str>) -> Result<(url::Ur
         if requested.host_str() == Some("localhost") {
             requested.set_host(Some("127.0.0.1"))?;
         }
-        if parsed.host_str() == Some("localhost") {
-            parsed.set_host(Some("127.0.0.1"))?;
+        let mut identity = parsed.clone();
+        if identity.host_str() == Some("localhost") {
+            identity.set_host(Some("127.0.0.1"))?;
         }
-        if requested != parsed {
+        if requested != identity {
             bail!("The requested endpoint differs from the authenticated shared service discovery");
         }
     }
-    if parsed.host_str() == Some("localhost") {
+    if parsed.scheme() == "http" && parsed.host_str() == Some("localhost") {
         parsed.set_host(Some("127.0.0.1"))?;
     }
     let token = record["token"]

@@ -30,17 +30,42 @@ fn normalized(text: &str) -> String {
         .to_lowercase()
 }
 
-fn windows(text: &str) -> Vec<String> {
-    let chars: Vec<_> = normalized(text).chars().take(4_000).collect();
-    if chars.len() < PASSAGE {
-        return vec![];
+fn windows(text: &str) -> impl Iterator<Item = String> + use<> {
+    let chars: Vec<_> = normalized(text).chars().collect();
+    (0..chars.len().saturating_sub(PASSAGE - 1))
+        .map(move |start| chars[start..start + PASSAGE].iter().collect())
+}
+
+impl Account {
+    fn note_batch(&mut self, chat: &Value, batch: HashSet<String>) {
+        if batch.is_empty() {
+            return;
+        }
+        for window in &batch {
+            let record = self
+                .windows
+                .entry(window.clone())
+                .or_insert_with(|| (chat.clone(), 0));
+            record.0 = chat.clone();
+            record.1 += 1;
+        }
+        self.total += batch.len();
+        self.batches.push_back(batch.into_iter().collect());
+        while self.total > MAX_WINDOWS {
+            let Some(old) = self.batches.pop_front() else {
+                break;
+            };
+            self.total -= old.len();
+            for window in old {
+                if let Some(record) = self.windows.get_mut(&window) {
+                    record.1 -= 1;
+                    if record.1 == 0 {
+                        self.windows.remove(&window);
+                    }
+                }
+            }
+        }
     }
-    chars
-        .windows(PASSAGE)
-        .map(|window| window.iter().collect())
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect()
 }
 
 fn fragments(text: &str) -> Vec<(String, String)> {
@@ -114,35 +139,16 @@ impl Memory {
                 memory.fragments.pop_front();
             }
         }
-        let batch = windows(text);
-        if batch.is_empty() {
-            return;
-        }
-        for window in &batch {
-            let record = memory
-                .windows
-                .entry(window.clone())
-                .or_insert_with(|| (chat.clone(), 0));
-            record.0 = chat.clone();
-            record.1 += 1;
-        }
-        memory.total += batch.len();
-        memory.batches.push_back(batch);
-        while memory.total > MAX_WINDOWS {
-            if let Some(old) = memory.batches.pop_front() {
-                memory.total -= old.len();
-                for window in old {
-                    if let Some(record) = memory.windows.get_mut(&window) {
-                        record.1 -= 1;
-                        if record.1 == 0 {
-                            memory.windows.remove(&window);
-                        }
-                    }
-                }
-            } else {
-                break;
+        // Visit the entire rendered text while retaining only bounded batches.
+        // Outgoing lookup streams these same windows without accumulating them.
+        let mut batch = HashSet::new();
+        for (index, window) in windows(text).enumerate() {
+            batch.insert(window);
+            if index % 4_000 == 3_999 {
+                memory.note_batch(chat, std::mem::take(&mut batch));
             }
         }
+        memory.note_batch(chat, batch);
     }
 
     pub fn note_value(&mut self, account: &str, chat: &Value, value: &Value) {
@@ -231,11 +237,10 @@ impl Memory {
                 }
             }
             for window in windows(text) {
-                if let Some((chat, _)) = memory.windows.get(&window) {
-                    if seen.insert(format!("passage:{chat}")) {
-                        matches.push(json!({"kind":"passage","source_chat":chat}));
-                    }
-                    break;
+                if let Some((chat, _)) = memory.windows.get(&window)
+                    && seen.insert(format!("passage:{chat}"))
+                {
+                    matches.push(json!({"kind":"passage","source_chat":chat}));
                 }
             }
         }

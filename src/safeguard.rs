@@ -78,7 +78,7 @@ impl Safeguard {
         facts.approval_chats = approval_channels
             .split(',')
             .filter(|s| !s.trim().is_empty())
-            .map(|s| normalize_key(&json!(s)))
+            .map(|s| policy::chat_key(&json!(s)))
             .collect();
         if category == Category::Send {
             let sends = self

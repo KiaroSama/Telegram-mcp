@@ -23,18 +23,36 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        # Gyan builds are linked by https://ffmpeg.org/download.html.
-        # Official release asset digest reviewed on 2026-11-15.
         $version = '9.0.2'
-        $expected = '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
-        $archive = Join-Path $env:RUNNER_TEMP "ffmpeg-$version.zip"
-        $destination = Join-Path $env:RUNNER_TEMP "ffmpeg-$version"
-        $uri = "https://github.com/GyanD/codexffmpeg/releases/download/$version/ffmpeg-$version-essentials_build.zip"
+        switch ($env:RUNNER_ARCH) {
+          'X64' {
+            # Gyan is linked by ffmpeg.org/download.html; preserve the x64 release.
+            $expected = '60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba'
+            $asset = "ffmpeg-$version-essentials_build.zip"
+            $uri = "https://github.com/GyanD/codexffmpeg/releases/download/$version/$asset"
+          }
+          'ARM64' {
+            # Tordona's native CLANGARM64 build includes VP9 alpha/libvpx and Opus.
+            # Release archive, publisher checksum, and both PE headers reviewed 2026-11-16.
+            $expected = '5319165d85ecee87360166dc0198b6de7747be6ce7a97a9f59b3920eddb6a3c3'
+            $asset = "ffmpeg-$version-essentials-static-win-arm64.7z"
+            $uri = "https://github.com/tordona/ffmpeg-win-arm64/releases/download/$version/$asset"
+          }
+          default { throw 'Only native Windows X64 and ARM64 codec tools are supported.' }
+        }
+        $archive = Join-Path $env:RUNNER_TEMP $asset
+        $destination = Join-Path $env:RUNNER_TEMP "ffmpeg-$version-$env:RUNNER_ARCH"
         Invoke-WebRequest -Uri $uri -OutFile $archive -TimeoutSec 180 -MaximumRetryCount 3
         if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
           throw 'Native FFmpeg archive checksum mismatch.'
         }
-        Expand-Archive -LiteralPath $archive -DestinationPath $destination
+        if ($env:RUNNER_ARCH -eq 'ARM64') {
+          # The hosted runner includes 7-Zip; older libarchive lacks the ARM64 filter.
+          & 7z x -y $archive "-o$destination"
+          if ($LASTEXITCODE -ne 0) { throw 'Native FFmpeg archive extraction failed.' }
+        } else {
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+        }
         $executables = @(Get-ChildItem -LiteralPath $destination -Recurse -File -Filter ffmpeg.exe)
         if ($executables.Count -ne 1) { throw 'Native FFmpeg archive layout is invalid.' }
         $binaryDirectory = $executables[0].Directory.FullName
@@ -46,7 +64,50 @@ runs:
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
+        $architecture = $env:RUNNER_ARCH.ToUpperInvariant()
+        if ($architecture -notin @('X64', 'ARM64')) { throw 'Unsupported native codec architecture.' }
+        if ([Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToUpperInvariant() -ne $architecture) {
+          throw 'Codec verification must run in a native PowerShell process.'
+        }
+        foreach ($program in @('ffmpeg', 'ffprobe')) {
+          $binary = (Get-Command $program -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+          if ($IsMacOS) {
+            $slice = if ($architecture -eq 'ARM64') { 'arm64' } else { 'x86_64' }
+            & lipo -verify_arch $slice $binary
+            if ($LASTEXITCODE -ne 0) { throw "Native $program Mach-O architecture mismatch." }
+          } else {
+            $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($binary))
+            try {
+              if ($IsWindows) {
+                if ($reader.ReadUInt16() -ne 0x5a4d) { throw 'Invalid codec PE executable.' }
+                $reader.BaseStream.Position = 0x3c
+                $offset = $reader.ReadInt32()
+                if ($offset -lt 0 -or $offset -gt $reader.BaseStream.Length - 6) { throw 'Invalid codec PE header offset.' }
+                $reader.BaseStream.Position = $offset
+                if ($reader.ReadUInt32() -ne 0x4550) { throw 'Invalid codec PE signature.' }
+                $expectedMachine = if ($architecture -eq 'ARM64') { 0xaa64 } else { 0x8664 }
+              } else {
+                if ($reader.ReadUInt32() -ne 0x464c457f) { throw 'Invalid codec ELF executable.' }
+                $reader.BaseStream.Position = 18
+                $expectedMachine = if ($architecture -eq 'ARM64') { 183 } else { 62 }
+              }
+              if ($reader.ReadUInt16() -ne $expectedMachine) { throw "Native $program executable architecture mismatch." }
+            } finally {
+              $reader.Dispose()
+            }
+          }
+          Write-Host "Native $program architecture verified: $architecture"
+        }
         & ffmpeg -version
         if ($LASTEXITCODE -ne 0) { throw 'Native FFmpeg cannot run.' }
         & ffprobe -version
         if ($LASTEXITCODE -ne 0) { throw 'Native FFprobe cannot run.' }
+        $encoders = (& ffmpeg -hide_banner -encoders 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0) { throw 'Native FFmpeg encoder inventory failed.' }
+        foreach ($codec in @('libvpx-vp9', 'libopus', 'mpeg4')) {
+          if ($encoders -notmatch "(?m)^\s*\S+\s+$codec\s") { throw "Required native encoder $codec is missing." }
+        }
+        $decoders = (& ffmpeg -hide_banner -decoders 2>&1) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or $decoders -notmatch '(?m)^\s*\S+\s+libvpx-vp9\s') {
+          throw 'Native FFmpeg VP9 alpha decoder is missing.'
+        }

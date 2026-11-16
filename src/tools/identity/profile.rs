@@ -51,6 +51,37 @@ async fn photos(api: &dyn Telegram, u: &Value, maximum: i64) -> Result<Value> {
     )
     .await
 }
+async fn previous_photos(api: &dyn Telegram, target: &Value) -> Result<Vec<Value>> {
+    let mut photos = Vec::new();
+    let mut offset = 0;
+    for _ in 0..100 {
+        let result = api
+            .invoke(
+                "photos.getUserPhotos",
+                json!({"user_id":target,"offset":offset,"max_id":0,"limit":100}),
+            )
+            .await?;
+        let page = result
+            .get("photos")
+            .and_then(Value::as_array)
+            .context("Telegram returned no profile photo history; nothing was uploaded")?;
+        photos.extend(
+            page.iter()
+                .filter(|photo| kind(photo) != "photoEmpty")
+                .map(input_photo)
+                .collect::<Result<Vec<_>>>()?,
+        );
+        offset += page.len();
+        if page.len() < 100
+            || result["count"]
+                .as_u64()
+                .is_some_and(|count| offset as u64 >= count)
+        {
+            return Ok(photos);
+        }
+    }
+    anyhow::bail!("Profile photo history exceeds the bounded scan; nothing was uploaded or deleted")
+}
 pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     if name == "get_privacy_settings" || name == "set_privacy_settings" {
         return privacy::run(api, name, a).await;
@@ -175,12 +206,16 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         "set_profile_photo" => {
             let path = Path::new(text(a, "file_path")?);
-            let target = target_user(api, a, "bot").await?;
             let replace = boolean(a, "replace", false)?;
+            ensure!(
+                !(replace && a.get("bot").is_some_and(|value| !value.is_null())),
+                "Telegram cannot target a selected bot's historical photo deletion; set its current photo without replace"
+            );
+            let target = target_user(api, a, "bot").await?;
             let previous = if replace {
-                photos(api, &target, 100).await?
+                previous_photos(api, &target).await?
             } else {
-                json!({"photos":[]})
+                Vec::new()
             };
             let uploaded = api.upload(path).await?;
             let mut request = json!({"file":uploaded});
@@ -188,34 +223,49 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 request["bot"] = target;
             }
             let result = api.invoke("photos.uploadProfilePhoto", request).await?;
-            let mut ids = Vec::new();
-            for old in previous
-                .get("photos")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-            {
-                ids.push(input_photo(old)?);
-            }
-            if ids.is_empty() {
+            if previous.is_empty() {
                 return Ok(result);
             }
-            match api.invoke("photos.deletePhotos", json!({"id":ids})).await {
-                Ok(deleted) => {
-                    Ok(json!({"photo_changed":true,"old_photos_deleted":deleted,"result":result}))
+            let mut deleted = Vec::new();
+            for ids in previous.chunks(100) {
+                match api.invoke("photos.deletePhotos", json!({"id":ids})).await {
+                    Ok(reply) if reply.is_array() => {
+                        deleted.extend(reply.as_array().into_iter().flatten().cloned())
+                    }
+                    other => {
+                        let refused = matches!(other,Err(ref error) if error.chain().any(|cause|cause.to_string().starts_with("Telegram RPC ")));
+                        return Ok(
+                            json!({"photo_changed":true,"old_photos_deleted":if refused{json!(false)}else{Value::Null},"confirmed_deleted":deleted,"warning":"The new photo is set, but prior history cleanup was not confirmed; do not upload again","result":result}),
+                        );
+                    }
                 }
-                Err(_) => Ok(
-                    json!({"photo_changed":true,"old_photos_deleted":false,"warning":"The new photo is set, but old photos could not be removed; do not upload again","result":result}),
-                ),
             }
+            let complete = previous.iter().all(|photo| {
+                deleted.iter().any(|id| {
+                    match (
+                        int_value(id, "deleted photo id"),
+                        int_value(&photo["id"], "old photo id"),
+                    ) {
+                        (Ok(deleted), Ok(old)) => deleted == old,
+                        _ => false,
+                    }
+                })
+            });
+            Ok(
+                json!({"photo_changed":true,"old_photos_deleted":deleted,"history_removed":complete,"result":result}),
+            )
         }
         "delete_profile_photo" => {
-            let target = target_user(api, a, "bot").await?;
             let wanted = a
                 .get("photo_id")
                 .filter(|v| !v.is_null())
                 .map(|v| int_value(v, "photo_id"))
                 .transpose()?;
+            ensure!(
+                wanted.is_none() || a.get("bot").is_none_or(Value::is_null),
+                "Telegram cannot target deletion of a selected bot's historical photo; omit photo_id to clear its current photo"
+            );
+            let target = target_user(api, a, "bot").await?;
             if wanted.is_none() && a.get("bot").is_some_and(|v| !v.is_null()) {
                 return api
                     .invoke(

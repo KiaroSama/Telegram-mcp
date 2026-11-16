@@ -150,6 +150,9 @@ impl Schema {
             .context("Missing constructor")?;
         let mut out = Vec::new();
         self.encode_definition(self.definition(name)?, value, &mut out, 0)?;
+        if out.len() > MAX_BYTES {
+            bail!("Telegram encoding budget exceeded");
+        }
         Ok(out)
     }
 }

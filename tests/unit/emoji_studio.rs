@@ -19,6 +19,29 @@ fn png(colour: [u8; 4]) -> Vec<u8> {
         .0
 }
 
+#[test]
+fn failed_document_metadata_never_consumes_another_documents_image() {
+    let error = json!({"document_id":"1","error":"Could not render this document"});
+    let reply = ToolReply::parse(json!({
+        "content":[{"type":"image","mimeType":"image/png","data":base64::engine::general_purpose::STANDARD.encode(png([255,0,0,255]))}],
+        "structuredContent":{"metadata":{"emoji":[error.clone(),{"document_id":"2","preview":[{"blank":false}]}]}}
+    })).unwrap();
+    let (images, facts) = group_frames(&reply).unwrap();
+    assert_eq!(images.keys().map(String::as_str).collect::<Vec<_>>(), ["2"]);
+    assert_eq!(facts["1"], error);
+    assert_eq!(images["2"][0].1["blank"], false);
+    let image = crate::tools::visual::images::decode_image(&images["2"][0].0)
+        .unwrap()
+        .to_rgba8();
+    assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
+    let all_failed =
+        ToolReply::parse(json!({"content":[],"structuredContent":{"metadata":{"emoji":[error]}}}))
+            .unwrap();
+    let (images, facts) = group_frames(&all_failed).unwrap();
+    assert!(images.is_empty());
+    assert!(facts["1"]["error"].is_string());
+}
+
 impl ServerHandler for Fixture {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())

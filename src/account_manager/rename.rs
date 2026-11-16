@@ -1,4 +1,7 @@
-use super::config::{ConfigWriteGuard, config_write_lock, file_values, remove_env_value_locked};
+use super::config::{
+    ConfigWriteGuard, config_write_lock, file_values, remove_env_value_locked,
+    rename_env_key_locked,
+};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
@@ -7,6 +10,13 @@ use std::fs::OpenOptions;
 use std::path::{Component, Path};
 
 const JOURNAL: &str = "account-rename-transaction.json";
+
+fn configuration_plan(journal: &Value) -> Option<&Value> {
+    journal
+        .get("configuration")
+        .filter(|value| !value.is_null())
+        .or_else(|| journal.get("removal").filter(|value| !value.is_null()))
+}
 
 fn move_key(value: &mut Value, old: &str, new: &str) -> Result<()> {
     let Some(map) = value.as_object_mut() else {
@@ -53,8 +63,84 @@ pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>
     rename_with_config(state, from, to, None)
 }
 
+/// Move an account's state and exact file-owned configuration in one journal.
+pub fn rename_configured_account(
+    state: &State,
+    from: &str,
+    to: &str,
+    env_file: &Path,
+    key: &str,
+) -> Result<Vec<String>> {
+    let from = from.to_ascii_lowercase();
+    let to = to.to_ascii_lowercase();
+    crate::session::validate_label(&from)?;
+    crate::session::validate_label(&to)?;
+    if super::label_for(key)? != from {
+        bail!("Rename key does not belong to the selected account");
+    }
+    let prefix = if key.starts_with("TELEGRAM_SESSION_STRING") {
+        "TELEGRAM_SESSION_STRING"
+    } else {
+        "TELEGRAM_SESSION_NAME"
+    };
+    let new_key = if to == "default" {
+        prefix.to_owned()
+    } else {
+        format!("{prefix}_{}", to.to_ascii_uppercase())
+    };
+    super::label_for(&new_key)?;
+    if from == to {
+        return Ok(vec![]);
+    }
+    recover_rename(state)?;
+    super::recover_logins(state)?;
+    let config = config_write_lock(env_file)?;
+    let metadata = config
+        .path
+        .symlink_metadata()
+        .context("The account configuration is missing")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!("Account rename requires a regular configuration file");
+    }
+    let snapshot = super::read_config(&config.path)?;
+    if snapshot
+        .process_keys
+        .iter()
+        .any(|key| super::label_for(key).is_ok_and(|label| label == from || label == to))
+    {
+        bail!("This account is owned by the process environment; rename it there first");
+    }
+    if snapshot
+        .values
+        .get(key)
+        .is_none_or(|value| value.is_empty())
+    {
+        bail!("The selected account configuration is missing");
+    }
+    let values = file_values(&config.path)?;
+    let value = values
+        .get(key)
+        .context("The selected account is not file-owned")?;
+    if values.contains_key(&new_key)
+        || values.iter().any(|(other, value)| {
+            other != key
+                && !value.is_empty()
+                && super::label_for(other).is_ok_and(|label| label == from || label == to)
+        })
+    {
+        bail!("Another configuration key defines a source or destination account");
+    }
+    let plan = json!({"env_file":config.path,"key":key,"digest":super::config_digest(value),"new_key":new_key});
+    rename_with_config(state, &from, &to, Some((&config, &plan)))
+}
+
 /// Archive one account and remove its exact file-owned configuration together.
-pub fn remove_account(state: &State, account: &str, env_file: &Path, key: &str) -> Result<Value> {
+pub(super) fn remove_owned_configuration(
+    state: &State,
+    account: &str,
+    env_file: &Path,
+    key: &str,
+) -> Result<super::RemovalReport> {
     let account = account.to_ascii_lowercase();
     crate::session::validate_label(&account)?;
     if super::label_for(key)? != account {
@@ -98,14 +184,19 @@ pub fn remove_account(state: &State, account: &str, env_file: &Path, key: &str) 
     );
     let plan = json!({"env_file":config.path,"key":key,"digest":super::config_digest(value)});
     let moved = rename_with_config(state, &account, &archive, Some((&config, &plan)))?;
-    Ok(json!({"removed":true,"account":account,"archived":archive,"moved":moved}))
+    Ok(super::RemovalReport {
+        removed: true,
+        selected_label: account,
+        archived: archive,
+        moved,
+    })
 }
 
 fn rename_with_config(
     state: &State,
     from: &str,
     to: &str,
-    removal: Option<(&ConfigWriteGuard, &Value)>,
+    configuration: Option<(&ConfigWriteGuard, &Value)>,
 ) -> Result<Vec<String>> {
     let from = from.to_ascii_lowercase();
     let to = to.to_ascii_lowercase();
@@ -182,23 +273,24 @@ fn rename_with_config(
             let (key, digest) = binding
                 .split_once(':')
                 .context("Native authorization source is malformed; nothing was renamed")?;
-            for prefix in ["TELEGRAM_SESSION_NAME", "TELEGRAM_SESSION_STRING"] {
-                let old_key = if from == "default" {
-                    prefix.to_owned()
-                } else {
-                    format!("{prefix}_{}", from.to_ascii_uppercase())
-                };
-                if key == old_key {
-                    let new_key = if to == "default" {
-                        prefix.to_owned()
-                    } else {
-                        format!("{prefix}_{}", to.to_ascii_uppercase())
-                    };
-                    // The retained PowerShell manager renames keys and preserves
-                    // their values, including legacy session paths. Keep its hash.
-                    after["authorization_source"] = json!(format!("{new_key}:{digest}"));
-                }
+            if super::label_for(key)? != from {
+                bail!(
+                    "Native authorization source belongs to another account; nothing was renamed"
+                );
             }
+            let prefix = if key.starts_with("TELEGRAM_SESSION_STRING") {
+                "TELEGRAM_SESSION_STRING"
+            } else {
+                "TELEGRAM_SESSION_NAME"
+            };
+            let new_key = if to == "default" {
+                prefix.to_owned()
+            } else {
+                format!("{prefix}_{}", to.to_ascii_uppercase())
+            };
+            // Labels normalize to lowercase, but an existing source key may use
+            // a mixed-case suffix. Preserve its source type and exact value hash.
+            after["authorization_source"] = json!(format!("{new_key}:{digest}"));
         }
         if before != after {
             rewrites.push(json!({"name":format!("{to}.session.json"),"moved_source":native_source,"before":before,"after":after}));
@@ -226,7 +318,11 @@ fn rename_with_config(
             }
             "aliases-v2.json" => {
                 move_key(&mut after["accounts"], &from, &to)?;
-                if let Some(rows) = after["accounts"][&to].as_object_mut() {
+                if let Some(rows) = after
+                    .get_mut("accounts")
+                    .and_then(|accounts| accounts.get_mut(&to))
+                    .and_then(Value::as_object_mut)
+                {
                     for value in rows.values_mut() {
                         value["account"] = json!(to);
                     }
@@ -321,7 +417,7 @@ fn rename_with_config(
             rewrites.push(json!({"name":name,"before":before,"after":{}}));
         }
     }
-    state.write_json_transaction_unlocked(JOURNAL, &json!({"from":from,"to":to,"files":files,"rewrites":rewrites,"removal":removal.map(|(_,plan)|plan)}))?;
+    state.write_json_transaction_unlocked(JOURNAL, &json!({"from":from,"to":to,"files":files,"rewrites":rewrites,"configuration":configuration.map(|(_,plan)|plan)}))?;
     let result = (|| -> Result<Vec<String>> {
         let mut changed = Vec::new();
         for (source, target) in &files {
@@ -335,25 +431,31 @@ fn rename_with_config(
             state.write_json_transaction_unlocked(name, &row["after"])?;
             changed.push(name.to_owned());
         }
-        if let Some((config, plan)) = removal {
-            remove_env_value_locked(
-                config,
-                plan["key"].as_str().context("Invalid removal key")?,
-                plan["digest"].as_str().context("Invalid removal digest")?,
-            )?;
+        if let Some((config, plan)) = configuration {
+            let key = plan["key"]
+                .as_str()
+                .context("Invalid transaction configuration key")?;
+            let digest = plan["digest"]
+                .as_str()
+                .context("Invalid transaction configuration digest")?;
+            if let Some(target) = plan["new_key"].as_str() {
+                rename_env_key_locked(config, key, target, digest)?;
+            } else {
+                remove_env_value_locked(config, key, digest)?;
+            }
         }
         if let Err(error) = std::fs::remove_file(state.root().join(JOURNAL)) {
-            if removal.is_none() {
+            if configuration.is_none() {
                 return Err(error.into());
             }
             tracing::warn!(
-                "Account removal completed; its private recovery marker could not be removed"
+                "Account configuration transaction completed; its private recovery marker could not be removed"
             );
         }
         Ok(changed)
     })();
     if result.is_err() {
-        recover_unlocked(state, removal.map(|(config,_)|config)).context("Account rename failed; rollback could not finish, retain the private transaction journal")?;
+        recover_unlocked(state, configuration.map(|(config,_)|config)).context("Account rename failed; rollback could not finish, retain the private transaction journal")?;
     }
     drop(leases);
     result
@@ -364,10 +466,13 @@ pub fn recover_rename(state: &State) -> Result<()> {
         return Ok(());
     }
     let initial = state.read_json(JOURNAL, Value::Null)?;
-    let config = if let Some(path) = initial["removal"]["env_file"].as_str() {
+    let config = if let Some(plan) = configuration_plan(&initial) {
+        let path = plan["env_file"]
+            .as_str()
+            .context("Invalid account configuration transaction source")?;
         let path = Path::new(path);
         if !path.is_absolute() {
-            bail!("Account removal source must be absolute");
+            bail!("Account configuration source must be absolute");
         }
         Some(config_write_lock(path)?)
     } else {
@@ -392,27 +497,22 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
     if journal.is_null() {
         return Ok(());
     }
-    let committed = if !journal["removal"].is_null() {
-        let plan = &journal["removal"];
-        let config = config.context("Account removal recovery needs its configuration lock")?;
+    let committed = if let Some(plan) = configuration_plan(&journal) {
+        let config = config.context("Account recovery needs its configuration lock")?;
         if plan["env_file"].as_str() != config.path.to_str() {
-            bail!("Account removal configuration source changed");
+            bail!("Account configuration source changed");
         }
         let metadata = config
             .path
             .symlink_metadata()
-            .context("Account removal configuration is missing; retain its journal")?;
+            .context("Account configuration is missing; retain its journal")?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
-            bail!("Account removal configuration is not a regular file");
+            bail!("Account configuration is not a regular file");
         }
         let key = plan["key"]
             .as_str()
             .context("Invalid account removal key")?;
-        if Some(super::label_for(key)?.as_str()) != journal["from"].as_str()
-            || !journal["to"]
-                .as_str()
-                .is_some_and(|label| label.starts_with("__removed_"))
-        {
+        if Some(super::label_for(key)?.as_str()) != journal["from"].as_str() {
             bail!("Account removal labels conflict with their configuration key");
         }
         let digest = plan["digest"]
@@ -421,12 +521,35 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
         if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             bail!("Invalid account removal digest");
         }
-        match file_values(&config.path)?.get(key) {
-            Some(value) if super::config_digest(value) == digest => false,
-            Some(_) => bail!(
-                "The removed account configuration changed; preserve its state and transaction journal"
-            ),
-            None => true,
+        let values = file_values(&config.path)?;
+        if let Some(target) = plan["new_key"].as_str() {
+            if Some(super::label_for(target)?.as_str()) != journal["to"].as_str()
+                || key.starts_with("TELEGRAM_SESSION_STRING")
+                    != target.starts_with("TELEGRAM_SESSION_STRING")
+            {
+                bail!("Account rename labels conflict with their configuration keys");
+            }
+            match (values.get(key), values.get(target)) {
+                (Some(value), None) if super::config_digest(value) == digest => false,
+                (None, Some(value)) if super::config_digest(value) == digest => true,
+                _ => bail!(
+                    "Account rename configuration changed; preserve its current values and transaction journal"
+                ),
+            }
+        } else {
+            if !journal["to"]
+                .as_str()
+                .is_some_and(|label| label.starts_with("__removed_"))
+            {
+                bail!("Account removal destination is not a private archive");
+            }
+            match values.get(key) {
+                Some(value) if super::config_digest(value) == digest => false,
+                Some(_) => bail!(
+                    "The removed account configuration changed; preserve its state and transaction journal"
+                ),
+                None => true,
+            }
         }
     } else {
         false
@@ -474,8 +597,8 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
         }
     }
     if committed {
-        // Configuration deletion is the commit point. Finish any remaining
-        // archival moves without restoring an obsolete whole .env revision.
+        // The exact configuration-key change is the commit point. Finish any
+        // remaining state moves without restoring an obsolete .env revision.
         for pair in journal["files"]
             .as_array()
             .context("Invalid account transaction journal")?

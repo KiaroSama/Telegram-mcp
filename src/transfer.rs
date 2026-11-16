@@ -1,6 +1,6 @@
 //! Short-lived, scoped capabilities for remote clients to transfer files.
 //! An upload URL authorizes one new file, never a directory or replacement.
-mod files;
+pub(crate) mod files;
 pub mod http;
 use crate::state::{FileAccess, State};
 use anyhow::{Context, Result, ensure};
@@ -13,6 +13,18 @@ use std::{
 };
 const TTL: Duration = Duration::from_secs(3600);
 const MAX_PENDING: usize = 64;
+
+/// Publish owned bytes through anchored staging; an existing path is never replaced.
+pub fn publish_bytes(state: &State, path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let temporary = files::Upload::new(state, path)?;
+    let mut output = temporary.writer()?;
+    output.write_all(bytes)?;
+    output.sync_all()?;
+    drop(output);
+    temporary.publish(state)
+}
+
 #[derive(Clone)]
 pub(crate) enum Ticket {
     Upload {
@@ -33,12 +45,14 @@ struct Entry {
 pub struct Transfers {
     pub(crate) state: Arc<State>,
     pending: Mutex<HashMap<String, Entry>>,
+    active_downloads: Arc<tokio::sync::Semaphore>,
 }
 impl Transfers {
     pub fn new(state: Arc<State>) -> Self {
         Self {
             state,
             pending: Mutex::new(HashMap::new()),
+            active_downloads: Arc::new(tokio::sync::Semaphore::new(16)),
         }
     }
     fn issue(&self, ticket: Ticket, base: &str, route: &str) -> Result<String> {

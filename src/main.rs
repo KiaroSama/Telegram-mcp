@@ -51,6 +51,10 @@ enum Command {
         from: String,
         #[arg(long)]
         to: String,
+        #[arg(long, requires = "key")]
+        env_file: Option<std::path::PathBuf>,
+        #[arg(long, requires = "env_file")]
+        key: Option<String>,
         #[arg(long)]
         state_dir: Option<std::path::PathBuf>,
     },
@@ -108,6 +112,7 @@ fn main() -> Result<()> {
         Some(Command::Login { env_file, .. })
         | Some(Command::SessionHealth { env_file, .. })
         | Some(Command::RemoveAccount { env_file, .. }) => env_file.clone(),
+        Some(Command::RenameAccount { env_file, .. }) => env_file.clone(),
         _ => None,
     };
     let env_file = explicit
@@ -194,6 +199,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::RenameAccount {
             from,
             to,
+            env_file,
+            key,
             state_dir,
         } => {
             let state = if let Some(root) = state_dir {
@@ -201,7 +208,15 @@ async fn run(cli: Cli) -> Result<()> {
             } else {
                 telegram_mcp::state::State::global()?
             };
-            let moved = telegram_mcp::account_manager::rename_account(&state, &from, &to)?;
+            let moved = match (env_file, key) {
+                (Some(file), Some(key)) => {
+                    telegram_mcp::account_manager::rename_configured_account(
+                        &state, &from, &to, &file, &key,
+                    )?
+                }
+                (None, None) => telegram_mcp::account_manager::rename_account(&state, &from, &to)?,
+                _ => anyhow::bail!("Configured rename requires both --env-file and --key"),
+            };
             println!(
                 "{}",
                 serde_json::json!({"renamed":true,"from":from,"to":to,"moved":moved})
@@ -218,13 +233,13 @@ async fn run(cli: Cli) -> Result<()> {
             } else {
                 telegram_mcp::state::State::global()?
             };
-            let result = telegram_mcp::account_manager::remove_account(
+            let report = telegram_mcp::account_manager::removal_report(
                 &state,
                 &account,
                 &env_file.context("The selected configuration file is missing")?,
                 &key,
             )?;
-            println!("{result}");
+            println!("{}", serde_json::to_string(&report)?);
         }
         Command::Approve { fingerprint } => telegram_mcp::safeguard::approve_from_terminal(
             telegram_mcp::state::State::global()?,

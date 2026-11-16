@@ -127,15 +127,16 @@ async fn channel_inspection_uses_channel_scoped_message_ids() {
     assert_eq!(w.calls()[0].1["channel"]["_"], "inputChannel");
 }
 #[tokio::test]
-async fn global_page_requires_bound_cursor() {
-    let w = Wire::new(vec![]);
-    assert!(
-        run(&w, "search_global", json!({"query":"q","page":2}))
-            .await
-            .is_err()
-    );
-    assert!(w.calls().is_empty());
+async fn legacy_global_page_reports_exhaustion_without_inventing_matches() {
+    let w = Wire::new(vec![messages(vec![])]);
+    let result = run(&w, "search_global", json!({"query":"q","page":2}))
+        .await
+        .unwrap();
+    assert_eq!(result["messages"], json!([]));
+    assert_eq!(result["exhausted"], true);
+    assert_eq!(w.calls().len(), 1);
 }
+
 #[tokio::test]
 async fn global_cursor_is_bound_to_query_and_account() {
     let w = Wire::new(vec![]);

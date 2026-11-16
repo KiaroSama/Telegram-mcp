@@ -249,18 +249,29 @@ async fn account_removal_cli_archives_the_session_and_preserves_unrelated_config
     let source = root.join("selected.env");
     let state = root.join("private");
     std::fs::create_dir(&state).unwrap();
+    let private_hash = "removal-api-hash-canary";
+    let private_session = "removal-session-data-canary";
+    let runtime_log = root.join("removal-runtime.log");
     std::fs::write(
         &source,
-        b"TELEGRAM_SESSION_NAME_WORK=work\nOTHER=preserved\n",
+        format!(
+            "TELEGRAM_SESSION_NAME_WORK=work\nTELEGRAM_API_HASH={private_hash}\nOTHER=preserved\n"
+        ),
     )
     .unwrap();
-    std::fs::write(state.join("work.session.json"), b"{}").unwrap();
+    std::fs::write(
+        state.join("work.session.json"),
+        serde_json::to_vec(&serde_json::json!({"private_session":private_session})).unwrap(),
+    )
+    .unwrap();
     let mut command = selected_cli(root);
     command
         .args(["remove-account", "--account", "work", "--env-file"])
         .arg(&source)
         .args(["--key", "TELEGRAM_SESSION_NAME_WORK", "--state-dir"])
-        .arg(&state);
+        .arg(&state)
+        .env("TELEGRAM_MCP_LOG_FILE", &runtime_log)
+        .env("RUST_LOG", "trace");
     let output = tokio::time::timeout(Duration::from_secs(20), command.output())
         .await
         .unwrap()
@@ -271,9 +282,34 @@ async fn account_removal_cli_archives_the_session_and_preserves_unrelated_config
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        report
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["account", "archived", "moved", "removed"]
+            .into_iter()
+            .collect()
+    );
+    for bytes in [&output.stdout, &output.stderr] {
+        let text = std::str::from_utf8(bytes).unwrap();
+        assert!(!text.contains(private_hash) && !text.contains(private_session));
+    }
+    assert!(
+        !runtime_log.exists(),
+        "The metadata-only removal CLI must not start service logging"
+    );
+    assert_eq!(report["account"], "work");
     assert_eq!(report["removed"], true);
     let archived = report["archived"].as_str().unwrap();
     assert!(state.join(format!("{archived}.session.json")).is_file());
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(state.join(format!("{archived}.session.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["private_session"], private_session);
     assert!(!state.join("work.session.json").exists());
     assert!(!state.join("account-rename-transaction.json").exists());
     let remaining = std::fs::read_to_string(source).unwrap();

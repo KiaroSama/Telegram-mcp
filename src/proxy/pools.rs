@@ -123,16 +123,23 @@ pub(super) fn candidates(
         rows.len() <= 4096,
         "Proxy pool exceeds its 4096-entry bound"
     );
-    let own = rows.values().any(|record| in_pool(record, label));
+    let own = rows.values().any(|record| {
+        in_pool(record, label)
+            && serde_json::from_value::<Proxy>(record["proxy"].clone())
+                .is_ok_and(|proxy| validate(&proxy).is_ok())
+    });
     let selected = if own { label } else { "shared" };
     let mut pooled = vec![];
     for (id, record) in rows {
         if !in_pool(record, selected) {
             continue;
         }
-        let proxy: Proxy = serde_json::from_value(record["proxy"].clone())
-            .context("Stored proxy entry is invalid")?;
-        validate(&proxy)?;
+        let Ok(proxy) = serde_json::from_value::<Proxy>(record["proxy"].clone()) else {
+            continue;
+        };
+        if validate(&proxy).is_err() {
+            continue;
+        }
         let health = match record["healthy"].as_bool() {
             Some(true) => 0,
             None => 1,
@@ -183,9 +190,12 @@ fn import_legacy(state: &State) -> Result<()> {
                 memberships <= 65_536,
                 "Legacy proxy pool exceeds its membership bound"
             );
-            let proxy: Proxy =
-                serde_json::from_value(row.clone()).context("Legacy proxy entry is invalid")?;
-            validate(&proxy)?;
+            let Ok(proxy) = serde_json::from_value::<Proxy>(row.clone()) else {
+                continue;
+            };
+            if validate(&proxy).is_err() {
+                continue;
+            }
             let id = proxy.fingerprint()?;
             let pool = pool.to_ascii_lowercase();
             if let Some(existing) = entries.get_mut(&id) {

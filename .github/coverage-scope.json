@@ -3,7 +3,7 @@
   "legacy_commit": "bd4b454c5392ef084ab265b92ca89ebc04d596df",
   "legacy_pyproject_sha256": "3f13c61b2c9a4b2054e976f8f52be5b151855deb50f38d434d9503b8a3f781e1",
   "floor_percent": 85,
-  "metric": "Union of executable source-line hits across all six native base/renderer operating-system legs; separate all-production metric is always published.",
+  "metric": "Union of executable source-line hits across all twelve native base/renderer legs: ARM64 and x86_64 on Linux, macOS and Windows; separate all-production metric is always published.",
   "include": {
     "src/account_manager.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/account_manager/config.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",

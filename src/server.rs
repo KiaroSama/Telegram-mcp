@@ -15,6 +15,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 pub use catalogue::{catalogue, validate_arguments};
+pub(crate) use http::{health_request_proof, local_http_client, verify_health_response};
 use rmcp::{
     ServerHandler, ServiceExt,
     model::*,
@@ -26,7 +27,7 @@ use tokio::sync::Mutex;
 
 struct Account {
     api: Arc<dyn Telegram>,
-    serial: Mutex<()>,
+    serial: Arc<Mutex<()>>,
     generation: Option<String>,
 }
 struct Runtime {
@@ -105,7 +106,7 @@ impl Mcp {
         }
         let account = Arc::new(Account {
             api: Arc::new(api),
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             generation,
         });
         accounts.insert(label.into(), Arc::clone(&account));
@@ -119,16 +120,34 @@ impl Mcp {
             .find(|t| t.name.as_ref() == name)
             .context("Tool is not exposed by this server")?;
         validate_arguments(&mut args, &tool.input_schema)?;
+        let budget = if name.starts_with("export_") {
+            Duration::from_secs(120)
+        } else {
+            Duration::from_secs(55)
+        };
+        let deadline = tokio::time::Instant::now() + budget;
         let global_event_wait =
             name == "wait_for_events" && args.get("account").and_then(Value::as_str).is_none();
         let account = if let Some(account) = args.get("account").and_then(Value::as_str) {
             account.to_ascii_lowercase()
+        } else if matches!(
+            name,
+            "export_status" | "cancel_export" | "get_invite_link_qr"
+        ) {
+            "default".into()
         } else {
             let labels = crate::backend::account_labels()?;
             match labels.as_slice() {
                 [label] => label.clone(),
                 [] => {
-                    let test_slots = self.runtime.accounts.lock().await;
+                    let test_slots = tokio::time::timeout_at(
+                        deadline,
+                        self.runtime.accounts.lock(),
+                    )
+                    .await
+                    .context(
+                        "Account selection exceeded its time budget; no mutation was dispatched",
+                    )?;
                     let mut embedded = test_slots
                         .iter()
                         .filter(|(_, slot)| slot.generation.is_none());
@@ -150,6 +169,9 @@ impl Mcp {
                             | "incoming_feed_status"
                             | "prepare_upload"
                             | "wait_for_events"
+                            | "export_status"
+                            | "cancel_export"
+                            | "get_invite_link_qr"
                     ) || (name == "add_proxies" && args.get("source").is_none_or(Value::is_null))
                     {
                         "default".into()
@@ -172,7 +194,13 @@ impl Mcp {
         let read_only = annotations.and_then(|a| a.read_only_hint).unwrap_or(false);
         let destructive = annotations.and_then(|a| a.destructive_hint).unwrap_or(true);
         let event_api = if name == "wait_for_events" {
-            Some(self.event_api(&args).await?)
+            Some(
+                tokio::time::timeout_at(deadline, self.event_api(&args))
+                    .await
+                    .context(
+                        "Event preflight exceeded its time budget; no mutation was dispatched",
+                    )??,
+            )
         } else {
             None
         };
@@ -195,12 +223,21 @@ impl Mcp {
                 | "test_proxies"
                 | "prepare_upload"
                 | "wait_for_events"
+                | "export_status"
+                | "cancel_export"
+                | "get_invite_link_qr"
         ) && !(name == "add_proxies"
             && args.get("source").is_some_and(|v| !v.is_null()));
         let slot = if local_only {
             None
         } else {
-            Some(self.account(&account).await?)
+            Some(
+                tokio::time::timeout_at(deadline, self.account(&account))
+                    .await
+                    .context(
+                        "Account preflight exceeded its time budget; no mutation was dispatched",
+                    )??,
+            )
         };
         let api = event_api.unwrap_or_else(|| {
             slot.as_ref()
@@ -215,15 +252,38 @@ impl Mcp {
         ) {
             None
         } else if let Some(slot) = &slot {
-            Some(slot.serial.lock().await)
+            Some(Arc::new(
+                tokio::time::timeout_at(deadline, Arc::clone(&slot.serial).lock_owned())
+                    .await
+                    .context(
+                        "Account admission exceeded its time budget; no mutation was dispatched",
+                    )?,
+            ))
         } else {
             None
         };
         // Resolve approval identities while holding the same account lock as
         // execution and bookkeeping. The operation retains these exact private
         // InputPeer references even if a username or saved alias is replaced.
-        let (api, approval_args) = if !read_only && slot.is_some() {
-            recipient::bind(api, &args).await?
+        let (api, approval_args) = if slot.is_some()
+            && (!read_only || self.runtime.policy.enabled())
+        {
+            let (api, approval_args) =
+                tokio::time::timeout_at(deadline, recipient::bind(name, api, &args))
+                    .await
+                    .context(
+                        "Recipient preflight exceeded its time budget; no mutation was dispatched",
+                    )??;
+            let api = if !read_only {
+                let guard = _serial
+                    .as_ref()
+                    .context("Mutation serialization is unavailable")?
+                    .clone();
+                recipient::with_operation_guard(api, guard)
+            } else {
+                api
+            };
+            (api, approval_args)
         } else {
             (api, args.clone())
         };
@@ -238,10 +298,12 @@ impl Mcp {
         let policy = if name == "wait_for_events" {
             self.runtime.policy.clone()
         } else {
-            self.runtime
-                .policy
-                .scoped(name, &policy_args, api.as_ref())
-                .await?
+            tokio::time::timeout_at(
+                deadline,
+                self.runtime.policy.scoped(name, &policy_args, api.as_ref()),
+            )
+            .await
+            .context("Policy preflight exceeded its time budget; no mutation was dispatched")??
         };
         match self
             .runtime
@@ -259,12 +321,10 @@ impl Mcp {
             }
             Decision::Refuse { reason } => bail!("{reason}"),
         }
-        let timeout = if name.starts_with("export_") {
-            Duration::from_secs(120)
-        } else {
-            Duration::from_secs(55)
-        };
         let operation = async {
+            if tokio::time::Instant::now() >= deadline {
+                bail!("Tool preflight exceeded its time budget; no mutation was dispatched");
+            }
             if name == "wait_for_events" {
                 crate::tools::local::upstream_events::wait_for_events_with_state(
                     api.as_ref(),
@@ -282,11 +342,13 @@ impl Mcp {
                     &policy,
                 )
                 .await
+            } else if name == "get_invite_link_qr" {
+                crate::tools::identity::invite_link_qr_in(&self.runtime.state, &args)
             } else {
                 crate::tools::call(api.as_ref(), name, &args).await
             }
         };
-        let outcome=tokio::time::timeout(timeout,operation).await
+        let outcome=tokio::time::timeout_at(deadline,operation).await
             .map_err(|_|anyhow::anyhow!("Tool exceeded its time budget; the outcome may be unknown. Inspect state before retrying a mutation."))?;
         let mut value = outcome?;
         if matches!(

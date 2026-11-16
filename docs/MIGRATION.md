@@ -21,7 +21,8 @@ separate PR; this migration does not authorize merging it into `main`.
 
 ## Source revisions reviewed
 
-The following official sources were read on **2026-11-15**. Dates describe the
+The core upstream sources below were read on **2026-11-15**. Native architecture and
+CI-tool behavior were additionally reviewed on **2026-11-16**. Dates describe the
 referenced source commit or release, rather than claiming every project released on
 the review date. Historical byte-oracle versions remain distinct from current sources.
 
@@ -36,6 +37,7 @@ the review date. Historical byte-oracle versions remain distinct from current so
 | [mozjpeg](https://github.com/mozilla/mozjpeg/tree/v4.1.5) | v4.1.5, `6c9f0897afa1c2738d7222a0a9ab49e8b536a267`; master `08265790774cd0714832c9e675522acbe5581437` | 2023-10-12; 2025-06-23 | Latest stable tag and build changes; native Rust encoder does not claim mozjpeg bitstream parity |
 | [Samsung/rlottie](https://github.com/Samsung/rlottie/commit/ea06d2f29ba01b8d06c00a838d107f5e484ae59b) | `ea06d2f29ba01b8d06c00a838d107f5e484ae59b` | 2026-09-30 | Allocation/stride guards and pinned external shared library for real animated-sticker rendering |
 | [FFmpeg Windows builds](https://ffmpeg.org/download.html) | Gyan 9.0.2 essentials ZIP, SHA-256 `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba` | 2026-09-20 | Actual native FFmpeg/FFprobe test dependency; official download guidance links this build provider |
+| [FFmpeg Windows ARM64 builds](https://github.com/tordona/ffmpeg-win-arm64/releases/tag/9.0.2) | Tordona 9.0.2 essentials-static ARM64 7z, SHA-256 `5319165d85ecee87360166dc0198b6de7747be6ce7a97a9f59b3920eddb6a3c3` | 2026-09-18 | Publisher archive/checksum and native PE headers reviewed on November 16; includes required VP9-alpha and Opus codecs |
 
 The grammers GitHub mirror is stale relative to Codeberg; the live Codeberg source was
 read directly. Search excerpts that still named 0.10.0 were not used as version proof.
@@ -71,8 +73,8 @@ The optional rlottie renderer is loaded through a Rust C-ABI adapter. CI builds 
 exact external revision above and requires distinct decoded frames with transparency;
 a missing shared library cannot turn that renderer job green. Its C++ dependency source
 is fetched outside this repository. Ordinary tests separately exercise safe fallback.
-On macOS ARM64 the pinned upstream NEON implementation has unresolved pixman assembly
-symbols. CI selects its existing scalar C++ implementation with `-U__ARM_NEON__`;
+On Unix ARM64 the pinned upstream NEON implementation lacks the pixman assembly
+helpers supplied for ARM32. CI selects its existing scalar C++ implementation with `-U__ARM_NEON__`;
 the same required rendering assertions still run.
 
 ## Verification baseline
@@ -85,7 +87,7 @@ case-count equality, so no test-name multiplication or synthetic one-to-one mapp
 used to claim parity.
 
 Native CI preserves distinct gates for locked dependency resolution, behavioral tests,
-optional renderer execution, Windows launchers, reviewed per-OS case inventories and base/renderer agreement,
+actual renderer execution, Windows launchers, reviewed per-OS case inventories and base/renderer agreement on both CPU architectures,
 coverage, advisory audit, static analysis, tree/history privacy, Gitleaks, container
 build/persistence and Compose validation. `.github/native-verification.json` names actual
 executed tests covering the critical behavior categories. Their assertions, not their
@@ -94,9 +96,11 @@ names, establish the practical limits of coverage.
 Release builds run before behavioral gates. Artifacts can exist for a commit whose
 other checks failed; read the full exact-head status set. Cancelled, skipped, missing,
 wrong-commit or stale-attempt evidence never produces a successful custom status.
-Each operating-system release package includes `telegram-mcp`, `emoji-studio` and
-`operator-plugin`, plus per-binary SHA-256 and commit/compiler/lock provenance. The
-Docker image provides the shared server; it does not currently distribute the two
+Each of the six OS/architecture release packages includes `telegram-mcp`, `emoji-studio` and
+`operator-plugin`, plus verified executable machine headers, per-binary SHA-256 and
+commit/compiler/lock provenance. Case reports record the actual operating system,
+CPU architecture and native compiler host; all expected base/renderer legs are required.
+The Docker image provides the shared server; it does not currently distribute the two
 standalone helper CLIs.
 
 Gitleaks scans the entire current tracked tree and the exact introduced PR/push range.
@@ -109,7 +113,7 @@ and exact verified Qt oracle-blob exception. Neither gate claims universal crede
 or byte coverage.
 
 The 85% threshold is retained for **combined executable application-core source-line
-coverage** across base and renderer legs on all three operating systems. The reviewed
+coverage** across base and renderer legs on all three operating systems and both CPU architectures. The reviewed
 file list and the SHA-256 of the original `pyproject.toml` are recorded in
 `.github/coverage-scope.json`. The original collector explicitly measured deterministic
 application helpers and omitted tool adapters and development/skill scripts. Native
@@ -124,13 +128,20 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A local Linux run passed all **1,747 tests**, with zero skipped and actual
-rlottie rendering required. Unique physical-line coverage measured approximately
-**87.2% reviewed core (17,871 executable source lines)** and **84.4% all production
-(25,334 executable source lines)**. Exact covered-line counts remain in the CI reports. The local core result
-meets the unchanged floor. It remains single-platform evidence; the combined six-leg
-CI gate requires actual reports from Linux, macOS and Windows. Raw LLVM JSON region
+identical code. A clean post-review Linux checkpoint passed all **1,821 tests**, with
+zero failures or skips and actual rlottie rendering required. Unique physical-line
+coverage exceeded **87% reviewed core (18,823 executable source lines)** and **85% all
+production (26,544 executable source lines)**. Exact covered-line counts remain in the
+individual reports. This is single-platform evidence; the combined CI gate requires
+actual reports from every configured OS/architecture leg. Reviewed inventories for
+other targets are expectations until those targets execute them. Raw LLVM JSON region
 totals can count repeated instantiations and are not substituted for this metric.
+
+Every instrumented leg first runs `cargo llvm-cov clean --workspace`, preserving its
+dependency cache while removing older workspace objects and raw profiles. Using
+`--no-report` alone retains those artifacts. The collector accepts only reviewed Rust
+source paths and positive DA lines within the current file; stale maps cannot silently
+enter a coverage percentage.
 
 Windows coverage uses cargo-llvm-cov 0.9.1's supported `--no-rustc-wrapper` mode.
 The original wrapper loses instrumentation when Cargo passes compiler arguments through
@@ -139,6 +150,9 @@ failure; upstream fixed argument expansion in
 [PR 533](https://github.com/taiki-e/cargo-llvm-cov/pull/533), commit
 `dc927946e73a6ecf18b797f2995490e922662387`. The workflow fallback places the same
 instrumentation flags inside Cargo's response file and still requires actual profiles.
+The Windows ARM64 leg additionally runs a direct native Rust 1.100 compiler/profile
+merge/report probe using its bundled LLVM tools. Its actual outputs are retained; a
+release build alone cannot establish that instrumentation works on a new target.
 
 
 ## Deliberate limits and migration cautions

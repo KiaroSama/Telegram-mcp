@@ -56,7 +56,17 @@ pub fn candidates(state: &State, snapshot: &ConfigSnapshot, label: &str) -> Resu
 
 pub async fn route(state: Arc<State>, snapshot: &ConfigSnapshot, label: &str) -> Result<Route> {
     crate::session::validate_label(label)?;
-    let _ = candidates(&state, snapshot, label)?;
+    let check_state = Arc::clone(&state);
+    let check_snapshot = ConfigSnapshot {
+        values: snapshot.values.clone(),
+        digest: snapshot.digest.clone(),
+        path: snapshot.path.clone(),
+        process_keys: snapshot.process_keys.clone(),
+    };
+    let check_label = label.to_owned();
+    tokio::task::spawn_blocking(move || candidates(&check_state, &check_snapshot, &check_label))
+        .await
+        .context("Proxy configuration worker failed")??;
     let status = Arc::new(Mutex::new(
         json!({"route":"direct","proxy":false,"verification":"not_probed","account":label}),
     ));
@@ -73,12 +83,16 @@ pub async fn probe(proxy: &Proxy, target: SocketAddr, dc: i16) -> Result<()> {
     .context("Proxy Telegram transport probe timed out")?
 }
 
+pub(crate) fn validate(proxy: &Proxy) -> Result<()> {
+    pools::validate(proxy)
+}
+
 pub(crate) struct ContextState {
     pub state: Arc<State>,
     pub label: String,
     pub snapshot: ConfigSnapshot,
     pub status: Arc<Mutex<Value>>,
-    pub failed_until: Mutex<Option<Instant>>,
+    pub failed_until: Mutex<std::collections::HashMap<SocketAddr, Instant>>,
 }
 impl ContextState {
     pub fn record(&self, candidate: &Candidate, latency: u64, target: SocketAddr) -> Result<()> {

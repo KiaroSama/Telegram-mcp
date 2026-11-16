@@ -4,7 +4,6 @@ use crate::{args, backend::Telegram, state::State};
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::process::Stdio;
 
 pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Value>> {
     match name {
@@ -88,26 +87,45 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         let mut rows = vec![];
         let mut image_bytes = 0_usize;
         for doc in docs {
-            let data =
-                downloads::download_bytes(api, downloads::download_location(doc)?, cap as u64)
-                    .await?;
-            let (images, preview) = super::emoji_previews::individual(
-                &data,
-                count,
-                dimension,
-                doc["mime_type"].as_str().unwrap_or(""),
-            )
-            .await?;
-            for image in images {
-                image_bytes = image_bytes
-                    .checked_add(image["data"].as_str().map(str::len).unwrap_or(0))
-                    .context("Custom emoji preview byte count overflow")?;
+            let preview_result: Result<_> = async {
                 ensure!(
-                    image_bytes <= 32 * 1024 * 1024,
-                    "Custom emoji previews exceed the request byte budget; request fewer documents, frames or smaller images"
+                    downloads::declared_size(doc).is_none_or(|size| size <= cap as u64),
+                    "Custom emoji exceeds max_bytes"
                 );
-                content.push(image);
+                let data =
+                    downloads::download_bytes(api, downloads::download_location(doc)?, cap as u64)
+                        .await?;
+                super::emoji_previews::individual(
+                    &data,
+                    count,
+                    dimension,
+                    doc["mime_type"].as_str().unwrap_or(""),
+                )
+                .await
             }
+            .await;
+            let (images, preview) = match preview_result {
+                Ok(value) => value,
+                Err(_) => {
+                    rows.push(json!({"document_id":doc["id"],"error":"This custom emoji could not be downloaded or rendered within its byte and codec limits"}));
+                    continue;
+                }
+            };
+            let bytes = images
+                .iter()
+                .try_fold(0_usize, |total, image| {
+                    total.checked_add(image["data"].as_str().map(str::len).unwrap_or(0))
+                })
+                .context("Custom emoji preview byte count overflow")?;
+            if image_bytes
+                .checked_add(bytes)
+                .is_none_or(|total| total > 32 * 1024 * 1024)
+            {
+                rows.push(json!({"document_id":doc["id"],"error":"This custom emoji would exceed the request preview byte budget"}));
+                continue;
+            }
+            image_bytes += bytes;
+            content.extend(images);
             let attributes = doc["attributes"].as_array().cloned().unwrap_or_default();
             let placeholder = attributes
                 .iter()
@@ -222,57 +240,17 @@ pub async fn render(data: &[u8], count: i64, dimension: i64) -> Result<Value> {
             json!({"content":[{"type":"image","data":STANDARD.encode(bytes),"mimeType":"image/png"}],"metadata":{"static":true,"image":meta}}),
         );
     }
-    // FFmpeg is an optional native codec dependency; unavailable codecs are reported as errors.
-    let state = State::global()?;
-    let root = state
-        .file_roots()
-        .first()
-        .context("No file roots configured")?;
-    let temp = tempfile::Builder::new()
-        .prefix(".telegram-frames-")
-        .tempdir_in(root)?;
-    let input = temp.path().join("input-media");
-    std::fs::write(&input, data)?;
-    let output = temp.path().join("frame-%02d.png");
-    let filter = format!(
-        "fps=1,scale={}:{}:force_original_aspect_ratio=decrease",
-        dimension.clamp(64, 1568),
-        dimension.clamp(64, 1568)
-    );
-    tracing::debug!(
-        operation = "media_frames",
-        "Starting bounded media frame decoder"
-    );
-    let mut child=super::decoder().args(["-nostdin","-max_alloc","67108864","-max_pixels","50000000","-v","error","-protocol_whitelist","file,pipe","-format_whitelist","mov,matroska,webm,ogg,mp3,wav,flac,aac,gif,apng,avi","-i"]).arg(&input).args(["-vf",&filter,"-frames:v",&count.clamp(1,12).to_string(),"-threads","1"]).arg(&output).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn().context("FFmpeg is required to decode this animation/video; install FFmpeg with the needed codec")?;
-    let result = tokio::time::timeout(std::time::Duration::from_secs(20), child.wait()).await;
-    match result {
-        Ok(result) => ensure!(
-            result?.success(),
-            "The native decoder could not render this media format"
-        ),
-        Err(_) => {
-            let _ = child.kill().await;
-            anyhow::bail!("Media decoding exceeded 20 seconds")
-        }
-    }
-    let mut frames = vec![];
-    for n in 1..=count.clamp(1, 12) {
-        let path = temp.path().join(format!("frame-{n:02}.png"));
-        if !path.exists() {
-            break;
-        }
-        ensure!(
-            std::fs::metadata(&path)?.len() <= 16 * 1024 * 1024,
-            "A decoded frame exceeded 16 MiB"
-        );
-        frames.push((std::fs::read(path)?, format!("{}s", n - 1)));
-    }
-    ensure!(!frames.is_empty(), "The decoder produced no frames");
-    let (bytes, meta) = crate::tools::visual::images::compose_contact_sheet(&frames, None)?;
+    // Share the duration-aware, bounded decoder with animated emoji previews.
+    let frames = super::emoji_previews::video(data, count, dimension, "").await?;
+    let images = frames
+        .iter()
+        .map(|(bytes, meta)| (bytes.clone(), format!("{}s", meta["timestamp"])))
+        .collect::<Vec<_>>();
+    let (bytes, meta) = crate::tools::visual::images::compose_contact_sheet(&images, None)?;
     image_content(
         &bytes,
         dimension,
-        json!({"static":false,"frames":frames.len(),"sheet":meta}),
+        json!({"static":false,"frames":frames.len(),"frame_metadata":frames.iter().map(|(_,meta)|meta.clone()).collect::<Vec<_>>(),"sheet":meta}),
     )
 }
 

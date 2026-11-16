@@ -20,6 +20,8 @@ pub(crate) use paths::canonical_existing;
 pub use stream::{EventLog, EventQuery};
 
 pub struct State {
+    #[cfg(test)]
+    fail_directory_sync: AtomicBool,
     root: PathBuf,
     roots: Vec<PathBuf>,
     installation: PathBuf,
@@ -110,6 +112,8 @@ impl State {
             }
         }
         Ok(Self {
+            #[cfg(test)]
+            fail_directory_sync: AtomicBool::new(false),
             root,
             roots: normalized,
             installation,
@@ -133,6 +137,16 @@ impl State {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    #[cfg(all(test, unix))]
+    pub(crate) fn fail_next_directory_sync_for_test(&self) {
+        self.fail_directory_sync
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg(test)]
+    pub(crate) fn take_directory_sync_failure_for_test(&self) -> bool {
+        self.fail_directory_sync
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
     pub fn file_roots(&self) -> &[PathBuf] {
         &self.roots

@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(unix)]
+use grammers_session::types::UpdateState;
 use grammers_tl_types::Deserializable;
 
 #[test]
@@ -193,13 +195,7 @@ async fn successful_rpc_result_is_preserved_when_peer_storage_cannot_commit() {
 #[cfg(unix)]
 #[tokio::test]
 async fn an_indeterminate_commit_notifies_existing_and_later_pool_watchers() {
-    use std::{os::unix::fs::PermissionsExt, time::Duration};
-    struct Restore(std::path::PathBuf, std::fs::Permissions);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            let _ = std::fs::set_permissions(&self.0, self.1.clone());
-        }
-    }
+    use std::time::Duration;
     let temp = tempfile::tempdir().unwrap();
     let files = temp.path().join("files");
     std::fs::create_dir(&files).unwrap();
@@ -219,13 +215,8 @@ async fn an_indeterminate_commit_notifies_existing_and_later_pool_watchers() {
     });
     tokio::task::yield_now().await;
     assert!(!watcher.is_finished());
-    let restore = Restore(
-        state.root().to_owned(),
-        std::fs::metadata(state.root()).unwrap().permissions(),
-    );
-    std::fs::set_permissions(state.root(), std::fs::Permissions::from_mode(0o300)).unwrap();
+    state.fail_next_directory_sync_for_test();
     let failed = session.set_home_dc_id(3).await;
-    drop(restore);
     assert!(failed.is_err());
     tokio::time::timeout(Duration::from_secs(1), watcher)
         .await
@@ -235,4 +226,122 @@ async fn an_indeterminate_commit_notifies_existing_and_later_pool_watchers() {
         .await
         .unwrap();
     assert!(session.check_health().is_err());
+    // The fault is per-State and consumed only once at the real durability
+    // seam; it cannot poison another session's next successful commit.
+    let healthy = PersistentSession::open(state, "unrelated").unwrap();
+    healthy.set_home_dc_id(2).await.unwrap();
+}
+
+#[cfg(unix)]
+fn private_session_state() -> (tempfile::TempDir, Arc<State>) {
+    let temp = tempfile::tempdir().unwrap();
+    let files = temp.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let state = Arc::new(
+        State::at_with_installation(
+            temp.path().join("state"),
+            vec![files],
+            temp.path().to_owned(),
+        )
+        .unwrap(),
+    );
+    (temp, state)
+}
+#[cfg(unix)]
+fn private_test_session_string() -> String {
+    use base64::Engine;
+    let mut bytes = vec![2, 149, 154, 167, 51];
+    bytes.extend(443u16.to_be_bytes());
+    bytes.extend([0x5a; 256]);
+    format!(
+        "1{}",
+        base64::engine::general_purpose::URL_SAFE.encode(bytes)
+    )
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn an_indeterminate_session_commit_fences_later_writes_until_reopening_disk() {
+    let (_temp, state) = private_session_state();
+    let session = PersistentSession::open(Arc::clone(&state), "work").unwrap();
+    session
+        .set_update_state(UpdateState::Primary {
+            pts: 10,
+            date: 10,
+            seq: 1,
+        })
+        .await
+        .unwrap();
+    state.fail_next_directory_sync_for_test();
+    let failed = session
+        .set_update_state(UpdateState::Primary {
+            pts: 20,
+            date: 20,
+            seq: 2,
+        })
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap()["updates_state"]["pts"],
+        20
+    );
+    assert!(session.updates_state().await.is_err());
+    assert!(session.set_home_dc_id(1).await.is_err());
+    assert!(
+        session
+            .bind_source(Some("must-not-overwrite".into()))
+            .is_err()
+    );
+    assert!(
+        session
+            .import_telethon(&private_test_session_string())
+            .is_err()
+    );
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap()["updates_state"]["pts"],
+        20
+    );
+    drop(session);
+    let reopened = PersistentSession::open(Arc::clone(&state), "work").unwrap();
+    assert_eq!(reopened.updates_state().await.unwrap().pts, 20);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn indeterminate_source_and_import_commits_preserve_the_installed_snapshot_until_reopen() {
+    for import in [false, true] {
+        let (_temp, state) = private_session_state();
+        let session = PersistentSession::open(Arc::clone(&state), "work").unwrap();
+        state.fail_next_directory_sync_for_test();
+        let result = if import {
+            session.import_telethon(&private_test_session_string())
+        } else {
+            session.bind_source(Some("selected-revision".into()))
+        };
+        assert!(result.is_err());
+        assert!(session.bind_source(None).is_err());
+        assert!(session.set_home_dc_id(1).await.is_err());
+        assert!(session.cache_peers(vec![]).await.is_err());
+        let saved = state.read_json("work.session.json", Value::Null).unwrap();
+        if import {
+            assert_eq!(saved["authorization_origin"], "legacy");
+        } else {
+            assert_eq!(saved["authorization_source"], "selected-revision");
+        }
+        drop(session);
+        let reopened = PersistentSession::open(Arc::clone(&state), "work").unwrap();
+        if import {
+            assert!(reopened.dc_option(2).unwrap().unwrap().auth_key.is_some());
+        } else {
+            assert!(
+                reopened
+                    .bind_source(Some("selected-revision".into()))
+                    .is_ok()
+            );
+        }
+        assert_eq!(
+            state.read_json("work.session.json", Value::Null).unwrap(),
+            saved
+        );
+    }
 }

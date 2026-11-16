@@ -3000,7 +3000,7 @@
   },
   {
     "name": "delete_profile_photo",
-    "description": "Remove a profile photo - this account's, or one of the bots it owns.\n\nArgs:\n    bot: A bot this account owns (ID or @username). Omit for your own.\n    photo_id: Delete this one photo from the history (ids from\n        `get_user_photos`) instead of the current one.",
+    "description": "Remove a profile photo - this account's, or one of the bots it owns.\n\nArgs:\n    bot: A bot this account owns (ID or @username). Omit for your own.\n    photo_id: Delete this one photo from the history (ids from\n        `get_user_photos`) instead of the current one.\n\nFor an owned bot, omit photo_id to clear its current photo. Historical photo_id deletion applies only to the current account; bot plus photo_id is refused before any Telegram request.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4708,6 +4708,26 @@
             }
           ],
           "default": null
+        },
+        "expected_source": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "entities": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "text",
+            "entities"
+          ],
+          "additionalProperties": false,
+          "description": "Optional source snapshot checked after approval immediately before editing. A mismatch refuses the mutation; Telegram does not provide atomic compare-and-swap."
         }
       },
       "required": [
@@ -8775,6 +8795,9 @@
               "type": "integer"
             },
             {
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
@@ -8845,6 +8868,9 @@
               "type": "integer"
             },
             {
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
@@ -8913,6 +8939,9 @@
           "anyOf": [
             {
               "type": "integer"
+            },
+            {
+              "type": "string"
             },
             {
               "type": "null"
@@ -19082,7 +19111,7 @@
   },
   {
     "name": "set_profile_photo",
-    "description": "Set a profile photo - this account's, or one of the bots it owns.\n\nNot for a group or channel: use `replace_chat_photo` (only the new photo remains)\nor `edit_chat_photo` (the old photos stay). Without replace=True the previous\nprofile photo stays in this account's photo history.\n\n\"Change the profile photo\" is ambiguous. Unless the owner already said, ask them\nboth things before calling any photo tool:\n- whose photo: this account's own or a bot it owns (`set_profile_photo`), a group\n  or channel (`edit_chat_photo` / `replace_chat_photo`), a community\n  (`set_community_photo`);\n- keep the earlier photos in the photo list, or remove them (`replace_chat_photo`,\n  `set_profile_photo` with replace=True).\n\nArgs:\n    file_path: Image to upload.\n    bot: A bot this account owns (ID or @username). Omit for your own\n        profile. Telegram refuses a bot you do not own.\n    replace: Also delete the photo this one replaces. Nothing is deleted\n        until the new photo is set; without it the old one stays in the\n        photo history.",
+    "description": "Set a profile photo - this account's, or one of the bots it owns.\n\nNot for a group or channel: use `replace_chat_photo` (only the new photo remains)\nor `edit_chat_photo` (the old photos stay). Without replace=True the previous\nprofile photo stays in this account's photo history.\n\n\"Change the profile photo\" is ambiguous. Unless the owner already said, ask them\nboth things before calling any photo tool:\n- whose photo: this account's own or a bot it owns (`set_profile_photo`), a group\n  or channel (`edit_chat_photo` / `replace_chat_photo`), a community\n  (`set_community_photo`);\n- keep the earlier photos in the photo list, or remove them (`replace_chat_photo`,\n  `set_profile_photo` with replace=True).\n\nArgs:\n    file_path: Image to upload.\n    bot: A bot this account owns (ID or @username). Omit for your own\n        profile. Telegram refuses a bot you do not own.\n    replace: Also delete the photo this one replaces. Nothing is deleted\n        until the new photo is set; without it the old one stays in the\n        photo history.\n\nFor an owned bot, uploads support replace=false. replace=true applies only to the current account's complete photo history; bot-history cleanup is not supported by Telegram's deletePhotos method.",
     "inputSchema": {
       "type": "object",
       "properties": {

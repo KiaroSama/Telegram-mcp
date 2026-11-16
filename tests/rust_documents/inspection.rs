@@ -169,6 +169,47 @@ fn png(width: u32, height: u32) -> Vec<u8> {
 }
 
 #[tokio::test]
+async fn supported_bmp_documents_decode_actual_pixels_without_reencoding_the_input_fixture() {
+    // A real 2x1, 24-bit Windows BMP, with a padded BGR row: red then green.
+    let mut bmp = vec![0u8; 62];
+    bmp[..2].copy_from_slice(b"BM");
+    bmp[2..6].copy_from_slice(&62u32.to_le_bytes());
+    bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+    bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+    bmp[18..22].copy_from_slice(&2i32.to_le_bytes());
+    bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+    bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+    bmp[28..30].copy_from_slice(&24u16.to_le_bytes());
+    bmp[34..38].copy_from_slice(&8u32.to_le_bytes());
+    bmp[54..62].copy_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+    let fixture = Attachment::text("pixels.bmp", "image/bmp", bmp);
+    let result = fixture.inspect().await.unwrap();
+    let encoded = result["content"][0]["data"].as_str().unwrap();
+    let pixels = image::load_from_memory(
+        &base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap()
+    .into_rgb8();
+    assert_eq!(pixels.dimensions(), (2, 1));
+    assert_eq!(pixels.get_pixel(0, 0).0, [255, 0, 0]);
+    assert_eq!(pixels.get_pixel(1, 0).0, [0, 255, 0]);
+}
+
+#[tokio::test]
+async fn a_pnm_like_prefix_does_not_hide_an_explicitly_supported_csv_document() {
+    let fixture = Attachment::text(
+        "priorities.csv",
+        "text/csv",
+        b"P1,priority\n42,high\n".to_vec(),
+    );
+    let result = fixture.inspect().await.unwrap();
+    assert_eq!(result["text"], "P1,priority\n42,high\n");
+    assert_eq!(result["metadata"]["kind"], "text");
+}
+
+#[tokio::test]
 async fn image_documents_return_actual_bounded_png_pixels() {
     let fixture = Attachment::text("image.png", "image/png", png(1800, 900));
     let result = fixture.inspect().await.unwrap();

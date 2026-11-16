@@ -176,6 +176,37 @@ fn approval_channels_are_protected_in_reads_too() {
         "refuse"
     );
 }
+
+#[test]
+fn approval_channel_marked_ids_and_bound_peer_ids_share_the_same_refusal() {
+    let facts = Facts {
+        approval_chats: ["-1001234567890".into()].into_iter().collect(),
+        ..Default::default()
+    };
+    for args in [
+        json!({"chat_id": "-1001234567890"}),
+        json!({"chat_id": 1234567890i64}),
+        json!({"chat_id":{"_":"inputPeerChannel","channel_id":"1234567890","access_hash":"7"}}),
+    ] {
+        assert_eq!(
+            decide("get_history", true, false, &args, &facts).outcome,
+            "refuse"
+        );
+    }
+    for unrelated in ["-100", "-100not_a_channel", "-1001234567891"] {
+        assert_eq!(
+            decide(
+                "get_history",
+                true,
+                false,
+                &json!({"chat_id":unrelated}),
+                &facts
+            )
+            .outcome,
+            "run"
+        );
+    }
+}
 #[test]
 fn pending_approval_codes_are_never_sent() {
     let facts = Facts {

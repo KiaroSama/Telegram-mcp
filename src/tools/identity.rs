@@ -16,6 +16,10 @@ use crate::backend::Telegram;
 use anyhow::Result;
 use serde_json::Value;
 
+pub fn invite_link_qr_in(state: &crate::state::State, args: &Value) -> Result<Value> {
+    invites::qr_in(state, args)
+}
+
 /// One peer-selector normalization shared by the handler and access policy.
 /// Only public username links are accepted here; private invites never resolve.
 pub(crate) fn normalize_lookup_query(query: &Value) -> Result<Value> {

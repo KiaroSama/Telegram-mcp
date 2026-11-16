@@ -23,8 +23,8 @@ $logPath = $null
 $launchMutex = $null
 $launchMutexHeld = $false
 
-# Kept in step with telegram_mcp.runner.EXIT_SESSION_HELD, which tests/test_second_instance.py
-# pins from the other side. Any other non-zero code is an ordinary failure.
+# Reserved for a native session-ownership refusal. Any other non-zero code is
+# an ordinary failure; the launcher preserves the native process's exit status.
 $script:ExitSessionHeld = 75
 
 # STDOUT IS THE MCP PROTOCOL CHANNEL.
@@ -33,7 +33,7 @@ $script:ExitSessionHeld = 75
 # frames carry complete tool results: message text, contact names, chat titles,
 # files listed, whatever the client asked for. Teeing stdout wrote all of it to
 # disk. Only stderr -- which the server uses for diagnostics, and which
-# `telegram_mcp.safe_log` already bounds -- is ever persisted here.
+# the native diagnostic logger already bounds -- is ever persisted here.
 #
 # That is the whole privacy argument, and it is satisfied by the stdout/stderr
 # split alone. Logging was nevertheless OPT-IN, so the default run wrote nothing
@@ -93,7 +93,7 @@ function Get-StateDirectory {
         }
         elseif ($forwarded[$index] -like '--config=*') { $selector = $forwarded[$index].Substring(9) }
     }
-    if (-not $selector -and -not $env:TELEGRAM_ENV_FILE) {
+    if (-not $selector) {
         $selector = Get-Variable -Name envPath -ValueOnly -ErrorAction SilentlyContinue
     }
     $selection = if ($selector) { @('--config', $selector) } else { @() }
@@ -141,7 +141,7 @@ function Set-OwnerOnlyAcl {
       return value says what the object now allows, not that a call succeeded.
       A directory's entry is inheritable, which is what makes the files created
       inside one owner-only from birth. Mirrors
-      `telegram_mcp.owner_only.restrict_to_owner_strict`.
+      the native private-state permission checks.
 
       Returns whether it applied, never throws: a permissions detail must not
       abort the operation it was protecting half-way.
@@ -262,6 +262,9 @@ function Stop-OtherInstances {
         [Parameter(Mandatory)] [string] $Root,
         [int] $WaitSeconds = 15
     )
+    if (-not $IsWindows) {
+        return [pscustomobject] @{ Stopped = @(); Survived = @() }
+    }
     $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
     $parents = @{}
     foreach ($process in $processes) { $parents[[int] $process.ProcessId] = [int] $process.ParentProcessId }
@@ -379,7 +382,7 @@ try {
     # Opened by a person: whatever copy is already running goes first, so opening the
     # launcher always ends with THIS copy serving - instead of waiting 20 seconds on
     # the session lock and exiting, which read as a crash every time.
-    if (Test-OpenedByPerson) {
+    if ($IsWindows -and (Test-OpenedByPerson)) {
         # Same reservation as the supervisor: hold across takeover AND startup,
         # including the interval before the replacement has opened its port.
         $canonical = $PSScriptRoot.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
@@ -432,7 +435,7 @@ try {
         $env:TELEGRAM_MCP_LOG_MAX_BYTES = $previousLogLimit
     }
 
-    # 75 is EXIT_SESSION_HELD in telegram_mcp/runner.py: another instance of
+    # A native ownership-refusal exit status means another instance of
     # THIS server already holds the Telegram session, so this one refused to
     # connect a second time rather than risk Telegram invalidating the auth key
     # for both. That is the server working, not failing - and it is the most

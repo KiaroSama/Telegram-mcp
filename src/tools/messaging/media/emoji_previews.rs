@@ -147,7 +147,7 @@ async fn probe(path: &std::path::Path) -> Result<(Option<f64>, Option<f64>)> {
     }
 }
 
-async fn video(
+pub(super) async fn video(
     data: &[u8],
     count: i64,
     dimension: i64,

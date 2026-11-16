@@ -80,7 +80,7 @@ async fn completed_send_survives_recipient_bookkeeping_failure() {
         "default".into(),
         Arc::new(Account {
             api: api.clone(),
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             generation: None,
         }),
     );
@@ -146,7 +146,7 @@ async fn alias_service(
         "default".into(),
         Arc::new(Account {
             api: api.clone(),
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             generation: None,
         }),
     );
@@ -279,7 +279,7 @@ async fn routed_service(
         "default".into(),
         Arc::new(Account {
             api: api.clone(),
-            serial: Mutex::new(()),
+            serial: Arc::new(Mutex::new(())),
             generation: None,
         }),
     );
@@ -365,15 +365,21 @@ async fn authenticated_self_works_with_numeric_and_literal_allowlists() {
 async fn owned_backend_clones_keep_private_recipient_and_self_pins() {
     let (_mcp, api, _temp) = routed_service(access::AccessPolicy::default(), false).await;
     let (bound, approval) = recipient::bind(
+        "recipient-regression",
         api.clone(),
-        &json!({"to_chat_id":"finance team","from_chat_id":"me"}),
+        &json!({"to_chat_id":"finance team","from_chat_id":"me","user_id":"member alias"}),
     )
     .await
     .unwrap();
     assert_eq!(approval["to_chat_id"], "7");
     assert_eq!(approval["from_chat_id"], "7");
+    assert_eq!(approval["user_id"], "7");
     api.target.store(8, std::sync::atomic::Ordering::SeqCst);
     let cloned = bound.clone_handle().unwrap();
+    assert_eq!(
+        cloned.resolve_peer(&json!("member alias")).await.unwrap()["user_id"],
+        "7"
+    );
     assert_eq!(
         cloned.resolve_peer(&json!("finance team")).await.unwrap()["user_id"],
         "7"
@@ -488,4 +494,238 @@ async fn legacy_settled_wait_returns_allowed_burst_and_keeps_denied_burst_pendin
         .unwrap();
     assert_eq!(remaining["total"], 1);
     assert_eq!(remaining["pending_chats"][0]["chat_id"], "99");
+}
+
+#[tokio::test]
+async fn private_reads_and_conditional_mutation_selectors_pin_aliases_before_policy_or_approval() {
+    use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+    struct MovingAlias {
+        target: AtomicI64,
+        alias_resolutions: AtomicUsize,
+        calls: StdMutex<Vec<(String, Value)>>,
+    }
+    #[async_trait]
+    impl Telegram for MovingAlias {
+        async fn resolve_peer(&self, input: &Value) -> Result<Value> {
+            let id = if input == "moving alias" {
+                self.alias_resolutions.fetch_add(1, Ordering::SeqCst);
+                // Model an external rename or another process retargeting its
+                // local alias immediately after this operation resolved it.
+                self.target.swap(8, Ordering::SeqCst)
+            } else {
+                input
+                    .as_i64()
+                    .or_else(|| input.as_str()?.parse().ok())
+                    .context("Unexpected test selector")?
+            };
+            Ok(if id < -1_000_000_000_000 {
+                json!({"_":"inputPeerChannel","channel_id":(-id-1_000_000_000_000_i64).to_string(),"access_hash":"90"})
+            } else if id < 0 {
+                json!({"_":"inputPeerChat","chat_id":(-id).to_string()})
+            } else {
+                json!({"_":"inputPeerUser","user_id":id.to_string(),"access_hash":(id*10).to_string()})
+            })
+        }
+        async fn invoke(&self, name: &str, args: Value) -> Result<Value> {
+            crate::tl::Schema::global().encode_call(name, &args)?;
+            self.calls.lock().unwrap().push((name.into(), args.clone()));
+            Ok(match name {
+                "users.getFullUser" => {
+                    let id = &args["id"]["user_id"];
+                    json!({"full_user":{"id":id,"about":format!("private biography {}", id.as_str().unwrap())},"users":[{"_":"user","id":id,"first_name":"Owned"}]})
+                }
+                "users.getUsers" => {
+                    json!([{"_":"user","id":args["id"][0]["user_id"],"first_name":"Owned","status":{"_":"userStatusOffline","was_online":7}}])
+                }
+                // This raw resolver observes the replacement owner. A contact
+                // handler bypassing the private peer pin must fail this case.
+                "contacts.resolveUsername" => {
+                    let id = self.target.load(Ordering::SeqCst).to_string();
+                    json!({"peer":{"_":"peerUser","user_id":id},"users":[{"_":"user","id":id,"access_hash":"80"}]})
+                }
+                "contacts.addContact" => json!(true),
+                _ => panic!("A gated mutation was dispatched before approval: {name}"),
+            })
+        }
+    }
+    for (name, args, selector, restricted) in [
+        (
+            "get_full_user",
+            json!({"username":"moving alias"}),
+            "",
+            true,
+        ),
+        (
+            "get_user_status",
+            json!({"user_id":"moving alias"}),
+            "",
+            true,
+        ),
+        (
+            "resolve_username",
+            json!({"username":"moving alias"}),
+            "!retargeted",
+            true,
+        ),
+        (
+            "add_contact",
+            json!({"username":"8","first_name":"Outside scope"}),
+            "!denied",
+            true,
+        ),
+        (
+            "add_contact",
+            json!({"phone":"+15550100","first_name":"Unproved identity"}),
+            "!phone-only",
+            true,
+        ),
+        (
+            "add_contact",
+            json!({"username":"moving alias","first_name":"Owned","last_name":"Contact","phone":"+15550100"}),
+            "",
+            true,
+        ),
+        (
+            "set_privacy_settings",
+            json!({"key":"status","base_policy":"nobody","allow_users":["moving alias"]}),
+            "/allow_users/0",
+            false,
+        ),
+        (
+            "set_privacy_settings",
+            json!({"key":"status","base_policy":"everyone","disallow_users":["moving alias"]}),
+            "/disallow_users/0",
+            false,
+        ),
+        (
+            "set_privacy_settings",
+            json!({"key":"status","rules":[{"rule":"users_allowed","users":["moving alias"]}]}),
+            "/rules/0/users/0",
+            false,
+        ),
+        (
+            "set_privacy_settings",
+            json!({"key":"status","rules":[{"rule":"users_disallowed","users":["moving alias"]}]}),
+            "/rules/0/users/0",
+            false,
+        ),
+        (
+            "delete_revoked_invite_links",
+            json!({"chat_id":-9,"admin":"moving alias"}),
+            "/admin",
+            false,
+        ),
+        (
+            "export_recent_actions",
+            json!({"chat_id":-1_000_000_000_009_i64,"admins":["moving alias"]}),
+            "/admins/0",
+            false,
+        ),
+        (
+            "update_folder",
+            json!({"folder_id":2,"patch":{"include_chat_ids":["moving alias"]}}),
+            "/patch/include_chat_ids/0",
+            false,
+        ),
+        (
+            "update_folder",
+            json!({"folder_id":2,"patch":{"pinned_chat_ids":["moving alias"]}}),
+            "/patch/pinned_chat_ids/0",
+            false,
+        ),
+        (
+            "update_folder",
+            json!({"folder_id":2,"patch":{"exclude_chat_ids":["moving alias"]}}),
+            "/patch/exclude_chat_ids/0",
+            false,
+        ),
+    ] {
+        let policy = access::AccessPolicy::parse(restricted.then_some("7")).unwrap();
+        let (mcp, _, _temp) = service(json!({}), policy);
+        let api = Arc::new(MovingAlias {
+            target: AtomicI64::new(7),
+            alias_resolutions: AtomicUsize::new(0),
+            calls: StdMutex::new(vec![]),
+        });
+        mcp.runtime.accounts.lock().await.insert(
+            "default".into(),
+            Arc::new(Account {
+                api: api.clone(),
+                serial: Arc::new(Mutex::new(())),
+                generation: None,
+            }),
+        );
+        let mut args = args;
+        args["account"] = json!("default");
+        let result = mcp.execute(name, args).await;
+        if selector.starts_with('!') {
+            let error = result.expect_err("A changed or unproved identity cannot pass its policy");
+            if selector == "!retargeted" {
+                assert!(
+                    error.to_string().contains("Username identity changed"),
+                    "{error:#}"
+                );
+                let calls = api.calls.lock().unwrap();
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].0, "contacts.resolveUsername");
+                assert_eq!(api.target.load(Ordering::SeqCst), 8);
+                assert_eq!(api.alias_resolutions.load(Ordering::SeqCst), 1);
+            } else {
+                let expected = if selector == "!phone-only" {
+                    "permitted identity"
+                } else {
+                    "scope"
+                };
+                assert!(error.to_string().contains(expected), "{error:#}");
+                assert!(api.calls.lock().unwrap().is_empty());
+                assert_eq!(api.alias_resolutions.load(Ordering::SeqCst), 0);
+            }
+            continue;
+        }
+        let result = result.unwrap_or_else(|e| panic!("{name} {selector}: {e:#}"));
+        if !selector.is_empty() {
+            assert_eq!(result["approval_required"], true, "{name} {selector}");
+            let pending = mcp
+                .runtime
+                .state
+                .read_json("approval-pending.json", json!({}))
+                .unwrap();
+            let request = &pending[result["fingerprint"].as_str().unwrap()];
+            assert_eq!(
+                request["arguments"].pointer(selector),
+                Some(&json!("7")),
+                "{name} {selector}"
+            );
+            assert!(api.calls.lock().unwrap().is_empty(), "{name} {selector}");
+        } else {
+            let calls = api.calls.lock().unwrap();
+            assert_eq!(calls.len(), 1, "{name}");
+            if name == "add_contact" {
+                assert_eq!(calls[0].0, "contacts.addContact");
+                assert_eq!(calls[0].1["id"]["user_id"], "7");
+                assert_eq!(calls[0].1["first_name"], "Owned");
+                assert_eq!(calls[0].1["last_name"], "Contact");
+                assert_eq!(calls[0].1["phone"], "+15550100");
+            } else if name == "get_full_user" {
+                assert_eq!(calls[0].0, "users.getFullUser");
+                assert_eq!(calls[0].1["id"]["user_id"], "7");
+                assert_eq!(result["full_user"]["id"], "7");
+                assert_eq!(result["full_user"]["about"], "private biography 7");
+            } else {
+                assert_eq!(calls[0].0, "users.getUsers");
+                assert_eq!(calls[0].1["id"][0]["user_id"], "7");
+                assert_eq!(result["id"], "7");
+            }
+        }
+        assert_eq!(
+            api.target.load(Ordering::SeqCst),
+            8,
+            "Alias must really retarget"
+        );
+        assert_eq!(
+            api.alias_resolutions.load(Ordering::SeqCst),
+            1,
+            "{name} {selector}"
+        );
+    }
 }

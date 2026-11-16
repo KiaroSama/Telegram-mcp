@@ -14,6 +14,59 @@ pub struct Settings {
 }
 
 impl Settings {
+    pub(crate) fn reserve(&mut self) -> Result<Reservation> {
+        let state = crate::state::State::from_environment()?;
+        let parent = state.resolve_file(
+            self.path.parent().context("Export folder has no parent")?,
+            crate::state::FileAccess::Write,
+        )?;
+        if !parent.exists() {
+            crate::state::storage::private_directory(&parent)?;
+        }
+        let parent_guard = crate::transfer::files::Directory::open(&state, &parent)?;
+        let base = self
+            .path
+            .file_name()
+            .context("Export folder has no name")?
+            .to_string_lossy();
+        for suffix in 0..=10_000 {
+            parent_guard.verify(&state)?;
+            let path = parent.join(if suffix == 0 {
+                base.to_string()
+            } else {
+                format!("{base}_{suffix}")
+            });
+            if state.resolve_file(&path, crate::state::FileAccess::Write)? != path {
+                bail!("Export folder changed before reservation");
+            }
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error).context("Cannot reserve the export folder"),
+                Ok(()) => {}
+            }
+            let mut reservation = Reservation {
+                state,
+                parent: parent_guard,
+                directory: None,
+                path: path.clone(),
+            };
+            crate::state::storage::restrict(&path, true)?;
+            reservation.directory = Some(crate::transfer::files::Directory::open(
+                &reservation.state,
+                &path,
+            )?);
+            self.path = path;
+            return Ok(reservation);
+        }
+        bail!("No unused export folder is available")
+    }
+
     pub fn parse(args: &Value) -> Result<Self> {
         let format = args["format"]
             .as_str()
@@ -89,6 +142,33 @@ impl Settings {
 
     pub fn includes_date(&self, timestamp: i64) -> bool {
         timestamp >= self.from && (self.until == 0 || timestamp < self.until)
+    }
+}
+
+/// Owns only the newly created folder; rollback never removes partial output.
+pub(crate) struct Reservation {
+    state: crate::state::State,
+    parent: crate::transfer::files::Directory,
+    directory: Option<crate::transfer::files::Directory>,
+    path: PathBuf,
+}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let intact = self.parent.verify(&self.state).is_ok()
+            && self
+                .directory
+                .as_ref()
+                .is_none_or(|directory| directory.verify(&self.state).is_ok())
+            && self
+                .state
+                .resolve_file(&self.path, crate::state::FileAccess::Write)
+                .is_ok_and(|path| path == self.path);
+        // Windows denies directory replacement while the guard is held, so
+        // release it only after verification and immediately before removal.
+        drop(self.directory.take());
+        if intact {
+            let _ = std::fs::remove_dir(&self.path);
+        }
     }
 }
 

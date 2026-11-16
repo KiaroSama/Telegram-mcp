@@ -282,6 +282,28 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         request["send_as"] = api.resolve_peer(identity).await?;
     }
     copy_optional(&mut request, a, &[("effect_id", "effect")]);
+    if name == "edit_message"
+        && let Some(expected) = a.get("expected_source").filter(|value| !value.is_null())
+    {
+        let text = expected["text"].as_str().ok_or_else(|| {
+            anyhow::anyhow!("expected_source.text must contain the inspected text")
+        })?;
+        ensure!(
+            text.len() <= 256 * 1024,
+            "Expected source text exceeds its comparison budget"
+        );
+        let expected_entities = source_entities(text, &expected["entities"])?;
+        // The server invokes this handler after approval. Keep this peer-bound
+        // read immediately before the edit; Telegram offers no atomic edit CAS.
+        let current = fetch(api, &p, mid.unwrap()).await?;
+        let current_text = current["message"].as_str().unwrap_or("");
+        ensure!(
+            current_text == text
+                && source_entities(current_text, current.get("entities").unwrap_or(&json!([])))?
+                    == expected_entities,
+            "Source message changed since inspection; nothing was edited. Inspect it again before confirming"
+        );
+    }
     let response = api
         .invoke(
             if edit {
@@ -298,6 +320,25 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         response => response,
     }
+}
+fn source_entities(text: &str, raw: &Value) -> Result<Vec<Vec<u8>>> {
+    entities(text, raw)?
+        .into_iter()
+        .map(|mut entity| {
+            if entity["_"] == "inputMessageEntityMentionName" {
+                entity["_"] = json!("messageEntityMentionName");
+                if entity["user_id"].is_object() {
+                    let user = entity["user_id"]["user_id"].clone();
+                    ensure!(
+                        !user.is_null(),
+                        "Expected source mentions require their inspected user id"
+                    );
+                    entity["user_id"] = user;
+                }
+            }
+            crate::tl::Schema::global().encode_object(&entity)
+        })
+        .collect()
 }
 /// Scheduled ids live in a separate queue from sent message ids. Always bind
 /// an edit to that queue and resend its date, including an overdue stored date.
@@ -376,7 +417,7 @@ async fn delete(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     };
     let p = args::peer(api, a, "chat_id").await?;
     ensure!(
-        channel(&p).is_none() || revoke,
+        name == "delete_chat_history" || channel(&p).is_none() || revoke,
         "A channel or supergroup has no private copy: revoke=false cannot delete messages there"
     );
     if name == "delete_chat_history" {
@@ -385,6 +426,15 @@ async fn delete(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             (0..=i32::MAX as i64).contains(&max_id),
             "max_id must be a nonnegative message id"
         );
+        if let Some(channel) = channel(&p) {
+            let result = api
+                .invoke(
+                    "channels.deleteHistory",
+                    json!({"channel":channel,"max_id":max_id,"for_everyone":revoke}),
+                )
+                .await?;
+            return Ok(json!({"deleted":true,"passes":1,"result":result}));
+        }
         let request = json!({"peer":p,"max_id":max_id,"revoke":revoke,"just_clear":true});
         let started = std::time::Instant::now();
         let mut previous = None;
@@ -454,7 +504,7 @@ async fn forward(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     let repeat = repeat(a)?;
     let source = args::peer(api, a, "from_chat_id").await?;
     let destination = args::peer(api, a, "to_chat_id").await?;
-    if name != "forward_messages" && args::boolean(a, "expand_album", true)? {
+    if !a[key].is_array() && name != "forward_messages" && args::boolean(a, "expand_album", true)? {
         let original = fetch(api, &source, message_ids[0]).await?;
         if original.get("grouped_id").is_some_and(|v| !v.is_null()) {
             let around = api

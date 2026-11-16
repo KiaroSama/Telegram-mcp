@@ -22,6 +22,16 @@ impl std::fmt::Display for DurabilityUncertain {
 
 impl std::error::Error for DurabilityUncertain {}
 
+/// A failed append may still be present because truncation or its sync failed.
+#[derive(Debug)]
+pub(crate) struct AppendUncertain;
+impl std::fmt::Display for AppendUncertain {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Event append outcome is uncertain; inspect the feed before retrying")
+    }
+}
+impl std::error::Error for AppendUncertain {}
+
 pub(crate) fn private_directory(path: &Path) -> Result<()> {
     if path
         .symlink_metadata()
@@ -43,12 +53,46 @@ pub(crate) fn restrict(path: &Path, directory: bool) -> Result<()> {
         )
         .context("Cannot restrict private state permissions")?;
     }
+    #[cfg(target_os = "macos")]
+    restrict_macos_acl(path)?;
     #[cfg(windows)]
     windows_acl::restrict(path, directory)?;
     #[cfg(not(any(unix, windows)))]
     {
         let _ = (path, directory);
         bail!("Private state is unsupported on this operating system");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn restrict_macos_acl(path: &Path) -> Result<()> {
+    use std::{
+        ffi::{CString, c_char, c_int, c_void},
+        os::unix::ffi::OsStrExt,
+    };
+    unsafe extern "C" {
+        fn acl_init(count: c_int) -> *mut c_void;
+        fn acl_set_file(path: *const c_char, kind: c_int, acl: *mut c_void) -> c_int;
+        fn acl_free(acl: *mut c_void) -> c_int;
+    }
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    // Darwin ACL grants precede mode bits. Install an empty extended ACL,
+    // removing both inherited grants and directory inheritance flags.
+    // SAFETY: the path is NUL-terminated; the owned ACL is freed once after use.
+    unsafe {
+        let acl = acl_init(0);
+        if acl.is_null() {
+            return Err(std::io::Error::last_os_error())
+                .context("Cannot construct a private macOS ACL");
+        }
+        let result = acl_set_file(path.as_ptr(), 0x100, acl);
+        let error = std::io::Error::last_os_error();
+        acl_free(acl);
+        if result != 0 {
+            return Err(error)
+                .context("Cannot remove inherited macOS ACL grants from private state");
+        }
     }
     Ok(())
 }
@@ -275,6 +319,12 @@ impl State {
             file.sync_all()?;
             drop(file);
             replace_and_sync(&temporary, &destination, || {
+                #[cfg(test)]
+                if self.take_directory_sync_failure_for_test() {
+                    return Err(std::io::Error::other(
+                        "Synthetic post-replacement directory sync failure",
+                    ));
+                }
                 #[cfg(unix)]
                 File::open(&self.root)?.sync_all()?;
                 Ok(())
@@ -308,7 +358,7 @@ pub(super) fn append_transaction(
     if let Err(error) = append(file) {
         file.set_len(committed_length)
             .and_then(|()| file.sync_data())
-            .context("Event append failed and rollback could not be confirmed; pending events were retained")?;
+            .context(AppendUncertain)?;
         return Err(error).context("Event append failed; previous records were restored");
     }
     Ok(())

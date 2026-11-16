@@ -307,3 +307,18 @@ fn overlapping_rich_quotes_require_offsets_and_accept_the_second_occurrence() {
         rich_quote::select(&source, &json!({"quote_text":"aba","quote_offset":4})).unwrap();
     assert_eq!(offset, 4);
 }
+
+#[test]
+fn caption_credit_is_a_quote_source_and_shifts_following_utf16_offsets() {
+    let source = json!({"blocks":[{"_":"pageBlockPhoto","photo_id":"1","caption":{"_":"pageCaption","text":plain("A"),"credit":plain("Alice")}},paragraph(plain("B"))]});
+    let (credit, offset) =
+        rich_quote::select(&source, &json!({"quote_text":"Alice","quote_offset":2})).unwrap();
+    assert_eq!(offset, 2);
+    assert_eq!(credit[0], plain("Alice"));
+    assert_eq!(
+        rich_quote::select(&source, &json!({"quote_text":"B","quote_offset":8}))
+            .unwrap()
+            .1,
+        8
+    );
+}

@@ -30,7 +30,7 @@ function Get-StateDirectory {
         }
         elseif ($forwarded[$index] -like '--config=*') { $selector = $forwarded[$index].Substring(9) }
     }
-    if (-not $selector -and -not $env:TELEGRAM_ENV_FILE) {
+    if (-not $selector) {
         $selector = Get-Variable -Name envPath -ValueOnly -ErrorAction SilentlyContinue
     }
     $selection = if ($selector) { @('--config', $selector) } else { @() }

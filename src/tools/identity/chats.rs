@@ -40,7 +40,15 @@ fn matching_entity<'a>(r: &'a Value, p: &Value) -> Option<&'a Value> {
         "chats"
     };
     let id = entity_id(p).ok()?;
-    r.get(key)?.as_array()?.iter().find(|e| e["id"] == id)
+    r.get(key)?.as_array()?.iter().find(|e| {
+        e["id"] == id
+            && match kind(p).replace("inputPeer", "peer").as_str() {
+                "peerUser" => matches!(kind(e), "user" | "userEmpty"),
+                "peerChat" => matches!(kind(e), "chat" | "chatEmpty" | "chatForbidden"),
+                "peerChannel" => matches!(kind(e), "channel" | "channelForbidden" | "community"),
+                _ => false,
+            }
+    })
 }
 pub(super) fn marked(p: &Value) -> Result<String> {
     let id = int_value(&entity_id(p)?, "peer id")?;
@@ -270,8 +278,19 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         "resolve_username" => {
             let raw = text(a, "username")?.trim().trim_start_matches('@');
             ensure!(!raw.is_empty(), "username must not be empty");
-            api.invoke("contacts.resolveUsername", json!({"username":raw}))
-                .await
+            let p = api.resolve_peer(req(a, "username")?).await?;
+            let expected = crate::server::access::marked_peer(&p)
+                .or_else(|| api.pinned_identity(&p))
+                .context("Username target has no stable Telegram identity")?;
+            let response = api
+                .invoke("contacts.resolveUsername", json!({"username":raw}))
+                .await?;
+            ensure!(
+                crate::server::access::marked_peer(&response["peer"]).as_deref()
+                    == Some(expected.as_str()),
+                "Username identity changed during lookup; retry the operation"
+            );
+            Ok(response)
         }
         "search_public_chats" => {
             let k = string(a, "kind", "all")?;

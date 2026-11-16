@@ -8,6 +8,7 @@ pub mod settings;
 mod writer;
 
 use anyhow::{Context, Result, bail};
+use jobs::Cancelled;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
@@ -53,7 +54,7 @@ async fn invoke(
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<Value> {
     if *cancel.borrow() {
-        bail!("Export cancelled");
+        return Err(Cancelled.into());
     }
     let (method, params) = if let Some(id) = takeout {
         params["_"] = method.into();
@@ -63,7 +64,7 @@ async fn invoke(
     };
     tokio::select! {
         result = api.invoke(method, params) => result.context("Telegram export request failed"),
-        _ = cancel.changed() => bail!("Export cancelled"),
+        _ = cancel.changed() => Err(Cancelled.into()),
     }
 }
 
@@ -72,8 +73,20 @@ pub async fn run(
     kind: &str,
     args: &Value,
     settings: &settings::Settings,
+    cancel: watch::Receiver<bool>,
+    job_id: &str,
+) -> Result<Value> {
+    run_inner(api, kind, args, settings, cancel, job_id, false).await
+}
+
+async fn run_inner(
+    api: &dyn crate::backend::Telegram,
+    kind: &str,
+    args: &Value,
+    settings: &settings::Settings,
     mut cancel: watch::Receiver<bool>,
     job_id: &str,
+    reserved: bool,
 ) -> Result<Value> {
     let peer = api
         .resolve_peer(crate::args::required(args, "chat_id")?)
@@ -107,7 +120,7 @@ pub async fn run(
         settings,
         &peer,
         takeout.as_ref(),
-        (&mut cancel, job_id),
+        (&mut cancel, job_id, reserved),
     )
     .await;
     if let Some(id) = &takeout {
@@ -133,16 +146,19 @@ async fn collect_and_write(
     settings: &settings::Settings,
     peer: &Value,
     takeout: Option<&Value>,
-    tracking: (&mut watch::Receiver<bool>, &str),
+    tracking: (&mut watch::Receiver<bool>, &str, bool),
 ) -> Result<Value> {
-    let (cancel, job_id) = tracking;
+    let (cancel, job_id, reserved) = tracking;
     if *cancel.borrow() {
-        bail!("Export cancelled");
+        return Err(Cancelled.into());
     }
     let state = crate::state::State::from_environment()?;
     let folder = state.resolve_file(&settings.path, crate::state::FileAccess::Write)?;
-    std::fs::create_dir(&folder)
-        .context("Export directory could not be created; existing exports are never overwritten")?;
+    if !reserved {
+        std::fs::create_dir(&folder).context(
+            "Export directory could not be created; existing exports are never overwritten",
+        )?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -198,7 +214,7 @@ async fn collect_and_write(
             let mut offset = 0_i64;
             loop {
                 if *cancel.borrow() {
-                    bail!("Export cancelled");
+                    return Err(Cancelled.into());
                 }
                 let response = if kind == "recent_actions" {
                     invoke(
@@ -360,11 +376,11 @@ async fn collect_and_write(
             }
         }
     }
-    let title = title_for_peer(peer, &peers);
+    let title = writer::title_for_peer(peer, &peers);
     let mut writer = writer::Writer::new(&folder, settings, &title, peer)?;
     for offset in offsets.into_iter().rev() {
         if *cancel.borrow() {
-            bail!("Export cancelled");
+            return Err(Cancelled.into());
         }
         spool.as_file_mut().seek(SeekFrom::Start(offset))?;
         let mut line = String::new();
@@ -388,27 +404,6 @@ fn numeric_id(value: &Value) -> Option<i64> {
     value
         .as_i64()
         .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
-}
-
-fn title_for_peer(peer: &Value, peers: &BTreeMap<String, Value>) -> String {
-    let id = peer
-        .get("user_id")
-        .or_else(|| peer.get("channel_id"))
-        .or_else(|| peer.get("chat_id"));
-    let kind = match peer["_"].as_str() {
-        Some("inputPeerUser") => "user",
-        Some("inputPeerChannel") => "channel",
-        _ => "chat",
-    };
-    id.and_then(numeric_id)
-        .and_then(|id| peers.get(&format!("{kind}:{id}")))
-        .map(|value| {
-            value["title"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| render::person_name(value))
-        })
-        .unwrap_or_else(|| "Telegram chat export".into())
 }
 
 fn event_message(event: &Value) -> Value {

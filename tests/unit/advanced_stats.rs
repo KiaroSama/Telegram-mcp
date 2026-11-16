@@ -15,13 +15,37 @@ fn daily_total_and_previous_period() {
 }
 #[test]
 fn level_graphs_report_change_instead_of_sum() {
-    let g = graph(json!([["x", 0, 1, 2, 3], ["y0", 100, 110, 120, 150]]));
+    let g = graph(json!([
+        ["x", 0, 1, 2, 3, 4],
+        ["y0", 90, 100, 110, 120, 150]
+    ]));
     let r = daily("growth_graph", &g, 2);
-    assert_eq!(r["series"]["Messages"]["start"], 120.0);
+    assert_eq!(r["series"]["Messages"]["start"], 110.0);
     assert_eq!(r["series"]["Messages"]["end"], 150.0);
-    assert_eq!(r["series"]["Messages"]["change"], 30.0);
-    assert_eq!(r["series"]["Messages"]["previous_change"], 10.0);
+    assert_eq!(r["series"]["Messages"]["change"], 40.0);
+    assert_eq!(r["series"]["Messages"]["previous_change"], 20.0);
     assert!(r["series"]["Messages"].get("total").is_none());
+}
+
+#[test]
+fn one_day_growth_uses_the_preceding_level_and_missing_baselines_stay_unknown() {
+    let g = graph(json!([
+        ["x", 0, 86400000, 172800000],
+        ["y0", 100, 110, 130]
+    ]));
+    let row = daily("growth_graph", &g, 1)["series"]["Messages"].clone();
+    assert_eq!(row["start"], 110.0);
+    assert_eq!(row["end"], 130.0);
+    assert_eq!(row["change"], 20.0);
+    assert_eq!(row["previous_change"], 10.0);
+    let row = daily("growth_graph", &g, 2)["series"]["Messages"].clone();
+    assert_eq!(row["change"], 30.0);
+    assert!(row["previous_change"].is_null());
+    assert_eq!(row["comparison_complete"], false);
+    let short = graph(json!([["x", 0], ["y0", 130]]));
+    let row = daily("growth_graph", &short, 1)["series"]["Messages"].clone();
+    assert!(row["change"].is_null());
+    assert_eq!(row["period_complete"], false);
 }
 
 #[test]

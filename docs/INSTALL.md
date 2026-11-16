@@ -17,10 +17,23 @@ cd Telegram-mcp
 cargo build --locked --release --bin telegram-mcp --bin emoji-studio --bin operator-plugin
 ```
 
-CI provides release artifacts for Linux x86-64, macOS ARM64 and Windows x86-64.
+CI builds separate ARM64 and x86_64 release artifacts for each operating system:
+
+| System | Architecture | Artifact |
+| --- | --- | --- |
+| Linux | x86_64 | `telegram-mcp-x86_64-unknown-linux-gnu` |
+| Linux | ARM64 | `telegram-mcp-aarch64-unknown-linux-gnu` |
+| macOS | x86_64 | `telegram-mcp-x86_64-apple-darwin` |
+| macOS | ARM64 | `telegram-mcp-aarch64-apple-darwin` |
+| Windows | x86_64 | `telegram-mcp-x86_64-pc-windows-msvc` |
+| Windows | ARM64 | `telegram-mcp-aarch64-pc-windows-msvc` |
+
+Choose the artifact matching both your operating system and CPU. `aarch64` is
+Rust's target name for ARM64; `x86_64` is also commonly called AMD64 or x64.
 Download the artifact from the run for the exact PR head SHA; `build.json` records
 that SHA, the target, compiler, lockfile digest and actual SHA-256 of each of the three
-native executable files. Do not infer that all checks passed
+native executable files. Packaging verifies the actual ELF, Mach-O or PE machine
+headers before attaching target provenance. Do not infer that all checks passed
 merely because the build artifact exists: builds intentionally run before behavioral
 gates, which can still fail.
 
@@ -38,8 +51,11 @@ Install native **FFmpeg and FFprobe** on `PATH` for video/animation decoding and
 audio/video metadata. Linux distributions provide the `ffmpeg` package; macOS users can
 install Homebrew's `ffmpeg`. Windows builds are linked from
 [FFmpeg's official download page](https://ffmpeg.org/download.html). CI verifies the
-Gyan 9.0.2 Windows archive against its exact SHA-256; Linux/macOS jobs install their
-platform packages and log both executable versions. PDF/text and ordinary image
+Gyan 9.0.2 x86_64 archive and the separately reviewed
+[tordona ARM64 build](https://github.com/tordona/ffmpeg-win-arm64) against exact SHA-256
+digests. Both native Windows builds must provide VP9 encoding/decoding and Opus;
+Linux/macOS jobs install their platform packages. CI checks the actual codec machine
+headers, executable versions and required codec capabilities. PDF/text and ordinary image
 inspection use the Rust pipeline. Local Whisper transcription additionally needs an
 explicitly configured native `whisper-cli` and local model; no model is downloaded automatically.
 
@@ -189,10 +205,16 @@ For a private CA, install that CA in each client's trust store. Do not disable
 certificate verification. Keep private keys outside the repository and restrict
 their filesystem access to the service operator.
 
-Loopback HTTP remains available without TLS for the local native `bridge`.
-The bridge's discovery protocol accepts loopback HTTP; use direct HTTPS-capable
-clients for a service configured with TLS. A locally generated test certificate
-is not a trusted production deployment certificate.
+The native bridge accepts loopback HTTP and HTTPS. For HTTPS it validates the
+hostname and operating-system trust roots, plus the certificate chain published
+by its privately owned service discovery. The certificate must cover the
+loopback address or exact `localhost` name used by discovery. Existing TLS
+services are never downgraded, and certificate verification cannot be disabled.
+
+Local discovery uses a fresh credential for each service generation, separate
+from the configured external bearer. Health checks authenticate the service
+without sending either raw credential. Restart an older shared service when
+upgrading its native clients so both use the same authenticated health protocol.
 
 The native `bridge` command attaches stdio clients to the local HTTP shared service. If no verified
 service exists, that explicit command can start the same native executable using the

@@ -116,9 +116,16 @@ pub async fn transcribe_with(api: &dyn Telegram, settings: &Settings, a: &Value)
         .cloned()
         .unwrap_or(Value::Null);
     let key=api.cache_key().map(|session|format!("{:x}",Sha256::digest(json!({"session":session,"peer":peer,"message_id":mid,"document_id":document["id"],"engine":settings.engine,"model":settings.cache_model(),"language":settings.language,"endpoint":settings.endpoint.as_ref().map(url::Url::as_str)}).to_string().as_bytes())));
+    let deadline = tokio::time::Instant::now() + settings.timeout;
     let bucket = key.map(flight).transpose()?;
     let mut cached = if let Some(bucket) = &bucket {
-        Some(bucket.lock().await)
+        Some(
+            tokio::time::timeout_at(deadline, bucket.lock())
+                .await
+                .context(
+                    "Transcription exceeded its time budget while waiting for the same recording",
+                )?,
+        )
     } else {
         None
     };
@@ -127,6 +134,10 @@ pub async fn transcribe_with(api: &dyn Telegram, settings: &Settings, a: &Value)
         value["cached"] = json!(true);
         return Ok(value);
     }
+    ensure!(
+        tokio::time::Instant::now() < deadline,
+        "Transcription exceeded its time budget while waiting for the same recording"
+    );
     let engine = async {
         Ok::<Value, anyhow::Error>(match settings.engine.as_str() {
             "telegram" => native(api, &peer, mid).await?,
@@ -137,7 +148,7 @@ pub async fn transcribe_with(api: &dyn Telegram, settings: &Settings, a: &Value)
             _ => unreachable!(),
         })
     };
-    let mut value=tokio::time::timeout(settings.timeout,engine).await.context("Transcription exceeded its time budget; a hosted provider may still be processing the selected recording")??;
+    let mut value=tokio::time::timeout_at(deadline,engine).await.context("Transcription exceeded its time budget; a hosted provider may still be processing the selected recording")??;
     value["source"] = json!(settings.engine);
     value["model"] = json!(settings.display_model());
     value["duration"] = duration;

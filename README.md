@@ -41,7 +41,7 @@ cargo build --locked --release --bin telegram-mcp --bin emoji-studio --bin opera
 
 The executable is `target/release/telegram-mcp` on Linux/macOS and
 `target/release/telegram-mcp.exe` on Windows. CI builds and uploads native release
-artifacts for Linux x86-64, macOS ARM64 and Windows x86-64 on every push and PR.
+artifacts for both **ARM64 and x86_64 on Linux, macOS and Windows** on every push and PR.
 Artifacts identify the actual commit, compiler and `Cargo.lock` digest in `build.json`.
 They include all three native CLIs and their SHA-256 values. Follow
 [artifact permission and media-tool setup](docs/INSTALL.md) after extraction.
@@ -144,7 +144,7 @@ cargo test --locked --all-features -- --test-threads=1
 cargo build --locked --release --bin telegram-mcp
 ```
 
-CI additionally checks the lockfile, all three operating systems, native release
+CI additionally checks the lockfile, both architectures on all three operating systems, native release
 artifacts, collected-case agreement, critical behavioral-category evidence, combined
 application-core line coverage of at least 85% alongside full-production coverage,
 the preserved PowerShell suites, dependency

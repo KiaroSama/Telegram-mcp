@@ -35,6 +35,20 @@ fn variable(name: &str) -> Result<String> {
     env::var(name).with_context(|| format!("Required CI variable {name} is missing"))
 }
 
+fn status_context(workflow: &str, event: &str, name: &str) -> Result<String> {
+    let stem = workflow
+        .strip_suffix(".yml")
+        .context("Invalid workflow filename")?;
+    ensure!(
+        matches!(
+            event,
+            "push" | "pull_request" | "workflow_dispatch" | "schedule"
+        ),
+        "Invalid status event identity"
+    );
+    Ok(format!("CI/{stem}/{event}/{name}"))
+}
+
 pub fn publish(phase: &str, workflow: &str) -> Result<()> {
     ensure!(
         matches!(phase, "begin" | "finish"),
@@ -60,6 +74,7 @@ pub fn publish(phase: &str, workflow: &str) -> Result<()> {
     );
     let run_id: u64 = variable("GITHUB_RUN_ID")?.parse()?;
     let attempt: u64 = variable("GITHUB_RUN_ATTEMPT")?.parse()?;
+    let event = variable("GITHUB_EVENT_NAME")?;
     ensure!(run_id > 0 && attempt > 0, "Invalid CI run identity");
     let inventory: BTreeMap<String, Vec<String>> =
         serde_json::from_slice(&fs::read(".github/ci-status-jobs.json")?)?;
@@ -78,15 +93,16 @@ pub fn publish(phase: &str, workflow: &str) -> Result<()> {
         "Workflow identity does not match this exact commit and attempt"
     );
     ensure!(
+        run["event"].as_str() == Some(&event),
+        "Workflow event identity mismatch"
+    );
+    ensure!(
         run["path"].as_str() == Some(&format!(".github/workflows/{workflow}")),
         "Workflow path mismatch"
     );
     let run_url = format!("https://github.com/{repository}/actions/runs/{run_id}");
     let post = |name: &str, state: &str, outcome: &str, url: &str| -> Result<()> {
-        let stem = workflow
-            .strip_suffix(".yml")
-            .context("Invalid workflow filename")?;
-        let payload = json!({"context":format!("CI/{stem}/{name}"), "state":state, "description":format!("Run {run_id}, attempt {attempt}: {outcome}"), "target_url":url});
+        let payload = json!({"context":status_context(workflow, &event, name)?, "state":state, "description":format!("Run {run_id}, attempt {attempt}: {outcome}"), "target_url":url});
         api("POST", &format!("{base}/statuses/{sha}"), Some(&payload))?;
         println!("{name}: {state} ({outcome})");
         Ok(())

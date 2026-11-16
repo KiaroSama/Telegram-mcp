@@ -205,3 +205,161 @@ fn emoji_cli_indexes_a_visible_animation_frame_instead_of_its_blank_endpoints() 
             .any(|value| value.as_f64().unwrap() > 0.9)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn emoji_insert_sends_the_inspected_snapshot_with_the_approved_edit() {
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    };
+    use rmcp::{
+        ServerHandler,
+        model::*,
+        service::{RequestContext, RoleServer},
+    };
+    use std::sync::{Arc, Mutex};
+    const TOKEN: &str = "a-synthetic-owner-token-with-more-than-32-characters";
+    type Calls = Arc<Mutex<Vec<(String, Value)>>>;
+    fn proof(purpose: &[u8], nonce: &str, target: &str, status: u16, body: &[u8]) -> String {
+        use hmac::{Hmac, Mac};
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(TOKEN.as_bytes()).unwrap();
+        for part in [
+            b"telegram-mcp-health-v2\0".as_slice(),
+            purpose,
+            b"\0",
+            nonce.as_bytes(),
+            b"\0",
+            target.as_bytes(),
+            b"\0",
+            &status.to_be_bytes(),
+            body,
+        ] {
+            mac.update(part);
+        }
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+    async fn health(request: axum::extract::Request) -> axum::response::Response {
+        assert!(
+            request
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .is_none(),
+            "Health preflight must not disclose its reusable bearer"
+        );
+        let nonce = request.headers()["x-telegram-health-nonce"]
+            .to_str()
+            .unwrap();
+        let target = request.uri().to_string();
+        assert_eq!(
+            request.headers()["x-telegram-health-proof"],
+            proof(b"request", nonce, &target, 0, &[])
+        );
+        let body = serde_json::to_vec(
+            &json!({"ready":true,"backend":"grammers","pid":std::process::id()}),
+        )
+        .unwrap();
+        let signature = proof(b"response", nonce, &target, 200, &body);
+        axum::response::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .header("x-telegram-health-proof", signature)
+            .body(axum::body::Body::from(body))
+            .unwrap()
+    }
+    #[derive(Clone)]
+    struct Remote(Calls);
+    impl ServerHandler for Remote {
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        }
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, rmcp::ErrorData> {
+            let args = Value::Object(request.arguments.unwrap_or_default());
+            self.0
+                .lock()
+                .unwrap()
+                .push((request.name.to_string(), args));
+            let payload = match request.name.as_ref() {
+                "inspect_message" => {
+                    json!({"message":{"id":42,"text":"hello 😀\nsecond","entities":[{"type":"bold","offset":0,"length":5}]}})
+                }
+                "edit_message" => json!({"approval_required":true,"performed":false}),
+                _ => panic!("Unexpected CLI request {}", request.name),
+            };
+            Ok(CallToolResult::success(vec![ContentBlock::text(payload.to_string())]).into())
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let remote = Remote(calls.clone());
+    let service: StreamableHttpService<Remote, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(remote.clone()),
+        Default::default(),
+        StreamableHttpServerConfig::default(),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let serving = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            axum::Router::new()
+                .nest_service("/mcp", service)
+                .route("/health", axum::routing::get(health)),
+        )
+        .await
+        .unwrap();
+    });
+    let state =
+        telegram_mcp::state::State::at(temp.path().join("state"), vec![temp.path().to_owned()])
+            .unwrap();
+    state
+        .write_json(
+            "http-service.json",
+            &json!({"url":endpoint,"token":TOKEN,"health_protocol":2,"pid":std::process::id()}),
+        )
+        .unwrap();
+    let output = invoke(
+        temp.path(),
+        &[
+            "insert",
+            "--chat",
+            "@owner",
+            "--message",
+            "42",
+            "--line",
+            "2",
+            "--id",
+            "9",
+            "--glyph",
+            "✅",
+        ],
+    );
+    serving.abort();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("approval_required"));
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        ["inspect_message", "edit_message"]
+    );
+    let edit = &calls[1].1;
+    assert_eq!(edit["new_text"], "hello 😀\nsecond✅");
+    assert_eq!(
+        edit["expected_source"],
+        json!({"text":"hello 😀\nsecond","entities":[{"type":"bold","offset":0,"length":5}]})
+    );
+    assert_eq!(edit["entities"][1]["offset"], 15);
+}

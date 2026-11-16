@@ -562,3 +562,16 @@ fn fixed_width_int128_rejects_wrong_length() {
     assert!(Schema::global().decode("int128", &[0; 15]).is_err());
     assert!(Schema::global().decode("int128", &[0; 17]).is_err());
 }
+
+#[test]
+fn object_encoding_rejects_a_final_append_above_the_whole_message_budget() {
+    let url = "u".repeat(14 * 1024 * 1024);
+    let value = serde_json::json!({"_":"textWithEntities","text":"a","entities":(0..5).map(|_|serde_json::json!({"_":"messageEntityTextUrl","offset":0,"length":1,"url":url})).collect::<Vec<_>>()});
+    let result = telegram_mcp::tl::Schema::global().encode_object(&value);
+    assert!(
+        result.is_err(),
+        "The final encoded buffer must not exceed64MiB"
+    );
+    let error = result.err().unwrap();
+    assert!(error.to_string().contains("budget"));
+}

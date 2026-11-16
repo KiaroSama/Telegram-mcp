@@ -55,7 +55,7 @@ pub(super) fn identity(file: &File) -> Result<Identity> {
     }
 }
 
-struct Directory {
+pub(crate) struct Directory {
     file: File,
     path: PathBuf,
     identity: Identity,
@@ -84,7 +84,7 @@ fn directory_options() -> std::fs::OpenOptions {
     options
 }
 impl Directory {
-    fn open(state: &State, path: &Path) -> Result<Self> {
+    pub(crate) fn open(state: &State, path: &Path) -> Result<Self> {
         ensure!(
             state.resolve_file(path, FileAccess::Write)? == path,
             "Transfer directory changed"
@@ -105,7 +105,7 @@ impl Directory {
         directory.verify(state)?;
         Ok(directory)
     }
-    fn verify(&self, state: &State) -> Result<()> {
+    pub(crate) fn verify(&self, state: &State) -> Result<()> {
         ensure!(
             identity(&self.file)? == self.identity,
             "Held transfer directory identity changed"

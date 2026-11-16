@@ -129,7 +129,7 @@ pub async fn inspect_with_worker(
             .await?;
     ensure!(!bytes.is_empty(), "The document download was empty");
     let mut metadata = json!({"message_id":id,"filename":filename,"bytes":bytes.len(),"untrusted":true,"stored":false});
-    if image::guess_format(&bytes).is_ok() {
+    if !text && image::guess_format(&bytes).is_ok() {
         let (data, details) = image_work(move || {
             let image = images::decode_image(&bytes)?;
             let (data, details) = images::encode_image(&image, "png", 1568, 90, false)?;

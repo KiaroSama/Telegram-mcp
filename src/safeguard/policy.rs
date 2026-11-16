@@ -66,7 +66,7 @@ fn scalars<'a>(value: &'a Value, output: &mut Vec<&'a Value>) {
     }
 }
 
-fn chat_key(value: &Value) -> String {
+pub(super) fn chat_key(value: &Value) -> String {
     let raw = normalize_key(value);
     let lower = raw.to_lowercase();
     for prefix in [
@@ -85,6 +85,13 @@ fn chat_key(value: &Value) -> String {
                 .to_owned();
         }
     }
+    if let Some(channel) = lower.strip_prefix("-100")
+        && !channel.is_empty()
+        && channel.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        let channel = channel.trim_start_matches('0');
+        return if channel.is_empty() { "0" } else { channel }.to_owned();
+    }
     lower
 }
 
@@ -102,9 +109,14 @@ pub fn decide(
     };
     let mut values = Vec::new();
     scalars(args, &mut values);
+    let approval_chats: HashSet<_> = facts
+        .approval_chats
+        .iter()
+        .map(|chat| chat_key(&json!(chat)))
+        .collect();
     if facts.approval_message
         || values.iter().any(|value| {
-            facts.approval_chats.contains(&chat_key(value))
+            approval_chats.contains(&chat_key(value))
                 || value.as_str().is_some_and(|s| {
                     facts.pending_codes.iter().any(|code| {
                         s.split(|c: char| !c.is_ascii_alphanumeric())

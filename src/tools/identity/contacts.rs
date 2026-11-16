@@ -208,19 +208,14 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             if !name.is_empty() {
                 let clean = name.trim().trim_start_matches('@');
                 ensure!(!clean.is_empty(), "Username cannot be empty");
-                let r = api
-                    .invoke("contacts.resolveUsername", json!({"username":clean}))
-                    .await?;
-                ensure!(
-                    kind(&r["peer"]) == "peerUser",
-                    "Resolved entity is not a user"
-                );
-                let u = r
-                    .get("users")
-                    .and_then(Value::as_array)
-                    .and_then(|u| u.iter().find(|u| u["id"] == r["peer"]["user_id"]))
-                    .context("User not found")?;
-                api.invoke("contacts.addContact",json!({"id":{"_":"inputUser","user_id":req(u,"id")?,"access_hash":req(u,"access_hash")?},"first_name":first,"last_name":last,"phone":""})).await
+                // Keep the exact selector used by the server's private peer
+                // binding; a second username RPC could target its new owner.
+                let p = api.resolve_peer(&json!(name)).await?;
+                api.invoke(
+                    "contacts.addContact",
+                    json!({"id":user(&p)?,"first_name":first,"last_name":last,"phone":phone}),
+                )
+                .await
             } else {
                 api.invoke("contacts.importContacts",json!({"contacts":[{"_":"inputPhoneContact","client_id":0,"phone":phone,"first_name":first,"last_name":last}]})).await
             }

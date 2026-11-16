@@ -251,6 +251,56 @@ fn private_state_files_have_owner_only_modes() {
         0o600
     );
 }
+
+#[test]
+#[cfg(target_os = "macos")]
+fn macos_private_state_removes_inherited_acl_grants_before_publishing_records() {
+    use std::process::Command;
+    let root = tempfile::tempdir().unwrap();
+    let files = root.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let grant = |path: &Path, inherit: bool| {
+        let access = if inherit {
+            "everyone allow read,readattr,readextattr,readsecurity,file_inherit,directory_inherit"
+        } else {
+            "everyone allow read,readattr,readextattr,readsecurity"
+        };
+        assert!(
+            Command::new("/bin/chmod")
+                .args(["+a", access])
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+    };
+    let acl = |path: &Path| {
+        let output = Command::new("/bin/ls")
+            .arg("-lde")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap()
+    };
+    grant(root.path(), true);
+    let inherited = root.path().join("state");
+    std::fs::create_dir(&inherited).unwrap();
+    assert!(acl(&inherited).contains("everyone"));
+    let state = State::at(inherited, vec![files]).unwrap();
+    assert!(!acl(state.root()).contains("everyone"));
+    // An operator can later add an inherited ACE to the state directory.
+    // Every temporary record must independently remove it before writing.
+    grant(state.root(), true);
+    state
+        .write_json("private.json", &json!({"payload":"private-canary"}))
+        .unwrap();
+    assert!(!acl(&state.root().join("private.json")).contains("everyone"));
+    assert_eq!(
+        state.read_json("private.json", Value::Null).unwrap()["payload"],
+        "private-canary"
+    );
+}
 #[cfg(unix)]
 #[test]
 fn symlink_state_record_is_never_followed() {

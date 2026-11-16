@@ -113,6 +113,10 @@ fn ipv4_and_ipv6_session_import_formats_validate_without_network() {
             base64::engine::general_purpose::URL_SAFE.encode(bytes)
         );
         assert_eq!(session_validate(&value), "valid");
+        // The native importer uses padded URL_SAFE decoding; accepting a paste
+        // with stripped padding would save an authorization it cannot import.
+        assert!(value.ends_with('='));
+        assert_eq!(session_validate(value.trim_end_matches('=')), "invalid");
     }
 }
 #[test]
@@ -389,10 +393,16 @@ fn login_identity_mismatch_preserves_original_keys() {
     state
         .write_json(
             &format!("{}.session.json", transaction.stage_label()),
-            &json!({"keys":"new"}),
+            &verified_snapshot(99),
         )
         .unwrap();
-    assert!(transaction.commit(99).is_err());
+    assert!(
+        transaction
+            .commit(99)
+            .unwrap_err()
+            .to_string()
+            .contains("different Telegram account")
+    );
     assert_eq!(
         state.read_json("work.session.json", Value::Null).unwrap(),
         original
@@ -415,11 +425,17 @@ fn login_source_changed_during_authentication_preserves_original_keys() {
     state
         .write_json(
             &format!("{}.session.json", transaction.stage_label()),
-            &json!({"keys":"new"}),
+            &verified_snapshot(42),
         )
         .unwrap();
     std::fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=changed\n").unwrap();
-    assert!(transaction.commit(42).is_err());
+    assert!(
+        transaction
+            .commit(42)
+            .unwrap_err()
+            .to_string()
+            .contains("Account configuration changed during login")
+    );
     assert!(!state.root().join("work.session.json").exists());
 }
 
@@ -428,15 +444,7 @@ fn new_login_commit_persists_verified_identity_and_configuration_binding() {
     let (dir, state) = fixture();
     let env = dir.path().join(".env");
     let transaction = begin_login(state.clone(), "work", &env, None, None, None).unwrap();
-    let mut data = grammers_session::SessionData::default();
-    data.dc_options.get_mut(&data.home_dc).unwrap().auth_key = Some([7; 256]);
-    let peer = grammers_session::types::PeerInfo::User {
-        id: 42,
-        auth: None,
-        bot: Some(false),
-        is_self: Some(true),
-    };
-    let snapshot = json!({"home_dc":data.home_dc,"dc_options":data.dc_options.values().collect::<Vec<_>>(),"peer_infos":[peer],"updates_state":data.updates_state});
+    let snapshot = verified_snapshot(42);
     let stage = transaction.stage_label().to_owned();
     state
         .write_json(&format!("{stage}.session.json"), &snapshot)
@@ -452,6 +460,18 @@ fn new_login_commit_persists_verified_identity_and_configuration_binding() {
         "work"
     );
     assert!(!state.root().join(format!("{stage}.session.json")).exists());
+}
+
+fn verified_snapshot(user_id: i64) -> Value {
+    let mut data = grammers_session::SessionData::default();
+    data.dc_options.get_mut(&data.home_dc).unwrap().auth_key = Some([7; 256]);
+    let peer = grammers_session::types::PeerInfo::User {
+        id: user_id,
+        auth: None,
+        bot: Some(false),
+        is_self: Some(true),
+    };
+    json!({"home_dc":data.home_dc,"dc_options":data.dc_options.values().collect::<Vec<_>>(),"peer_infos":[peer],"updates_state":data.updates_state})
 }
 
 #[test]

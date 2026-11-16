@@ -67,6 +67,10 @@ pub fn group_frames(reply: &ToolReply) -> Result<(Frames, Metadata)> {
     for record in reply.records() {
         let id = packs::decimal_id(&record["document_id"])
             .context("Custom emoji response omitted a valid document id")?;
+        if record.get("error").is_some_and(|error| !error.is_null()) {
+            facts.insert(id, record);
+            continue;
+        }
         let metadata = record["preview"]
             .as_array()
             .cloned()

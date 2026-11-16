@@ -15,6 +15,61 @@ fn reviewed_scope() -> CoverageScope {
 }
 
 #[test]
+fn coverage_refuses_stale_object_lines_outside_current_source() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("src")).unwrap();
+    fs::write(root.path().join("src/main.rs"), "fn main() {\n}\n").unwrap();
+    let scope = reviewed_scope();
+    scope.validate_source_tree(root.path()).unwrap();
+    let mut lengths = BTreeMap::new();
+    for line in [1, 2] {
+        scope
+            .validate_source_line(root.path(), "src/main.rs", line, &mut lengths)
+            .unwrap();
+    }
+    let stale =
+        parse_lcov_report("SF:src/main.rs\nDA:3,99\nend_of_record\n", "telegram-mcp").unwrap();
+    let ((path, line), _) = stale.first_key_value().unwrap();
+    assert!(
+        scope
+            .validate_source_line(root.path(), path, *line, &mut lengths)
+            .is_err(),
+        "Executed stale object-map lines beyond the actual source entered a coverage result"
+    );
+    assert!(
+        scope
+            .validate_source_line(root.path(), "src/main.rs", 0, &mut lengths)
+            .is_err()
+    );
+    let error = scope
+        .validate_source_line(root.path(), "src/unreviewed.rs", 1, &mut lengths)
+        .unwrap_err();
+    assert!(error.to_string().contains("unreviewed"));
+    let mut full_scope = scope;
+    fs::write(root.path().join("src/adapter.rs"), "fn adapter() {}\n").unwrap();
+    full_scope.exclude.insert(
+        "src/adapter.rs".into(),
+        "Thin RPC adapter outside the historic core, still included in the full-source metric"
+            .into(),
+    );
+    full_scope.validate_source_tree(root.path()).unwrap();
+    full_scope
+        .validate_source_line(root.path(), "src/adapter.rs", 1, &mut lengths)
+        .unwrap();
+    assert!(
+        full_scope
+            .validate_source_line(root.path(), "src/adapter.rs", 2, &mut lengths)
+            .is_err()
+    );
+    fs::remove_file(root.path().join("src/main.rs")).unwrap();
+    assert!(
+        full_scope
+            .validate_source_line(root.path(), "src/main.rs", 1, &mut BTreeMap::new())
+            .is_err()
+    );
+}
+
+#[test]
 fn coverage_policy_rejects_silent_floor_changes_and_missing_legacy_basis() {
     let mut scope = reviewed_scope();
     assert!(scope.validate().is_ok());

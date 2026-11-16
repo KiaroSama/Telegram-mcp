@@ -1,4 +1,4 @@
-use super::evidence::summary;
+use super::evidence::{native_legs, summary};
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 use std::{
@@ -12,9 +12,9 @@ pub fn run(directory: &Path) -> Result<()> {
     let scope: CoverageScope = serde_json::from_slice(&fs::read(".github/coverage-scope.json")?)?;
     scope.validate()?;
     scope.validate_source_tree(Path::new("."))?;
-    let expected: BTreeMap<String, String> =
-        serde_json::from_slice(&fs::read(".github/expected-native-legs.json")?)?;
+    let expected = native_legs()?;
     let mut report_labels = BTreeSet::new();
+    let mut source_lines = BTreeMap::new();
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
         if !path.extension().is_some_and(|x| x == "info") {
@@ -42,17 +42,13 @@ pub fn run(directory: &Path) -> Result<()> {
             "A coverage leg contains no executable project source lines"
         );
         for (key, hit) in report {
-            ensure!(
-                scope.include.contains_key(&key.0) || scope.exclude.contains_key(&key.0),
-                "Coverage contains an unreviewed source path: {}",
-                key.0
-            );
+            scope.validate_source_line(Path::new("."), &key.0, key.1, &mut source_lines)?;
             *lines.entry(key).or_default() |= hit;
         }
     }
     ensure!(
         report_labels == expected.keys().cloned().collect() && !lines.is_empty(),
-        "Coverage requires a nonempty report from every base and renderer operating-system leg"
+        "Coverage requires a nonempty report from every base and renderer architecture leg"
     );
     let all_hits = lines.values().filter(|hit| **hit).count();
     let all_percent = all_hits as f64 * 100.0 / lines.len() as f64;
@@ -67,7 +63,7 @@ pub fn run(directory: &Path) -> Result<()> {
     let hits = measured.iter().filter(|(_, hit)| **hit).count();
     let percent = hits as f64 * 100.0 / measured.len() as f64;
     summary(&format!(
-        "### Combined native line coverage\n\nAll production source: {all_hits}/{} executable lines, **{all_percent:.2}%**.\n\nReviewed application core: {hits}/{} executable lines, **{percent:.2}%** (required: 85%). Both metrics combine actual base and renderer evidence from Linux, macOS and Windows. `.github/coverage-scope.json` records each included/excluded path and its legacy measurement basis; full-source evidence remains available.\n",
+        "### Combined native line coverage\n\nAll production source: {all_hits}/{} executable lines, **{all_percent:.2}%**.\n\nReviewed application core: {hits}/{} executable lines, **{percent:.2}%** (required: 85%). Both metrics combine actual base and renderer evidence from ARM64 and x86_64 on Linux, macOS and Windows. `.github/coverage-scope.json` records each included/excluded path and its legacy measurement basis; full-source evidence remains available.\n",
         lines.len(),
         measured.len()
     ))?;
@@ -89,6 +85,33 @@ struct CoverageScope {
 }
 
 impl CoverageScope {
+    fn validate_source_line(
+        &self,
+        root: &Path,
+        path: &str,
+        line: u64,
+        source_lines: &mut BTreeMap<String, u64>,
+    ) -> Result<()> {
+        ensure!(
+            self.include.contains_key(path) || self.exclude.contains_key(path),
+            "Coverage contains an unreviewed source path: {path}"
+        );
+        ensure!(line > 0, "Coverage source line cannot be zero");
+        let length = match source_lines.entry(path.to_owned()) {
+            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let source = fs::read_to_string(root.join(path))
+                    .context("Reviewed coverage source is missing or is not UTF-8")?;
+                *entry.insert(u64::try_from(source.lines().count())?)
+            }
+        };
+        ensure!(
+            line <= length,
+            "Coverage refers to a source line outside the current file: {path}:{line}; remove stale workspace objects before measuring coverage"
+        );
+        Ok(())
+    }
+
     fn validate(&self) -> Result<()> {
         ensure!(
             self.schema_version == 1 && self.floor_percent == 85,

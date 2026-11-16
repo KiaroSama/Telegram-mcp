@@ -1,15 +1,25 @@
 use super::common::*;
-use serde_json::json;
+use serde_json::{Value, json};
 
 // These exercise distinct public adapters through the real TL encoder. A route
 // accidentally wired to a similar method or wrong peer constructor must fail.
 macro_rules! route {
     ($name:ident,$args:expr,$method:literal) => {
+        route!($name, $args, $method, |_: &Value| {});
+    };
+    ($name:ident,$args:expr,$method:literal,$check:expr) => {
         #[tokio::test]
         async fn $name() {
             let m = Mock::new();
             run(&m, stringify!($name), $args).await.unwrap();
             assert_eq!(m.methods().last().map(String::as_str), Some($method));
+            let calls = m.sent($method);
+            let request = calls.last().unwrap();
+            let schema = telegram_mcp::tl::Schema::global();
+            let decoded = schema
+                .decode("Object", &schema.encode_call($method, request).unwrap())
+                .unwrap();
+            ($check)(&decoded);
         }
     };
 }
@@ -26,11 +36,60 @@ route!(block_user, json!({"user_id":8}), "contacts.block");
 route!(unblock_user, json!({"user_id":8}), "contacts.unblock");
 route!(get_chat, json!({"chat_id":7}), "messages.getPeerDialogs");
 route!(get_full_chat, json!({"chat_id":9}), "messages.getFullChat");
-route!(
-    resolve_username,
-    json!({"username":"@Ada"}),
-    "contacts.resolveUsername"
-);
+#[tokio::test]
+async fn resolve_username() {
+    for (input, returned, accepted) in [
+        (
+            json!({"_":"inputPeerUser","user_id":"8","access_hash":"80"}),
+            json!({"_":"peerUser","user_id":8}),
+            true,
+        ),
+        (
+            json!({"_":"inputPeerChannel","channel_id":"8","access_hash":"80"}),
+            json!({"_":"peerChannel","channel_id":8}),
+            true,
+        ),
+        (
+            json!({"_":"inputPeerUser","user_id":"8","access_hash":"80"}),
+            json!({"_":"peerUser","user_id":"9"}),
+            false,
+        ),
+        (
+            json!({"_":"inputPeerUser","user_id":"8","access_hash":"80"}),
+            json!({"_":"peerChannel","channel_id":"8"}),
+            false,
+        ),
+    ] {
+        let m = Mock::new();
+        m.set_peer("@Ada", input);
+        let response = json!({"_":"contacts.resolvedPeer","peer":returned,"chats":[],"users":[]});
+        m.reply("contacts.resolveUsername", response.clone());
+        let result = run(&m, "resolve_username", json!({"username":"@Ada"})).await;
+        if accepted {
+            assert_eq!(result.unwrap(), response);
+        } else {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Username identity changed")
+            );
+        }
+        assert_eq!(m.resolutions(), [json!("@Ada")]);
+        assert_eq!(m.methods(), ["contacts.resolveUsername"]);
+        let request = &m.sent("contacts.resolveUsername")[0];
+        let schema = telegram_mcp::tl::Schema::global();
+        let decoded = schema
+            .decode(
+                "Object",
+                &schema
+                    .encode_call("contacts.resolveUsername", request)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert_eq!(decoded["username"], "Ada");
+    }
+}
 route!(
     search_public_chats,
     json!({"query":"news","kind":"channels"}),
@@ -46,8 +105,24 @@ route!(
     json!({"chat_id":7,"message_id":12,"thread":true}),
     "channels.exportMessageLink"
 );
-route!(pin_chat, json!({"chat":7}), "messages.toggleDialogPin");
-route!(unpin_chat, json!({"chat":7}), "messages.toggleDialogPin");
+route!(
+    pin_chat,
+    json!({"chat":7}),
+    "messages.toggleDialogPin",
+    |r: &Value| {
+        assert_eq!(r["peer"]["peer"]["channel_id"], "7");
+        assert_eq!(r["pinned"], true);
+    }
+);
+route!(
+    unpin_chat,
+    json!({"chat":7}),
+    "messages.toggleDialogPin",
+    |r: &Value| {
+        assert_eq!(r["peer"]["peer"]["channel_id"], "7");
+        assert_eq!(r["pinned"], false);
+    }
+);
 route!(
     mark_chat_unread,
     json!({"chat":7}),
@@ -61,12 +136,20 @@ route!(
 route!(
     archive_chat,
     json!({"chat_id":7}),
-    "folders.editPeerFolders"
+    "folders.editPeerFolders",
+    |r: &Value| {
+        assert_eq!(r["folder_peers"][0]["peer"]["channel_id"], "7");
+        assert_eq!(r["folder_peers"][0]["folder_id"], 1);
+    }
 );
 route!(
     unarchive_chat,
     json!({"chat_id":7}),
-    "folders.editPeerFolders"
+    "folders.editPeerFolders",
+    |r: &Value| {
+        assert_eq!(r["folder_peers"][0]["peer"]["channel_id"], "7");
+        assert_eq!(r["folder_peers"][0]["folder_id"], 0);
+    }
 );
 route!(
     create_group,
@@ -128,12 +211,22 @@ route!(
 route!(
     ban_user,
     json!({"chat_id":7,"user_id":8}),
-    "channels.editBanned"
+    "channels.editBanned",
+    |r: &Value| {
+        assert_eq!(r["channel"]["channel_id"], "7");
+        assert_eq!(r["participant"]["user_id"], "8");
+        assert_eq!(r["banned_rights"]["view_messages"], true);
+    }
 );
 route!(
     unban_user,
     json!({"chat_id":7,"user_id":8}),
-    "channels.editBanned"
+    "channels.editBanned",
+    |r: &Value| {
+        assert_eq!(r["channel"]["channel_id"], "7");
+        assert_eq!(r["participant"]["user_id"], "8");
+        assert_eq!(r["banned_rights"]["view_messages"], false);
+    }
 );
 route!(
     get_recent_actions,

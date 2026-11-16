@@ -124,6 +124,49 @@ fn incoming(chat: &str) -> IncomingEvent {
 }
 
 #[tokio::test]
+async fn already_settled_feed_backlog_drains_without_a_second_quiet_period() {
+    let (_root, state) = fixture();
+    for chat in 1..=32 {
+        state.record_incoming(incoming(&chat.to_string())).unwrap();
+    }
+    {
+        let mut journal = state.events.lock().unwrap();
+        let old = Instant::now() - Duration::from_secs(60);
+        for burst in journal.bursts.values_mut() {
+            burst.first = old;
+            burst.last = old;
+        }
+        let flushed = journal
+            .flush_settled(Duration::from_secs(50), |value| {
+                state.append_event_line(value)
+            })
+            .unwrap();
+        assert!(
+            flushed > 0 && flushed < 32,
+            "One batch must leave other work a chance to run"
+        );
+        assert_eq!(journal.bursts.len(), 32 - flushed);
+    }
+    state.enable_incoming_feed(50_000).unwrap();
+    let drained = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if state.incoming_feed_status().unwrap()["pending_chats"] == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    state.disable_incoming_feed().unwrap();
+    assert!(
+        drained.is_ok(),
+        "Already-settled bursts were delayed by another quiet period"
+    );
+    let contents = fs::read_to_string(state.root().join("incoming_feed.jsonl")).unwrap();
+    assert_eq!(contents.lines().count(), 32);
+}
+
+#[tokio::test]
 async fn explicit_disable_wins_over_an_already_claimed_autostart() {
     let (_root, state) = fixture();
     state
@@ -323,6 +366,92 @@ fn failed_feed_prefix_and_final_sync_roll_back_to_the_last_committed_length() {
         serde_json::from_str::<Value>(rows.lines().last().unwrap()).unwrap()["account"],
         "healthy-retry"
     );
+}
+
+#[tokio::test]
+async fn a_complete_append_with_failed_rollback_reports_an_unknown_outcome() {
+    use std::io::Write;
+    let (_root, state) = fixture();
+    let path = state.root().join("incoming_feed.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    state.record_incoming(incoming("42")).unwrap();
+    {
+        let mut journal = state.events.lock().unwrap();
+        journal.feed_enabled = true;
+        let error = journal
+            .flush_settled(Duration::ZERO, |summary| {
+                super::super::storage::append_transaction(&mut file, |file| {
+                    file.write_all(&serde_json::to_vec(summary)?)?;
+                    file.write_all(b"\n")?;
+                    // Rollback fails deterministically even for root after a
+                    // complete record was written, by changing descriptor access.
+                    *file = fs::File::open(&path)?;
+                    Err(std::io::Error::other(
+                        "injected append synchronization failure",
+                    ))
+                })
+            })
+            .unwrap_err();
+        assert!(error.is::<super::super::storage::AppendUncertain>());
+        assert!(!journal.feed_enabled);
+        assert_eq!(journal.bursts.len(), 1);
+        assert!(
+            journal
+                .error
+                .as_deref()
+                .unwrap()
+                .contains("uncertain append")
+        );
+    }
+    let before = fs::read(&path).unwrap();
+    tokio::time::timeout(Duration::from_secs(1), state.feed_loop(0, Duration::ZERO))
+        .await
+        .unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(String::from_utf8(before).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn feed_keeps_confirmed_rollback_retryable_and_consumes_only_a_durable_success() {
+    use std::io::Write;
+    let (_root, state) = fixture();
+    state.record_incoming(incoming("42")).unwrap();
+    let path = state.root().join("incoming_feed.jsonl");
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .unwrap();
+    let mut journal = state.events.lock().unwrap();
+    journal.feed_enabled = true;
+    let error = journal
+        .flush_settled(Duration::ZERO, |_| {
+            super::super::storage::append_transaction(&mut file, |file| {
+                file.write_all(b"{\"partial\":")?;
+                Err(std::io::Error::other("injected append failure"))
+            })
+        })
+        .unwrap_err();
+    assert!(!error.is::<super::super::storage::AppendUncertain>());
+    assert!(journal.feed_enabled);
+    assert_eq!(journal.bursts.len(), 1);
+    assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+    drop(file);
+    assert_eq!(
+        journal
+            .flush_settled(Duration::ZERO, |value| state.append_event_line(value))
+            .unwrap(),
+        1
+    );
+    assert!(journal.bursts.is_empty());
+    assert!(journal.error.is_none());
+    assert_eq!(fs::read_to_string(path).unwrap().lines().count(), 1);
 }
 
 #[test]

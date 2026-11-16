@@ -476,3 +476,129 @@ async fn preserving_scheduled_mentions_rebuilds_the_outgoing_input_user() {
         json!({"_":"inputMessageEntityMentionName","offset":0,"length":5,"user_id":{"_":"inputUser","user_id":"7","access_hash":"13"}})
     );
 }
+
+#[tokio::test]
+async fn supergroup_history_clearing_uses_the_channel_api_for_both_deletion_scopes() {
+    for revoke in [false, true] {
+        let peer = json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"13"});
+        let api = Api::new(vec![("channels.deleteHistory", updates())]).identity(json!(7), peer);
+        let result = run(
+            &api,
+            "delete_chat_history",
+            json!({"chat_id":7,"max_id":50,"revoke":revoke}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["deleted"], true);
+        assert_eq!(
+            api.calls()[0].1,
+            json!({"channel":{"_":"inputChannel","channel_id":"7","access_hash":"13"},"max_id":50,"for_everyone":revoke})
+        );
+    }
+}
+
+#[tokio::test]
+async fn explicit_forward_id_lists_never_fetch_or_expand_album_neighbors() {
+    let api = Api::new(vec![("messages.forwardMessages", updates())]);
+    run(
+        &api,
+        "forward_message",
+        json!({"from_chat_id":7,"to_chat_id":7,"message_id":[10,20],"expand_album":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(api.calls().len(), 1);
+    assert_eq!(api.calls()[0].1["id"], json!([10, 20]));
+}
+
+#[tokio::test]
+async fn unpin_all_continues_affected_history_until_no_batches_remain() {
+    let api = Api::new(vec![
+        (
+            "messages.unpinAllMessages",
+            json!({"_":"messages.affectedHistory","pts":1,"pts_count":1,"offset":10}),
+        ),
+        (
+            "messages.unpinAllMessages",
+            json!({"_":"messages.affectedHistory","pts":2,"pts_count":1,"offset":0}),
+        ),
+    ]);
+    let result = run(&api, "unpin_all_messages", json!({"chat_id":7}))
+        .await
+        .unwrap();
+    assert_eq!(result["completed"], true);
+    assert_eq!(result["passes"], 2);
+    assert_eq!(api.calls().len(), 2);
+}
+
+#[tokio::test]
+async fn guarded_edits_refuse_changed_text_or_entities_before_any_mutation() {
+    for (text, entities) in [
+        ("changed", json!([])),
+        (
+            "original",
+            json!([{"_":"messageEntityBold","offset":0,"length":8}]),
+        ),
+    ] {
+        let mut current = message(8, text);
+        current["entities"] = entities;
+        let api = Api::new(vec![("messages.getMessages", messages(vec![current]))]);
+        let error=run(&api,"edit_message",json!({"chat_id":7,"message_id":8,"new_text":"replacement","expected_source":{"text":"original","entities":[]}})).await.unwrap_err().to_string();
+        assert!(error.contains("changed"));
+        assert_eq!(api.calls().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn guarded_edit_matches_raw_source_against_normalized_inspection_entities() {
+    let mut current = message(8, "original");
+    current["entities"] =
+        json!([{"_":"messageEntityCustomEmoji","offset":0,"length":8,"document_id":"12345"}]);
+    let api = Api::new(vec![
+        ("messages.getMessages", messages(vec![current])),
+        ("messages.editMessage", updates()),
+    ]);
+    let result=run(&api,"edit_message",json!({"chat_id":7,"message_id":8,"new_text":"replacement","expected_source":{"text":"original","entities":[{"type":"custom_emoji","offset":0,"length":8,"custom_emoji_id":12345,"text":"original"}]}})).await.unwrap();
+    assert_eq!(result, updates());
+    assert_eq!(
+        api.calls()
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["messages.getMessages", "messages.editMessage"]
+    );
+}
+
+#[tokio::test]
+async fn incomplete_unpin_batches_preserve_progress_without_claiming_completion() {
+    let api = Api::new(vec![(
+        "messages.unpinAllMessages",
+        json!({"_":"messages.affectedHistory","pts":1,"pts_count":1,"offset":10}),
+    )]);
+    api.error(
+        "messages.unpinAllMessages",
+        "synthetic lost continuation response",
+    );
+    let result = run(&api, "unpin_all_messages", json!({"chat_id":7}))
+        .await
+        .unwrap();
+    assert_eq!(result["completed"], false);
+    assert_eq!(result["result"]["offset"], 10);
+    assert_eq!(api.calls().len(), 2);
+    let api = Api::new(
+        (0..20)
+            .map(|_| {
+                (
+                    "messages.unpinAllMessages",
+                    json!({"_":"messages.affectedHistory","pts":1,"pts_count":1,"offset":10}),
+                )
+            })
+            .collect(),
+    );
+    let result = run(&api, "unpin_all_messages", json!({"chat_id":7}))
+        .await
+        .unwrap();
+    assert_eq!(result["completed"], false);
+    assert_eq!(result["passes"], 20);
+    assert_eq!(api.calls().len(), 20);
+}

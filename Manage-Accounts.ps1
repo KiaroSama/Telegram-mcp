@@ -342,22 +342,27 @@ function Move-AccountState {
     <#
       Move everything the server stored under a label - secret-chat keys, history
       and files, ghost mode, proxy route, approvals, contact aliases - to another
-      label (telegram_mcp.account_rename). All or nothing; throws on a refusal or a
-      failure, having changed nothing. Returns what moved.
+      label through the native transaction. An optional configuration key joins
+      the same recovery journal. Returns the committed moved-item metadata.
     #>
     param(
         [Parameter(Mandatory)] [string] $From,
-        [Parameter(Mandatory)] [string] $To
+        [Parameter(Mandatory)] [string] $To,
+        [string] $ConfigurationKey
     )
     $native = Get-NativeBinary -Root $PSScriptRoot
     Push-Location -LiteralPath $PSScriptRoot
     try {
-        $output = @(& $native rename-account --state-dir (Get-StateDirectory) --from $From --to $To 2>&1 | ForEach-Object { "$_" })
+        $arguments = @('rename-account', '--state-dir', (Get-StateDirectory), '--from', $From, '--to', $To)
+        if ($ConfigurationKey) { $arguments += @('--env-file', $envPath, '--key', $ConfigurationKey) }
+        $output = @(& $native @arguments 2>&1 | ForEach-Object { "$_" })
         $code = $LASTEXITCODE
     }
     finally { Pop-Location }
     if ($code -ne 0) { throw "Moving stored state failed; the configuration was not renamed: $(($output -join ' ').Trim())" }
-    return $output
+    $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+    if (-not $result.renamed) { throw 'The native account transaction returned no committed rename.' }
+    return @($result.moved)
 }
 
 function Rename-Account {
@@ -409,16 +414,7 @@ function Rename-Account {
     $backup = $null
     $registry = $false
     try {
-        $moved = @(Move-AccountState -From $from -To $to)
-        try {
-            # One write. The value is never read into a variable here - it moves inside
-            # the transform, so nothing in this scope ever holds a session string.
-            $backup = Rename-EnvKey -From $oldKey -To $newKey
-        }
-        catch {
-            $null = Move-AccountState -From $to -To $from
-            throw
-        }
+        $moved = @(Move-AccountState -From $from -To $to -ConfigurationKey $oldKey)
         try {
             $registry = Rename-SecretsEntry -Path (Join-Path $PSScriptRoot 'secrets.md') `
                 -OldKey $oldKey -NewKey $newKey -OldLabel $from -NewLabel $to

@@ -19,6 +19,7 @@ permissions and file-root restrictions apply independently of read-only annotati
 | `telegram-mcp session-validate` | Validate a legacy authorization read from stdin without network |
 | `telegram-mcp session-health --env-file PATH --key KEY --json` | Check an exact configured source via the shared service |
 | `telegram-mcp rename-account --from LABEL --to LABEL` | Recoverable private-state rename |
+| `telegram-mcp rename-account --from LABEL --to LABEL --env-file FILE --key KEY` | Rename the exact configuration key and private state in one recoverable transaction |
 | `telegram-mcp remove-account --account LABEL --env-file FILE --key KEY` | Archive private account records and remove the exact file-owned configuration key |
 | `telegram-mcp serve --http 127.0.0.1:8765` | Authenticated shared `/mcp` service |
 | `telegram-mcp bridge` | Attach a stdio client to the shared service |

@@ -1,12 +1,105 @@
 use super::{config_digest, label_for, read_config, session_validate};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
+use rand::Rng;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::Duration;
 
 fn status(name: &str) -> Value {
     json!({"status":name,"repairable":matches!(name,"unauthorized"|"revoked"|"invalid")})
+}
+
+fn validate_endpoint(endpoint: &url::Url) -> Result<()> {
+    let loopback = match endpoint.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain("localhost")) => true,
+        _ => false,
+    };
+    if !matches!(endpoint.scheme(), "http" | "https")
+        || !loopback
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.fragment().is_some()
+    {
+        bail!("Private service discovery must name a loopback HTTP or HTTPS endpoint");
+    }
+    Ok(())
+}
+
+/// Authenticate a bounded health response without sending any reusable bearer.
+pub(crate) async fn authenticated_health_request(
+    endpoint: url::Url,
+    discovery: &Value,
+) -> Result<Value> {
+    validate_endpoint(&endpoint)?;
+    if discovery["health_protocol"].as_u64() != Some(2) {
+        bail!("Shared service health protocol is unverified; restart its owned service");
+    }
+    let token = discovery["token"]
+        .as_str()
+        .filter(|token| {
+            (32..=4096).contains(&token.len())
+                && token.bytes().all(|byte| (33..=126).contains(&byte))
+        })
+        .context("Invalid service authentication token")?;
+    let nonce = rand::rng()
+        .random::<[u8; 32]>()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let mut target = endpoint.path().to_owned();
+    if let Some(query) = endpoint.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+    let proof = crate::server::health_request_proof(token, &nonce, &target);
+    let client = crate::server::local_http_client(discovery["certificate_pem"].as_str())?;
+    tokio::time::timeout(Duration::from_secs(25), async {
+        let mut response = client
+            .get(endpoint)
+            .timeout(Duration::from_secs(25))
+            .header("x-telegram-health-nonce", &nonce)
+            .header("x-telegram-health-proof", proof)
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        let response_proof = response
+            .headers()
+            .get("x-telegram-health-proof")
+            .and_then(|value| value.to_str().ok())
+            .context("Health response has no authentication proof")?
+            .to_owned();
+        const LIMIT: usize = 65_536;
+        if response
+            .content_length()
+            .is_some_and(|length| length > LIMIT as u64)
+        {
+            bail!("Health response exceeds its byte limit");
+        }
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len() > LIMIT.saturating_sub(body.len()) {
+                bail!("Health response exceeds its byte limit");
+            }
+            body.extend_from_slice(&chunk);
+        }
+        crate::server::verify_health_response(
+            token,
+            &nonce,
+            &target,
+            status,
+            &body,
+            &response_proof,
+        )?;
+        if !(200..300).contains(&status) {
+            bail!("Authenticated health service returned a failure status");
+        }
+        Ok(serde_json::from_slice(&body)?)
+    })
+    .await
+    .context("Health request exceeded its deadline")?
 }
 
 pub async fn session_health(env_file: &Path, key: &str) -> Result<Value> {
@@ -49,30 +142,17 @@ pub async fn session_health_with_state(state: &State, env_file: &Path, key: &str
         answer["config_digest"] = json!(digest);
         return Ok(answer);
     }
+    if discovery["health_protocol"].as_u64() != Some(2) {
+        let mut answer = status("unknown");
+        answer["config_digest"] = json!(digest);
+        return Ok(answer);
+    }
     let mut endpoint = url::Url::parse(
         discovery["url"]
             .as_str()
             .context("Service discovery has no URL")?,
     )?;
-    let loopback = match endpoint.host() {
-        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-        _ => false,
-    };
-    if !matches!(endpoint.scheme(), "http" | "https")
-        || !loopback
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.fragment().is_some()
-    {
-        bail!("Private service discovery must name a loopback HTTP or HTTPS endpoint");
-    }
-    let token = discovery["token"]
-        .as_str()
-        .context("Service discovery has no authentication token")?;
-    if token.len() < 32 || token.chars().any(|c| c.is_control() || c.is_whitespace()) {
-        bail!("Invalid service authentication token");
-    }
+    validate_endpoint(&endpoint)?;
     endpoint.set_path("/health");
     endpoint.set_query(None);
     endpoint
@@ -80,25 +160,8 @@ pub async fn session_health_with_state(state: &State, env_file: &Path, key: &str
         .append_pair("account", &label)
         .append_pair("config_key", key)
         .append_pair("config_digest", &digest);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(25))
-        .build()?;
     let result = async {
-        let response = client.get(endpoint).bearer_auth(token).send().await?;
-        let response = response.error_for_status()?;
-        if response
-            .content_length()
-            .is_some_and(|length| length > 65_536)
-        {
-            bail!("Health response exceeds its byte limit");
-        }
-        let bytes = response.bytes().await?;
-        if bytes.len() > 65_536 {
-            bail!("Health response exceeds its byte limit");
-        }
-        let answer: Value = serde_json::from_slice(&bytes)?;
+        let answer = authenticated_health_request(endpoint, &discovery).await?;
         let name = answer["status"]
             .as_str()
             .context("Health response has no authorization status")?;

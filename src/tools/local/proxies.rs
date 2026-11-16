@@ -170,14 +170,16 @@ pub fn parse_proxy(input: &str) -> Result<Proxy> {
             bail!("Invalid MTProto proxy secret length or prefix");
         }
     }
-    Ok(Proxy {
+    let proxy = Proxy {
         kind,
         host,
         port,
         secret,
         username,
         password,
-    })
+    };
+    crate::proxy::validate(&proxy)?;
+    Ok(proxy)
 }
 
 fn decode_component(text: &str) -> Result<String> {

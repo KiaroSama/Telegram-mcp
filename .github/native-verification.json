@@ -62,7 +62,11 @@
       "evidence::tests::junit_rejects_duplicate_case_identity",
       "evidence::tests::junit_retains_skipped_case_without_claiming_execution",
       "status::tests::status_rejects_ancestor_commit_and_stale_attempt",
-      "status::tests::status_cannot_report_skipped_cancelled_or_running_as_success"
+      "status::tests::status_cannot_report_skipped_cancelled_or_running_as_success",
+      "evidence::tests::both_architectures_require_complete_native_and_renderer_identity_evidence",
+      "evidence::tests::release_package_refuses_an_image_with_another_native_architecture",
+      "status::tests::concurrent_push_and_pull_request_statuses_cannot_overwrite_each_other",
+      "coverage::tests::coverage_refuses_stale_object_lines_outside_current_source"
     ],
     "advanced_api": [
       "polls::minimal_poll_results_are_refetched",

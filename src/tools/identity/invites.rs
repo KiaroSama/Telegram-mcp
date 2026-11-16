@@ -64,6 +64,51 @@ fn expiry(a: &Value) -> Result<Option<i64>> {
     );
     Ok(Some(stamp))
 }
+pub(super) fn qr_in(state: &crate::state::State, a: &Value) -> Result<Value> {
+    let link = text(a, "link")?;
+    ensure!(!link.trim().is_empty(), "link must not be empty");
+    let code = qrcode::QrCode::new(link.as_bytes())?;
+    let modules = code.width();
+    let scale = 8;
+    let border = 4;
+    let edge = ((modules + border * 2) * scale) as u32;
+    let mut image = image::GrayImage::from_pixel(edge, edge, image::Luma([255]));
+    for y in 0..modules {
+        for x in 0..modules {
+            if code[(x, y)] == qrcode::Color::Dark {
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        image.put_pixel(
+                            ((x + border) * scale + dx) as u32,
+                            ((y + border) * scale + dy) as u32,
+                            image::Luma([0]),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(image).write_to(&mut bytes, image::ImageFormat::Png)?;
+    use base64::Engine;
+    let bytes = bytes.into_inner();
+    let directory = state.default_downloads()?;
+    std::fs::create_dir_all(&directory)?;
+    let path = state.resolve_file(
+        &directory.join(format!("invite-{:032x}.png", rand::random::<u128>())),
+        crate::state::FileAccess::Write,
+    )?;
+    let display = path
+        .to_str()
+        .context("The QR destination must be representable as UTF-8")?
+        .to_owned();
+    crate::transfer::publish_bytes(state, &path, &bytes)?;
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    Ok(
+        json!({"path":display,"content":[{"type":"image","data":data,"mimeType":"image/png"}],"metadata":{"link":link,"path":display}}),
+    )
+}
+
 pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     if name == "import_chat_invite" || name == "join_chat_by_link" {
         let raw = text(
@@ -100,36 +145,8 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             .await;
     }
     if name == "get_invite_link_qr" {
-        let link = text(a, "link")?;
-        ensure!(!link.trim().is_empty(), "link must not be empty");
-        let code = qrcode::QrCode::new(link.as_bytes())?;
-        let modules = code.width();
-        let scale = 8;
-        let border = 4;
-        let edge = ((modules + border * 2) * scale) as u32;
-        let mut image = image::GrayImage::from_pixel(edge, edge, image::Luma([255]));
-        for y in 0..modules {
-            for x in 0..modules {
-                if code[(x, y)] == qrcode::Color::Dark {
-                    for dy in 0..scale {
-                        for dx in 0..scale {
-                            image.put_pixel(
-                                ((x + border) * scale + dx) as u32,
-                                ((y + border) * scale + dy) as u32,
-                                image::Luma([0]),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::ImageLuma8(image).write_to(&mut bytes, image::ImageFormat::Png)?;
-        use base64::Engine;
-        let data = base64::engine::general_purpose::STANDARD.encode(bytes.into_inner());
-        return Ok(
-            json!({"content":[{"type":"image","data":data,"mimeType":"image/png"}],"metadata":{"link":link}}),
-        );
+        let state = crate::state::State::global()?;
+        return qr_in(&state, a);
     }
     let expiry = expiry(a)?;
     let usage = a

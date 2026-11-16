@@ -140,6 +140,11 @@ try {
                 $canonical = (& $native state-path --config $selected | Select-Object -Last 1).Trim()
                 if ((Get-StateDirectory) -ne $canonical) { throw 'State discovery ignored or cached the wrong configuration selector.' }
             }
+            $ServerArguments = @()
+            $envPath = Join-Path $Fixture 'first.env'
+            $env:TELEGRAM_ENV_FILE = Join-Path $Fixture 'second.env'
+            $canonical = (& $native state-path --config $envPath | Select-Object -Last 1).Trim()
+            if ((Get-StateDirectory) -ne $canonical) { throw 'Manager discovery ignored its explicit file in favor of a global environment selector.' }
         }
         finally { $env:TELEGRAM_STATE_DIR = $oldState; $env:TELEGRAM_ENV_FILE = $oldSelector }
     } $projectRoot $launcher $stateLookupRoot
@@ -307,7 +312,9 @@ $nativeFixture = Join-Path ([IO.Path]::GetTempPath()) ("tg-native-" + [guid]::Ne
 [IO.File]::WriteAllText($nativeFixture, @'
 param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $Arguments)
 if ($Arguments.Count -and $Arguments[0] -eq 'state-path') {
-    [Console]::Out.WriteLine((Join-Path $env:XDG_STATE_HOME 'telegram-mcp'))
+    # A .ps1 fixture runs in-process: use its success stream so the caller can
+    # capture it as it captures the real native executable's stdout.
+    Write-Output (Join-Path $env:XDG_STATE_HOME 'telegram-mcp')
     exit 0
 }
 if ($env:TG_TEST_EXPECT_LOG_DISABLED -eq '1' -and $env:TELEGRAM_MCP_LOG_FILE -ne 'off') {
@@ -339,6 +346,14 @@ try {
     $output = & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $scripts[0] 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "Launcher exited with $LASTEXITCODE`: $($output -join [Environment]::NewLine)"
+    }
+    if (-not (Test-Path -LiteralPath $logsDirectory -PathType Container)) {
+        $context = ($output | ForEach-Object { "$_" }) -join [Environment]::NewLine
+        $context = $context.Replace($stateHome, '<fixture-state>').Replace($projectRoot, '<repository>')
+        if ($env:USERPROFILE) { $context = $context.Replace($env:USERPROFILE, '<user>') }
+        $context = $context -replace '(?i)(token|password|session_string|api_hash)\s*[:=]\s*\S+', '$1=<redacted>'
+        $context = $context.Substring(0, [Math]::Min(4096, $context.Length))
+        throw "The launcher did not create its fixture log directory. Child output: $context"
     }
     $newLogs = @(
         Get-ChildItem -LiteralPath $logsDirectory -Filter 'start-mcp_*.log' -File |
@@ -476,7 +491,7 @@ finally {
 
 # Takeover (spec 013): a launcher a person opens stops the copy already running, and
 # only this checkout's copy. Proved against the shipped functions on real processes:
-# two dummies that name the native server executable under two different roots, the way a real copy does.
+# two PowerShell dummies that name the launcher under two different roots.
 $takeoverRoot = Join-Path ([IO.Path]::GetTempPath()) ("tg-takeover-" + [guid]::NewGuid())
 $otherRoot = Join-Path ([IO.Path]::GetTempPath()) ("tg-other-" + [guid]::NewGuid())
 $dummies = @()
@@ -490,7 +505,7 @@ try {
     $shell = (Get-Process -Id $PID).Path
     foreach ($root in $takeoverRoot, $otherRoot) {
         $dummies += Start-Process -FilePath $shell -WindowStyle Hidden -PassThru -ArgumentList (
-            "-NoProfile -NonInteractive -Command Start-Sleep -Seconds 120 # $root\telegram-mcp.exe")
+            "-NoProfile -NonInteractive -Command Start-Sleep -Seconds 120 # $root\start-mcp.ps1")
     }
     $mine, $theirs = $dummies
 
