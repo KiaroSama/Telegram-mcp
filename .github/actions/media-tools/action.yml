@@ -73,7 +73,7 @@ runs:
           $binary = (Get-Command $program -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
           if ($IsMacOS) {
             $slice = if ($architecture -eq 'ARM64') { 'arm64' } else { 'x86_64' }
-            & lipo -verify_arch $slice $binary
+            & lipo $binary -verify_arch $slice
             if ($LASTEXITCODE -ne 0) { throw "Native $program Mach-O architecture mismatch." }
           } else {
             $reader = [IO.BinaryReader]::new([IO.File]::OpenRead($binary))

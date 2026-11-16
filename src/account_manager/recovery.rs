@@ -1,6 +1,9 @@
 //! Recovery for a new account's session/configuration two-file publication.
 use super::{
-    config::{ConfigWriteGuard, config_write_lock, file_values},
+    config::{
+        ConfigWriteGuard, Publication, config_write_lock, confirm_configuration, file_values,
+        sync_directory,
+    },
     config_digest,
     login::lock_stage,
 };
@@ -33,6 +36,11 @@ fn same_authorization(current: &Value, installed: &Value) -> bool {
         && key(current) == key(installed)
 }
 
+pub(super) struct RecoveryOutcome {
+    pub committed: bool,
+    pub durable: bool,
+}
+
 /// Caller holds the selected configuration byte lock, both account leases and
 /// state_lock. Recovery never restores a whole .env revision over newer writes.
 pub(super) fn recover_locked(
@@ -40,7 +48,7 @@ pub(super) fn recover_locked(
     name: &str,
     journal: &Value,
     config: &ConfigWriteGuard,
-) -> Result<bool> {
+) -> Result<RecoveryOutcome> {
     if state
         .root()
         .join("account-rename-transaction.json")
@@ -128,12 +136,25 @@ pub(super) fn recover_locked(
     if !staged.is_null() {
         std::fs::remove_file(state.root().join(stage_name))?;
     }
+    sync_directory(state.root())
+        .context("Login recovery cleanup durability is unconfirmed; retain its private intent")?;
+    // Publication may already have happened. Retain intent until its selected
+    // configuration directory is durable, without undoing the visible commit.
+    if confirm_configuration(&config.path) == Publication::Uncertain {
+        return Ok(RecoveryOutcome {
+            committed,
+            durable: false,
+        });
+    }
     // Both files now describe a completed commit or a completed rollback.
     // Failing to prune its marker must not report that committed files rolled back.
     if std::fs::remove_file(state.root().join(name)).is_err() {
         tracing::warn!("Account login completed; its private recovery marker could not be removed");
     }
-    Ok(committed)
+    Ok(RecoveryOutcome {
+        committed,
+        durable: true,
+    })
 }
 
 pub fn recover_logins(state: &State) -> Result<()> {
@@ -173,7 +194,11 @@ pub fn recover_logins(state: &State) -> Result<()> {
         if journal != initial {
             bail!("Login recovery marker changed while acquiring ownership");
         }
-        recover_locked(state, &name, &journal, &config)?;
+        if !recover_locked(state, &name, &journal, &config)?.durable {
+            bail!(
+                "Login recovery is applied; configuration durability is unconfirmed, so its private intent is retained"
+            );
+        }
     }
     Ok(())
 }

@@ -293,7 +293,26 @@ async fn global(api: &dyn Telegram, a: &Value) -> Result<Value> {
             }
         };
         let batch = result_messages(&response);
-        let next = global_cursor(api, a, &req, &response).await?;
+        let next =
+            match tokio::time::timeout_at(deadline, global_cursor(api, a, &req, &response)).await {
+                Ok(next) => next?,
+                Err(_) => {
+                    response["partial"] = json!(true);
+                    response["exhausted"] = json!(false);
+                    response["next_cursor"] = Value::Null;
+                    response["cursor_warning"] =
+                        json!("Cursor resolution exceeded the search deadline");
+                    if remaining > 0 {
+                        // These matches precede the requested legacy page. Retain
+                        // them without presenting them as that page's results.
+                        response["fetched_messages"] = response["messages"].take();
+                        response["messages"] = json!([]);
+                        response["legacy_page_reached"] = json!(false);
+                        response["legacy_page_advance_remaining"] = json!(remaining);
+                    }
+                    return Ok(response);
+                }
+            };
         if remaining == 0 || batch.is_empty() {
             response["exhausted"] = json!(batch.is_empty());
             response["partial"] = json!(false);
@@ -411,10 +430,11 @@ async fn bounded_sender_media(
     let mut offset = 0;
     let mut exhausted = false;
     let mut stalled = false;
-    while scanned < 2500 && collected.len() < limit as usize {
+    let mut own_peer = (sender["_"] == "inputPeerSelf").then(|| expected_sender.clone());
+    'scan: while scanned < 2500 && collected.len() < limit as usize {
         let wanted = (2500 - scanned).min(100);
         let mut request = history_request(peer.clone(), wanted as i64, offset, 0);
-        let method = if let Some(topic) = topic {
+        let method = if let Some(topic) = topic.filter(|topic| *topic != 1) {
             request["msg_id"] = json!(topic);
             "messages.getReplies"
         } else {
@@ -445,9 +465,9 @@ async fn bounded_sender_media(
             } else {
                 1
             };
-            if topic
-                .is_some_and(|topic| actual_topic != topic && message["id"].as_i64() != Some(topic))
-            {
+            if topic.is_some_and(|topic| {
+                actual_topic != topic && !(topic > 1 && message["id"].as_i64() == Some(topic))
+            }) {
                 continue;
             }
             let sent_by = message
@@ -456,9 +476,31 @@ async fn bounded_sender_media(
                 .or_else(|| {
                     (!message["out"].as_bool().unwrap_or(false)).then_some(&message["peer_id"])
                 });
-            let implicit_self = sent_by.is_none()
-                && sender["_"] == "inputPeerSelf"
-                && message["out"].as_bool().unwrap_or(false);
+            let implicit_self = if sent_by.is_none()
+                && expected_sender["_"] == "peerUser"
+                && message["out"].as_bool().unwrap_or(false)
+            {
+                if own_peer.is_none() {
+                    // Resolve self only when an outgoing message omits its
+                    // sender, and reuse it for numeric and username selectors.
+                    own_peer = Some(
+                        match tokio::time::timeout_at(
+                            deadline,
+                            requested_peer(api, &json!({"_":"inputPeerSelf"})),
+                        )
+                        .await
+                        {
+                            Ok(peer) => peer?,
+                            Err(_) => break 'scan,
+                        },
+                    );
+                }
+                own_peer
+                    .as_ref()
+                    .is_some_and(|peer| same_peer(peer, &expected_sender))
+            } else {
+                false
+            };
             if !implicit_self && !sent_by.is_some_and(|actual| same_peer(actual, &expected_sender))
             {
                 continue;

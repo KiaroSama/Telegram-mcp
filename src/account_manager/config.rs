@@ -11,6 +11,85 @@ static PROCESS: OnceLock<BTreeMap<String, String>> = OnceLock::new();
 static SOURCE: OnceLock<PathBuf> = OnceLock::new();
 static ACCEPTED: Mutex<bool> = Mutex::new(false);
 
+/// The replacement is visible in both cases; only Durable permits discarding
+/// recovery intent that spans the configuration and another filesystem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+pub(super) enum Publication {
+    Durable,
+    Uncertain,
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAILED_SYNC: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+struct SyncFailureGuard {
+    previous: Option<PathBuf>,
+    _thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+#[cfg(test)]
+impl Drop for SyncFailureGuard {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        let _ = FAILED_SYNC.try_with(|slot| slot.replace(previous));
+    }
+}
+/// A scoped, thread-local fault at one configuration publication or directory sync.
+#[cfg(test)]
+pub(crate) fn fail_configuration_sync_for_test(path: &Path) -> impl Drop {
+    let path = std::path::absolute(path).expect("Synthetic configuration path must be absolute");
+    let previous = FAILED_SYNC.with(|slot| slot.replace(Some(path)));
+    SyncFailureGuard {
+        previous,
+        _thread: std::marker::PhantomData,
+    }
+}
+
+pub(super) fn confirm_configuration(path: &Path) -> Publication {
+    let sync = || -> std::io::Result<()> {
+        check_sync_fault(path)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("Configuration source has no parent"))?;
+        sync_directory(parent)
+    };
+    if sync().is_ok() {
+        Publication::Durable
+    } else {
+        tracing::warn!(
+            "Configuration replacement is visible; directory durability remains unconfirmed"
+        );
+        Publication::Uncertain
+    }
+}
+
+fn check_sync_fault(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if FAILED_SYNC.with(|slot| slot.borrow().as_deref() == Some(path)) {
+        return Err(std::io::Error::other(
+            "Synthetic account directory sync failure",
+        ));
+    }
+    let _ = path;
+    Ok(())
+}
+
+pub(super) fn sync_directory(path: &Path) -> std::io::Result<()> {
+    check_sync_fault(path)?;
+    #[cfg(unix)]
+    std::fs::File::open(path)?.sync_all()?;
+    Ok(())
+}
+
+fn process_values() -> BTreeMap<String, String> {
+    PROCESS
+        .get()
+        .cloned()
+        .unwrap_or_else(|| std::env::vars().collect())
+}
+
 pub fn select_source(path: &Path) -> Result<()> {
     let absolute = if path.is_absolute() {
         path.to_owned()
@@ -134,10 +213,7 @@ pub(super) fn file_values(path: &Path) -> Result<BTreeMap<String, String>> {
 
 fn read_config_revision(path: &Path) -> Result<(ConfigSnapshot, bool)> {
     let (raw, present) = read_bytes(path)?;
-    let process = PROCESS
-        .get()
-        .cloned()
-        .unwrap_or_else(|| std::env::vars().collect());
+    let process = process_values();
     let text = std::str::from_utf8(&raw).context("Account configuration must be UTF-8")?;
     let values = parse_config(text, &process)?;
     let process_keys = process
@@ -353,7 +429,7 @@ pub fn write_env_value(
     expected_digest: Option<&str>,
 ) -> Result<()> {
     let guard = config_write_lock(path)?;
-    write_env_value_locked(&guard, key, value, expected_digest)
+    write_env_value_locked(&guard, key, value, expected_digest).map(|_| ())
 }
 
 pub(super) fn write_env_value_locked(
@@ -361,7 +437,7 @@ pub(super) fn write_env_value_locked(
     key: &str,
     value: &str,
     expected_digest: Option<&str>,
-) -> Result<()> {
+) -> Result<Publication> {
     rewrite_env_locked(guard, key, Some(value), expected_digest)
 }
 
@@ -369,7 +445,7 @@ pub(super) fn remove_env_value_locked(
     guard: &ConfigWriteGuard,
     key: &str,
     expected_digest: &str,
-) -> Result<()> {
+) -> Result<Publication> {
     rewrite_env_locked(guard, key, None, Some(expected_digest))
 }
 
@@ -378,7 +454,26 @@ pub(super) fn rename_env_key_locked(
     key: &str,
     target: &str,
     expected_digest: &str,
+) -> Result<Publication> {
+    let (bytes, result) = prepare_env_key_rename(guard, key, target, expected_digest)?;
+    persist_configuration(&guard.path, &bytes, &result)
+}
+
+pub(super) fn validate_env_key_rename(
+    guard: &ConfigWriteGuard,
+    key: &str,
+    target: &str,
+    expected_digest: &str,
 ) -> Result<()> {
+    prepare_env_key_rename(guard, key, target, expected_digest).map(|_| ())
+}
+
+fn prepare_env_key_rename(
+    guard: &ConfigWriteGuard,
+    key: &str,
+    target: &str,
+    expected_digest: &str,
+) -> Result<(Vec<u8>, String)> {
     label_for(key)?;
     label_for(target)?;
     let metadata = guard.path.symlink_metadata()?;
@@ -395,6 +490,7 @@ pub(super) fn rename_env_key_locked(
     }
     let mut result = String::new();
     for record in logical_records(text)? {
+        let record = rename_references(record, key, target)?;
         let body = record.trim_start_matches('\u{feff}').trim_start();
         let candidate = body.strip_prefix("export ").unwrap_or(body).trim_start();
         if candidate
@@ -408,10 +504,99 @@ pub(super) fn rename_env_key_locked(
             result.push_str(target);
             result.push_str(&candidate[key.len()..]);
         } else {
-            result.push_str(record);
+            result.push_str(&record);
         }
     }
-    persist_configuration(&guard.path, &bytes, &result)
+    let process = process_values();
+    let before = parse_config(text, &process)?;
+    let after = parse_config(&result, &process)?;
+    if before.len() != after.len()
+        || before.iter().any(|(name, value)| {
+            after.get(if name == key { target } else { name.as_str() }) != Some(value)
+        })
+    {
+        bail!(
+            "Configuration rename would change resolved settings; no state or configuration was changed"
+        );
+    }
+    Ok((bytes, result))
+}
+
+fn rename_references(record: &str, key: &str, target: &str) -> Result<String> {
+    let Some(equal) = record.find('=') else {
+        return Ok(record.to_owned());
+    };
+    if record
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .starts_with('#')
+    {
+        return Ok(record.to_owned());
+    }
+    let mut result = record[..equal + 1].to_owned();
+    let value = &record[equal + 1..];
+    let mut index = 0;
+    let mut started = false;
+    let mut quote = None;
+    let mut previous = None;
+    while index < value.len() {
+        let c = value[index..].chars().next().expect("Character boundary");
+        let next_index = index + c.len_utf8();
+        let first = !started && !c.is_whitespace();
+        if first {
+            started = true;
+        }
+        if c == '#' && quote.is_none() && (first || previous.is_some_and(char::is_whitespace)) {
+            result.push_str(&value[index..]);
+            break;
+        }
+        if first && matches!(c, '\'' | '"') {
+            quote = Some(c);
+        } else if quote == Some(c) {
+            quote = None;
+        } else if c == '\\'
+            && quote.is_some()
+            && let Some(next) = value[next_index..].chars().next()
+        {
+            let escaped = next == '\\'
+                || next == '\''
+                || quote == Some('"')
+                    && matches!(next, '"' | 'a' | 'b' | 'f' | 'n' | 'r' | 't' | 'v');
+            if escaped {
+                result.push(c);
+                result.push(next);
+                previous = Some(next);
+                index = next_index + next.len_utf8();
+                continue;
+            }
+        }
+        if c == '$' && quote != Some('\'') && value[next_index..].starts_with('{') {
+            let expression_start = next_index + 1;
+            let end = value[expression_start..]
+                .find('}')
+                .map(|end| end + expression_start)
+                .context("Incomplete configuration reference")?;
+            let expression = &value[expression_start..end];
+            let name = expression
+                .split_once(":-")
+                .map_or(expression, |(name, _)| name);
+            result.push_str("${");
+            if name == key {
+                result.push_str(target);
+                result.push_str(&expression[key.len()..]);
+            } else {
+                result.push_str(expression);
+            }
+            result.push('}');
+            previous = Some('}');
+            index = end + 1;
+            continue;
+        }
+        result.push(c);
+        previous = Some(c);
+        index = next_index;
+    }
+    Ok(result)
 }
 
 fn rewrite_env_locked(
@@ -419,7 +604,7 @@ fn rewrite_env_locked(
     key: &str,
     value: Option<&str>,
     expected_digest: Option<&str>,
-) -> Result<()> {
+) -> Result<Publication> {
     let path = &guard.path;
     label_for(key)?;
     if value.is_some_and(|value| value.contains(['\r', '\n', '\0'])) {
@@ -489,7 +674,7 @@ fn rewrite_env_locked(
     persist_configuration(path, &bytes, &result)
 }
 
-fn persist_configuration(path: &Path, bytes: &[u8], result: &str) -> Result<()> {
+fn persist_configuration(path: &Path, bytes: &[u8], result: &str) -> Result<Publication> {
     let parent = path
         .parent()
         .context("Configuration file has no parent directory")?;
@@ -504,12 +689,12 @@ fn persist_configuration(path: &Path, bytes: &[u8], result: &str) -> Result<()> 
             "{backup_prefix}{}",
             chrono::Utc::now().format("%Y-%m-%d_%H-%M-%S_%f_UTC")
         ));
-        private_replace(&backup, bytes, false)?;
+        let _ = private_replace(&backup, bytes, false)?;
     }
-    private_replace(path, result.as_bytes(), true)?;
+    let publication = private_replace(path, result.as_bytes(), true)?;
     // Backups hold complete logins, so keep only the newest recoverable revision.
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return Ok(());
+        return Ok(publication);
     };
     let mut backups = entries
         .filter_map(|entry| entry.ok())
@@ -526,10 +711,10 @@ fn persist_configuration(path: &Path, bytes: &[u8], result: &str) -> Result<()> 
     for entry in backups.into_iter().take(excess) {
         let _ = std::fs::remove_file(entry.path());
     }
-    Ok(())
+    Ok(publication)
 }
 
-fn private_replace(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
+fn private_replace(path: &Path, bytes: &[u8], replace: bool) -> Result<Publication> {
     let parent = path.parent().context("Private file has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     crate::state::storage::restrict(temporary.path(), false)?;
@@ -544,14 +729,5 @@ fn private_replace(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
             .persist_noclobber(path)
             .map_err(|_| anyhow::anyhow!("Cannot preserve account configuration backup"))?;
     }
-    #[cfg(unix)]
-    if std::fs::File::open(parent)
-        .and_then(|file| file.sync_all())
-        .is_err()
-    {
-        tracing::warn!(
-            "Configuration replacement committed; directory durability could not be confirmed"
-        );
-    }
-    Ok(())
+    Ok(confirm_configuration(path))
 }

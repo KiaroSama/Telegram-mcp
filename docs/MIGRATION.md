@@ -128,10 +128,11 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A clean post-review Linux checkpoint passed all **1,821 tests**, with
+identical code. A clean post-review Linux checkpoint passed all **1,839 tests**, with
 zero failures or skips and actual rlottie rendering required. Unique physical-line
-coverage exceeded **87% reviewed core (18,823 executable source lines)** and **85% all
-production (26,544 executable source lines)**. Exact covered-line counts remain in the
+coverage measured **88.03% reviewed core (16,767 of 19,046 executable source lines)**
+and **85.52% all production (22,892 of 26,767 executable source lines)**. Exact source
+fingerprints and original test-run identifiers remain in the
 individual reports. This is single-platform evidence; the combined CI gate requires
 actual reports from every configured OS/architecture leg. Reviewed inventories for
 other targets are expectations until those targets execute them. Raw LLVM JSON region
@@ -150,9 +151,18 @@ failure; upstream fixed argument expansion in
 [PR 533](https://github.com/taiki-e/cargo-llvm-cov/pull/533), commit
 `dc927946e73a6ecf18b797f2995490e922662387`. The workflow fallback places the same
 instrumentation flags inside Cargo's response file and still requires actual profiles.
-The Windows ARM64 leg additionally runs a direct native Rust 1.100 compiler/profile
-merge/report probe using its bundled LLVM tools. Its actual outputs are retained; a
-release build alone cannot establish that instrumentation works on a new target.
+On native Windows ARM64, Rust 1.100 with the default MSVC linker produced real profiles
+that its bundled LLVM rejected with `symbol name is empty`, matching the symptom in
+[rust-lang/rust#150123](https://github.com/rust-lang/rust/issues/150123).
+CI probes both that linker and the same pinned host toolchain's bundled `rust-lld`,
+retaining their binaries, raw profiles and diagnostics. A linker is accepted only
+after two real native processes, profile merging, positive function counters and
+positive executable/covered lines for the actual smoke source all succeed. The
+accepted linker and hash are then required for coverage, case-recorder and documentation
+builds; bundled LLD uses the stable `lld-link` flavor. Release packaging uses the normal
+linker before the accepted coverage configuration is applied. If neither linker passes,
+the leg fails. A release build alone cannot
+establish that instrumentation works on a new target.
 
 
 ## Deliberate limits and migration cautions

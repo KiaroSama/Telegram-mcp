@@ -295,6 +295,141 @@ fn service(reply: Value, policy: access::AccessPolicy) -> (Mcp, Arc<Probe>, Temp
     )
 }
 
+static QR_TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[test]
+fn local_qr_yields_before_rendering_and_publishes_without_a_telegram_account() {
+    use base64::Engine;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let _serial = QR_TEST_SERIAL.lock().await;
+        let (mcp, api, _temporary) = service(Value::Null, access::AccessPolicy::default());
+        mcp.runtime.accounts.lock().await.clear();
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = tokio::sync::oneshot::channel();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = blocked.recv();
+        });
+        running.await.unwrap();
+        let link = "https://t.me/+owned-qr-publication";
+        let mut operation = Box::pin(mcp.execute("get_invite_link_qr", json!({"link":link})));
+        assert!(
+            futures_util::poll!(operation.as_mut()).is_pending(),
+            "QR rendering and synchronous publication ran inside the first async poll"
+        );
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(10), operation)
+            .await
+            .unwrap()
+            .unwrap();
+        let path = std::path::Path::new(result["path"].as_str().unwrap());
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(result["content"][0]["data"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(result["content"][0]["mimeType"], "image/png");
+        assert_eq!(result["metadata"]["link"], link);
+        assert_eq!(result["metadata"]["path"], result["path"]);
+        assert!(path.starts_with(mcp.runtime.state.default_downloads().unwrap()));
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        let image = image::load_from_memory(&bytes).unwrap();
+        assert_eq!(image.width(), image.height());
+        assert!(mcp.runtime.accounts.lock().await.is_empty());
+        assert!(api.calls.lock().unwrap().is_empty());
+    });
+}
+
+#[test]
+fn local_qr_cancelled_callers_retain_bounded_admission_until_owned_publication_finishes() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .start_paused(true)
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let _serial = QR_TEST_SERIAL.lock().await;
+        let (mcp, api, _temporary) = service(Value::Null, access::AccessPolicy::default());
+        mcp.runtime.accounts.lock().await.clear();
+        let capacity = QR_WORKERS.available_permits();
+        assert!(capacity > 0);
+        let (release, blocked) = std::sync::mpsc::channel::<()>();
+        let (started, running) = tokio::sync::oneshot::channel();
+        // The gate sender lives inside this future: every panic drops it before
+        // Runtime shutdown waits for the worker, so no assertion can deadlock.
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = blocked.recv();
+        });
+        running.await.unwrap();
+        let mut requests = (0..capacity)
+            .map(|index| {
+                Box::pin(mcp.execute(
+                    "get_invite_link_qr",
+                    json!({"link":format!("https://t.me/+cancelled{index}")}),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for request in &mut requests {
+            assert!(futures_util::poll!(request.as_mut()).is_pending());
+        }
+        assert_eq!(QR_WORKERS.available_permits(), 0);
+        drop(requests);
+        assert!(
+            QR_WORKERS.try_acquire().is_err(),
+            "Cancelling callers released admission while their publication work was queued"
+        );
+
+        let mut waiting = Box::pin(mcp.execute(
+            "get_invite_link_qr",
+            json!({"link":"https://t.me/+must-not-start"}),
+        ));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        tokio::time::advance(Duration::from_secs(56)).await;
+        let error = waiting.await.unwrap_err();
+        assert!(error.to_string().contains("Tool exceeded its time budget"));
+        assert!(QR_WORKERS.try_acquire().is_err());
+
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let _completed = loop {
+            if let Ok(permits) = QR_WORKERS.try_acquire_many(capacity as u32) {
+                break permits;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "QR workers retained admission after their owned work completed"
+            );
+            tokio::task::yield_now().await;
+        };
+        let paths = std::fs::read_dir(mcp.runtime.state.default_downloads().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths.len(),
+            capacity,
+            "A timed-out waiter dispatched extra work or a cancelled worker lost its publication"
+        );
+        for path in paths {
+            assert_eq!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("png"),
+                "A QR worker orphaned its staging file"
+            );
+            image::load_from_memory(&std::fs::read(path).unwrap()).unwrap();
+        }
+        assert!(mcp.runtime.accounts.lock().await.is_empty());
+        assert!(api.calls.lock().unwrap().is_empty());
+    });
+}
+
 #[tokio::test]
 async fn dropping_plaintext_serve_cancels_already_initialized_mcp_sessions() {
     use rmcp::transport::{

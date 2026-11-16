@@ -1,5 +1,87 @@
 use super::support::*;
 use serde_json::{Value, json};
+
+struct DelayedApi {
+    api: Api,
+    search_delay: u64,
+    cursor_delay: u64,
+    self_delay: u64,
+}
+#[async_trait::async_trait]
+impl telegram_mcp::backend::Telegram for DelayedApi {
+    async fn invoke(&self, method: &str, args: Value) -> anyhow::Result<Value> {
+        let delay = match method {
+            "messages.searchGlobal" => self.search_delay,
+            "users.getUsers" => self.self_delay,
+            _ => 0,
+        };
+        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+        self.api.invoke(method, args).await
+    }
+    async fn resolve_peer(&self, input: &Value) -> anyhow::Result<Value> {
+        tokio::time::sleep(std::time::Duration::from_secs(self.cursor_delay)).await;
+        self.api.resolve_peer(input).await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn global_cursor_timeout_preserves_fetched_page_within_search_budget() {
+    let api = DelayedApi {
+        api: Api::new(vec![(
+            "messages.searchGlobal",
+            messages(vec![message(8, "retained")]),
+        )]),
+        search_delay: 25,
+        cursor_delay: 10,
+        self_delay: 0,
+    };
+    let started = tokio::time::Instant::now();
+    let result =
+        telegram_mcp::tools::messaging::call(&api, "search_global", &json!({"query":"needle"}))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        tokio::time::Instant::now() - started,
+        std::time::Duration::from_secs(30)
+    );
+    assert_eq!(result["messages"][0]["message"], "retained");
+    assert_eq!(result["partial"], true);
+    assert_eq!(result["exhausted"], false);
+    assert!(result["next_cursor"].is_null());
+    assert_eq!(api.api.calls().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn legacy_global_cursor_timeout_keeps_fetched_batch_separate_from_requested_page() {
+    let api = DelayedApi {
+        api: Api::new(vec![
+            (
+                "messages.searchGlobal",
+                messages(vec![message(8, "earlier page")]),
+            ),
+            ("messages.searchGlobal", messages(vec![])),
+        ]),
+        search_delay: 0,
+        cursor_delay: 40,
+        self_delay: 0,
+    };
+    let result = telegram_mcp::tools::messaging::call(
+        &api,
+        "search_global",
+        &json!({"query":"needle","page":2,"page_size":1}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result["messages"], json!([]));
+    assert_eq!(result["fetched_messages"][0]["message"], "earlier page");
+    assert_eq!(result["legacy_page_reached"], false);
+    assert_eq!(result["legacy_page_advance_remaining"], 1);
+    assert_eq!(result["partial"], true);
+    assert!(result["next_cursor"].is_null());
+    assert_eq!(api.api.calls().len(), 1);
+}
 #[tokio::test]
 async fn global_cursor_round_trip_preserves_query_account_filter_and_server_offsets() {
     let mut first = messages(vec![message(8, "match")]);
@@ -305,4 +387,174 @@ async fn sender_media_search_recognizes_outgoing_private_messages_with_implicit_
     .unwrap();
     assert_eq!(result["messages"].as_array().unwrap().len(), 1);
     assert_eq!(result["messages"][0]["id"], 9);
+}
+
+#[tokio::test]
+async fn general_topic_sender_media_scans_history_without_cross_topic_matches() {
+    let make = |id, reply: Value| {
+        let mut item = message(id, "photo");
+        item["peer_id"] = json!({"_":"peerChannel","channel_id":"7"});
+        item["from_id"] = json!({"_":"peerUser","user_id":"9"});
+        item["media"] = json!({"_":"messageMediaPhoto","photo":{"_":"photo","id":"4"}});
+        item["reply_to"] = reply;
+        item
+    };
+    let api = Api::new(vec![(
+        "messages.getHistory",
+        messages(vec![
+            make(10, Value::Null),
+            make(9, json!({"forum_topic":false,"reply_to_msg_id":77})),
+            make(
+                8,
+                json!({"forum_topic":true,"reply_to_top_id":55,"reply_to_msg_id":77}),
+            ),
+            make(7, json!({"forum_topic":true,"reply_to_msg_id":55})),
+            make(1, json!({"forum_topic":true,"reply_to_top_id":55})),
+        ]),
+    )])
+    .identity(
+        json!(7),
+        json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"13"}),
+    )
+    .identity(
+        json!(9),
+        json!({"_":"inputPeerUser","user_id":"9","access_hash":"14"}),
+    );
+    let result = run(
+        &api,
+        "search_messages",
+        json!({"chat_id":7,"topic_id":1,"from_user":9,"media_type":"photos","query":"","limit":10}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![10, 9]
+    );
+    assert_eq!(result["scanned"], 5);
+    assert_eq!(result["exhausted"], true);
+    assert!(api.calls()[0].1.get("msg_id").is_none());
+    assert_eq!(api.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn sender_media_numeric_and_username_self_aliases_include_implicit_outgoing_messages() {
+    for selector in [json!(7), json!("@self_fixture")] {
+        let mut own = message(9, "own photo");
+        own["out"] = json!(true);
+        own["peer_id"] = json!({"_":"peerUser","user_id":"8"});
+        own["media"] = json!({"_":"messageMediaPhoto","photo":{"_":"photo","id":"4"}});
+        let mut next = own.clone();
+        next["id"] = json!(8);
+        let mut explicit_other = own.clone();
+        explicit_other["id"] = json!(7);
+        explicit_other["from_id"] = json!({"_":"peerUser","user_id":"9"});
+        let api = Api::new(vec![
+            (
+                "messages.getHistory",
+                messages(vec![own, next, explicit_other]),
+            ),
+            ("users.getUsers", json!([{"_":"user","id":7}])),
+        ])
+        .identity(
+            json!(8),
+            json!({"_":"inputPeerUser","user_id":"8","access_hash":"18"}),
+        )
+        .identity(
+            selector.clone(),
+            json!({"_":"inputPeerUser","user_id":"7","access_hash":"17"}),
+        );
+        let result = run(
+            &api,
+            "search_messages",
+            json!({"chat_id":8,"from_user":selector,"media_type":"photos","query":"","limit":10}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["id"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![9, 8]
+        );
+        assert_eq!(
+            api.calls().len(),
+            2,
+            "self identity should be reused within the scan"
+        );
+        assert_eq!(api.calls()[1].1["id"], json!([{"_":"inputUserSelf"}]));
+    }
+}
+
+#[tokio::test]
+async fn sender_media_implicit_outgoing_messages_do_not_match_another_user() {
+    let mut own = message(9, "own photo");
+    own["out"] = json!(true);
+    own["peer_id"] = json!({"_":"peerUser","user_id":"8"});
+    own["media"] = json!({"_":"messageMediaPhoto","photo":{"_":"photo","id":"4"}});
+    let api = Api::new(vec![
+        ("messages.getHistory", messages(vec![own])),
+        ("users.getUsers", json!([{"_":"user","id":"7"}])),
+    ])
+    .identity(
+        json!(8),
+        json!({"_":"inputPeerUser","user_id":"8","access_hash":"18"}),
+    )
+    .identity(
+        json!(9),
+        json!({"_":"inputPeerUser","user_id":"9","access_hash":"19"}),
+    );
+    let result = run(
+        &api,
+        "search_messages",
+        json!({"chat_id":8,"from_user":9,"media_type":"photos","query":""}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["messages"], json!([]));
+    assert_eq!(result["exhausted"], true);
+}
+
+#[tokio::test(start_paused = true)]
+async fn sender_media_self_identity_timeout_keeps_prior_matches_within_scan_budget() {
+    let mut own = message(9, "explicit own photo");
+    own["out"] = json!(true);
+    own["peer_id"] = json!({"_":"peerUser","user_id":"8"});
+    own["media"] = json!({"_":"messageMediaPhoto","photo":{"_":"photo","id":"4"}});
+    own["from_id"] = json!({"_":"peerUser","user_id":"7"});
+    let mut implicit = own.clone();
+    implicit["id"] = json!(8);
+    implicit["from_id"] = Value::Null;
+    let api = DelayedApi {
+        api: Api::new(vec![("messages.getHistory", messages(vec![own, implicit]))]).identity(
+            json!(8),
+            json!({"_":"inputPeerUser","user_id":"8","access_hash":"18"}),
+        ),
+        search_delay: 0,
+        cursor_delay: 0,
+        self_delay: 40,
+    };
+    let started = tokio::time::Instant::now();
+    let result = telegram_mcp::tools::messaging::call(
+        &api,
+        "search_messages",
+        &json!({"chat_id":8,"from_user":7,"media_type":"photos","query":"","limit":10}),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(result["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(result["messages"][0]["id"], 9);
+    assert_eq!(result["partial"], true);
+    assert_eq!(result["exhausted"], false);
+    assert!(tokio::time::Instant::now() - started <= std::time::Duration::from_secs(30));
+    assert_eq!(api.api.calls().len(), 1);
 }

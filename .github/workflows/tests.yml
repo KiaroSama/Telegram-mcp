@@ -143,69 +143,112 @@ jobs:
         if: matrix.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         id: arm64_coverage_probe
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
           $toolchain = '1.100.0-aarch64-pc-windows-msvc'
           $version = & rustc "+$toolchain" -vV
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the pinned native Rust compiler' }
-          $version | Write-Output
-          if (-not ($version -contains 'host: aarch64-pc-windows-msvc')) {
-            throw 'Coverage smoke is not using the ARM64 Rust host compiler'
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains 'host: aarch64-pc-windows-msvc')) {
+            throw 'The coverage probe must use the pinned native ARM64 Rust host.'
           }
           $sysroot = (& rustc "+$toolchain" --print sysroot).Trim()
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot' }
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot.' }
           $llvmBin = Join-Path $sysroot 'lib/rustlib/aarch64-pc-windows-msvc/bin'
           $profdata = Join-Path $llvmBin 'llvm-profdata.exe'
           $llvmCov = Join-Path $llvmBin 'llvm-cov.exe'
-          if (-not (Test-Path -LiteralPath $profdata -PathType Leaf) -or
-              -not (Test-Path -LiteralPath $llvmCov -PathType Leaf)) {
-            throw 'The native Rust llvm-tools-preview component is missing'
+          foreach ($tool in @($profdata, $llvmCov)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw 'A bundled coverage tool is missing.' }
           }
-          & $profdata --version
-          if ($LASTEXITCODE -ne 0) { throw 'Bundled llvm-profdata did not run' }
           $work = Join-Path $env:RUNNER_TEMP ('native-arm64-coverage-' + [guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Path $work | Out-Null
+          [void] [IO.Directory]::CreateDirectory($work)
+          $version | Out-File (Join-Path $work 'rustc-version.log') -Encoding utf8
           $source = Join-Path $work 'smoke.rs'
-          $binary = Join-Path $work 'smoke.exe'
-          $merged = Join-Path $work 'smoke.profdata'
           $program = '#[inline(never)] fn branch(v: bool) -> u64 { if v { 42 } else { 7 } } fn main() { println!("{}", branch(std::env::args().nth(1).is_some())); }'
           [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
-          & rustc "+$toolchain" --edition=2024 --target=aarch64-pc-windows-msvc -C instrument-coverage -C opt-level=0 -C debuginfo=1 $source -o $binary
-          if ($LASTEXITCODE -ne 0) { throw 'The pinned ARM64 compiler could not build the coverage smoke' }
-          $pe = [IO.File]::ReadAllBytes($binary)
-          $header = [BitConverter]::ToInt32($pe, 0x3c)
-          $machine = [BitConverter]::ToUInt16($pe, $header + 4)
-          if ($machine -ne 0xaa64) { throw ('Smoke executable is not native ARM64; PE Machine=0x{0:x4}' -f $machine) }
-          $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
-          try {
-            $env:LLVM_PROFILE_FILE = Join-Path $work 'first-%p.profraw'
-            & $binary
-            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke execution failed' }
-            $env:LLVM_PROFILE_FILE = Join-Path $work 'second-%p.profraw'
-            & $binary exercise-second-branch
-            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke second execution failed' }
-            $raw = @(Get-ChildItem -LiteralPath $work -Filter '*.profraw' -File)
-            $raw | Select-Object Name, Length | Format-Table | Out-String | Write-Output
-            if ($raw.Count -lt 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) {
-              throw 'Both real smoke processes must produce nonempty profiles'
-            }
-            $rawPaths = @($raw | ForEach-Object FullName)
-            & $profdata merge -sparse @rawPaths -o $merged
-            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM rejected the actual ARM64 profiles; retain its diagnostic and raw files' }
-            $counters = & $profdata show --all-functions --counts $merged
-            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM could not read merged ARM64 function counters' }
-            $counters | Write-Output
-            if (($counters -join "`n") -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') {
-              throw 'The actual native profile contains no executed function counter'
-            }
-            & $llvmCov report $binary "--instr-profile=$merged" $source
-            if ($LASTEXITCODE -ne 0) { throw 'ARM64 coverage mapping/report generation failed' }
-            Write-Output "Verified native Rust 1.100 ARM64 coverage artifacts: $work"
-          } finally {
-            [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process')
+          function Invoke-LoggedProbeCommand {
+            param([string] $Program, [string[]] $Arguments, [string] $Log)
+            & $Program @Arguments *> $Log
+            if ($LASTEXITCODE -ne 0) { throw "Probe command failed with exit status $LASTEXITCODE; inspect its retained diagnostic." }
           }
+          function Read-SmokeSourceCoverage {
+            param([string] $MappingFile, [string] $SourcePath)
+            $mapping = Get-Content -LiteralPath $MappingFile -Raw | ConvertFrom-Json -Depth 100
+            $files = @($mapping.data | ForEach-Object files | Where-Object { [IO.Path]::GetFullPath($_.filename) -eq [IO.Path]::GetFullPath($SourcePath) })
+            $executable = ($files | ForEach-Object { $_.summary.lines.count } | Measure-Object -Sum).Sum
+            $covered = ($files | ForEach-Object { $_.summary.lines.covered } | Measure-Object -Sum).Sum
+            if ($files.Count -eq 0 -or $executable -le 0 -or $covered -le 0 -or $covered -gt $executable) {
+              throw 'The real smoke source has no valid executable and covered source mapping.'
+            }
+            return [pscustomobject] @{ executable = $executable; covered = $covered }
+          }
+          $results = @()
+          foreach ($kind in @('default-msvc', 'bundled-rust-lld')) {
+            $directory = Join-Path $work $kind
+            [void] [IO.Directory]::CreateDirectory($directory)
+            $result = [ordered] @{ kind = $kind; accepted = $false; target = 'aarch64-pc-windows-msvc' }
+            $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+            try {
+              $linkFlags = @()
+              if ($kind -eq 'bundled-rust-lld') {
+                $linker = Join-Path $llvmBin 'rust-lld.exe'
+                if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'The pinned bundled linker is missing.' }
+                Invoke-LoggedProbeCommand -Program $linker -Arguments @('-flavor', 'link', '--version') -Log (Join-Path $directory 'linker-version.log')
+                $linkFlags = @('-C', "linker=$linker", '-C', 'linker-flavor=lld-link')
+              } else {
+                $linker = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+                $linkFlags = @('-C', "linker=$linker")
+              }
+              $result.linker = $linker
+              $result.linker_sha256 = (Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash.ToLowerInvariant()
+              $result.flags = $linkFlags
+              $binary = Join-Path $directory 'smoke.exe'
+              $merged = Join-Path $directory 'smoke.profdata'
+              $compile = @("+$toolchain", '--edition=2024', '--target=aarch64-pc-windows-msvc', '-C', 'instrument-coverage', '-C', 'opt-level=0', '-C', 'debuginfo=1') + $linkFlags + @($source, '-o', $binary)
+              Invoke-LoggedProbeCommand -Program 'rustc' -Arguments $compile -Log (Join-Path $directory 'compile.log')
+              $pe = [IO.File]::ReadAllBytes($binary)
+              if ($pe.Length -lt 64 -or [BitConverter]::ToUInt16($pe, 0) -ne 0x5a4d) { throw 'The actual smoke executable is not PE.' }
+              $header = [BitConverter]::ToUInt32($pe, 0x3c)
+              if ($header -gt $pe.Length - 6 -or [BitConverter]::ToUInt32($pe, $header) -ne 0x4550 -or [BitConverter]::ToUInt16($pe, $header + 4) -ne 0xaa64) {
+                throw 'The actual smoke executable is not native ARM64.'
+              }
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'first-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @() -Log (Join-Path $directory 'first-run.log')
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'second-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @('exercise-second-branch') -Log (Join-Path $directory 'second-run.log')
+              $raw = @(Get-ChildItem -LiteralPath $directory -Filter '*.profraw' -File)
+              if ($raw.Count -ne 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) { throw 'Both real processes must emit their own nonempty profiles.' }
+              $result.profiles = @($raw | Select-Object Name, Length)
+              $mergeArguments = @('merge', '-sparse') + @($raw | ForEach-Object FullName) + @('-o', $merged)
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments $mergeArguments -Log (Join-Path $directory 'merge.log')
+              $counterLog = Join-Path $directory 'function-counters.log'
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments @('show', '--all-functions', '--counts', $merged) -Log $counterLog
+              if ([IO.File]::ReadAllText($counterLog) -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') { throw 'No actual function counter was executed.' }
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('report', $binary, "--instr-profile=$merged", $source) -Log (Join-Path $directory 'source-report.log')
+              $mappingFile = Join-Path $directory 'source-coverage.json'
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('export', $binary, "--instr-profile=$merged", $source) -Log $mappingFile
+              $sourceCoverage = Read-SmokeSourceCoverage -MappingFile $mappingFile -SourcePath $source
+              $result.executable_source_lines = $sourceCoverage.executable
+              $result.covered_source_lines = $sourceCoverage.covered
+              $result.accepted = $true
+            } catch {
+              $result.error = $_.Exception.Message
+            } finally {
+              if ($null -eq $priorProfile) { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', [NullString]::Value, 'Process') }
+              else { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process') }
+            }
+            $result | ConvertTo-Json -Depth 12 | Out-File (Join-Path $directory 'result.json') -Encoding utf8
+            $results += [pscustomobject] $result
+            Write-Host "$kind coverage validation accepted: $($result.accepted)"
+          }
+          $results | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'all-results.json') -Encoding utf8
+          $selected = $results | Where-Object accepted | Select-Object -First 1
+          if (-not $selected) { throw 'Neither native linker produced valid real source-coverage evidence; inspect both retained diagnostics.' }
+          $selected | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'selected-linker.json') -Encoding utf8
+          "kind=$($selected.kind)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "linker=$($selected.linker)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha256=$($selected.linker_sha256)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Verified native coverage linker: $($selected.kind), SHA256 $($selected.linker_sha256)"
       - name: Retain actual Windows ARM64 compiler coverage evidence
         if: always() && matrix.target == 'aarch64-pc-windows-msvc'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -289,8 +332,58 @@ jobs:
           Write-Host 'Native tests use fresh private state and an existing disposable file root.'
       - name: Select a canonical coverage directory and per-process profiles
         shell: pwsh
+        env:
+          VERIFIED_COVERAGE_KIND: ${{ steps.arm64_coverage_probe.outputs.kind }}
+          VERIFIED_COVERAGE_LINKER: ${{ steps.arm64_coverage_probe.outputs.linker }}
+          VERIFIED_COVERAGE_SHA256: ${{ steps.arm64_coverage_probe.outputs.sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($IsWindows -and $env:RUNNER_ARCH -eq 'ARM64') {
+            function Set-VerifiedCoverageEnvironment {
+              param([string] $Name, [string] $Value)
+              [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+              $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N')
+              while ($Value.Contains($delimiter)) { $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N') }
+              "$Name<<$delimiter`n$Value`n$delimiter" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+            function Assert-UnambiguousCoverageFlags {
+              param([string] $EncodedName, [string] $RawName)
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $active = if ($null -ne $encoded) { $encoded.Replace([char] 31, ' ') } else { "$raw" }
+              if ($active -match '(?:^|\s)@') { throw 'Opaque caller response-file flags prevent verification of the selected linker.' }
+              if ($active -match '(?i)(?:^|\s)(?:-C\s*|--codegen(?:=|\s+))linker(?:-flavor)?=') {
+                throw 'Caller flags override the linker; no unverified coverage-linker identity will be claimed.'
+              }
+            }
+            function Add-VerifiedLinkerFlavor {
+              param([string] $EncodedName, [string] $RawName)
+              Assert-UnambiguousCoverageFlags $EncodedName $RawName
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $flavor = '-Clinker-flavor=lld-link'
+              if ($null -ne $encoded) {
+                $value = if ($encoded.Length) { $encoded + [char] 31 + $flavor } else { $flavor }
+                Set-VerifiedCoverageEnvironment $EncodedName $value
+              } else {
+                $value = if ($raw) { "$raw $flavor" } else { $flavor }
+                Set-VerifiedCoverageEnvironment $RawName $value
+              }
+            }
+            if ($env:VERIFIED_COVERAGE_KIND -notin @('default-msvc', 'bundled-rust-lld') -or
+                -not (Test-Path -LiteralPath $env:VERIFIED_COVERAGE_LINKER -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $env:VERIFIED_COVERAGE_LINKER -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:VERIFIED_COVERAGE_SHA256) {
+              throw 'The accepted native coverage linker or its exact hash is missing.'
+            }
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            if ($env:VERIFIED_COVERAGE_KIND -eq 'bundled-rust-lld') {
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            }
+            Set-VerifiedCoverageEnvironment 'CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER' $env:VERIFIED_COVERAGE_LINKER
+            Write-Host "Coverage, recorder and documentation builds use verified $env:VERIFIED_COVERAGE_KIND (SHA256 $env:VERIFIED_COVERAGE_SHA256)."
+          }
           Write-Host "Logical processors: $([Environment]::ProcessorCount)"
           $coverageEnvironmentArguments = @('llvm-cov', 'show-env', '--export-prefix')
           if ($IsWindows) { $coverageEnvironmentArguments += '--no-rustc-wrapper' }
@@ -481,69 +574,112 @@ jobs:
         if: matrix.target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         id: arm64_coverage_probe
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $false
           $toolchain = '1.100.0-aarch64-pc-windows-msvc'
           $version = & rustc "+$toolchain" -vV
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the pinned native Rust compiler' }
-          $version | Write-Output
-          if (-not ($version -contains 'host: aarch64-pc-windows-msvc')) {
-            throw 'Coverage smoke is not using the ARM64 Rust host compiler'
+          if ($LASTEXITCODE -ne 0 -or -not ($version -contains 'host: aarch64-pc-windows-msvc')) {
+            throw 'The coverage probe must use the pinned native ARM64 Rust host.'
           }
           $sysroot = (& rustc "+$toolchain" --print sysroot).Trim()
-          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot' }
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the pinned Rust sysroot.' }
           $llvmBin = Join-Path $sysroot 'lib/rustlib/aarch64-pc-windows-msvc/bin'
           $profdata = Join-Path $llvmBin 'llvm-profdata.exe'
           $llvmCov = Join-Path $llvmBin 'llvm-cov.exe'
-          if (-not (Test-Path -LiteralPath $profdata -PathType Leaf) -or
-              -not (Test-Path -LiteralPath $llvmCov -PathType Leaf)) {
-            throw 'The native Rust llvm-tools-preview component is missing'
+          foreach ($tool in @($profdata, $llvmCov)) {
+            if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { throw 'A bundled coverage tool is missing.' }
           }
-          & $profdata --version
-          if ($LASTEXITCODE -ne 0) { throw 'Bundled llvm-profdata did not run' }
           $work = Join-Path $env:RUNNER_TEMP ('native-arm64-coverage-' + [guid]::NewGuid().ToString('N'))
-          New-Item -ItemType Directory -Path $work | Out-Null
+          [void] [IO.Directory]::CreateDirectory($work)
+          $version | Out-File (Join-Path $work 'rustc-version.log') -Encoding utf8
           $source = Join-Path $work 'smoke.rs'
-          $binary = Join-Path $work 'smoke.exe'
-          $merged = Join-Path $work 'smoke.profdata'
           $program = '#[inline(never)] fn branch(v: bool) -> u64 { if v { 42 } else { 7 } } fn main() { println!("{}", branch(std::env::args().nth(1).is_some())); }'
           [IO.File]::WriteAllText($source, $program, [Text.UTF8Encoding]::new($false))
-          & rustc "+$toolchain" --edition=2024 --target=aarch64-pc-windows-msvc -C instrument-coverage -C opt-level=0 -C debuginfo=1 $source -o $binary
-          if ($LASTEXITCODE -ne 0) { throw 'The pinned ARM64 compiler could not build the coverage smoke' }
-          $pe = [IO.File]::ReadAllBytes($binary)
-          $header = [BitConverter]::ToInt32($pe, 0x3c)
-          $machine = [BitConverter]::ToUInt16($pe, $header + 4)
-          if ($machine -ne 0xaa64) { throw ('Smoke executable is not native ARM64; PE Machine=0x{0:x4}' -f $machine) }
-          $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
-          try {
-            $env:LLVM_PROFILE_FILE = Join-Path $work 'first-%p.profraw'
-            & $binary
-            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke execution failed' }
-            $env:LLVM_PROFILE_FILE = Join-Path $work 'second-%p.profraw'
-            & $binary exercise-second-branch
-            if ($LASTEXITCODE -ne 0) { throw 'ARM64 instrumented smoke second execution failed' }
-            $raw = @(Get-ChildItem -LiteralPath $work -Filter '*.profraw' -File)
-            $raw | Select-Object Name, Length | Format-Table | Out-String | Write-Output
-            if ($raw.Count -lt 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) {
-              throw 'Both real smoke processes must produce nonempty profiles'
-            }
-            $rawPaths = @($raw | ForEach-Object FullName)
-            & $profdata merge -sparse @rawPaths -o $merged
-            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM rejected the actual ARM64 profiles; retain its diagnostic and raw files' }
-            $counters = & $profdata show --all-functions --counts $merged
-            if ($LASTEXITCODE -ne 0) { throw 'Bundled LLVM could not read merged ARM64 function counters' }
-            $counters | Write-Output
-            if (($counters -join "`n") -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') {
-              throw 'The actual native profile contains no executed function counter'
-            }
-            & $llvmCov report $binary "--instr-profile=$merged" $source
-            if ($LASTEXITCODE -ne 0) { throw 'ARM64 coverage mapping/report generation failed' }
-            Write-Output "Verified native Rust 1.100 ARM64 coverage artifacts: $work"
-          } finally {
-            [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process')
+          function Invoke-LoggedProbeCommand {
+            param([string] $Program, [string[]] $Arguments, [string] $Log)
+            & $Program @Arguments *> $Log
+            if ($LASTEXITCODE -ne 0) { throw "Probe command failed with exit status $LASTEXITCODE; inspect its retained diagnostic." }
           }
+          function Read-SmokeSourceCoverage {
+            param([string] $MappingFile, [string] $SourcePath)
+            $mapping = Get-Content -LiteralPath $MappingFile -Raw | ConvertFrom-Json -Depth 100
+            $files = @($mapping.data | ForEach-Object files | Where-Object { [IO.Path]::GetFullPath($_.filename) -eq [IO.Path]::GetFullPath($SourcePath) })
+            $executable = ($files | ForEach-Object { $_.summary.lines.count } | Measure-Object -Sum).Sum
+            $covered = ($files | ForEach-Object { $_.summary.lines.covered } | Measure-Object -Sum).Sum
+            if ($files.Count -eq 0 -or $executable -le 0 -or $covered -le 0 -or $covered -gt $executable) {
+              throw 'The real smoke source has no valid executable and covered source mapping.'
+            }
+            return [pscustomobject] @{ executable = $executable; covered = $covered }
+          }
+          $results = @()
+          foreach ($kind in @('default-msvc', 'bundled-rust-lld')) {
+            $directory = Join-Path $work $kind
+            [void] [IO.Directory]::CreateDirectory($directory)
+            $result = [ordered] @{ kind = $kind; accepted = $false; target = 'aarch64-pc-windows-msvc' }
+            $priorProfile = [Environment]::GetEnvironmentVariable('LLVM_PROFILE_FILE', 'Process')
+            try {
+              $linkFlags = @()
+              if ($kind -eq 'bundled-rust-lld') {
+                $linker = Join-Path $llvmBin 'rust-lld.exe'
+                if (-not (Test-Path -LiteralPath $linker -PathType Leaf)) { throw 'The pinned bundled linker is missing.' }
+                Invoke-LoggedProbeCommand -Program $linker -Arguments @('-flavor', 'link', '--version') -Log (Join-Path $directory 'linker-version.log')
+                $linkFlags = @('-C', "linker=$linker", '-C', 'linker-flavor=lld-link')
+              } else {
+                $linker = (Get-Command link.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+                $linkFlags = @('-C', "linker=$linker")
+              }
+              $result.linker = $linker
+              $result.linker_sha256 = (Get-FileHash -LiteralPath $linker -Algorithm SHA256).Hash.ToLowerInvariant()
+              $result.flags = $linkFlags
+              $binary = Join-Path $directory 'smoke.exe'
+              $merged = Join-Path $directory 'smoke.profdata'
+              $compile = @("+$toolchain", '--edition=2024', '--target=aarch64-pc-windows-msvc', '-C', 'instrument-coverage', '-C', 'opt-level=0', '-C', 'debuginfo=1') + $linkFlags + @($source, '-o', $binary)
+              Invoke-LoggedProbeCommand -Program 'rustc' -Arguments $compile -Log (Join-Path $directory 'compile.log')
+              $pe = [IO.File]::ReadAllBytes($binary)
+              if ($pe.Length -lt 64 -or [BitConverter]::ToUInt16($pe, 0) -ne 0x5a4d) { throw 'The actual smoke executable is not PE.' }
+              $header = [BitConverter]::ToUInt32($pe, 0x3c)
+              if ($header -gt $pe.Length - 6 -or [BitConverter]::ToUInt32($pe, $header) -ne 0x4550 -or [BitConverter]::ToUInt16($pe, $header + 4) -ne 0xaa64) {
+                throw 'The actual smoke executable is not native ARM64.'
+              }
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'first-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @() -Log (Join-Path $directory 'first-run.log')
+              $env:LLVM_PROFILE_FILE = Join-Path $directory 'second-%p.profraw'
+              Invoke-LoggedProbeCommand -Program $binary -Arguments @('exercise-second-branch') -Log (Join-Path $directory 'second-run.log')
+              $raw = @(Get-ChildItem -LiteralPath $directory -Filter '*.profraw' -File)
+              if ($raw.Count -ne 2 -or @($raw | Where-Object Length -eq 0).Count -ne 0) { throw 'Both real processes must emit their own nonempty profiles.' }
+              $result.profiles = @($raw | Select-Object Name, Length)
+              $mergeArguments = @('merge', '-sparse') + @($raw | ForEach-Object FullName) + @('-o', $merged)
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments $mergeArguments -Log (Join-Path $directory 'merge.log')
+              $counterLog = Join-Path $directory 'function-counters.log'
+              Invoke-LoggedProbeCommand -Program $profdata -Arguments @('show', '--all-functions', '--counts', $merged) -Log $counterLog
+              if ([IO.File]::ReadAllText($counterLog) -notmatch '(?m)^\s*Function count:\s*[1-9][0-9]*\s*$') { throw 'No actual function counter was executed.' }
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('report', $binary, "--instr-profile=$merged", $source) -Log (Join-Path $directory 'source-report.log')
+              $mappingFile = Join-Path $directory 'source-coverage.json'
+              Invoke-LoggedProbeCommand -Program $llvmCov -Arguments @('export', $binary, "--instr-profile=$merged", $source) -Log $mappingFile
+              $sourceCoverage = Read-SmokeSourceCoverage -MappingFile $mappingFile -SourcePath $source
+              $result.executable_source_lines = $sourceCoverage.executable
+              $result.covered_source_lines = $sourceCoverage.covered
+              $result.accepted = $true
+            } catch {
+              $result.error = $_.Exception.Message
+            } finally {
+              if ($null -eq $priorProfile) { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', [NullString]::Value, 'Process') }
+              else { [Environment]::SetEnvironmentVariable('LLVM_PROFILE_FILE', $priorProfile, 'Process') }
+            }
+            $result | ConvertTo-Json -Depth 12 | Out-File (Join-Path $directory 'result.json') -Encoding utf8
+            $results += [pscustomobject] $result
+            Write-Host "$kind coverage validation accepted: $($result.accepted)"
+          }
+          $results | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'all-results.json') -Encoding utf8
+          $selected = $results | Where-Object accepted | Select-Object -First 1
+          if (-not $selected) { throw 'Neither native linker produced valid real source-coverage evidence; inspect both retained diagnostics.' }
+          $selected | ConvertTo-Json -Depth 12 | Out-File (Join-Path $work 'selected-linker.json') -Encoding utf8
+          "kind=$($selected.kind)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "linker=$($selected.linker)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "sha256=$($selected.linker_sha256)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Verified native coverage linker: $($selected.kind), SHA256 $($selected.linker_sha256)"
       - name: Retain actual Windows ARM64 compiler coverage evidence
         if: always() && matrix.target == 'aarch64-pc-windows-msvc'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -636,8 +772,58 @@ jobs:
           Write-Host 'Native tests use fresh private state and an existing disposable file root.'
       - name: Select a canonical coverage directory and per-process profiles
         shell: pwsh
+        env:
+          VERIFIED_COVERAGE_KIND: ${{ steps.arm64_coverage_probe.outputs.kind }}
+          VERIFIED_COVERAGE_LINKER: ${{ steps.arm64_coverage_probe.outputs.linker }}
+          VERIFIED_COVERAGE_SHA256: ${{ steps.arm64_coverage_probe.outputs.sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($IsWindows -and $env:RUNNER_ARCH -eq 'ARM64') {
+            function Set-VerifiedCoverageEnvironment {
+              param([string] $Name, [string] $Value)
+              [Environment]::SetEnvironmentVariable($Name, $Value, 'Process')
+              $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N')
+              while ($Value.Contains($delimiter)) { $delimiter = 'TELEGRAM_CI_' + [guid]::NewGuid().ToString('N') }
+              "$Name<<$delimiter`n$Value`n$delimiter" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+            }
+            function Assert-UnambiguousCoverageFlags {
+              param([string] $EncodedName, [string] $RawName)
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $active = if ($null -ne $encoded) { $encoded.Replace([char] 31, ' ') } else { "$raw" }
+              if ($active -match '(?:^|\s)@') { throw 'Opaque caller response-file flags prevent verification of the selected linker.' }
+              if ($active -match '(?i)(?:^|\s)(?:-C\s*|--codegen(?:=|\s+))linker(?:-flavor)?=') {
+                throw 'Caller flags override the linker; no unverified coverage-linker identity will be claimed.'
+              }
+            }
+            function Add-VerifiedLinkerFlavor {
+              param([string] $EncodedName, [string] $RawName)
+              Assert-UnambiguousCoverageFlags $EncodedName $RawName
+              $encoded = [Environment]::GetEnvironmentVariable($EncodedName, 'Process')
+              $raw = [Environment]::GetEnvironmentVariable($RawName, 'Process')
+              $flavor = '-Clinker-flavor=lld-link'
+              if ($null -ne $encoded) {
+                $value = if ($encoded.Length) { $encoded + [char] 31 + $flavor } else { $flavor }
+                Set-VerifiedCoverageEnvironment $EncodedName $value
+              } else {
+                $value = if ($raw) { "$raw $flavor" } else { $flavor }
+                Set-VerifiedCoverageEnvironment $RawName $value
+              }
+            }
+            if ($env:VERIFIED_COVERAGE_KIND -notin @('default-msvc', 'bundled-rust-lld') -or
+                -not (Test-Path -LiteralPath $env:VERIFIED_COVERAGE_LINKER -PathType Leaf) -or
+                (Get-FileHash -LiteralPath $env:VERIFIED_COVERAGE_LINKER -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:VERIFIED_COVERAGE_SHA256) {
+              throw 'The accepted native coverage linker or its exact hash is missing.'
+            }
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+            Assert-UnambiguousCoverageFlags 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            if ($env:VERIFIED_COVERAGE_KIND -eq 'bundled-rust-lld') {
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTFLAGS' 'RUSTFLAGS'
+              Add-VerifiedLinkerFlavor 'CARGO_ENCODED_RUSTDOCFLAGS' 'RUSTDOCFLAGS'
+            }
+            Set-VerifiedCoverageEnvironment 'CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER' $env:VERIFIED_COVERAGE_LINKER
+            Write-Host "Coverage, recorder and documentation builds use verified $env:VERIFIED_COVERAGE_KIND (SHA256 $env:VERIFIED_COVERAGE_SHA256)."
+          }
           Write-Host "Logical processors: $([Environment]::ProcessorCount)"
           $coverageEnvironmentArguments = @('llvm-cov', 'show-env', '--export-prefix')
           if ($IsWindows) { $coverageEnvironmentArguments += '--no-rustc-wrapper' }

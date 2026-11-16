@@ -465,6 +465,76 @@ fn configured_rename_commits_the_source_key_and_native_binding_without_rewriting
     }
 }
 
+#[test]
+fn configured_rename_preserves_active_references_and_literal_configuration_text() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    let key = "TELEGRAM_SESSION_NAME_WORK";
+    let target = "TELEGRAM_SESSION_NAME_OFFICE";
+    let original = concat!(
+        "BEFORE=${TELEGRAM_SESSION_NAME_WORK:-before}\n",
+        "TELEGRAM_SESSION_NAME_WORK=work\n",
+        "TELEGRAM_STATE_DIR=/srv/${TELEGRAM_SESSION_NAME_WORK}\n",
+        "FALLBACK=${TELEGRAM_SESSION_NAME_WORK:-fallback}\n",
+        "QUOTED=\"escaped \\\" ${TELEGRAM_SESSION_NAME_WORK} \\${TELEGRAM_SESSION_NAME_WORK}\"\n",
+        "SINGLE='${TELEGRAM_SESSION_NAME_WORK}'\n",
+        "BARE=$TELEGRAM_SESSION_NAME_WORK\n",
+        "COMMENT=value # ${TELEGRAM_SESSION_NAME_WORK}\n",
+        "# ${TELEGRAM_SESSION_NAME_WORK}\n",
+    );
+    std::fs::write(&env, original).unwrap();
+    state
+        .write_json("work.session.json", &snapshot(42, 7))
+        .unwrap();
+    let before = read_config(&env).unwrap().values;
+    rename_configured_account(&state, "work", "office", &env, key).unwrap();
+    let after = read_config(&env).unwrap().values;
+    for (name, value) in &before {
+        assert_eq!(
+            after.get(if name == key { target } else { name }),
+            Some(value),
+            "Resolved setting changed: {name}"
+        );
+    }
+    let written = std::fs::read_to_string(&env).unwrap();
+    assert!(written.contains("TELEGRAM_STATE_DIR=/srv/${TELEGRAM_SESSION_NAME_OFFICE}"));
+    assert!(written.contains("BEFORE=${TELEGRAM_SESSION_NAME_OFFICE:-before}"));
+    for literal in [
+        "SINGLE='${TELEGRAM_SESSION_NAME_WORK}'",
+        "BARE=$TELEGRAM_SESSION_NAME_WORK",
+        "COMMENT=value # ${TELEGRAM_SESSION_NAME_WORK}",
+        "# ${TELEGRAM_SESSION_NAME_WORK}",
+    ] {
+        assert!(written.contains(literal));
+    }
+}
+
+#[test]
+fn configured_rename_rejects_new_reference_meaning_before_moving_any_state() {
+    let (dir, state) = fixture();
+    let env = dir.path().join("selected.env");
+    let original = "TELEGRAM_SESSION_NAME_WORK=work\nARCHIVE_DIR=/srv/${TELEGRAM_SESSION_NAME_OFFICE:-previous}\n";
+    std::fs::write(&env, original).unwrap();
+    let native = snapshot(42, 7);
+    state.write_json("work.session.json", &native).unwrap();
+    assert!(
+        rename_configured_account(&state, "work", "office", &env, "TELEGRAM_SESSION_NAME_WORK")
+            .is_err()
+    );
+    assert_eq!(std::fs::read_to_string(&env).unwrap(), original);
+    assert_eq!(
+        state.read_json("work.session.json", Value::Null).unwrap(),
+        native
+    );
+    assert!(!state.root().join("office.session.json").exists());
+    assert!(
+        !state
+            .root()
+            .join("account-rename-transaction.json")
+            .exists()
+    );
+}
+
 fn interrupted_configured_rename(
     state: &State,
     env: &std::path::Path,

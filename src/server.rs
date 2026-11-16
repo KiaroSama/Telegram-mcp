@@ -25,6 +25,8 @@ use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::Mutex;
 
+static QR_WORKERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+
 struct Account {
     api: Arc<dyn Telegram>,
     serial: Arc<Mutex<()>>,
@@ -343,7 +345,20 @@ impl Mcp {
                 )
                 .await
             } else if name == "get_invite_link_qr" {
-                crate::tools::identity::invite_link_qr_in(&self.runtime.state, &args)
+                let permit = QR_WORKERS
+                    .acquire()
+                    .await
+                    .context("QR workers are unavailable")?;
+                let state = Arc::clone(&self.runtime.state);
+                let args = args.clone();
+                tokio::task::spawn_blocking(move || {
+                    // The worker owns both admission and anchored staging until
+                    // rendering/publication finish, even if its caller leaves.
+                    let _permit = permit;
+                    crate::tools::identity::invite_link_qr_in(&state, &args)
+                })
+                .await
+                .context("QR worker ended before returning its complete result")?
             } else {
                 crate::tools::call(api.as_ref(), name, &args).await
             }

@@ -322,6 +322,9 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
 }
 fn source_entities(text: &str, raw: &Value) -> Result<Vec<Vec<u8>>> {
+    if raw.is_null() {
+        return Ok(vec![]);
+    }
     entities(text, raw)?
         .into_iter()
         .map(|mut entity| {

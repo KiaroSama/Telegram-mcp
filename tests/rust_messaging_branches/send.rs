@@ -570,6 +570,39 @@ async fn guarded_edit_matches_raw_source_against_normalized_inspection_entities(
 }
 
 #[tokio::test]
+async fn guarded_edits_accept_native_null_entities_as_unformatted_source() {
+    for (actual, expected) in [
+        (Value::Null, json!([])),
+        (json!([]), Value::Null),
+        (Value::Null, Value::Null),
+    ] {
+        let mut current = message(8, "original");
+        current["entities"] = actual;
+        let api = Api::new(vec![
+            ("messages.getMessages", messages(vec![current])),
+            ("messages.editMessage", updates()),
+        ]);
+        let result = run(&api,"edit_message",json!({"chat_id":7,"message_id":8,"new_text":"replacement","expected_source":{"text":"original","entities":expected}})).await.unwrap();
+        assert_eq!(result, updates());
+        assert_eq!(api.calls().len(), 2);
+        assert_eq!(api.calls()[1].1["message"], "replacement");
+    }
+}
+
+#[tokio::test]
+async fn guarded_edits_reject_formatting_changes_when_one_entity_list_is_null() {
+    let bold = json!([{"_":"messageEntityBold","offset":0,"length":8}]);
+    for (actual, expected) in [(Value::Null, bold.clone()), (bold, Value::Null)] {
+        let mut current = message(8, "original");
+        current["entities"] = actual;
+        let api = Api::new(vec![("messages.getMessages", messages(vec![current]))]);
+        let error=run(&api,"edit_message",json!({"chat_id":7,"message_id":8,"new_text":"replacement","expected_source":{"text":"original","entities":expected}})).await.unwrap_err().to_string();
+        assert!(error.contains("Source message changed"), "{error}");
+        assert_eq!(api.calls().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn incomplete_unpin_batches_preserve_progress_without_claiming_completion() {
     let api = Api::new(vec![(
         "messages.unpinAllMessages",

@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     backend::Telegram,
-    documents::{check_message_topic, image_work},
+    documents::{IMAGE_WORKERS, check_message_topic, image_work},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -226,45 +226,91 @@ async fn topic_starters_require_the_exact_service_action_and_matching_channel() 
 
 #[tokio::test]
 async fn cancelled_image_requests_hold_the_worker_budget_until_their_cpu_work_finishes() {
+    use std::{future::Future, task::Poll};
+    let watchdog = Duration::from_secs(10);
     let (started, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let (finished, mut completed) = tokio::sync::mpsc::unbounded_channel();
     let mut releases = Vec::new();
     let mut callers = Vec::new();
     for id in 0..2 {
         let (release, wait) = std::sync::mpsc::channel();
         releases.push(release);
         let started = started.clone();
+        let finished = finished.clone();
         callers.push(tokio::spawn(image_work(move || {
             started.send(id).unwrap();
             let _ = wait.recv();
+            let _ = finished.send(id);
             Ok(())
         })));
     }
+    let mut initial = Vec::new();
     for _ in 0..2 {
-        tokio::time::timeout(Duration::from_secs(2), observed.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        initial.push(
+            tokio::time::timeout(watchdog, observed.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
     }
+    initial.sort_unstable();
+    assert_eq!(initial, [0, 1]);
     for caller in callers {
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
     }
-    let third = tokio::spawn(image_work(move || {
+    let semaphore = IMAGE_WORKERS.get().unwrap();
+    assert_eq!(
+        semaphore.available_permits(),
+        0,
+        "Cancelled callers released capacity while their CPU closures were still blocked"
+    );
+    let mut third = Box::pin(image_work(move || {
         started.send(2).unwrap();
+        let _ = finished.send(2);
         Ok(())
     }));
-    assert!(
-        tokio::time::timeout(Duration::from_millis(30), observed.recv())
-            .await
-            .is_err()
+    // Polling proves admission is blocked without a short timer that may be
+    // descheduled beyond the real production admission deadline under CI load.
+    std::future::poll_fn(|cx| {
+        assert!(third.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(
+        observed.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     );
     releases[0].send(()).unwrap();
+    // Await the real outcome, so an admission error or panic cannot be masked
+    // by an open sender and misreported as a missing readiness notification.
+    tokio::time::timeout(watchdog, third)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed.try_recv().unwrap(), 2);
+    let mut exits = Vec::new();
+    for _ in 0..2 {
+        exits.push(
+            tokio::time::timeout(watchdog, completed.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    exits.sort_unstable();
+    assert_eq!(exits, [0, 2]);
+    releases[1].send(()).unwrap();
     assert_eq!(
-        tokio::time::timeout(Duration::from_secs(2), observed.recv())
+        tokio::time::timeout(watchdog, completed.recv())
             .await
             .unwrap(),
-        Some(2)
+        Some(1)
     );
-    third.await.unwrap().unwrap();
-    releases[1].send(()).unwrap();
+    let all_capacity = tokio::time::timeout(watchdog, Arc::clone(semaphore).acquire_many_owned(2))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(all_capacity);
+    assert_eq!(semaphore.available_permits(), 2);
 }

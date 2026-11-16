@@ -1,6 +1,6 @@
 use super::config::{
-    ConfigWriteGuard, config_write_lock, file_values, remove_env_value_locked,
-    rename_env_key_locked,
+    ConfigWriteGuard, Publication, config_write_lock, confirm_configuration, file_values,
+    remove_env_value_locked, rename_env_key_locked, sync_directory, validate_env_key_rename,
 };
 use crate::state::State;
 use anyhow::{Context, Result, bail};
@@ -56,6 +56,24 @@ fn local_path(state: &State, name: &str) -> Result<std::path::PathBuf> {
         bail!("Account transaction path leaves private state");
     }
     Ok(full)
+}
+
+fn sync_move_parents(state: &State, files: &[(String, String)]) -> Result<()> {
+    let mut parents = std::collections::BTreeSet::from([state.root().to_owned()]);
+    for (source, target) in files {
+        for name in [source, target] {
+            let path = local_path(state, name)?;
+            parents.insert(
+                path.parent()
+                    .context("Account state path has no parent")?
+                    .to_owned(),
+            );
+        }
+    }
+    for parent in parents {
+        sync_directory(&parent).context("Could not confirm account state move durability")?;
+    }
+    Ok(())
 }
 
 pub fn rename_account(state: &State, from: &str, to: &str) -> Result<Vec<String>> {
@@ -130,7 +148,10 @@ pub fn rename_configured_account(
     {
         bail!("Another configuration key defines a source or destination account");
     }
-    let plan = json!({"env_file":config.path,"key":key,"digest":super::config_digest(value),"new_key":new_key});
+    let digest = super::config_digest(value);
+    // Reference rewriting must be semantically safe before moving any state.
+    validate_env_key_rename(&config, key, &new_key, &digest)?;
+    let plan = json!({"env_file":config.path,"key":key,"digest":digest,"new_key":new_key});
     rename_with_config(state, &from, &to, Some((&config, &plan)))
 }
 
@@ -431,7 +452,10 @@ fn rename_with_config(
             state.write_json_transaction_unlocked(name, &row["after"])?;
             changed.push(name.to_owned());
         }
-        if let Some((config, plan)) = configuration {
+        // Native files and deferred secret-chat sidecars can have different
+        // parents. Confirm every move before publishing the configuration key.
+        sync_move_parents(state, &files)?;
+        let publication = if let Some((config, plan)) = configuration {
             let key = plan["key"]
                 .as_str()
                 .context("Invalid transaction configuration key")?;
@@ -439,10 +463,18 @@ fn rename_with_config(
                 .as_str()
                 .context("Invalid transaction configuration digest")?;
             if let Some(target) = plan["new_key"].as_str() {
-                rename_env_key_locked(config, key, target, digest)?;
+                rename_env_key_locked(config, key, target, digest)?
             } else {
-                remove_env_value_locked(config, key, digest)?;
+                remove_env_value_locked(config, key, digest)?
             }
+        } else {
+            Publication::Durable
+        };
+        if publication == Publication::Uncertain {
+            tracing::warn!(
+                "Account configuration transaction is published; its private intent is retained until directory durability is confirmed"
+            );
+            return Ok(changed);
         }
         if let Err(error) = std::fs::remove_file(state.root().join(JOURNAL)) {
             if configuration.is_none() {
@@ -556,15 +588,26 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
     };
     // Ordinary writers are fenced while this marker exists. Also detect raw
     // out-of-band edits before restoring any whole-record snapshot.
-    for pair in journal["files"]
+    let files = journal["files"]
         .as_array()
         .context("Invalid account transaction journal")?
-    {
-        let source = local_path(state, pair[0].as_str().context("Invalid account source")?)?;
-        let target = local_path(
-            state,
-            pair[1].as_str().context("Invalid account destination")?,
-        )?;
+        .iter()
+        .map(|pair| {
+            Ok((
+                pair[0]
+                    .as_str()
+                    .context("Invalid account source")?
+                    .to_owned(),
+                pair[1]
+                    .as_str()
+                    .context("Invalid account destination")?
+                    .to_owned(),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for (source, target) in &files {
+        let source = local_path(state, source)?;
+        let target = local_path(state, target)?;
         if source.exists() && target.exists() {
             bail!("Account rollback found conflicting files; retain both and the private journal");
         }
@@ -599,15 +642,9 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
     if committed {
         // The exact configuration-key change is the commit point. Finish any
         // remaining state moves without restoring an obsolete .env revision.
-        for pair in journal["files"]
-            .as_array()
-            .context("Invalid account transaction journal")?
-        {
-            let source = local_path(state, pair[0].as_str().context("Invalid account source")?)?;
-            let target = local_path(
-                state,
-                pair[1].as_str().context("Invalid account destination")?,
-            )?;
+        for (source, target) in &files {
+            let source = local_path(state, source)?;
+            let target = local_path(state, target)?;
             if source.exists() {
                 std::fs::rename(source, target)?;
             }
@@ -621,6 +658,8 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
                 .context("Invalid account transaction record")?;
             state.write_json_transaction_unlocked(name, &row["after"])?;
         }
+        sync_move_parents(state, &files)?;
+        confirm_recovery_configuration(config)?;
         std::fs::remove_file(state.root().join(JOURNAL))?;
         return Ok(());
     }
@@ -642,17 +681,9 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
         }
         state.write_json_transaction_unlocked(name, &row["before"])?;
     }
-    for row in journal["files"]
-        .as_array()
-        .context("Invalid account transaction journal")?
-        .iter()
-        .rev()
-    {
-        let source = local_path(state, row[0].as_str().context("Invalid account source")?)?;
-        let target = local_path(
-            state,
-            row[1].as_str().context("Invalid account destination")?,
-        )?;
+    for (source, target) in files.iter().rev() {
+        let source = local_path(state, source)?;
+        let target = local_path(state, target)?;
         if target.exists() {
             if source.exists() {
                 bail!(
@@ -662,6 +693,17 @@ fn recover_unlocked(state: &State, config: Option<&ConfigWriteGuard>) -> Result<
             std::fs::rename(target, source)?;
         }
     }
+    sync_move_parents(state, &files)?;
+    confirm_recovery_configuration(config)?;
     std::fs::remove_file(state.root().join(JOURNAL))?;
+    Ok(())
+}
+
+fn confirm_recovery_configuration(config: Option<&ConfigWriteGuard>) -> Result<()> {
+    if config.is_some_and(|config| confirm_configuration(&config.path) == Publication::Uncertain) {
+        bail!(
+            "Account recovery is applied; configuration durability is unconfirmed, so its private intent is retained"
+        );
+    }
     Ok(())
 }

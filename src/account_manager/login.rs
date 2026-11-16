@@ -1,4 +1,4 @@
-use super::config::{config_write_lock, write_env_value_locked};
+use super::config::{Publication, config_write_lock, write_env_value_locked};
 use super::recovery::{journal_name, recover_locked, value_digest};
 use super::{config_digest, label_for, read_config};
 use crate::state::State;
@@ -251,26 +251,37 @@ impl LoginTransaction {
             }
             let name = journal_name(&self.account);
             let journal = json!({"account":self.account,"stage":self.stage,"stage_digest":stage_digest,"env_file":config.path,"config_key":key,"config_digest":config_digest(&self.account),"installed":staged});
-            let publication = (|| -> Result<()> {
+            let publication = (|| -> Result<Publication> {
                 self.state.write_json_unlocked(&name, &journal)?;
                 self.state.write_json_unlocked(&target_name, &staged)?;
-                write_env_value_locked(&config, &key, &self.account, None)?;
-                Ok(())
+                write_env_value_locked(&config, &key, &self.account, None)
             })();
-            if let Err(error) = publication {
-                if self.state.root().join(&name).exists() {
-                    if recover_locked(&self.state, &name, &journal, &config)? {
-                        tracing::warn!("Account login committed before a post-publication error");
-                    } else {
-                        return Err(error.context("Could not save account configuration; the incomplete native session was removed"));
-                    }
-                } else {
-                    return Err(error);
+            match publication {
+                Ok(Publication::Uncertain) => {
+                    tracing::warn!(
+                        "Account login is published; its private intent is retained until configuration directory durability is confirmed"
+                    );
                 }
-            } else if std::fs::remove_file(self.state.root().join(&name)).is_err() {
-                tracing::warn!(
-                    "Account login committed; its private recovery marker could not be removed"
-                );
+                Ok(Publication::Durable) => {
+                    if std::fs::remove_file(self.state.root().join(&name)).is_err() {
+                        tracing::warn!(
+                            "Account login committed; its private recovery marker could not be removed"
+                        );
+                    }
+                }
+                Err(error) => {
+                    if self.state.root().join(&name).exists() {
+                        if recover_locked(&self.state, &name, &journal, &config)?.committed {
+                            tracing::warn!(
+                                "Account login committed before a post-publication error"
+                            );
+                        } else {
+                            return Err(error.context("Could not save account configuration; the incomplete native session was removed"));
+                        }
+                    } else {
+                        return Err(error);
+                    }
+                }
             }
         } else {
             if !old.is_null() {
