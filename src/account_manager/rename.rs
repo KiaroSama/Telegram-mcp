@@ -82,6 +82,25 @@ fn retire_completed(state: &State) -> Result<()> {
     Ok(())
 }
 
+/// Caller already holds state_lock. Only cleanup-only receipts may bypass the
+/// ordinary-writer fence; pending transactions still require trusted recovery.
+pub(crate) fn cleanup_completed_rename_locked(state: &State) -> Result<bool> {
+    let metadata = state
+        .root()
+        .join(JOURNAL)
+        .symlink_metadata()
+        .context("Cannot verify the pending account transaction record")?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        bail!("The pending account transaction record is not a regular file");
+    }
+    let journal = state.read_json_unlocked(JOURNAL, Value::Null)?;
+    if !is_completed(state, &journal)? {
+        return Ok(false);
+    }
+    retire_completed(state)?;
+    Ok(true)
+}
+
 fn complete_recovery(state: &State, journal: &Value) -> Result<()> {
     state.write_json_transaction_unlocked(JOURNAL, &completion_receipt(state, journal)?)?;
     retire_completed(state)

@@ -200,6 +200,12 @@ async fn parent_worker_environment_contains_only_loader_and_profile_variables() 
     let unexpected = keys
         .iter()
         .filter(|key| {
+            // Native Windows ARM64 startup supplies this observed metadata name;
+            // the parent still explicitly copies only the same five keys below.
+            #[cfg(all(windows, target_arch = "aarch64"))]
+            if same_name(key, "PROCESSOR_ARCHITECTURE") {
+                return false;
+            }
             !["SystemRoot", "WINDIR", "TEMP", "TMP", "LLVM_PROFILE_FILE"]
                 .iter()
                 .any(|allowed| same_name(key, allowed))

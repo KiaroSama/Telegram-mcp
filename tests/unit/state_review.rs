@@ -227,6 +227,121 @@ fn completed_configured_receipt_cleanup_ignores_removed_configuration_and_active
 }
 
 #[test]
+fn ordinary_cache_writes_retire_confirmed_receipts_without_configuration_or_account_leases() {
+    use fs2::FileExt;
+    for configured in [false, true] {
+        let (root, state) = fixture();
+        let env = root.path().join("selected.env");
+        fs::write(&env, "TELEGRAM_SESSION_NAME_WORK=work\n").unwrap();
+        state
+            .write_json("work.session.json", &authorized_account_snapshot())
+            .unwrap();
+        state.set_ghost_mode(false, Some("work"), None).unwrap();
+        retained_rename_receipt(&state, configured.then_some(env.as_path()));
+        fs::remove_file(&env).unwrap();
+        let leases = ["work", "office"].map(|label| {
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(state.root().join(format!("{label}.session.lock")))
+                .unwrap();
+            FileExt::try_lock_exclusive(&file).unwrap();
+            file
+        });
+        state
+            .update_json("office.session.json", Value::Null, |snapshot| {
+                snapshot["peer_infos"].as_array_mut().unwrap().push(json!(
+                    grammers_session::types::PeerInfo::User {
+                        id: 99,
+                        auth: None,
+                        bot: Some(false),
+                        is_self: Some(false)
+                    }
+                ));
+                Ok(())
+            })
+            .unwrap();
+        state
+            .write_json("unrelated-cache.json", &json!({"healthy":true}))
+            .unwrap();
+        assert!(
+            !state
+                .root()
+                .join("account-rename-transaction.json")
+                .exists()
+        );
+        assert!(!env.exists());
+        assert!(!state.root().join("work.session.json").exists());
+        let cached = state.read_json("office.session.json", Value::Null).unwrap();
+        let peers: Vec<grammers_session::types::PeerInfo> =
+            serde_json::from_value(cached["peer_infos"].clone()).unwrap();
+        assert_eq!(peers.len(), 2);
+        assert!(matches!(
+            &peers[1],
+            grammers_session::types::PeerInfo::User { id: 99, .. }
+        ));
+        assert_eq!(state.ghost_mode(Some("office"), None)["effective"], false);
+        drop(leases);
+    }
+}
+
+#[test]
+fn ordinary_writers_keep_prepared_legacy_and_nonregular_rename_intents_fenced() {
+    let (_root, state) = fixture();
+    state
+        .write_json("work.session.json", &authorized_account_snapshot())
+        .unwrap();
+    state
+        .write_json("sample.json", &json!({"preserve":true}))
+        .unwrap();
+    let mut prepared = retained_rename_receipt(&state, None);
+    prepared["phase"] = json!("prepared");
+    prepared["files"] = json!([["work.session.json", "office.session.json"]]);
+    prepared["rewrites"] = json!([]);
+    let journal = state.root().join("account-rename-transaction.json");
+    let before = fs::read(state.root().join("sample.json")).unwrap();
+    for marker in [prepared, json!({"files":[],"rewrites":[]})] {
+        let bytes = serde_json::to_vec(&marker).unwrap();
+        fs::write(&journal, &bytes).unwrap();
+        assert!(
+            state
+                .write_json("sample.json", &json!({"bad":true}))
+                .is_err()
+        );
+        assert_eq!(fs::read(&journal).unwrap(), bytes);
+        assert_eq!(fs::read(state.root().join("sample.json")).unwrap(), before);
+        assert!(state.root().join("office.session.json").exists());
+        assert!(!state.root().join("work.session.json").exists());
+    }
+    fs::remove_file(&journal).unwrap();
+    fs::create_dir(&journal).unwrap();
+    assert!(
+        state
+            .write_json("sample.json", &json!({"bad":true}))
+            .is_err()
+    );
+    assert!(journal.is_dir());
+    assert_eq!(fs::read(state.root().join("sample.json")).unwrap(), before);
+    #[cfg(unix)]
+    {
+        fs::remove_dir(&journal).unwrap();
+        let outside = state.root().parent().unwrap().join("outside-receipt.json");
+        fs::write(&outside, b"private-outside-canary").unwrap();
+        std::os::unix::fs::symlink(&outside, &journal).unwrap();
+        assert!(
+            state
+                .write_json("sample.json", &json!({"bad":true}))
+                .is_err()
+        );
+        assert!(journal.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(outside).unwrap(), b"private-outside-canary");
+        assert_eq!(fs::read(state.root().join("sample.json")).unwrap(), before);
+    }
+}
+
+#[test]
 fn copied_or_malformed_completed_receipts_fail_closed_without_rewriting_records() {
     use crate::account_manager::recover_rename;
     let (_root, state) = fixture();
@@ -269,6 +384,12 @@ fn copied_or_malformed_completed_receipts_fail_closed_without_rewriting_records(
         let bytes = serde_json::to_vec(&marker).unwrap();
         fs::write(&journal, &bytes).unwrap();
         assert!(recover_rename(&state).is_err());
+        assert!(
+            state
+                .write_json("unrelated-cache.json", &json!({"must":"wait"}))
+                .is_err()
+        );
+        assert!(!state.root().join("unrelated-cache.json").exists());
         assert_eq!(fs::read(&journal).unwrap(), bytes);
         assert_eq!(
             fs::read(state.root().join("office.session.json")).unwrap(),
@@ -285,6 +406,12 @@ fn copied_or_malformed_completed_receipts_fail_closed_without_rewriting_records(
         .unwrap();
     let before = fs::read(other.root().join("office.session.json")).unwrap();
     assert!(recover_rename(&other).is_err());
+    assert!(
+        other
+            .write_json("unrelated-cache.json", &json!({"must":"wait"}))
+            .is_err()
+    );
+    assert!(!other.root().join("unrelated-cache.json").exists());
     assert_eq!(
         fs::read(other.root().join("office.session.json")).unwrap(),
         before
@@ -325,7 +452,7 @@ fn legacy_unversioned_recovery_without_labels_remains_rollback_compatible() {
 #[cfg(unix)]
 #[test]
 fn uncertain_completion_publication_retains_fenced_receipt_until_a_real_retry_confirms_it() {
-    use crate::account_manager::recover_rename;
+    use crate::account_manager::{fail_configuration_sync_for_test, recover_rename};
     let (_root, state) = fixture();
     state
         .write_json("work.session.json", &authorized_account_snapshot())
@@ -347,21 +474,32 @@ fn uncertain_completion_publication_retains_fenced_receipt_until_a_real_retry_co
     assert_eq!(receipt["phase"], "completed");
     assert!(state.root().join("work.session.json").exists());
     assert!(!state.root().join("office.session.json").exists());
+    let fault = fail_configuration_sync_for_test(state.root());
     assert!(
         state
             .write_json("unrelated.json", &json!({"must":"wait"}))
             .is_err()
     );
-    recover_rename(&state).unwrap();
+    assert_eq!(
+        state
+            .read_json("account-rename-transaction.json", Value::Null)
+            .unwrap(),
+        receipt
+    );
+    drop(fault);
+    state
+        .write_json("unrelated.json", &json!({"resumed":true}))
+        .unwrap();
     assert!(
         !state
             .root()
             .join("account-rename-transaction.json")
             .exists()
     );
-    state
-        .write_json("unrelated.json", &json!({"resumed":true}))
-        .unwrap();
+    assert_eq!(
+        state.read_json("unrelated.json", Value::Null).unwrap(),
+        json!({"resumed":true})
+    );
 }
 
 #[test]

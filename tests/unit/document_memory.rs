@@ -90,6 +90,68 @@ fn dropping_the_supervisor_joins_its_thread_before_releasing_captured_state() {
     assert_eq!(Arc::strong_count(&captured), 1);
 }
 
+const MEMORY_PROBE_OUTPUT_LIMIT: usize = 4096;
+const MEMORY_PROBE_READY: &[u8] = b"supervisor-ready-before-input";
+
+struct DrainedMemoryChild {
+    child: std::process::Child,
+    readers: Vec<std::thread::JoinHandle<io::Result<Vec<u8>>>>,
+}
+
+impl DrainedMemoryChild {
+    fn join_output(&mut self) -> Vec<io::Result<Vec<u8>>> {
+        self.readers
+            .drain(..)
+            .map(|reader| {
+                reader.join().unwrap_or_else(|_| {
+                    Err(io::Error::other("Memory probe output reader panicked"))
+                })
+            })
+            .collect()
+    }
+}
+
+impl Drop for DrainedMemoryChild {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = self.join_output();
+    }
+}
+
+fn drain_memory_probe_output(
+    mut pipe: impl io::Read + Send + 'static,
+    mut ready: Option<std::sync::mpsc::SyncSender<()>>,
+) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut retained = Vec::with_capacity(MEMORY_PROBE_OUTPUT_LIMIT);
+        let mut marker = Vec::with_capacity(MEMORY_PROBE_READY.len() + 1024);
+        let mut chunk = [0; 1024];
+        loop {
+            let count = pipe.read(&mut chunk)?;
+            if count == 0 {
+                return Ok(retained);
+            }
+            let keep = count.min(MEMORY_PROBE_OUTPUT_LIMIT - retained.len());
+            retained.extend_from_slice(&chunk[..keep]);
+            if ready.is_some() {
+                marker.extend_from_slice(&chunk[..count]);
+                if marker
+                    .windows(MEMORY_PROBE_READY.len())
+                    .any(|part| part == MEMORY_PROBE_READY)
+                    && let Some(ready) = ready.take()
+                {
+                    let _ = ready.send(());
+                }
+                let discard = marker.len().saturating_sub(MEMORY_PROBE_READY.len() - 1);
+                marker.drain(..discard);
+            }
+            // Retention is bounded; keep consuming after the limit so neither
+            // stdout nor a panic hook's stderr can block the owned supervisor.
+        }
+    })
+}
+
 #[test]
 fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_failure() {
     const CHILD: &str = "TELEGRAM_TEST_PDF_MEMORY_SUPERVISOR";
@@ -105,6 +167,7 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
             )
             .unwrap();
             println!("supervisor-ready-before-input");
+            std::io::Write::flush(&mut std::io::stdout()).unwrap();
             // Touch actual private pages: zero-page reservation alone would
             // exercise virtual memory rather than Darwin's physical ledger.
             let mut allocation = vec![0u8; 32 * 1024 * 1024];
@@ -115,6 +178,24 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
             std::hint::black_box(&allocation);
             std::thread::sleep(Duration::from_secs(10));
             panic!("Native Darwin accounting did not enforce its physical-memory budget");
+        }
+        if mode == "panic" {
+            let original = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                // Exceed both pipe capacities before catch_unwind can return.
+                // This proves that both readers keep draining past retention.
+                let chunk = [b'p'; 4096];
+                for mut output in [
+                    Box::new(std::io::stdout()) as Box<dyn std::io::Write>,
+                    Box::new(std::io::stderr()) as Box<dyn std::io::Write>,
+                ] {
+                    for _ in 0..32 {
+                        std::io::Write::write_all(&mut output, &chunk).unwrap();
+                    }
+                    std::io::Write::flush(&mut output).unwrap();
+                }
+                original(info);
+            }));
         }
         let count = AtomicUsize::new(0);
         let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -147,32 +228,75 @@ fn live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_
         &["excess", "error", "panic"][..]
     };
     for mode in modes {
-        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "documents::worker::memory::tests::live_memory_supervisor_terminates_only_its_own_child_on_excess_or_accounting_failure", "--nocapture"])
             .env(CHILD, mode)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn().unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(4);
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if std::time::Instant::now() > deadline {
-                child.kill().unwrap();
-                let _ = child.wait();
-                panic!("Memory supervisor did not stop its owned {mode} child");
-            }
-            std::thread::sleep(Duration::from_millis(10));
+        let mut probe = DrainedMemoryChild {
+            child,
+            readers: Vec::new(),
         };
-        let output = child.wait_with_output().unwrap();
+        let (started, ready) = std::sync::mpsc::sync_channel(1);
+        probe.readers.push(drain_memory_probe_output(
+            probe.child.stdout.take().unwrap(),
+            Some(started),
+        ));
+        probe.readers.push(drain_memory_probe_output(
+            probe.child.stderr.take().unwrap(),
+            None,
+        ));
+        let outcome = match ready.recv_timeout(Duration::from_secs(10)) {
+            Err(error) => Err(format!(
+                "Owned {mode} child did not report readiness: {error}"
+            )),
+            Ok(()) => {
+                // Process startup and readiness observation have their own bound;
+                // the original enforcement deadline begins only after this proof.
+                let deadline = std::time::Instant::now() + Duration::from_secs(4);
+                loop {
+                    match probe.child.try_wait() {
+                        Ok(Some(status)) => break Ok(status),
+                        Err(error) => {
+                            break Err(format!("Cannot inspect owned {mode} child: {error}"));
+                        }
+                        Ok(None) if std::time::Instant::now() > deadline => {
+                            break Err(format!(
+                                "Memory supervisor did not stop its owned {mode} child"
+                            ));
+                        }
+                        Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                }
+            }
+        };
+        if outcome.is_err() {
+            let _ = probe.child.kill();
+            probe.child.wait().unwrap();
+        }
+        let output = probe.join_output();
+        let stdout = output[0].as_ref().unwrap();
+        let stderr = output[1].as_ref().unwrap();
+        assert!(stdout.len() <= MEMORY_PROBE_OUTPUT_LIMIT);
+        assert!(stderr.len() <= MEMORY_PROBE_OUTPUT_LIMIT);
+        let status = outcome.unwrap_or_else(|error| {
+            panic!(
+                "{error}; bounded stdout: {}; bounded stderr: {}",
+                String::from_utf8_lossy(stdout),
+                String::from_utf8_lossy(stderr)
+            )
+        });
         assert_eq!(
             status.code(),
             Some(MEMORY_EXIT),
             "{mode}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            String::from_utf8_lossy(stderr)
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("supervisor-ready-before-input"));
+        if *mode == "panic" {
+            assert_eq!(stdout.len(), MEMORY_PROBE_OUTPUT_LIMIT);
+            assert_eq!(stderr.len(), MEMORY_PROBE_OUTPUT_LIMIT);
+        }
     }
 }
 

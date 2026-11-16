@@ -15,6 +15,7 @@ pub(crate) use health::authenticated_health_request;
 pub use health::{session_health, session_health_with_state};
 pub use login::{LoginTransaction, begin_login};
 pub use recovery::recover_logins;
+pub(crate) use rename::cleanup_completed_rename_locked;
 pub use rename::{recover_rename, rename_account, rename_configured_account};
 
 /// Public transaction metadata has no configuration values or session payloads.

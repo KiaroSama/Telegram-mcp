@@ -285,7 +285,11 @@ impl State {
             .join("account-rename-transaction.json")
             .symlink_metadata()
         {
-            Ok(_) => bail!("Account rename recovery is pending; private state writes are paused"),
+            Ok(_) => {
+                if !crate::account_manager::cleanup_completed_rename_locked(self)? {
+                    bail!("Account rename recovery is pending; private state writes are paused");
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => {
                 bail!("Cannot verify the account rename journal; private state writes are paused")

@@ -128,10 +128,10 @@ adapters and native CI/distribution/Emoji Studio helpers, alongside the gated co
 metric. Their behavioral suites still run. Neither test assertion lines nor dependency
 source contributes to these percentages. This is an explicit metric change from the
 old Python line/branch collector, not a claim that the two percentages measure
-identical code. A clean post-review Linux checkpoint passed all **1,849 tests**, with
+identical code. A clean post-review Linux checkpoint passed all **1,851 tests**, with
 zero failures or skips and actual rlottie rendering required. Unique physical-line
-coverage measured **88.03% reviewed core (16,970 of 19,277 executable source lines)**
-and **85.54% all production (23,095 of 26,998 executable source lines)**. Exact source
+coverage measured **88.05% reviewed core (16,989 of 19,295 executable source lines)**
+and **85.56% all production (23,114 of 27,016 executable source lines)**. Exact source
 fingerprints and original test-run identifiers remain in the
 individual reports. This is single-platform evidence; the combined CI gate requires
 actual reports from every configured OS/architecture leg. Reviewed inventories for
@@ -210,6 +210,9 @@ do not repeat the login or
 mutation until recovery completes. Completed receipts only authorize cleanup, so a
 receipt that reappears after a crash cannot undo an acknowledged operation or replace
 newer account data.
+Ordinary state writes confirm and retire completed rename/removal receipts automatically
+under state ownership; prepared, malformed or foreign receipts remain fenced until
+trusted recovery.
 
 **Rendered evidence:** structured Telegram metadata and rendered images are separate.
 Native window capture is Windows-specific; other platforms report that restriction.
