@@ -372,7 +372,7 @@ fn client() -> reqwest::Client {
 
 #[tokio::test]
 async fn real_health_v2_proofs_bind_nonce_target_body_and_rotating_generation_credentials() {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use rmcp::{
         ServiceExt,
         transport::{

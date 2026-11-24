@@ -235,7 +235,7 @@ pub fn request_fingerprint(tool: &str, args: &Value) -> Result<String> {
     hash.update(tool.as_bytes());
     hash.update(b"\0");
     hash.update(serde_json::to_vec(&canonical(args))?);
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(crate::lowercase_hex(&hash.finalize()))
 }
 
 fn canonical(value: &Value) -> Value {

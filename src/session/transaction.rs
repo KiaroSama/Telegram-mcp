@@ -66,7 +66,7 @@ impl PersistentSession {
             .values()
             .filter_map(|dc| dc.auth_key.as_ref())
         {
-            let fingerprint = format!("{:x}", Sha256::digest(key));
+            let fingerprint = crate::lowercase_hex(&Sha256::digest(key));
             if leases.contains_key(&fingerprint) {
                 continue;
             }

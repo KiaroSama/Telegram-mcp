@@ -298,7 +298,7 @@ pub(super) fn remove_owned_configuration(
     }) {
         bail!("Several configuration keys define this account; resolve them before removal");
     }
-    use rand::Rng;
+    use rand::RngExt;
     let archive = format!(
         "__removed_{}_{:012x}",
         account.chars().take(41).collect::<String>(),

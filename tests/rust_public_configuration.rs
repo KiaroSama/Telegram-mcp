@@ -88,7 +88,10 @@ async fn public_inventory_cli_omits_raw_session_and_api_hash_in_stdout_stderr_an
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         report["accounts"][0]["config_digest"],
-        format!("{:x}", Sha256::digest(source_text.as_bytes()))
+        Sha256::digest(source_text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(
         report["accounts"][0]["config_key"],
@@ -111,7 +114,10 @@ async fn process_source_precedence_retains_exact_revision_without_emitting_eithe
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         report["accounts"][0]["config_digest"],
-        format!("{:x}", Sha256::digest(process_text.as_bytes()))
+        Sha256::digest(process_text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
 }
 #[tokio::test]

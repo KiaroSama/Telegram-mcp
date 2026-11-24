@@ -1,7 +1,7 @@
 use super::support::*;
 use anyhow::{Result, ensure};
 use base64::Engine;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::net::Ipv4Addr;
 use telegram_mcp::proxy::{

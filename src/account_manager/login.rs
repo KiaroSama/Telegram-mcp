@@ -6,7 +6,7 @@ use super::{config_digest, label_for, read_config};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
-use rand::Rng;
+use rand::RngExt;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

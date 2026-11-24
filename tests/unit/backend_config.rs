@@ -35,7 +35,10 @@ fn public_configuration_projection_preserves_contract_without_credential_or_unre
     assert_eq!(row["config_key"], "TELEGRAM_SESSION_STRING_WORK");
     assert_eq!(
         row["config_digest"],
-        format!("{:x}", Sha256::digest(source_text.as_bytes()))
+        Sha256::digest(source_text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(row["native_session"], false);
     assert_eq!(row["source"], "configuration");
@@ -69,7 +72,10 @@ fn source_preference_and_unicode_whitespace_digest_match_native_binding() {
     assert_eq!(output["accounts"][1]["label"], "work");
     assert_eq!(
         output["accounts"][1]["config_digest"],
-        format!("{:x}", Sha256::digest(source_text.as_bytes()))
+        Sha256::digest(source_text.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(
         output["accounts"][1]["config_key"],

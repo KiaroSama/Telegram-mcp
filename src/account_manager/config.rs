@@ -142,7 +142,7 @@ pub fn capture_process_config() {
 }
 
 pub fn config_digest(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    crate::lowercase_hex(&Sha256::digest(value.as_bytes()))
 }
 
 pub(super) fn state_owner(state: &crate::state::State) -> String {
@@ -161,7 +161,7 @@ pub(super) fn state_owner(state: &crate::state::State) -> String {
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>()
     };
-    format!("{:x}", Sha256::digest(bytes))
+    crate::lowercase_hex(&Sha256::digest(bytes))
 }
 
 /// Resolve the shared service address with the same file and process precedence.
@@ -262,7 +262,7 @@ fn read_config_revision(path: &Path) -> Result<(ConfigSnapshot, bool)> {
     Ok((
         ConfigSnapshot {
             values,
-            digest: format!("{:x}", Sha256::digest(&raw)),
+            digest: crate::lowercase_hex(&Sha256::digest(&raw)),
             path: path.to_owned(),
             process_keys,
         },

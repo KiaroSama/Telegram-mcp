@@ -27,7 +27,7 @@ pub struct Proxy {
 impl Proxy {
     pub fn fingerprint(&self) -> Result<String> {
         let bytes = serde_json::to_vec(self)?;
-        Ok(format!("{:x}", Sha256::digest(bytes))[..20].to_owned())
+        Ok(crate::lowercase_hex(&Sha256::digest(bytes))[..20].to_owned())
     }
     pub fn describe(&self) -> Result<Value> {
         Ok(json!({"id":self.fingerprint()?,"kind":self.kind,"host":self.host,"port":self.port}))

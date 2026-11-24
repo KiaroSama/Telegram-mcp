@@ -102,10 +102,8 @@ pub fn git(args: &[&str]) -> Result<String> {
 
 pub fn digest(path: &std::path::Path) -> Result<String> {
     use sha2::{Digest, Sha256};
-    Ok(format!(
-        "{:x}",
-        Sha256::digest(std::fs::read(path).context("Required digest input unavailable")?)
-    ))
+    let digest = Sha256::digest(std::fs::read(path).context("Required digest input unavailable")?);
+    Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Check the actual image format and machine before attaching target provenance.

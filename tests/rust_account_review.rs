@@ -53,7 +53,7 @@ fn completed_login_fixture(state: &State, stage: &str, staged: &Value) -> Value 
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>()
     };
-    json!({"version":2,"phase":"completed","owner":format!("{:x}",Sha256::digest(path)),"account":"work","stage":stage,"stage_digest":config_digest(&serde_json::to_string(staged).unwrap()),"committed":true})
+    json!({"version":2,"phase":"completed","owner":Sha256::digest(path).iter().map(|byte| format!("{byte:02x}")).collect::<String>(),"account":"work","stage":stage,"stage_digest":config_digest(&serde_json::to_string(staged).unwrap()),"committed":true})
 }
 
 // Keep the fully qualified names used by the CI test inventory.

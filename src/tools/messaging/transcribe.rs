@@ -158,7 +158,7 @@ pub async fn transcribe_with(api: &dyn Telegram, settings: &Settings, a: &Value)
         .and_then(|attr| attr.get("duration"))
         .cloned()
         .unwrap_or(Value::Null);
-    let key=api.cache_key().map(|session|format!("{:x}",Sha256::digest(json!({"session":session,"peer":peer,"message_id":mid,"document_id":document["id"],"engine":settings.engine,"model":settings.cache_model(),"language":settings.language,"endpoint":settings.endpoint.as_ref().map(url::Url::as_str)}).to_string().as_bytes())));
+    let key=api.cache_key().map(|session|crate::lowercase_hex(&Sha256::digest(json!({"session":session,"peer":peer,"message_id":mid,"document_id":document["id"],"engine":settings.engine,"model":settings.cache_model(),"language":settings.language,"endpoint":settings.endpoint.as_ref().map(url::Url::as_str)}).to_string().as_bytes())));
     let deadline = tokio::time::Instant::now() + settings.timeout;
     let bucket = key.map(flight).transpose()?;
     let mut cached = if let Some(bucket) = &bucket {

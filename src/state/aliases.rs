@@ -172,7 +172,7 @@ impl State {
                     migrated["legacy_unscoped"][&alias] = migrated_record;
                 }
             }
-            migrated["legacy_source_digest"] = json!(format!("{:x}", Sha256::digest(&bytes)));
+            migrated["legacy_source_digest"] = json!(crate::lowercase_hex(&Sha256::digest(&bytes)));
         }
         self.write_json_unlocked("aliases-v2.json", &migrated)
     }

@@ -1,7 +1,7 @@
 use super::{config_digest, label_for, read_config, session_validate};
 use crate::state::State;
 use anyhow::{Context, Result, bail};
-use rand::Rng;
+use rand::RngExt;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::time::Duration;

@@ -14,13 +14,7 @@ use std::{
 struct ConfigurationRevision([u8; 32]);
 impl Serialize for ConfigurationRevision {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        const DIGITS: &[u8; 16] = b"0123456789abcdef";
-        let mut hex = String::with_capacity(64);
-        for byte in self.0 {
-            hex.push(DIGITS[(byte >> 4) as usize] as char);
-            hex.push(DIGITS[(byte & 15) as usize] as char);
-        }
-        serializer.serialize_str(&hex)
+        serializer.serialize_str(&crate::lowercase_hex(&self.0))
     }
 }
 #[derive(Serialize)]
@@ -131,7 +125,12 @@ pub(super) fn source_from(
     None
 }
 pub fn generation(label: &str) -> Result<Option<String>> {
-    Ok(source(label)?.map(|(key, value)| format!("{key}:{:x}", Sha256::digest(value.as_bytes()))))
+    Ok(source(label)?.map(|(key, value)| {
+        format!(
+            "{key}:{}",
+            crate::lowercase_hex(&Sha256::digest(value.as_bytes()))
+        )
+    }))
 }
 pub fn account_labels() -> Result<Vec<String>> {
     let mut labels = BTreeSet::new();

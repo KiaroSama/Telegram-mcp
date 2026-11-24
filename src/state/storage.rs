@@ -1,7 +1,7 @@
 use super::State;
 use anyhow::{Context, Result, bail};
 use fs2::FileExt;
-use rand::Rng;
+use rand::RngExt;
 use serde_json::Value;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
