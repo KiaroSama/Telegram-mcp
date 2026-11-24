@@ -258,6 +258,35 @@ fn configured_rename_preserves_a_native_snapshot_bound_to_an_unrelated_account()
 }
 
 #[test]
+fn rename_moves_native_secret_chat_state_without_rewriting_it() {
+    let (_dir, state) = fixture();
+    let custody = state.root().join("secret-chats");
+    std::fs::create_dir(&custody).unwrap();
+    let suffixes = [
+        ".v1.enc",
+        ".store.key",
+        ".migration.json",
+        ".history.v1.json",
+        ".media.v1.json",
+        ".archive.v1.json",
+    ];
+    for suffix in suffixes {
+        std::fs::write(custody.join(format!("work{suffix}")), suffix).unwrap();
+    }
+
+    telegram_mcp::account_manager::rename_account(&state, "work", "office").unwrap();
+
+    for suffix in suffixes {
+        assert!(!custody.join(format!("work{suffix}")).exists(), "{suffix}");
+        assert_eq!(
+            std::fs::read(custody.join(format!("office{suffix}"))).unwrap(),
+            suffix.as_bytes(),
+            "{suffix}"
+        );
+    }
+}
+
+#[test]
 fn rename_recovery_refuses_unrelated_record_changes_before_any_rollback() {
     let (_dir, state) = fixture();
     let before = json!({"accounts":{"work":false}});

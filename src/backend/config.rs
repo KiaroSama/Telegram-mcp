@@ -68,7 +68,7 @@ fn configuration_report(
                     revision,
                     source: "configuration",
                     backend: "grammers",
-                    secret_chat_available: false,
+                    secret_chat_available: true,
                 },
             );
         }
@@ -76,7 +76,7 @@ fn configuration_report(
     Ok(PublicConfigurationReport {
         entries: entries.into_values().collect(),
         backend: "grammers",
-        secret_chat_available: false,
+        secret_chat_available: true,
     })
 }
 fn current_configuration_report() -> Result<PublicConfigurationReport> {

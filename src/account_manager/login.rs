@@ -314,7 +314,7 @@ impl LoginTransaction {
         // The new snapshot is durable. The staging copy is removed by Drop; the
         // single private backup keeps a failed operational rollback recoverable.
         Ok(
-            json!({"saved":true,"account":self.account,"user_id":actual_user_id.to_string(),"backend":"grammers","secret_chat_available":false}),
+            json!({"saved":true,"account":self.account,"user_id":actual_user_id.to_string(),"backend":"grammers","secret_chat_available":true}),
         )
     }
 }

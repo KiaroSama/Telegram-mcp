@@ -1,9 +1,9 @@
 # Native API coverage
 
-The native catalogue currently contains 352 nonsecret tools. The server validates
-that every advertised tool has a native dispatch route before startup. A route is not
-by itself proof of semantic parity: actual request/response, validation and failure
-behavior is exercised by the Rust suites and the critical verification category gate.
+The native catalogue has 386 tools: 352 ordinary tools and 34 secret-chat tools.
+Before startup, the server checks that every advertised tool has a native dispatch
+route. The Rust tests exercise requests, responses and failures. The route check
+alone does not establish parity.
 
 | Native domain | Catalogue tools |
 | --- | --- |
@@ -13,6 +13,7 @@ behavior is exercised by the Rust suites and the critical verification category 
 | `local` | 24 |
 | `messaging` | 76 |
 | `visual` | 8 |
+| [Secret chats](COMMANDS.md#secret-chat-tools) | 34 |
 
 See [COMMANDS.md](COMMANDS.md) for exact tool names and the runtime schema for current
 arguments/defaults. Telegram API layer 233 is pinned with grammers 0.12.0. Native local
@@ -42,15 +43,23 @@ source-line coverage must reach 85%, with the full all-production metric publish
 separately and each scope decision recorded in `.github/coverage-scope.json`. Test counts and category labels do not substitute for
 reviewing the assertions or for authorized live Telegram checks.
 
-## Deferred and restricted capabilities
+## Secret chats
 
-Secret-chat integration awaits the owner’s Rust rewrite of the separate encryption
-backend. No encrypted chat/key migration, peer erasure or secret archive parity is
-claimed. Native Windows window capture remains platform-specific. Optional TGS rendering
-requires a reviewed rlottie shared library. Export output must not be described as
-byte-identical Telegram Desktop/Qt ICC/mozjpeg output unless its actual oracle tests prove
-that property. Missing native lifecycle guarantees remain explicit in
-[migration notes](MIGRATION.md).
+[`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat) handles
+native MTProto 2.0 secret chats over the existing account connection. The server
+commits incoming encrypted updates to durable storage before acknowledging them.
+On first open, it creates a read-only backup of a supported legacy secret-chat store
+and migrates it losslessly before connecting. See the [migration notes](MIGRATION.md#secret-chat-store-migration)
+and the [34 tools in six groups](COMMANDS.md#secret-chat-tools).
+`export_secret_chat` does not support `peer_user` filtering. The runtime refuses a
+nonempty filter instead of exporting an unfiltered chat.
+
+## Restricted capabilities
+
+Native window capture requires Windows. Optional TGS rendering requires a reviewed
+rlottie shared library. Native export output is not necessarily byte-identical to
+Telegram Desktop, Qt or mozjpeg output. See the [migration notes](MIGRATION.md) for
+lifecycle and export limits.
 
 Useful upstream changes are reviewed at exact revisions listed in MIGRATION.md. Chat
 and forum-topic allowlists preserve source/destination checking and refusal of operations

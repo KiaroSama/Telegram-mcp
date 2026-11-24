@@ -49,19 +49,84 @@ pub fn check_deferred_custody(state: &State, label: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check authorization identity as well as the account label, before importing
-/// any legacy material or starting a sender/update consumer. No state is written.
+/// Verify custody against the selected authorization before a sender can start.
 pub fn check_deferred_custody_with_config(
     state: &State,
     label: &str,
     config: &crate::account_manager::ConfigSnapshot,
 ) -> Result<()> {
-    check_deferred_custody(state, label)?;
+    check_custody_identity(state, label, config)?;
+    let directory = crate::secret::custody_dir(state.root())?;
+    if !crate::secret::has_legacy(&directory, label)? {
+        return Ok(());
+    }
+    let native = state.read_json(&format!("{label}.session.json"), serde_json::Value::Null)?;
+    let mut snapshot: Snapshot = serde_json::from_value(native).map_err(|_| {
+        anyhow::anyhow!(
+            "Legacy secret-chat custody needs an imported local authorization before migration"
+        )
+    })?;
+    let identity = snapshot.peer_infos.iter().find_map(|peer| match peer {
+        PeerInfo::User {
+            id,
+            is_self: Some(true),
+            bot,
+            ..
+        } => Some((*id, *bot)),
+        _ => None,
+    });
+    let key = snapshot
+        .dc_options
+        .iter_mut()
+        .find(|option| option.id == snapshot.home_dc)
+        .and_then(|option| option.auth_key.take())
+        .map(zeroize::Zeroizing::new)
+        .context("No home authorization key is available for secret-chat custody")?;
+    let owner = crate::secret::legacy_owner(&directory, label)?;
+    let Some((user, bot)) = identity else {
+        bail!(
+            "No verified Telegram user identity is available for legacy secret-chat custody; verify the session owner before publishing migration"
+        );
+    };
+    if bot == Some(true) {
+        bail!("Bot authorization cannot adopt legacy secret-chat custody");
+    }
+    if owner.is_some_and(|expected| expected != user) {
+        bail!("Verified session user does not match legacy secret-chat custody owner");
+    }
+    if snapshot.authorization_origin == "native" && owner.is_none() {
+        bail!("Fresh native authorization cannot adopt unverified legacy secret-chat custody");
+    }
+    let binding = crate::secret::session_binding(user, snapshot.home_dc, &key)?;
+    drop(crate::secret::migrate_legacy(
+        state.root(),
+        label,
+        &binding,
+    )?);
+    Ok(())
+}
+
+impl PersistentSession {
+    pub(crate) fn check_custody_identity(
+        state: &State,
+        label: &str,
+        config: &crate::account_manager::ConfigSnapshot,
+    ) -> Result<()> {
+        check_custody_identity(state, label, config)
+    }
+}
+
+fn check_custody_identity(
+    state: &State,
+    label: &str,
+    config: &crate::account_manager::ConfigSnapshot,
+) -> Result<()> {
+    validate_label(label)?;
     let native = state.read_json(&format!("{label}.session.json"), serde_json::Value::Null)?;
     if native["authorization_origin"].as_str() == Some("native") {
         return Ok(());
     }
-    let directory = state.root().join("secret-chats");
+    let directory = crate::secret::custody_dir(state.root())?;
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -78,8 +143,11 @@ pub fn check_deferred_custody_with_config(
         let Some(name) = name.to_str() else {
             bail!("Cannot identify deferred custody owner; no connection was opened");
         };
+        if name == "legacy-backups" {
+            continue;
+        }
         let owner = name.strip_suffix(".owner.json").unwrap_or(name);
-        if validate_label(owner).is_ok() {
+        if owner != label && validate_label(owner).is_ok() {
             owners.insert(owner.to_owned());
         }
     }

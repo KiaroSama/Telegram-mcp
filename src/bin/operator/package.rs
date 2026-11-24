@@ -37,9 +37,7 @@ pub fn package(source: &Path, output: &Path, client: &str) -> Result<()> {
             .remove("category");
         let mut text = serde_json::to_vec_pretty(&manifest)?;
         text.push(b'\n');
-        payload.retain(|name, _| {
-            matches!(name.as_str(), "README.md" | "mcp_config.json") || name.starts_with("skills/")
-        });
+        payload.retain(|name, _| name == "README.md" || name.starts_with("skills/"));
         payload.insert("plugin.json".into(), text);
     }
     for name in ["LICENSE", "NOTICE"] {

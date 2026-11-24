@@ -1,6 +1,6 @@
 [package]
 name = "telegram-mcp"
-version = "3.0.0"
+version = "3.1.0"
 edition = "2024"
 rust-version = "1.100"
 description = "Native Rust Telegram MCP server powered by grammers"
@@ -22,11 +22,13 @@ clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 flate2 = "1"
 futures-util = "0.3"
-grammers-client = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", features = ["markdown", "html", "proxy"] }
-grammers-mtsender = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", features = ["proxy"] }
+grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", features = ["markdown", "html", "proxy"] }
+grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", features = ["proxy"] }
 grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
-grammers-session = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86", default-features = false, features = ["serde"] }
+grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", default-features = false, features = ["serde"] }
 grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
+kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62" }
+sha1 = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 hmac = "0.13"
 libc = "0.2"
@@ -44,7 +46,8 @@ roxmltree = "0.21"
 rusqlite = { version = "0.43", default-features = false, features = ["bundled", "limits", "hooks"] }
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision"] }
+num-bigint = "0.5"
 sha2 = "0.11"
 subtle = "=2.6.1"
 tempfile = "3"

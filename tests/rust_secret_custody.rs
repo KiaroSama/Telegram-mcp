@@ -4,7 +4,7 @@ use grammers_session::{Session, SessionData, types::UpdateState};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 use telegram_mcp::{
-    session::{PersistentSession, check_deferred_custody},
+    session::{PersistentSession, check_deferred_custody, check_deferred_custody_with_config},
     state::State,
 };
 
@@ -45,6 +45,110 @@ impl Fixture {
         self.state
             .read_json("work.session.json", Value::Null)
             .unwrap()
+    }
+}
+
+#[test]
+fn configured_custody_migrates_only_for_the_bound_account() {
+    let f = Fixture::new();
+    let mut session = SessionData::default();
+    session
+        .dc_options
+        .get_mut(&session.home_dc)
+        .unwrap()
+        .auth_key = Some([73; 256]);
+    let native = json!({"home_dc":session.home_dc,"dc_options":session.dc_options.values().collect::<Vec<_>>(),"peer_infos":[],"updates_state":session.updates_state,"authorization_origin":"legacy"});
+    f.state.write_json("work.session.json", &native).unwrap();
+    let directory = f.directory();
+    let legacy = br#"{"chats":{},"in":{},"out":{},"settings":{}}"#;
+    let config = telegram_mcp::account_manager::ConfigSnapshot {
+        values: Default::default(),
+        digest: String::new(),
+        process_keys: Default::default(),
+        path: f.state.root().join("test.env"),
+    };
+    let source = directory.join("work");
+    let owner = directory.join("work.owner.json");
+    std::fs::write(&source, legacy).unwrap();
+    std::fs::write(&owner, br#"{"user_id":91}"#).unwrap();
+    // An imported session without a verified cached self peer must not bind or publish custody.
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    assert!(!directory.join("work.v1.enc").exists());
+    assert!(!directory.join("work.migration.json").exists());
+    let wrong_self = grammers_session::types::PeerInfo::User {
+        id: 92,
+        auth: None,
+        bot: Some(false),
+        is_self: Some(true),
+    };
+    let wrong_native = json!({"home_dc":session.home_dc,"dc_options":session.dc_options.values().collect::<Vec<_>>(),"peer_infos":[wrong_self],"updates_state":session.updates_state,"authorization_origin":"legacy"});
+    f.state
+        .write_json("work.session.json", &wrong_native)
+        .unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    assert!(!directory.join("work.v1.enc").exists());
+    assert!(!directory.join("work.migration.json").exists());
+    let verified_self = grammers_session::types::PeerInfo::User {
+        id: 91,
+        auth: None,
+        bot: Some(false),
+        is_self: Some(true),
+    };
+    let verified_native = json!({"home_dc":session.home_dc,"dc_options":session.dc_options.values().collect::<Vec<_>>(),"peer_infos":[verified_self],"updates_state":session.updates_state,"authorization_origin":"legacy"});
+    f.state
+        .write_json("work.session.json", &verified_native)
+        .unwrap();
+    std::fs::write(&source, b"broken-json").unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"broken-json");
+    assert!(!directory.join("work.v1.enc").exists());
+    std::fs::write(&source, legacy).unwrap();
+    check_deferred_custody_with_config(&f.state, "work", &config).unwrap();
+    assert!(directory.join("work.v1.enc").is_file());
+
+    use grammers_client::Client;
+    use grammers_mtsender::SenderPool;
+    use grammers_session::storages::MemorySession;
+    use kiaro_secret_chat::{
+        manager::SecretChatManager, storage::MemoryStorage, transport::GrammersTransport,
+    };
+    use telegram_mcp::secret::HISTORY_HANDLER_LABEL;
+
+    let pool = SenderPool::new(Arc::new(MemorySession::from(session)), 1);
+    let manager = SecretChatManager::new(
+        GrammersTransport::new(Client::new(pool.handle.clone())),
+        MemoryStorage::default(),
+        "ab".repeat(32),
+        Default::default(),
+    )
+    .unwrap();
+    manager
+        .on_async("MessageReceived", HISTORY_HANDLER_LABEL, |_| async {
+            Ok(())
+        })
+        .unwrap();
+    manager
+        .on("ServiceActionReceived", HISTORY_HANDLER_LABEL, |_| Ok(()))
+        .unwrap();
+    manager
+        .on("ChatClosed", HISTORY_HANDLER_LABEL, |_| Ok(()))
+        .unwrap();
+    assert!(directory.join("work.migration.json").is_file());
+    let backup = std::fs::read_dir(directory.join("legacy-backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(std::fs::read(backup.join("work")).unwrap(), legacy);
+    std::fs::write(&owner, br#"{"user_id":92}"#).unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    #[cfg(windows)]
+    for entry in std::fs::read_dir(backup).unwrap() {
+        let entry = entry.unwrap();
+        let original = directory.join(entry.file_name());
+        let permissions = std::fs::metadata(original).unwrap().permissions();
+        std::fs::set_permissions(entry.path(), permissions).unwrap();
     }
 }
 

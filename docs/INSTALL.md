@@ -1,26 +1,26 @@
 # Native Rust installation
 
-Telegram MCP v3.0.0 supports Windows and Linux on x64 and arm64. If you are replacing a Python installation, read the [migration notes](MIGRATION.md) before moving any account state. Keep existing private account and encryption stores intact.
+The native Telegram MCP server supports Windows and Linux on x64 and arm64. If you are replacing a Python installation, read the [migration notes](MIGRATION.md) before moving any account state. Keep existing private account and encryption stores intact.
 
 ## Build or obtain a native artifact
 
-Choose the archive for your operating system and CPU on [GitHub Releases](https://github.com/KiaroSama/Telegram-mcp/releases).
+Choose the archive for your operating system and CPU on [GitHub Releases](https://github.com/KiaroSama/Telegram-mcp/releases). Replace `VERSION` below with the version in the release tag, without the leading `v`.
 
 | System | Architecture | Archive |
 | --- | --- | --- |
-| Windows | x64 | `telegram-mcp-v3.0.0-windows-x64.zip` |
-| Windows | arm64 | `telegram-mcp-v3.0.0-windows-arm64.zip` |
-| Linux | x64 | `telegram-mcp-v3.0.0-linux-x64.tar.gz` |
-| Linux | arm64 | `telegram-mcp-v3.0.0-linux-arm64.tar.gz` |
+| Windows | x64 | `telegram-mcp-vVERSION-windows-x64.zip` |
+| Windows | arm64 | `telegram-mcp-vVERSION-windows-arm64.zip` |
+| Linux | x64 | `telegram-mcp-vVERSION-linux-x64.tar.gz` |
+| Linux | arm64 | `telegram-mcp-vVERSION-linux-arm64.tar.gz` |
 
 Each release includes a `.sha256` checksum and a detached `.sig` for each archive, along with `SHA256SUMS`, `SHA256SUMS.sig`, `publisher-cert.pem` and `publisher-key.pem`. Check the certificate and public key against [the pinned publisher metadata](signing/publisher.json) from a trusted copy of the repository. Before extracting, use the pinned public key to verify the archive's `.sig`, or verify `SHA256SUMS.sig` and compare the archive's hash with its entry in `SHA256SUMS`. To calculate the hash, use `Get-FileHash -Algorithm SHA256` on Windows or `sha256sum` on Linux, followed by the archive path. On Windows, verify the Authenticode signatures on the `.exe` files in `bin/` against the pinned certificate. To check GitHub build provenance, run `gh attestation verify <archive> --repo KiaroSama/Telegram-mcp`.
 
-All three executables (`telegram-mcp`, `emoji-studio` and `operator-plugin`) are in `bin/`. Windows executables have the `.exe` extension. The Windows archive keeps `start-mcp.ps1`, `Manage-Accounts.ps1` and `account-manager/` at its root. If a Linux extraction tool drops executable permissions, run `chmod +x bin/telegram-mcp bin/emoji-studio bin/operator-plugin` in the extracted directory.
+All three executables (`telegram-mcp`, `emoji-studio` and `operator-plugin`) are in `bin/`. Windows executables have the `.exe` extension. The Windows archive keeps `start-mcp.ps1` and `Manage-Accounts.ps1` at its root. If a Linux extraction tool drops executable permissions, run `chmod +x bin/telegram-mcp bin/emoji-studio bin/operator-plugin` in the extracted directory.
 
 To build from source, install [Rust through rustup](https://rustup.rs/). The repository selects Rust 1.100.0. Windows needs the MSVC build tools and Windows SDK. Native Windows arm64 builds also need arm64 `clang` and `clang-cl` on `PATH`. Linux needs its C compiler, linker and system development libraries.
 
 ```bash
-git clone --branch v3.0.0 https://github.com/KiaroSama/Telegram-mcp.git
+git clone --branch vVERSION https://github.com/KiaroSama/Telegram-mcp.git
 cd Telegram-mcp
 cargo build --locked --release --bin telegram-mcp --bin emoji-studio --bin operator-plugin
 ```
@@ -41,7 +41,7 @@ PDF parsing runs in a separate process with a 25 MiB input budget, bounded decom
 
 ## Configure credentials and authorize an account
 
-Copy the [example configuration](https://github.com/KiaroSama/Telegram-mcp/blob/v3.0.0/.env.example) to a private `.env` in the directory where you run setup. The example is in the source tree, separate from the binary archives. Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` to your application credentials from [my.telegram.org/apps](https://my.telegram.org/apps). Process environment variables take precedence over the selected file.
+Copy `.env.example` from the source tree at your selected release tag to a private `.env` in the directory where you run setup. The binary archives do not include the example. Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` to your application credentials from [my.telegram.org/apps](https://my.telegram.org/apps). Process environment variables take precedence over the selected file.
 `--config /absolute/path/to/private.env` (or `TELEGRAM_ENV_FILE`) selects an explicit
 file for headless clients; without it ordinary commands use `.env` from their working
 directory. Login and account-manager flows also provide `--env-file` for their selected
@@ -64,17 +64,19 @@ For an explicitly configured legacy source, the native runtime validates and imp
 supported Telethon SQLite schema7/8 or StringSession authorization into its own private
 store. SQLite input is read through a read-only copy; the source bytes are not upgraded
 or overwritten. An active owner, unexpected schema, WAL state, changed source generation
-or conflicting native authorization is refused rather than reset. Existing secret-chat
-keys/sidecars are preserved and are not interpreted by this import.
+or conflicting native authorization is refused rather than reset.
 
-A configured/imported legacy authorization associated with a known owned secret-chat
-sidecar is blocked **before any network connection**. grammers' full difference flow
-can implicitly acknowledge qts even without an explicit ReceivedQueue call, so reusing
-that authorization while its encryption backend is deferred could consume encrypted
-updates. A fresh, separate native authorization remains supported. Keep the original
-files; deleting a sidecar to bypass this gate would defeat its custody protection.
-Detection covers the known owned-store layouts inspected by the runtime and does not
-claim to discover unknown or external key stores.
+On the first open of an account with a supported legacy secret-chat store, the
+server makes a read-only backup of the original files, then migrates the store
+before connecting. If backup, migration or custody initialization fails, the
+server refuses to connect. Keep the original files and the backup private. Do
+not delete them to bypass an error. See [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
+
+When `TELEGRAM_ALLOWED_CHAT_IDS` is set, add `secret/123` to allow the secret
+chat with wire ID `123`. A bare `123` authorizes only the cloud peer. Copying
+into a secret chat requires permission for the cloud source and the secret
+chat destination. Account-wide secret-chat tools are unavailable under an
+allowlist.
 
 The account manager uses staged login transactions bound to the selected configuration
 key/digest and expected account identity. A failed or mismatched login preserves the
@@ -205,7 +207,7 @@ pwsh -NoProfile -File .\start-mcp.ps1
 pwsh -NoProfile -File .\Manage-Accounts.ps1
 ```
 
-`start-mcp.ps1` launches the compiled service. `Manage-Accounts.ps1` manages accounts through the native CLI and uses the `.env` beside the script. Keep the `account-manager/` directory with the launchers. Set `TELEGRAM_MCP_BINARY` to the full path to `telegram-mcp.exe` when using a binary stored elsewhere. The four launcher test suites run on Windows in CI.
+`start-mcp.ps1` launches the compiled service. `Manage-Accounts.ps1` manages accounts through the native CLI and uses the `.env` beside the script. Set `TELEGRAM_MCP_BINARY` to the full path to `telegram-mcp.exe` when using a binary stored elsewhere. The Rust launcher tests run both scripts on Windows in CI.
 
 ## Docker
 

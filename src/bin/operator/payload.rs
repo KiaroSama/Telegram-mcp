@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
+use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -39,9 +40,6 @@ pub fn client_directory(name: &str) -> Result<&'static str> {
 pub fn files() -> BTreeSet<String> {
     let mut files = [
         "plugin.json",
-        "mcp.json",
-        ".mcp.json",
-        "mcp_config.json",
         "docs/operator-plugin.md",
         ".claude-plugin/plugin.json",
         ".claude-plugin/marketplace.json",
@@ -140,7 +138,7 @@ pub fn outside_payload(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-fn check_parents(source: &Path, path: &Path) -> Result<()> {
+pub(super) fn check_parents(source: &Path, path: &Path) -> Result<()> {
     let mut parent = source.to_owned();
     for component in path.parent().into_iter().flat_map(Path::components) {
         parent.push(component.as_os_str());
@@ -150,6 +148,16 @@ fn check_parents(source: &Path, path: &Path) -> Result<()> {
         );
     }
     Ok(())
+}
+
+fn declares_mcp(value: &Value) -> bool {
+    match value {
+        Value::Object(fields) => {
+            fields.contains_key("mcpServers") || fields.values().any(declares_mcp)
+        }
+        Value::Array(items) => items.iter().any(declares_mcp),
+        _ => false,
+    }
 }
 
 pub fn read_payload(source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -207,8 +215,12 @@ pub fn read_payload(source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
         let bytes = fs::read(path)?;
         std::str::from_utf8(&bytes).context("A package document is not UTF-8")?;
         if file.ends_with(".json") {
-            serde_json::from_slice::<serde_json::Value>(&bytes)
+            let manifest: Value = serde_json::from_slice(&bytes)
                 .with_context(|| format!("Invalid package JSON: {file}"))?;
+            ensure!(
+                !declares_mcp(&manifest),
+                "Package manifest declares mcpServers: {file}"
+            );
         }
         let key = if file == "docs/operator-plugin.md" {
             "README.md".to_owned()
