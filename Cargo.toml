@@ -22,12 +22,12 @@ clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 flate2 = "1"
 futures-util = "0.3"
-grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "983414f50a5b61f935930dfcb0dd82c8b41a99fd", features = ["markdown", "html", "proxy"] }
-grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "983414f50a5b61f935930dfcb0dd82c8b41a99fd", features = ["proxy"] }
+grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", features = ["markdown", "html", "proxy"] }
+grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", features = ["proxy"] }
 grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
-grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "983414f50a5b61f935930dfcb0dd82c8b41a99fd", default-features = false, features = ["serde"] }
+grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", default-features = false, features = ["serde"] }
 grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
-kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "983414f50a5b61f935930dfcb0dd82c8b41a99fd" }
+kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62" }
 sha1 = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 hmac = "0.13"

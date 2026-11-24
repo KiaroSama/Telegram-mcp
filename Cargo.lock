@@ -27,6 +27,7 @@ dependencies = [
  "cipher",
  "cpubits",
  "cpufeatures",
+ "zeroize",
 ]
 
 [[package]]
@@ -1172,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=983414f50a5b61f935930dfcb0dd82c8b41a99fd#983414f50a5b61f935930dfcb0dd82c8b41a99fd"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=c6b7673a7ba9150900621c9fc8b7a2094b86ef62#c6b7673a7ba9150900621c9fc8b7a2094b86ef62"
 dependencies = [
  "futures-util",
  "grammers-crypto",
@@ -1225,7 +1226,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtsender"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=983414f50a5b61f935930dfcb0dd82c8b41a99fd#983414f50a5b61f935930dfcb0dd82c8b41a99fd"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=c6b7673a7ba9150900621c9fc8b7a2094b86ef62#c6b7673a7ba9150900621c9fc8b7a2094b86ef62"
 dependencies = [
  "bytes",
  "grammers-mtproto",
@@ -1243,7 +1244,7 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=983414f50a5b61f935930dfcb0dd82c8b41a99fd#983414f50a5b61f935930dfcb0dd82c8b41a99fd"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=c6b7673a7ba9150900621c9fc8b7a2094b86ef62#c6b7673a7ba9150900621c9fc8b7a2094b86ef62"
 dependencies = [
  "grammers-tl-types",
  "serde",
@@ -1895,8 +1896,9 @@ dependencies = [
 [[package]]
 name = "kiaro-secret-chat"
 version = "0.3.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=983414f50a5b61f935930dfcb0dd82c8b41a99fd#983414f50a5b61f935930dfcb0dd82c8b41a99fd"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=c6b7673a7ba9150900621c9fc8b7a2094b86ef62#c6b7673a7ba9150900621c9fc8b7a2094b86ef62"
 dependencies = [
+ "aes",
  "aes-gcm",
  "base64 0.22.1",
  "getrandom 0.4.3",
