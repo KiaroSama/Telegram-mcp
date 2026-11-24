@@ -328,7 +328,7 @@ jobs:
           openssl dgst -sha256 -sign "$RUNNER_TEMP/signing-key.pem" -out SHA256SUMS.sig SHA256SUMS
           openssl dgst -sha256 -verify publisher-key.pem -signature SHA256SUMS.sig SHA256SUMS
       - *cleanup-signing-key
-      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             dist/telegram-mcp-${{ env.RELEASE_TAG }}-windows-x64.zip
