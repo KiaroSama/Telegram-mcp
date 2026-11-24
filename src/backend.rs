@@ -508,23 +508,67 @@ pub async fn login_transaction(
         .request_login_code(&phone, hash)
         .await
         .context("Could not request login code")?;
-    let code = prompt("Telegram login code: ")?;
-    native.0.session.check_health()?;
-    match native.0.client.sign_in(&token, &code).await {
-        Ok(_) => {}
-        Err(SignInError::PasswordRequired(token)) => {
-            let password = rpassword::prompt_password("Two-step verification password: ")?;
+    let password_token = retry_auth(
+        async || {
+            let code = prompt("Telegram login code: ")?;
+            if code.is_empty() {
+                eprintln!("No code entered; nothing was submitted.");
+                return Ok(None);
+            }
             native.0.session.check_health()?;
-            native
-                .0
-                .client
-                .check_password(token, password)
-                .await
-                .context("Two-step verification failed")?;
-        }
-        Err(_) => bail!("Telegram sign-in failed; verify the code before trying again"),
+            match native.0.client.sign_in(&token, &code).await {
+                Ok(_) => Ok(Some(None)),
+                Err(SignInError::PasswordRequired(token)) => Ok(Some(Some(token))),
+                Err(SignInError::InvalidCode) => {
+                    eprintln!("Telegram rejected that code. Check the newest message and try again.");
+                    Ok(None)
+                }
+                Err(SignInError::SignUpRequired) => {
+                    bail!("Create the account in an official Telegram client before logging in here")
+                }
+                Err(_) => bail!("Telegram sign-in could not be completed; no session was saved"),
+            }
+        },
+        "Telegram login was not accepted after three attempts; start a new login if the code expired",
+    )
+    .await?;
+    if password_token.is_some() {
+        let mut challenge = password_token;
+        retry_auth(
+            async || {
+                let password = rpassword::prompt_password("Two-step verification password: ")?;
+                if password.is_empty() {
+                    eprintln!("No password entered; nothing was submitted.");
+                    return Ok(None);
+                }
+                native.0.session.check_health()?;
+                let token = challenge
+                    .take()
+                    .context("Two-step verification challenge is missing")?;
+                match native.0.client.check_password(token, password).await {
+                    Ok(_) => Ok(Some(())),
+                    Err(SignInError::InvalidPassword(token)) => {
+                        challenge = Some(token);
+                        eprintln!("Telegram rejected that password. Try again.");
+                        Ok(None)
+                    }
+                    Err(_) => bail!("Telegram two-step verification could not be completed"),
+                }
+            },
+            "Telegram two-step verification was not accepted after three attempts",
+        )
+        .await?;
     }
     native.0.session.check_health()?;
+    anyhow::ensure!(
+        native
+            .0
+            .client
+            .is_authorized()
+            .await
+            .context("Could not verify Telegram authorization")?,
+        "Telegram has not authorized this session; nothing was saved"
+    );
     let id = native
         .0
         .client
@@ -538,10 +582,73 @@ pub async fn login_transaction(
     eprintln!("Account authorized; the native session was saved privately");
     Ok(result)
 }
+async fn retry_auth<T>(
+    mut attempt: impl AsyncFnMut() -> Result<Option<T>>,
+    exhausted: &str,
+) -> Result<T> {
+    for _ in 0..3 {
+        if let Some(result) = attempt().await? {
+            return Ok(result);
+        }
+    }
+    bail!("{exhausted}")
+}
+
 fn prompt(message: &str) -> Result<String> {
     eprint!("{message}");
     std::io::stderr().flush()?;
     let mut value = String::new();
-    std::io::stdin().read_line(&mut value)?;
+    if std::io::stdin().read_line(&mut value)? == 0 {
+        bail!("Login input closed; no session was saved");
+    }
     Ok(value.trim().to_owned())
+}
+
+#[cfg(test)]
+mod login_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn rejected_login_input_retries_only_up_to_three_attempts() {
+        let mut attempts = 0;
+        let result = retry_auth(
+            async || {
+                attempts += 1;
+                Ok((attempts == 2).then_some(7))
+            },
+            "exhausted",
+        )
+        .await
+        .unwrap();
+        assert_eq!((result, attempts), (7, 2));
+
+        let mut attempts = 0;
+        let failure = retry_auth::<()>(
+            async || {
+                attempts += 1;
+                Ok(None)
+            },
+            "exhausted",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failure.to_string(), "exhausted");
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn failed_login_transport_is_not_retried_as_rejected_input() {
+        let mut attempts = 0;
+        let failure = retry_auth::<()>(
+            async || {
+                attempts += 1;
+                bail!("transport failure");
+            },
+            "exhausted",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failure.to_string(), "transport failure");
+        assert_eq!(attempts, 1);
+    }
 }

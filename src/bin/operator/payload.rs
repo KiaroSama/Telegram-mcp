@@ -12,11 +12,13 @@ pub const SKILLS: [(&str, &str); 5] = [
     ("telegram-access-audit", "audit-matrix.md"),
     ("telegram-format-reconstruction", "fidelity.md"),
 ];
-pub const TREES: [&str; 4] = [
+pub const TREES: [&str; 6] = [
     "skills",
     ".claude-plugin",
     ".codex-plugin",
+    ".agents/plugins",
     ".cursor-plugin",
+    ".antigravity-plugin",
 ];
 
 pub fn client_directory(name: &str) -> Result<&'static str> {
@@ -37,11 +39,17 @@ pub fn client_directory(name: &str) -> Result<&'static str> {
 pub fn files() -> BTreeSet<String> {
     let mut files = [
         "plugin.json",
+        "mcp.json",
+        ".mcp.json",
+        "mcp_config.json",
         "docs/operator-plugin.md",
-        ".codex-plugin/plugin.json",
-        ".cursor-plugin/plugin.json",
         ".claude-plugin/plugin.json",
         ".claude-plugin/marketplace.json",
+        ".codex-plugin/plugin.json",
+        ".agents/plugins/marketplace.json",
+        ".cursor-plugin/plugin.json",
+        ".cursor-plugin/marketplace.json",
+        ".antigravity-plugin/plugin.json",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -132,6 +140,18 @@ pub fn outside_payload(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn check_parents(source: &Path, path: &Path) -> Result<()> {
+    let mut parent = source.to_owned();
+    for component in path.parent().into_iter().flat_map(Path::components) {
+        parent.push(component.as_os_str());
+        ensure!(
+            plain(&parent)?.is_dir(),
+            "Every package document parent must be an unlinked directory"
+        );
+    }
+    Ok(())
+}
+
 pub fn read_payload(source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
     let source = checked_source(source)?;
     let files = files();
@@ -172,23 +192,24 @@ pub fn read_payload(source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
         Ok(())
     }
     for tree in TREES {
+        check_parents(&source, Path::new(tree))?;
         visit(&source.join(tree), &source, &files, &directories)?;
     }
     let mut result = BTreeMap::new();
     for file in files {
-        for parent in Path::new(&file).ancestors().skip(1) {
-            ensure!(
-                plain(&source.join(parent))?.is_dir(),
-                "Every package document parent must be an unlinked directory"
-            );
-        }
+        check_parents(&source, Path::new(&file))?;
         let path = source.join(&file);
+        let metadata = plain(&path)?;
         ensure!(
-            plain(&path)?.is_file() && fs::metadata(&path)?.len() <= 1_000_000,
+            metadata.is_file() && metadata.len() <= 1_000_000,
             "A package file is invalid or exceeds the byte limit"
         );
         let bytes = fs::read(path)?;
         std::str::from_utf8(&bytes).context("A package document is not UTF-8")?;
+        if file.ends_with(".json") {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .with_context(|| format!("Invalid package JSON: {file}"))?;
+        }
         let key = if file == "docs/operator-plugin.md" {
             "README.md".to_owned()
         } else {
@@ -197,4 +218,44 @@ pub fn read_payload(source: &Path) -> Result<BTreeMap<String, Vec<u8>>> {
         result.insert(key, bytes);
     }
     Ok(result)
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_a_linked_parent_even_when_its_document_is_regular() {
+        let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let source = root.path().join("source");
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for name in files()
+            .into_iter()
+            .filter(|name| name != "docs/operator-plugin.md")
+        {
+            let target = source.join(&name);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::copy(repository.join(name), target).unwrap();
+        }
+        let docs = root.path().join("unrelated documents");
+        fs::create_dir(&docs).unwrap();
+        fs::write(docs.join("operator-plugin.md"), b"Synthetic document").unwrap();
+        let link = source.join("docs");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&docs, &link).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("cmd.exe")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&docs)
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "Could not construct a directory junction fixture"
+        );
+        let error = read_payload(&source).unwrap_err();
+        assert!(error.to_string().contains("Linked"), "{error:#}");
+    }
 }

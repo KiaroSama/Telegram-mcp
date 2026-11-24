@@ -39,13 +39,14 @@ impl Settings {
             if state.resolve_file(&path, crate::state::FileAccess::Write)? != path {
                 bail!("Export folder changed before reservation");
             }
-            let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
-            {
+            let created = {
                 use std::os::unix::fs::DirBuilderExt;
-                builder.mode(0o700);
-            }
-            match builder.create(&path) {
+                std::fs::DirBuilder::new().mode(0o700).create(&path)
+            };
+            #[cfg(not(unix))]
+            let created = std::fs::create_dir(&path);
+            match created {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error).context("Cannot reserve the export folder"),
                 Ok(()) => {}

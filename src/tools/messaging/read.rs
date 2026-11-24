@@ -19,10 +19,71 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
         | "read_rich_message"
         | "get_media_info"
         | "get_media_details"
-        | "list_disappearing_media" => Some(run(api, name, a).await),
+        | "list_disappearing_media" => Some(run(api, name, a).await.map(with_formatting)),
         _ => None,
     }
 }
+
+fn with_formatting(mut result: Value) -> Value {
+    describe_formatting(&mut result);
+    if let Some(message) = result.get_mut("message").filter(|value| value.is_object()) {
+        describe_formatting(message);
+    }
+    for key in ["messages", "fetched_messages"] {
+        if let Some(messages) = result.get_mut(key).and_then(Value::as_array_mut) {
+            for message in messages {
+                describe_formatting(message);
+            }
+        }
+    }
+    result
+}
+
+fn describe_formatting(message: &mut Value) {
+    // Media-only and rich-block results are not ordinary message records.
+    if !message["message"].is_string() {
+        return;
+    }
+    let kinds: std::collections::BTreeSet<_> = message["entities"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|entity| {
+            Some(match entity["_"].as_str()? {
+                "messageEntityBold" => "bold",
+                "messageEntityItalic" => "italic",
+                "messageEntityUnderline" => "underline",
+                "messageEntityStrike" => "strikethrough",
+                "messageEntitySpoiler" => "spoiler",
+                "messageEntityCode" => "code",
+                "messageEntityPre" => "pre",
+                "messageEntityBlockquote" => "blockquote",
+                "messageEntityTextUrl" => "text_url",
+                "messageEntityCustomEmoji" => "custom_emoji",
+                "messageEntityMention" => "mention",
+                "messageEntityMentionName" => "mention_name",
+                "messageEntityUrl" => "url",
+                "messageEntityEmail" => "email",
+                "messageEntityPhone" => "phone",
+                "messageEntityHashtag" => "hashtag",
+                "messageEntityBotCommand" => "bot_command",
+                "messageEntityCashtag" => "cashtag",
+                "messageEntityBankCard" => "bank_card",
+                "messageEntityFormattedDate" => "formatted_date",
+                "messageEntityDiffInsert" => "diff_insert",
+                "messageEntityDiffReplace" => "diff_replace",
+                "messageEntityDiffDelete" => "diff_delete",
+                "messageEntityTonAddress" => "ton_address",
+                "messageEntityUnknown" => "unknown",
+                _ => return None,
+            })
+        })
+        .collect();
+    if !kinds.is_empty() {
+        message["formatting"] = json!(kinds);
+    }
+}
+
 async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     if name == "search_global" {
         return global(api, a).await;

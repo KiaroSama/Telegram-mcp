@@ -204,6 +204,13 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         "leave_chat" => {
             let p = peer(api, a, "chat_id").await?;
+            ensure!(
+                !matches!(
+                    kind(&p),
+                    "inputPeerUser" | "inputPeerUserFromMessage" | "inputPeerSelf"
+                ),
+                "Private chats have no membership to leave. Use delete_chat to remove the conversation from your chat list."
+            );
             if is_channel(&p) {
                 api.invoke("channels.leaveChannel", json!({"channel":channel(&p)?}))
                     .await

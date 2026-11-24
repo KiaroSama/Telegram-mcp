@@ -63,7 +63,7 @@ pub fn run(directory: &Path) -> Result<()> {
     let hits = measured.iter().filter(|(_, hit)| **hit).count();
     let percent = hits as f64 * 100.0 / measured.len() as f64;
     summary(&format!(
-        "### Combined native line coverage\n\nAll production source: {all_hits}/{} executable lines, **{all_percent:.2}%**.\n\nReviewed application core: {hits}/{} executable lines, **{percent:.2}%** (required: 85%). Both metrics combine actual base and renderer evidence from ARM64 and x86_64 on Linux, macOS and Windows. `.github/coverage-scope.json` records each included/excluded path and its legacy measurement basis; full-source evidence remains available.\n",
+        "### Combined native line coverage\n\nAll production source: {all_hits}/{} executable lines, **{all_percent:.2}%**.\n\nReviewed application core: {hits}/{} executable lines, **{percent:.2}%** (required: 85%). Both metrics combine the eight base and renderer reports from ARM64 and x86_64 on Linux and Windows. `.github/coverage-scope.json` records each included/excluded path and its legacy measurement basis; full-source evidence remains available.\n",
         lines.len(),
         measured.len()
     ))?;

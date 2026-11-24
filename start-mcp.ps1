@@ -66,7 +66,7 @@ function Get-NativeBinary {
         return (Get-Item -LiteralPath $env:TELEGRAM_MCP_BINARY).FullName
     }
     $names = if ($env:OS -eq 'Windows_NT') { @('telegram-mcp.exe', 'telegram-mcp') } else { @('telegram-mcp', 'telegram-mcp.exe') }
-    foreach ($directory in @('', 'target/release', 'target/debug')) {
+    foreach ($directory in @('bin', '', 'target/release', 'target/debug')) {
         foreach ($name in $names) {
             $relative = if ($directory) { Join-Path $directory $name } else { $name }
             $candidate = Join-Path $Root $relative
@@ -75,7 +75,7 @@ function Get-NativeBinary {
     }
     $command = Get-Command telegram-mcp -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
-    throw 'The native telegram-mcp executable is missing. Run cargo build --locked --release, or set TELEGRAM_MCP_BINARY.'
+    throw 'The native telegram-mcp executable is missing. Place it in bin/, run cargo build --locked --release, or set TELEGRAM_MCP_BINARY.'
 }
 
 function Get-StateDirectory {
@@ -277,13 +277,14 @@ function Stop-OtherInstances {
 
     $checkout = [regex]::Escape($Root.TrimEnd('\', '/'))
     $launcherPattern = $checkout + '[\\/]start-mcp\.ps1(?:"|\s|$)'
-    $nativePattern = $checkout + '[\\/](?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe"?\s+serve(?:\s|$)'
-    $runners = 'pwsh.exe', 'powershell.exe', 'telegram-mcp.exe'
+    $nativePattern = $checkout + '[\\/](?:(?:bin|target[\\/](?:release|debug))[\\/])?telegram-mcp(?:\.exe)?"?\s+serve(?:\s|$)'
+    $nativeRunners = 'telegram-mcp.exe', 'telegram-mcp'
+    $runners = @('pwsh.exe', 'powershell.exe') + $nativeRunners
     $targets = @($processes | Where-Object {
-            $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
+            $_.CommandLine -and $_.Name -in $runners -and
             -not $protected.ContainsKey([int] $_.ProcessId) -and
-            (($_.Name.ToLowerInvariant() -eq 'telegram-mcp.exe' -and $_.CommandLine -match $nativePattern) -or
-                ($_.Name.ToLowerInvariant() -ne 'telegram-mcp.exe' -and $_.CommandLine -match $launcherPattern))
+            (($_.Name -in $nativeRunners -and $_.CommandLine -match $nativePattern) -or
+                ($_.Name -notin $nativeRunners -and $_.CommandLine -match $launcherPattern))
         })
     $targetIds = @($targets | ForEach-Object { [int] $_.ProcessId })
     # The top of each tree only; its children go with it.

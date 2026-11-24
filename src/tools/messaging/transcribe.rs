@@ -30,6 +30,10 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
             }
             .await,
         ),
+        "transcribe_audio" => Some(
+            async { transcribe_audio_with_state(crate::state::State::global()?.as_ref(), a).await }
+                .await,
+        ),
         "rate_voice_transcription" => Some(rate(api, a).await),
         _ => None,
     }
@@ -61,6 +65,45 @@ fn flight(key: String) -> Result<Flight> {
     let flight = Arc::new(tokio::sync::Mutex::new(None));
     cache.insert(key, (Instant::now(), Arc::clone(&flight)));
     Ok(flight)
+}
+
+pub(crate) async fn transcribe_audio_with_state(
+    state: &crate::state::State,
+    a: &Value,
+) -> Result<Value> {
+    let snapshot = crate::account_manager::current_config()?;
+    let settings = Settings::from_values(&snapshot.values, &json!({"engine":"whisper"}))?;
+    transcribe_audio_with(state, &settings, a).await
+}
+
+/// Transcribe an allowed local file without accessing Telegram or a hosted provider.
+async fn transcribe_audio_with(
+    state: &crate::state::State,
+    settings: &Settings,
+    a: &Value,
+) -> Result<Value> {
+    let path = std::path::Path::new(args::text(a, "file_path")?);
+    if settings.disabled {
+        return Ok(json!({"transcribed":false,"reason":"transcription_disabled"}));
+    }
+    ensure!(
+        settings.engine == "whisper",
+        "Local audio requires native Whisper"
+    );
+    let path = state.resolve_file(path, crate::state::FileAccess::Read)?;
+    settings.preflight()?;
+    let deadline = tokio::time::Instant::now() + settings.timeout;
+    let mut result = tokio::time::timeout_at(
+        deadline,
+        whisper::transcribe_file(state, settings, &path, deadline),
+    )
+    .await
+    .context("Local transcription exceeded its time budget")??;
+    result["source"] = json!("whisper");
+    result["model"] = json!(settings.display_model());
+    result["note"] = json!(NOTE);
+    result["untrusted_content"] = json!(true);
+    Ok(result)
 }
 
 /// Injectable settings make endpoint/privacy and concurrency behavior testable
@@ -144,7 +187,7 @@ pub async fn transcribe_with(api: &dyn Telegram, settings: &Settings, a: &Value)
             "groq" | "openai" => {
                 hosted::transcribe(api, settings, document, video.is_some()).await?
             }
-            "whisper" => whisper::transcribe(api, settings, document).await?,
+            "whisper" => whisper::transcribe(api, settings, document, deadline).await?,
             _ => unreachable!(),
         })
     };

@@ -53,8 +53,7 @@ foreach ($script in $scripts) {
     }
 }
 
-# Test native discovery itself with empty, unexecuted filename fixtures. Both
-# launchers must find a local release/debug build without an override or PATH.
+# Test native discovery with empty files so neither lookup executes a binary.
 $nativeLookupRoot = Join-Path ([IO.Path]::GetTempPath()) ('tg-native-lookup-' + [guid]::NewGuid())
 $savedLookupOverride = $env:TELEGRAM_MCP_BINARY
 try {
@@ -67,15 +66,23 @@ try {
             [IO.File]::WriteAllText((Join-Path (Join-Path $nativeLookupRoot $directory) $name), '')
         }
     }
-    foreach ($path in @((Join-Path $projectRoot 'start-mcp.ps1'), (Join-Path $projectRoot 'account-manager/Native.ps1'))) {
-        $lookup = [regex]::Match([IO.File]::ReadAllText($path), '(?ms)^function Get-NativeBinary \{.*?^\}').Value
-        if (-not $lookup) { throw "Native discovery helper is missing from $path" }
-        & {
-            param($Definition, $Root, $Name)
-            . ([ScriptBlock]::Create($Definition))
-            $expected = Join-Path (Join-Path $Root 'target/release') $Name
-            if ((Get-NativeBinary -Root $Root) -ne $expected) { throw 'Native lookup missed the platform release binary.' }
-        } $lookup $nativeLookupRoot $nativeName
+    foreach ($preferred in 'target/release', 'bin') {
+        $expected = Join-Path (Join-Path $nativeLookupRoot $preferred) $nativeName
+        if ($preferred -eq 'bin') {
+            [void] (New-Item -ItemType Directory -Path (Join-Path $nativeLookupRoot 'bin'))
+            [IO.File]::WriteAllText((Join-Path $nativeLookupRoot $nativeName), '')
+            [IO.File]::WriteAllText($expected, '')
+        }
+        foreach ($path in @((Join-Path $projectRoot 'start-mcp.ps1'), (Join-Path $projectRoot 'account-manager/Native.ps1'))) {
+            $lookup = [regex]::Match([IO.File]::ReadAllText($path), '(?ms)^function Get-NativeBinary \{.*?^\}').Value
+            if (-not $lookup) { throw "Native discovery helper is missing from $path" }
+            & {
+                param($Definition, $Root, $Expected, $LauncherPath)
+                . ([ScriptBlock]::Create($Definition))
+                $actual = Get-NativeBinary -Root $Root
+                if ($actual -ne $Expected) { throw "Native lookup in ${LauncherPath}: expected $Expected, got $actual." }
+            } $lookup $nativeLookupRoot $expected $path
+        }
     }
 }
 finally {
@@ -98,16 +105,19 @@ $launcher = Get-Content -LiteralPath $scripts[0] -Raw
         [pscustomobject] @{ ProcessId = 5000002; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\target\debug\telegram-mcp.exe" session-health --key TELEGRAM_SESSION_NAME_WORK' },
         [pscustomobject] @{ ProcessId = 5000003; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\target\release\telegram-mcp.exe" serve --http 127.0.0.1:8765' },
         [pscustomobject] @{ ProcessId = 5000004; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh.exe -File "C:\fixture checkout\start-mcp.ps1"' },
-        [pscustomobject] @{ ProcessId = 5000005; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = 'C:\foreign\telegram-mcp.exe serve' }
+        [pscustomobject] @{ ProcessId = 5000005; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = 'C:\foreign\telegram-mcp.exe serve' },
+        [pscustomobject] @{ ProcessId = 5000006; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\bin\telegram-mcp.exe" serve' },
+        [pscustomobject] @{ ProcessId = 5000007; ParentProcessId = 0; Name = 'telegram-mcp'; CommandLine = '"C:\fixture checkout\bin\telegram-mcp" serve' },
+        [pscustomobject] @{ ProcessId = 5000008; ParentProcessId = 0; Name = 'telegram-mcp.exe'; CommandLine = '"C:\fixture checkout\bin\telegram-mcp.exe" login --account work' }
     )
     $script:killed = @()
     function Get-CimInstance { param($ClassName) $script:processFixtures }
     function Get-Process { param($Id) $null }
     function taskkill.exe { $script:killed += $args }
     $trees = @(Get-ServerTrees -Root $checkout)
-    if ((($trees | Sort-Object) -join ',') -ne '5000003,5000004') { throw 'Account manager matched a non-server CLI invocation.' }
+    if ((($trees | Sort-Object) -join ',') -ne '5000003,5000004,5000006,5000007') { throw 'Account manager selected the wrong server processes.' }
     $stopped = Stop-OtherInstances -Root $checkout -WaitSeconds 0
-    if ((($stopped.Stopped | Sort-Object) -join ',') -ne '5000003,5000004') { throw 'Launcher takeover matched a non-server CLI invocation.' }
+    if ((($stopped.Stopped | Sort-Object) -join ',') -ne '5000003,5000004,5000006,5000007') { throw 'Launcher takeover selected the wrong server processes.' }
 } $projectRoot $launcher
 
 # State discovery uses the native canonical root for explicit overrides and the

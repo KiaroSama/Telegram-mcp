@@ -3,7 +3,7 @@
   "legacy_commit": "bd4b454c5392ef084ab265b92ca89ebc04d596df",
   "legacy_pyproject_sha256": "3f13c61b2c9a4b2054e976f8f52be5b151855deb50f38d434d9503b8a3f781e1",
   "floor_percent": 85,
-  "metric": "Union of executable source-line hits across all twelve native base/renderer legs: ARM64 and x86_64 on Linux, macOS and Windows; separate all-production metric is always published.",
+  "metric": "Union of executable source-line hits across all eight native base and renderer legs: ARM64 and x86_64 on Linux and Windows. A separate metric covers all production source.",
   "include": {
     "src/account_manager.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/account_manager/config.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
@@ -11,7 +11,8 @@
     "src/account_manager/health.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/account_manager/login.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/account_manager/recovery.rs": "Native account login transaction recovery supplements measured account_manager/login.rs; full file retained.",
-    "src/account_manager/rename.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
+    "src/account_manager/rename/mod.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
+    "src/account_manager/rename/recovery.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/args.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/backend.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/backend/config.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",

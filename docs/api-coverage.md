@@ -1,6 +1,6 @@
 # Native API coverage
 
-The native catalogue currently contains 351 nonsecret tools. The server validates
+The native catalogue currently contains 352 nonsecret tools. The server validates
 that every advertised tool has a native dispatch route before startup. A route is not
 by itself proof of semantic parity: actual request/response, validation and failure
 behavior is exercised by the Rust suites and the critical verification category gate.
@@ -11,13 +11,16 @@ behavior is exercised by the Rust suites and the critical verification category 
 | `documents and upload preparation` | 2 |
 | `identity` | 148 |
 | `local` | 24 |
-| `messaging` | 75 |
+| `messaging` | 76 |
 | `visual` | 8 |
 
 See [COMMANDS.md](COMMANDS.md) for exact tool names and the runtime schema for current
 arguments/defaults. Telegram API layer 233 is pinned with grammers 0.12.0. Native local
 adapters bridge gaps in high-level grammers helpers through typed-schema-validated
-raw requests rather than retaining a Telethon process.
+raw requests rather than retaining a Telethon process. The pinned grammers sender
+requests missed updates on the existing account pool after a home-DC disconnect.
+`transcribe_audio` uses an allowed local file and returns Whisper segment times in
+seconds. It has no hosted-engine or Telegram fallback.
 
 ## Verification boundaries
 

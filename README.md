@@ -1,124 +1,105 @@
-# Telegram MCP — Rust
+<div align="center">
 
-[![Rust builds and tests](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml/badge.svg?branch=codex%2Frust-rewrite)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml?query=branch%3Acodex%2Frust-rewrite)
-[![Rust lint](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/rust-lint-format.yml/badge.svg?branch=codex%2Frust-rewrite)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/rust-lint-format.yml)
-[![CodeQL](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/codeql.yml/badge.svg?branch=codex%2Frust-rewrite)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/codeql.yml)
-[![Gitleaks](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/gitleaks.yml/badge.svg?branch=codex%2Frust-rewrite)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/gitleaks.yml)
-[![Rust](https://img.shields.io/badge/Rust-1.100%2B-orange)](https://www.rust-lang.org/)
-[![grammers](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20233-2CA5E0)](https://codeberg.org/Lonami/grammers)
-[![MCP SDK](https://img.shields.io/badge/MCP%20Rust%20SDK-3.10-6E56CF)](https://github.com/modelcontextprotocol/rust-sdk)
-[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+# Telegram MCP
 
-Telegram account tools for MCP clients, rewritten around **grammers** and the official
-**Rust MCP SDK**. The application, protocol adapters, storage and CI helpers use Rust.
-The existing Windows launchers and their PowerShell tests are retained by explicit
-request and launch the compiled executable.
+**Use your own Telegram account from an MCP client.**
 
-**Migration branch:** completion requires equivalent native behavior and the preserved
-CI verification types, not merely a successful build. The historical baseline is 6,117
-collected cases across 302 suites, plus four PowerShell suites. Exact test-count parity
-was explicitly waived; meaningful Rust tests and honest capability reporting remain required. Read [migration status and scope](docs/MIGRATION.md) before replacing an
-existing installation. Live Telegram behavior requires account credentials and is
-reported separately from offline tests.
+[![CI workflows on main](https://img.shields.io/badge/CI-Windows%20%7C%20Linux%2064--bit-16a34a)](.github/workflows/tests.yml)
+[![GPL-3.0-or-later license](https://img.shields.io/badge/license-GPL--3.0--or--later-2563eb)](LICENSE)
+[![Release v3.0.0](https://img.shields.io/badge/release-v3.0.0-ea580c)](Cargo.toml)
+[![Core test coverage floor 85 percent](https://img.shields.io/badge/coverage-85%25%2B%20core-0d9488)](docs/api-coverage.md)
+[![Built with Rust 1.100.0](https://img.shields.io/badge/rust-1.100.0-8b5cf6)](Cargo.toml)
+[![Runs on Windows and Linux 64-bit](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%2064--bit-0891b2)](.github/workflows/release.yml)
+[![Install from GitHub releases or Cargo](https://img.shields.io/badge/install-release%20%7C%20cargo-4f46e5)](docs/INSTALL.md)
+[![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7)](docs/COMMANDS.md)
+[![Repository source size: 7.05 MB](https://img.shields.io/badge/repo%20size-7.05%20MB-ca8a04)](Cargo.toml)
+[![grammers 0.12 on Telegram layer 233](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20233-15803d)](docs/MIGRATION.md)
+[![Official Rust MCP SDK rmcp 3.10](https://img.shields.io/badge/mcp%20sdk-rmcp%203.10-b45309)](Cargo.toml)
+[![Supports 5 agent plugin formats](https://img.shields.io/badge/plugins-5%20formats-334155)](docs/operator-plugin.md)
+[![352 native non-secret MCP tools](https://img.shields.io/badge/tools-352%20native-7c3aed)](docs/api-coverage.md)
+[![CI includes CodeQL and Gitleaks workflows](https://img.shields.io/badge/security-CodeQL%20%7C%20Gitleaks-c2410c)](.github/workflows)
+[![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)
 
-**Secret chats are deferred.** The owner is rewriting `Telethon-Secret-Chat` separately.
-This branch does not connect the Python package or claim that grammers itself provides
-its encryption, key custody or secret-chat history. Existing private session and key
-stores must be preserved until a reviewed migration is available. Known owned
-secret-chat sidecars block imported/legacy authorization before network startup;
-a fresh separate native authorization can serve ordinary chats. See the
-[custody gate](docs/MIGRATION.md#deliberate-limits-and-migration-cautions).
+</div>
 
-## Install and build
+Telegram MCP can read and search chats, send messages, handle media, and manage groups and channels within the account's Telegram permissions. Version 3.0.0 uses `grammers` 0.12.0 from [Codeberg](https://codeberg.org/Lonami/grammers) at Telegram API layer 233 and the [official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk) (`rmcp` 3.10). The server does not need Python or a virtual environment.
 
-Install [Rust](https://rustup.rs/) and a native linker for your operating system, then:
+## Install
+
+Choose an archive from [GitHub Releases](https://github.com/KiaroSama/Telegram-mcp/releases) for Windows or Linux on x64 or arm64. After extraction, the server is at `bin/telegram-mcp.exe` on Windows and `bin/telegram-mcp` on Linux. If the Linux file is not executable, run `chmod +x bin/telegram-mcp`.
+
+To build from source, install [Rust 1.100.0 through rustup](https://rustup.rs/) and a native linker. Windows needs the MSVC build tools and Windows SDK. Linux needs its C compiler, linker and system development libraries. In a checkout of the release source, run:
 
 ```bash
-git clone --branch codex/rust-rewrite https://github.com/KiaroSama/Telegram-mcp.git
-cd Telegram-mcp
 cargo build --locked --release --bin telegram-mcp --bin emoji-studio --bin operator-plugin
 ```
 
-The executable is `target/release/telegram-mcp` on Linux/macOS and
-`target/release/telegram-mcp.exe` on Windows. CI builds and uploads native release
-artifacts for both **ARM64 and x86_64 on Linux, macOS and Windows** on every push and PR.
-Artifacts identify the actual commit, compiler and `Cargo.lock` digest in `build.json`.
-They include all three native CLIs and their SHA-256 values. Follow
-[artifact permission and media-tool setup](docs/INSTALL.md) after extraction.
-No package is published to crates.io by this repository.
+Cargo puts the executables in `target/release/`. See [installation](docs/INSTALL.md) for optional media dependencies, artifact verification and state configuration.
 
-Copy `.env.example` to a private `.env` and replace the invalid example API credentials
-with your own application ID and hash from [my.telegram.org/apps](https://my.telegram.org/apps).
-Authorize interactively:
+### Authorize an account
+
+Copy the source tree's [.env.example](.env.example) to a private `.env`. Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` using your application credentials from [my.telegram.org/apps](https://my.telegram.org/apps). From a terminal with `telegram-mcp` on `PATH`, run:
 
 ```bash
-./target/release/telegram-mcp login --account default
-./target/release/telegram-mcp accounts --json
+telegram-mcp --config .env login --account default
+telegram-mcp --config .env accounts --json
 ```
 
-Login codes and two-factor passwords belong in the interactive terminal. Never place
-them in chat, MCP arguments, committed examples or logs. A native grammers session is
-an authorization credential. Configured supported legacy sessions are validated and
-imported without modifying their source; conflicting or active authorization is refused. See [installation](docs/INSTALL.md) for account and state details.
+Enter login codes and two-factor passwords at the terminal prompt. Keep the `.env` and native session files private. If you already use a Python installation, read the [migration notes](docs/MIGRATION.md) before replacing it. The native importer validates supported legacy sessions without changing their source files and refuses conflicting or active authorization.
 
-## Connect an MCP client
+### Windows launchers
 
-For a client that starts the service over stdio, point it to the **absolute compiled
-binary path** and pass `serve`:
-
-```json
-{
-  "mcpServers": {
-    "telegram-mcp": {
-      "command": "/absolute/path/to/Telegram-mcp/target/release/telegram-mcp",
-      "args": ["--config", "/absolute/path/to/private.env", "serve"]
-    }
-  }
-}
-```
-
-Windows uses the equivalent absolute `.exe` path. The server reserves stdout for the
-MCP protocol. Its diagnostics and private runtime state are separate.
-
-For shared clients, start the authenticated HTTP service:
-
-```bash
-./target/release/telegram-mcp serve --http 127.0.0.1:8765
-```
-
-Use its `/mcp` endpoint with the configured bearer token. A non-loopback listener
-requires TLS with a matching `TELEGRAM_HTTP_TLS_CERT` / `TELEGRAM_HTTP_TLS_KEY`
-PEM pair and an explicitly configured private token of at least 32 characters.
-Clients must trust the certificate and use HTTPS. Keep tokens in private client
-configuration, never the repository's integration examples. Transport setup and the
-shared-service bridge are described in [installation](docs/INSTALL.md) and
-[service operation](docs/service-supervision.md).
-
-On Windows, the preserved launchers invoke the native executable:
+Run these with PowerShell 7 from the extracted Windows archive or a source checkout with a release build. If the binary is stored elsewhere, set `TELEGRAM_MCP_BINARY` to its full path.
 
 ```powershell
 pwsh -NoProfile -File .\start-mcp.ps1
 pwsh -NoProfile -File .\Manage-Accounts.ps1
 ```
 
-## Tools and boundaries
+`start-mcp.ps1` launches the compiled server. `Manage-Accounts.ps1` uses the native CLI to manage accounts.
 
-Tools cover ordinary chats, contacts, messages, media, administration, forums, polls,
-stories, saved content, Telegram Business and account diagnostics. Read the
-[command catalogue](docs/COMMANDS.md), [API coverage](docs/api-coverage.md) and
-[exposure filters](docs/exposed-tools-groups.md). Telegram access rights, Premium
-requirements and server-side limits still apply.
+## Connect an MCP client
 
-Read operations preserve the distinction between fetching content and sending a seen
-signal. IDs that exceed JavaScript's exact integer range are represented as decimal
-strings. Message text and entity offsets preserve UTF-16 semantics; content received
-from Telegram remains untrusted input. Local files are restricted to configured roots.
-Mutations that need the owner's approval use a separate genuine terminal approval,
-not an MCP argument that a model can approve for itself.
+For stdio, configure your client to start the executable with `serve`. Use the absolute path to the executable in `bin/` for a release archive or in `target/release/` for a Cargo build. On Windows use the `.exe` and escape backslashes in JSON.
 
-The [operator plugin](docs/operator-plugin.md) provides five portable instruction
-workflows. Installing skills does not register an MCP connection, authenticate an
-account or authorize any target action.
+```json
+{
+  "mcpServers": {
+    "telegram-mcp": {
+      "command": "/absolute/path/to/Telegram-mcp/bin/telegram-mcp",
+      "args": ["--config", "/absolute/path/to/private.env", "serve"]
+    }
+  }
+}
+```
+
+For a shared service, set `TELEGRAM_HTTP_TOKEN` in the private config, then run:
+
+```bash
+telegram-mcp --config .env serve --http 127.0.0.1:8765
+```
+
+Point the client at `http://127.0.0.1:8765/mcp` and configure the bearer token in the client. A non-loopback listener requires TLS with `TELEGRAM_HTTP_TLS_CERT` and `TELEGRAM_HTTP_TLS_KEY` and a private token of at least 32 characters. Use HTTPS and keep certificate verification enabled. See [shared HTTP setup](docs/INSTALL.md#authenticated-shared-http-service) for host allowlists and the native bridge. After connecting, check the MCP tool list and call `list_accounts` to verify the intended account.
+
+## Logs and private state
+
+Run `telegram-mcp state-path` to locate the private state directory. Direct server launches write `mcp.log` there, and the logger rotates it to `mcp.log.1` when it reaches its size limit. `TELEGRAM_MCP_LOG_FILE=off` sends diagnostics to stderr. The server reserves stdout for MCP traffic.
+
+On Windows, the launchers write `logs/start-mcp_YYYY-MM-DD_HH-mm-ss_UTC.log` and `logs/Manage-Accounts_YYYY-MM-DD_HH-mm-ss_UTC.log` inside the private state directory. They use UTC timestamps and add a suffix if a name is taken. Each launcher keeps ten logs; `start-mcp.ps1` also keeps ten rotated parts. Runtime diagnostics exclude raw tool arguments, Telegram message text, authorization keys and login codes. Review excerpts before sharing them. See [service operation](docs/service-supervision.md#logs-and-recovery-limits) for logging and recovery limits.
+
+## Tools and access
+
+The [command catalogue](docs/COMMANDS.md) and [API coverage](docs/api-coverage.md) describe the 352 native tools for ordinary chats, including standalone `transcribe_audio`. Use [exposure filters](docs/exposed-tools-groups.md) to choose which tools a client can call. Telegram permissions, Premium requirements and server limits still apply.
+
+Fetching content and marking it read are separate operations. Integers that JavaScript cannot represent exactly are returned as decimal strings; message entity offsets use UTF-16. File tools are limited to configured roots. Actions that require owner approval use a separate terminal prompt.
+
+### Secret chats
+
+Secret-chat support is deferred while `Telethon-Secret-Chat` is rewritten separately in Rust. The native server does not use the old Python backend for secret-chat encryption, key custody or history. Preserve existing private session and key stores. If the importer finds known secret-chat sidecars, it blocks the affected legacy authorization before connecting. Use a fresh native authorization for ordinary chats. See [migration cautions](docs/MIGRATION.md#deliberate-limits-and-migration-cautions) before moving account state.
+
+## Telegram Operator plugin
+
+`telegram-operator` ships one skill pack in five formats: Portable Agent Plugins 1.0.0, Claude Code, Codex, Cursor and Antigravity. The skills cover chat migration, backup and restore, access audits, bot and Mini App reconstruction, and reproducing message formatting and custom emoji. Configure the MCP connection and authorize the account separately. See [plugin installation](docs/operator-plugin.md).
 
 ## Docker
 
@@ -127,41 +108,46 @@ docker build --tag telegram-mcp:local .
 docker run --rm -i --env-file .env --volume telegram-mcp-state:/data telegram-mcp:local serve
 ```
 
-For a shared HTTPS service, set a fresh private `TELEGRAM_HTTP_TOKEN` and absolute
-host paths `TELEGRAM_HTTP_TLS_CERT` / `TELEGRAM_HTTP_TLS_KEY` in `.env`, then use
-`docker compose up --build -d`. Compose mounts the certificate/key read-only,
-publishes only `127.0.0.1:8765` and persists
-all state in the `telegram-state` volume. Keep that volume when replacing containers;
-removing it is account-state deletion. The runtime is non-root and contains the native
-server binary, native FFmpeg/FFprobe, certificates and system runtime libraries.
+Keep the state volume when replacing the container. For a shared HTTPS service, set the token and certificate paths before running `docker compose up --build -d`. Compose mounts the certificate and key read-only, binds port `8765` to loopback, and keeps private state in its `telegram-state` volume. See [Docker installation](docs/INSTALL.md#docker).
 
-## Development and verification
+## Benchmarks
+
+Both measurements come from five cold runs on the same Windows 11 x64 host. The Python baseline uses [main at `72a4aed`](https://github.com/KiaroSama/Telegram-mcp/commit/72a4aed8901fcce97b97797342aad3dcdfdc530a), where startup measures module import and tool registration (`3,440 ms` import; `4,830 ms` process wall) and disk footprint includes `.venv/`, package source and scripts. The Rust 3.0.0 release build measures cold stdio `initialize` plus `tools/list` for all 352 native tools, live process working-set RSS via `GetProcessMemoryInfo`, 50,000 `serde_json` UTF-8 string serializations, and the compiled executable size (`34.73 MB` for `telegram-mcp.exe`; `51.42 MB` for all three binaries combined).
+
+| Measurement | Python baseline | Rust 3.0.0 | Delta |
+| --- | ---: | ---: | ---: |
+| Median cold startup and tool listing | 3,440.09 ms | 36.53 ms | -98.94% (94.2x faster) |
+| Median working-set RSS | 124.32 MB | 15.98 MB | -87.15% (7.8x lower) |
+| Median time to serialize 50,000 JSON strings | 126.97 ms | 6.77 ms | -94.67% (18.8x faster) |
+| Runtime disk footprint | 206.01 MB | 34.73 MB | -83.14% (5.9x smaller) |
+
+The repository-size badge reports source tree size in decimal MB. The disk footprint above measures the installed runtime.
+
+## Development
 
 ```bash
 cargo fmt --all --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-features -- --test-threads=1
-cargo build --locked --release --bin telegram-mcp
 ```
 
-CI additionally checks the lockfile, both architectures on all three operating systems, native release
-artifacts, collected-case agreement, critical behavioral-category evidence, combined
-application-core line coverage of at least 85% alongside full-production coverage,
-the preserved PowerShell suites, dependency
-advisories, Rust/Actions CodeQL, publication privacy, Gitleaks and container persistence.
-Skipped, missing, cancelled and failed jobs do not produce a successful commit status.
-Each status is attached to the exact validated head commit so it is visible beside that
-commit on GitHub. [Contributing](CONTRIBUTING.md) explains the evidence formats and
-reproduction bundle.
+[CI](.github/workflows/tests.yml) checks the four release targets, enforces an 85% application-core line coverage floor, and runs the Windows launcher tests. Offline tests do not establish live Telegram behavior. See [contributing](CONTRIBUTING.md) for the CI evidence and the reproduction bundle.
 
-## Sources and license
+## Donate
 
-The implementation follows [grammers](https://codeberg.org/Lonami/grammers), pinned to
-its reviewed 0.12.0 revision and API layer 233, and the
-[official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk).
-The [chigwell/telegram-mcp upstream](https://github.com/chigwell/telegram-mcp) is reviewed
-for useful improvements while retaining this fork's account, approval and fidelity
-contracts. Exact revisions and gaps are recorded in [migration notes](docs/MIGRATION.md).
+Send donations only on the network listed for the address.
 
-GPL-3.0-or-later. Existing Apache-2.0 and Telegram Desktop/Qt attributions remain in
-[NOTICE](NOTICE); a language rewrite does not remove their license obligations.
+| Currency | Network | Address |
+| --- | --- | --- |
+| Bitcoin (BTC) | Bitcoin | `bc1qmth5m03pu5hujw5xw5jmywam3jj3sqwqupesdt` |
+| USDT, BNB, USDC, etc. | BEP20 | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+| USDT, TRX, USDC, etc. | TRC20 | `TWBA3xFTqgZAeAYMxqo85xWnzvty3DcAhw` |
+| Ethereum (ETH) | ERC20 | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+| TON | TON | `UQCN8Umo_OfOWqImZetQsrNStPcmLkMAKajFyiCOhso23NDb` |
+| Litecoin (LTC) | LTC | `ltc1qntqnnrunadurnw4cshv3qgspywrueyyeyngwuy` |
+| Solana (SOL) | Solana | `7B2wkczUjmkDhETwQuknBL8sUsbuV7nErxc317TmQuwR` |
+| Polygon (POL) | Polygon | `0x0Bd0BA443a8B9cf15922bf7f0Bb0a4b495fD06Ef` |
+
+## License and sources
+
+Telegram MCP is licensed under [GPL-3.0-or-later](LICENSE). [NOTICE](NOTICE) records the Apache-2.0 and Telegram Desktop/Qt attributions. See the [migration notes](docs/MIGRATION.md) for pinned dependencies and changes drawn from [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp).

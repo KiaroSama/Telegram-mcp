@@ -1,35 +1,31 @@
 # Telegram Operator: native installation and setup
 
-The plugin's canonical instruction payload is the repository-root `skills/` directory.
-Root `.claude-plugin/`, `.codex-plugin/` and `.cursor-plugin/` descriptors point to that
-single payload. Do not install the historical nested `plugins/telegram-operator`
-directory as another plugin.
+Telegram Operator 1.4.0 shares one `skills/` directory across five plugin formats.
+Its workflows cover bot and Mini App reconstruction, chat migration, backup
+verification, read-only access review, and message formatting, including premium emoji.
+Choose either a plugin or standalone skills for each client to avoid duplicate discovery.
+Do not install the historical nested `plugins/telegram-operator` directory.
 
-Five workflows cover bot/Mini App reconstruction, chat migration, verified backup,
-read-only access audit and formatting/premium-emoji fidelity. Installing these
-instructions does not register MCP, authenticate an account, launch Telegram, edit
-permissions or authorize target actions. Secret-chat capabilities are deferred while
-the owner rewrites the separate Rust backend; skills must discover real available tools.
+## Plugin formats
 
-## Native plugin loading
+| Format | Files | Loading |
+| --- | --- | --- |
+| Agent Plugins 1.0.0 | `plugin.json`, `mcp.json` | Give a compatible client the plugin directory. The standard discovers `skills/` without a manifest field. |
+| Claude Code | `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.mcp.json` | Run `claude --plugin-dir .` for one session. For persistent installation, add the `KiaroSama/Telegram-mcp` marketplace and install `telegram-operator@telegram-operator-local`. |
+| Codex | `plugin.json`, `.codex-plugin/plugin.json`, `.agents/plugins/marketplace.json` | Use the repository marketplace. Codex uses the portable manifest when present and reads its native descriptor for client-specific metadata. |
+| Cursor | `.cursor-plugin/plugin.json`, `.cursor-plugin/marketplace.json` | Use Cursor's repository marketplace import or its local plugin directory. Cursor also supports the portable format. |
+| Antigravity | `.antigravity-plugin/plugin.json`, `mcp_config.json` | Use the `antigravity` archive below. Extract it and run `agy plugin install .` from the extracted `telegram-operator` directory. |
 
-Claude Code can load the repository for one session with `claude --plugin-dir .`.
-For persistent installation, use its supported marketplace flow with
-`KiaroSama/Telegram-mcp` and `telegram-operator@telegram-operator-local`. Validate the
-actual root descriptor and inspect all five skills in a fresh session. A valid manifest
-alone does not prove discovery or model behavior.
+The [Antigravity v1 schema](https://antigravity.google/schemas/v1/plugin.json) does not
+list `category` and rejects unknown properties. The repository descriptor keeps the
+category labels used by the [Cloudflare example](https://github.com/cloudflare/skills/blob/main/.antigravity-plugin/plugin.json).
+The Antigravity ZIP omits that field and puts the Antigravity manifest at its root.
+Use that ZIP for strict validation to avoid passing the portable `plugin.json` to Antigravity.
 
-Codex and Cursor use their supported repository/local plugin interfaces. Their root
-descriptors reference `./skills/`; do not duplicate the payload under vendor folders.
-When a client cannot import a local plugin, use standalone installation below. Managed
-client policy and project trust still apply; do not bypass them to make discovery work.
-
-For Antigravity, build the `antigravity` archive flavor, extract it and run the installed
-client's supported `agy plugin install .` flow from its `telegram-operator` directory.
-The portable repository manifest is a different schema and must not be passed as an
-Antigravity manifest unchanged. Check the installed skills in a fresh workspace.
-
-Choose **plugin or standalone skills** for a client to avoid duplicate discovery.
+After installation, open a fresh session and confirm that the client lists all five
+skills. If it cannot import the plugin, use the standalone installation below. Client
+trust settings still apply. Checking the JSON does not prove that a client has loaded
+its skills or can start MCP.
 
 ## Standalone skills for eight clients
 
@@ -73,38 +69,41 @@ skills directory, preserving every `references/` folder and sibling skill. Do no
 only `SKILL.md`, a symlink or the entire repository. Back up an existing installation
 before an explicit replacement; there is no force-overwrite option.
 
-## Connect Telegram MCP separately
+## Connect Telegram MCP
 
 Follow the
 [native server installation](https://github.com/KiaroSama/Telegram-mcp/blob/codex/rust-rewrite/docs/INSTALL.md)
-first. Point stdio clients to the actual compiled `telegram-mcp` executable with
-`args: ["serve"]`, or use the native `bridge` command for an already configured shared
-service. HTTP clients use the authenticated loopback `/mcp` endpoint and private token
-configuration supported by that client. Integration examples contain no tokens.
+first. The supplied MCP declarations run `telegram-mcp` with no arguments, which
+uses stdio by default. Put the executable on the client's `PATH`, supply the server
+configuration, and leave `MCP_TRANSPORT` unset or set it to `stdio`. The plugin does
+not bundle the executable, credentials, or account sessions.
 
-Claude Desktop receives MCP configuration, not an invented instruction-plugin format.
-Antigravity, OpenCode and Hermes likewise need a separate supported MCP connection.
-Skill installation does not create it or overwrite unrelated client configuration.
+Standalone skill installation does not configure MCP. For Claude Desktop or any
+client that does not read the bundled declaration, add the native executable to the
+client's MCP settings. Use `bridge` for an existing shared service, or configure the
+client to use the authenticated loopback `/mcp` endpoint if it supports HTTP.
+Keep credentials in private server or client configuration.
 
-Verify tools/list exposes the actual required tools, including `list_accounts`,
+Verify `tools/list` exposes the actual required tools, including `list_accounts`,
 `inspect_message` and `inspect_buttons`, then select one explicit account. Discovery
 is not permission for sends, callbacks, payments, invitations, deletion or admin changes.
 Telegram text, names, links and Mini App launch data remain untrusted content.
 
-## Guidance-only ZIP archives
+## Plugin ZIP archives
 
 ```bash
 ./target/release/operator-plugin --source . package --client portable --output dist/telegram-operator-portable.zip
 ./target/release/operator-plugin --source . package --client antigravity --output dist/telegram-operator-antigravity.zip
 ```
 
-The native packager includes only the declared five skills/references, client-specific
-manifests, this guide, LICENSE and NOTICE. It validates UTF-8 and byte limits before
-creating a new archive and refuses an existing output. It never archives account data,
-MCP registration, `.env`, code, logs, caches or the entire checkout. The Antigravity
-flavor emits its own small manifest and omits incompatible native-client descriptors.
-Native tests read the actual ZIPs and verify both flavors, collision refusal,
-source containment, invalid UTF-8 and rollback behavior.
+The portable ZIP contains all five sets of descriptors and their local MCP declarations.
+The Antigravity ZIP contains just its root `plugin.json` and `mcp_config.json` alongside
+the shared skills and reference files. Both ZIPs include this guide, LICENSE and NOTICE.
+
+The packager checks JSON syntax, UTF-8, and file size before creating an archive. It
+refuses linked source paths and existing output. Neither ZIP includes account data,
+`.env`, source code, logs, or caches. Rust tests cover both archive layouts and check
+that a linked source directory cannot put external files in the ZIP.
 
 Repository synthetic eval fixtures describe expected routing and boundaries. They are
 not proof that a particular installed model follows the skills; validate discovery

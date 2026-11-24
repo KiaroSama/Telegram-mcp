@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
+#[derive(Clone)]
 pub struct Settings {
     pub(super) engine: String,
     pub(super) disabled: bool,

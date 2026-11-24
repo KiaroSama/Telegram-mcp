@@ -9,16 +9,6 @@
     "architecture": "aarch64",
     "target": "aarch64-unknown-linux-gnu"
   },
-  "macos-x86_64": {
-    "platform": "macos",
-    "architecture": "x86_64",
-    "target": "x86_64-apple-darwin"
-  },
-  "macos-aarch64": {
-    "platform": "macos",
-    "architecture": "aarch64",
-    "target": "aarch64-apple-darwin"
-  },
   "windows-x86_64": {
     "platform": "windows",
     "architecture": "x86_64",
@@ -38,16 +28,6 @@
     "platform": "linux",
     "architecture": "aarch64",
     "target": "aarch64-unknown-linux-gnu"
-  },
-  "renderer-macos-x86_64": {
-    "platform": "macos",
-    "architecture": "x86_64",
-    "target": "x86_64-apple-darwin"
-  },
-  "renderer-macos-aarch64": {
-    "platform": "macos",
-    "architecture": "aarch64",
-    "target": "aarch64-apple-darwin"
   },
   "renderer-windows-x86_64": {
     "platform": "windows",

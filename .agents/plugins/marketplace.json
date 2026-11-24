@@ -1,0 +1,21 @@
+{
+  "name": "telegram-operator",
+  "interface": {
+    "displayName": "Telegram Operator"
+  },
+  "plugins": [
+    {
+      "name": "telegram-operator",
+      "version": "1.4.0",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/KiaroSama/Telegram-mcp.git"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}

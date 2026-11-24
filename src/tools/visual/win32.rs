@@ -231,16 +231,8 @@ impl Drop for Drawing {
     }
 }
 
-fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)> {
-    let handle = window.handle as HWND;
-    let client = args["client_only"] == true;
-    let screen = args["method"].as_str() == Some("screen");
-    let mut rect = RECT {
-        left: window.rect[0],
-        top: window.rect[1],
-        right: window.rect[2],
-        bottom: window.rect[3],
-    };
+fn capture_rect(handle: HWND, client: bool) -> Result<RECT> {
+    let mut rect = RECT::default();
     if client {
         if unsafe { GetClientRect(handle, &mut rect) } == 0 {
             bail!("Telegram client rectangle is unavailable");
@@ -256,6 +248,14 @@ fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)
     } else if unsafe { GetWindowRect(handle, &mut rect) } == 0 {
         bail!("Telegram window rectangle is unavailable");
     }
+    Ok(rect)
+}
+
+fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)> {
+    let handle = window.handle as HWND;
+    let client = args["client_only"] == true;
+    let screen = args["method"].as_str() == Some("screen");
+    let rect = capture_rect(handle, client)?;
     let (width, height) = (
         i64::from(rect.right) - i64::from(rect.left),
         i64::from(rect.bottom) - i64::from(rect.top),
@@ -339,7 +339,7 @@ fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)
     let bytes =
         unsafe { std::slice::from_raw_parts(pixels as *const u8, (width * height * 4) as usize) };
     let mut output = Vec::with_capacity(bytes.len());
-    for bgra in bytes.chunks_exact(4) {
+    for bgra in bytes.as_chunks::<4>().0 {
         output.extend_from_slice(&[bgra[2], bgra[1], bgra[0], 255]);
     }
     let image = image::RgbaImage::from_raw(width as u32, height as u32, output)
@@ -380,4 +380,50 @@ fn is_flat(image: &image::DynamicImage) -> bool {
         return true;
     };
     image.pixels().all(|pixel| pixel == first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, MoveWindow, WS_POPUP,
+    };
+
+    #[test]
+    fn capture_rect_tracks_window_moves_and_resizes() {
+        struct Fixture(HWND);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                // The creating test thread owns this window until it is destroyed.
+                unsafe { DestroyWindow(self.0) };
+            }
+        }
+        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
+        // The class buffer is terminated and lives through the synchronous call.
+        let handle = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP,
+                10,
+                20,
+                100,
+                100,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!handle.is_null());
+        let window = Fixture(handle);
+        let initial = capture_rect(window.0, false).unwrap();
+        // The HWND is valid and this thread owns it; the window stays hidden.
+        assert_ne!(unsafe { MoveWindow(window.0, 40, 50, 175, 160, 0) }, 0);
+        let updated = capture_rect(window.0, false).unwrap();
+        assert_ne!((updated.left, updated.top), (initial.left, initial.top));
+        assert!(updated.right - updated.left > initial.right - initial.left);
+        assert!(updated.bottom - updated.top > initial.bottom - initial.top);
+    }
 }

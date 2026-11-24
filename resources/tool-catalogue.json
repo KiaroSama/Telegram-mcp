@@ -3028,9 +3028,13 @@
               "type": "integer"
             },
             {
+              "type": "string"
+            },
+            {
               "type": "null"
             }
           ],
+          "description": "Nonzero photo ID from get_user_photos. Use its decimal string to preserve every digit.",
           "default": null
         },
         "account": {
@@ -19585,6 +19589,29 @@
     },
     "module": "groups",
     "deferred": false
+  },
+  {
+    "name": "transcribe_audio",
+    "description": "Transcribe a local audio file or a video's audio track with the configured native whisper-cli and existing local model. The path must be inside an allowed file root and the input must be at most 100 MiB. Returns text and segment start/end times in seconds. Audio stays on the machine; no Telegram account is required. The transcript can contain mistakes or untrusted speech.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "file_path"
+      ],
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Transcribe Local Audio",
+      "openWorldHint": false,
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true
+    }
   },
   {
     "name": "transcribe_voice",

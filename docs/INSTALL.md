@@ -1,63 +1,35 @@
 # Native Rust installation
 
-This document applies to the Rust migration branch. See [MIGRATION.md](MIGRATION.md)
-for known capability differences, the historical test baseline and the secret-chat
-integration deferral. Keep existing private account and encryption stores untouched.
+Telegram MCP v3.0.0 supports Windows and Linux on x64 and arm64. If you are replacing a Python installation, read the [migration notes](MIGRATION.md) before moving any account state. Keep existing private account and encryption stores intact.
 
 ## Build or obtain a native artifact
 
-Install Rust through [rustup](https://rustup.rs/) and the platform's native linker.
-Windows builds use the MSVC toolchain; macOS needs Apple's command-line developer
-tools; Linux needs its compiler/linker and standard system development libraries.
-The checked-in toolchain selects Rust 1.100.0.
+Choose the archive for your operating system and CPU on [GitHub Releases](https://github.com/KiaroSama/Telegram-mcp/releases).
+
+| System | Architecture | Archive |
+| --- | --- | --- |
+| Windows | x64 | `telegram-mcp-v3.0.0-windows-x64.zip` |
+| Windows | arm64 | `telegram-mcp-v3.0.0-windows-arm64.zip` |
+| Linux | x64 | `telegram-mcp-v3.0.0-linux-x64.tar.gz` |
+| Linux | arm64 | `telegram-mcp-v3.0.0-linux-arm64.tar.gz` |
+
+Each release includes a `.sha256` checksum and a detached `.sig` for each archive, along with `SHA256SUMS`, `SHA256SUMS.sig`, `publisher-cert.pem` and `publisher-key.pem`. Check the certificate and public key against [the pinned publisher metadata](signing/publisher.json) from a trusted copy of the repository. Before extracting, use the pinned public key to verify the archive's `.sig`, or verify `SHA256SUMS.sig` and compare the archive's hash with its entry in `SHA256SUMS`. To calculate the hash, use `Get-FileHash -Algorithm SHA256` on Windows or `sha256sum` on Linux, followed by the archive path. On Windows, verify the Authenticode signatures on the `.exe` files in `bin/` against the pinned certificate. To check GitHub build provenance, run `gh attestation verify <archive> --repo KiaroSama/Telegram-mcp`.
+
+All three executables (`telegram-mcp`, `emoji-studio` and `operator-plugin`) are in `bin/`. Windows executables have the `.exe` extension. The Windows archive keeps `start-mcp.ps1`, `Manage-Accounts.ps1` and `account-manager/` at its root. If a Linux extraction tool drops executable permissions, run `chmod +x bin/telegram-mcp bin/emoji-studio bin/operator-plugin` in the extracted directory.
+
+To build from source, install [Rust through rustup](https://rustup.rs/). The repository selects Rust 1.100.0. Windows needs the MSVC build tools and Windows SDK. Native Windows arm64 builds also need arm64 `clang` and `clang-cl` on `PATH`. Linux needs its C compiler, linker and system development libraries.
 
 ```bash
-git clone --branch codex/rust-rewrite https://github.com/KiaroSama/Telegram-mcp.git
+git clone --branch v3.0.0 https://github.com/KiaroSama/Telegram-mcp.git
 cd Telegram-mcp
 cargo build --locked --release --bin telegram-mcp --bin emoji-studio --bin operator-plugin
 ```
 
-CI builds separate ARM64 and x86_64 release artifacts for each operating system:
+The source build puts the executables in `target/release/`. Add the directory that contains `telegram-mcp` to `PATH` for the commands below, or invoke the executable by its full path. The server does not require Python, uv or a virtual environment. The Windows launchers require PowerShell 7.
 
-| System | Architecture | Artifact |
-| --- | --- | --- |
-| Linux | x86_64 | `telegram-mcp-x86_64-unknown-linux-gnu` |
-| Linux | ARM64 | `telegram-mcp-aarch64-unknown-linux-gnu` |
-| macOS | x86_64 | `telegram-mcp-x86_64-apple-darwin` |
-| macOS | ARM64 | `telegram-mcp-aarch64-apple-darwin` |
-| Windows | x86_64 | `telegram-mcp-x86_64-pc-windows-msvc` |
-| Windows | ARM64 | `telegram-mcp-aarch64-pc-windows-msvc` |
+### Optional media tools
 
-Choose the artifact matching both your operating system and CPU. `aarch64` is
-Rust's target name for ARM64; `x86_64` is also commonly called AMD64 or x64.
-Download the artifact from the run for the exact PR head SHA; `build.json` records
-that SHA, the target, compiler, lockfile digest and actual SHA-256 of each of the three
-native executable files. Packaging verifies the actual ELF, Mach-O or PE machine
-headers before attaching target provenance. Do not infer that all checks passed
-merely because the build artifact exists: builds intentionally run before behavioral
-gates, which can still fail.
-
-Release artifacts contain `telegram-mcp`, `emoji-studio` and `operator-plugin` (with
-`.exe` on Windows). GitHub artifact downloads can reset Unix executable permissions;
-after extracting on Linux/macOS, run `chmod +x telegram-mcp emoji-studio operator-plugin`
-in the extracted directory.
-
-The application does not require Python, uv or a virtual environment. The retained
-Windows PowerShell launchers require PowerShell 7 and invoke the compiled binary.
-Optional native rendering uses a separate rlottie shared library; see
-[visual access](visual-structured-access.md).
-
-Install native **FFmpeg and FFprobe** on `PATH` for video/animation decoding and
-audio/video metadata. Linux distributions provide the `ffmpeg` package; macOS users can
-install Homebrew's `ffmpeg`. Windows builds are linked from
-[FFmpeg's official download page](https://ffmpeg.org/download.html). CI verifies the
-Gyan 9.0.2 x86_64 archive and the separately reviewed
-[tordona ARM64 build](https://github.com/tordona/ffmpeg-win-arm64) against exact SHA-256
-digests. Both native Windows builds must provide VP9 encoding/decoding and Opus;
-Linux/macOS jobs install their platform packages. CI checks the actual codec machine
-headers, executable versions and required codec capabilities. PDF/text and ordinary image
-inspection use the Rust pipeline. Local Whisper transcription additionally needs an
-explicitly configured native `whisper-cli` and local model; no model is downloaded automatically.
+For video and animation decoding or audio/video metadata, put native `ffmpeg` and `ffprobe` on `PATH`. Install your distribution's `ffmpeg` package on Linux. On Windows, choose a build for your CPU from [FFmpeg's download page](https://ffmpeg.org/download.html) or the [reviewed arm64 build](https://github.com/tordona/ffmpeg-win-arm64). CI checks the pinned Windows archives by SHA-256 and checks executable format, version and codec support, including VP9 and Opus. PDF, text and ordinary image inspection use the Rust pipeline. Optional native rendering needs the rlottie shared library; see [visual access](visual-structured-access.md). Local Whisper needs a configured native `whisper-cli` and model. The server does not download the model.
 
 Hosted transcription requires HTTPS for remote services and all API keys. Credential-free HTTP is accepted only for literal loopback endpoints such as `http://127.0.0.1:8080/v1`; `localhost` aliases are not trusted as loopback destinations.
 Local HTTP transcription connects directly and bypasses inherited system proxies.
@@ -65,31 +37,20 @@ HTTPS services retain normal proxy support and certificate validation.
 
 Proxy URLs support SOCKS4, SOCKS5, HTTP CONNECT, verified HTTPS CONNECT and MTProxy. Use `https://proxy.example:443` and private username/password settings for authenticated remote HTTP proxies; HTTPS checks the hostname and operating system trust store. Authenticated plaintext HTTP/SOCKS is accepted only when the actual connected socket is loopback, for an owner-managed local tunnel. Anonymous remote HTTP/SOCKS routes remain available.
 
-PDF parsing runs in a separate process with a 25 MiB input budget, bounded
-decompression/output, 20 seconds of CPU time and a 40-second parent deadline.
-Linux applies a 512 MiB address-space limit and Windows applies a 512 MiB process
-memory limit. macOS instead monitors its native physical footprint and lifetime
-peak against 512 MiB every 20 ms, starting before input is read and checking the
-peak again before returning a result. Darwin cannot lower the address-space limit
-below the shared mappings already present at launch. This macOS limit is sampled,
-so it can briefly overshoot; unavailable memory accounting refuses processing.
-The watchdog terminates only its own parser process.
+PDF parsing runs in a separate process with a 25 MiB input budget, bounded decompression and output, a 20-second CPU limit and a 40-second parent deadline. Linux applies a 512 MiB address-space limit. Windows applies a 512 MiB process memory limit. The watchdog terminates only its own parser process.
 
 ## Configure credentials and authorize an account
 
-Copy `.env.example` to a private `.env` in the directory from which you run setup.
-Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` to your own application credentials
-from [my.telegram.org/apps](https://my.telegram.org/apps). The example values are
-invalid. Process environment variables take precedence over the selected file.
+Copy the [example configuration](https://github.com/KiaroSama/Telegram-mcp/blob/v3.0.0/.env.example) to a private `.env` in the directory where you run setup. The example is in the source tree, separate from the binary archives. Set `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` to your application credentials from [my.telegram.org/apps](https://my.telegram.org/apps). Process environment variables take precedence over the selected file.
 `--config /absolute/path/to/private.env` (or `TELEGRAM_ENV_FILE`) selects an explicit
 file for headless clients; without it ordinary commands use `.env` from their working
 directory. Login and account-manager flows also provide `--env-file` for their selected
 transaction source.
 
 ```bash
-./target/release/telegram-mcp login --account default
-./target/release/telegram-mcp accounts --json
-./target/release/telegram-mcp health --json
+telegram-mcp --config .env login --account default
+telegram-mcp --config .env accounts --json
+telegram-mcp --config .env health --json
 ```
 
 Use another explicit label with `login --account work` for a second account. Select the
@@ -161,22 +122,21 @@ when a broad ancestor is allowed. See [personal data](personal-data.md).
 
 ## Stdio MCP clients
 
-Use the absolute release executable path and `args: ["serve"]`. For example:
+Use the absolute path to the executable in `bin/` for a release archive or in `target/release/` for a Cargo build. Pass `serve` in the client's arguments. For example:
 
 ```json
 {
   "mcpServers": {
     "telegram-mcp": {
-      "command": "/absolute/path/to/Telegram-mcp/target/release/telegram-mcp",
+      "command": "/absolute/path/to/Telegram-mcp/bin/telegram-mcp",
       "args": ["--config", "/absolute/path/to/private.env", "serve"]
     }
   }
 }
 ```
 
-On Windows, use `C:/path/to/Telegram-mcp/target/release/telegram-mcp.exe`.
-Replace the path with the actual checkout; examples deliberately contain no account
-credentials. Use an explicit private configuration path or your client's supported secret environment
+On Windows, use a path such as `C:/path/to/Telegram-mcp/bin/telegram-mcp.exe`.
+Replace the example path with the one on your machine. Use an explicit private configuration path or your client's supported secret environment
 configuration. Do not assume a client starts in the repository's working directory or
 discovers the repository's `.env`. Process values retain precedence over file values.
 
@@ -189,7 +149,7 @@ against the same account store.
 Start the service locally:
 
 ```bash
-./target/release/telegram-mcp serve --http 127.0.0.1:8765
+telegram-mcp --config .env serve --http 127.0.0.1:8765
 ```
 
 The MCP endpoint is `/mcp`. Configure the same private bearer token on clients. A
@@ -238,17 +198,14 @@ connectivity. Verify actual MCP initialize and tools/list plus the intended acco
 
 ## Windows launchers
 
-From PowerShell 7 in the checkout:
+From PowerShell 7, run these in the extracted Windows archive or in a source checkout with a release build:
 
 ```powershell
 pwsh -NoProfile -File .\start-mcp.ps1
 pwsh -NoProfile -File .\Manage-Accounts.ps1
 ```
 
-The first launches the compiled service; the second manages accounts through the native
-CLI. They are the explicit PowerShell exception to the Rust source migration. Set the
-supported native-binary override when testing an alternate build; never point a launcher
-at an unrelated executable. Their preserved four test suites run on Windows in CI.
+`start-mcp.ps1` launches the compiled service. `Manage-Accounts.ps1` manages accounts through the native CLI and uses the `.env` beside the script. Keep the `account-manager/` directory with the launchers. Set `TELEGRAM_MCP_BINARY` to the full path to `telegram-mcp.exe` when using a binary stored elsewhere. The four launcher test suites run on Windows in CI.
 
 ## Docker
 
@@ -277,10 +234,10 @@ you intentionally want to delete that state.
 ## Verify the installed revision
 
 ```bash
-./target/release/telegram-mcp --version
-./target/release/telegram-mcp state-path
-./target/release/telegram-mcp accounts --json
-./target/release/telegram-mcp health --json
+telegram-mcp --version
+telegram-mcp --config .env state-path
+telegram-mcp --config .env accounts --json
+telegram-mcp --config .env health --json
 ```
 
 Then verify MCP initialize, tools/list and an authorized read-only call on the selected

@@ -221,7 +221,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
     let shutdown = tokio_util::sync::CancellationToken::new();
     // Existing MCP connections are detached from axum's accept future. Cancel
     // their workers before this scope releases the service ownership lease.
-    let _sessions = shutdown.clone().drop_guard();
+    let sessions = shutdown.clone().drop_guard();
     let factory = server.clone();
     let mut config = StreamableHttpServerConfig::default()
         .enforce_origin_validation()
@@ -289,6 +289,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
             })
             .await
     };
+    drop(sessions);
     let _ = state.update_json("http-service.json", Value::Null, |record| {
         if record["token"] == token {
             *record = Value::Null;

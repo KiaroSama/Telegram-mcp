@@ -82,8 +82,20 @@ fn native_packager_cli_creates_a_real_archive_without_runtime_state() {
         "{}",
         String::from_utf8_lossy(&run.stderr)
     );
-    let archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
-    assert_eq!(archive.len(), 18);
+    let mut archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
+    assert_eq!(archive.len(), 24);
+    for name in [
+        "mcp.json",
+        ".mcp.json",
+        "mcp_config.json",
+        ".agents/plugins/marketplace.json",
+        ".cursor-plugin/marketplace.json",
+        ".antigravity-plugin/plugin.json",
+    ] {
+        archive
+            .by_name(&format!("telegram-operator/{name}"))
+            .unwrap();
+    }
     for name in archive.file_names() {
         let name = name.unwrap();
         assert!(

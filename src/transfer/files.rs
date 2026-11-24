@@ -297,7 +297,7 @@ impl Drop for Upload {
     }
 }
 
-pub(super) fn open_download(state: &State, path: &Path) -> Result<File> {
+pub(crate) fn open_download(state: &State, path: &Path) -> Result<File> {
     ensure!(
         state.resolve_file(path, FileAccess::Read)? == path,
         "Download source changed"

@@ -2,6 +2,7 @@ name: Rust tests and builds
 
 on:
   push:
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
@@ -62,12 +63,6 @@ jobs:
           - os: ubuntu-24.04-arm
             label: linux-aarch64
             target: aarch64-unknown-linux-gnu
-          - os: macos-15-intel
-            label: macos-x86_64
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            label: macos-aarch64
-            target: aarch64-apple-darwin
           - os: windows-latest
             label: windows-x86_64
             target: x86_64-pc-windows-msvc
@@ -575,8 +570,8 @@ jobs:
         run: cargo llvm-cov report --lcov --output-path coverage-${{ matrix.label }}.info
       - name: Run documentation examples
         run: cargo test --locked --all-features --doc
-      - name: Verify the retained PowerShell launchers on native Unix
-        if: always() && runner.os != 'Windows' && steps.release.outcome == 'success'
+      - name: Verify the retained PowerShell launchers on native Linux
+        if: always() && runner.os == 'Linux' && steps.release.outcome == 'success'
         shell: pwsh
         timeout-minutes: 3
         env:
@@ -594,12 +589,12 @@ jobs:
             if ($errors.Count -ne 0) { throw "PowerShell syntax errors in $($file.Name)." }
           }
           & pwsh -NoLogo -NoProfile -File tests/test_account_health.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'The portable account-health and native Unix launcher behaviors failed.' }
+          if ($LASTEXITCODE -ne 0) { throw 'The portable account-health and native Linux launcher behaviors failed.' }
           $nativeHelp = (& pwsh -NoLogo -NoProfile -NonInteractive -File start-mcp.ps1 -NoLogToFile --help) -join "`n"
           if ($LASTEXITCODE -ne 0 -or $nativeHelp -notmatch 'Usage:\s+telegram-mcp serve') {
-            throw 'The retained Unix launcher did not invoke the actual compiled native server CLI.'
+            throw 'The retained Linux launcher did not invoke the compiled native server CLI.'
           }
-          Write-Host "Parsed $($files.Count) retained scripts and executed the portable Unix launcher suite. The other three full suites exercise Windows ACL/CIM behavior in both Windows architecture jobs."
+          Write-Host "Parsed $($files.Count) scripts and ran test_account_health.ps1. Skipped test_account_manager.ps1, test_account_rename.ps1 and test_launchers.ps1 on Linux; the Windows launcher jobs run them."
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -635,14 +630,6 @@ jobs:
             label: linux-aarch64
             target: aarch64-unknown-linux-gnu
             library: librlottie.so
-          - os: macos-15-intel
-            label: macos-x86_64
-            target: x86_64-apple-darwin
-            library: librlottie.dylib
-          - os: macos-latest
-            label: macos-aarch64
-            target: aarch64-apple-darwin
-            library: librlottie.dylib
           - os: windows-latest
             label: windows-x86_64
             target: x86_64-pc-windows-msvc

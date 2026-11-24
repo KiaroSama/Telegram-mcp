@@ -123,12 +123,13 @@ fn native_visual_worker_returns_actual_fixture_pixels_without_stdout_noise() {
                 .contains("fixture")
         );
         let windows = run_worker(&json!({"tool":"list_telegram_windows","process_name":process}));
+        let hwnd = fixture.handle.to_string();
         assert!(
             windows["windows"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|window| window["hwnd"] == fixture.handle.to_string())
+                .any(|window| window["hwnd"] == hwnd)
         );
         let region = run_worker(
             &json!({"tool":"get_telegram_region","process_name":process,"hwnd":fixture.handle.to_string(),

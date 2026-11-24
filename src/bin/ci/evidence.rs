@@ -16,11 +16,9 @@ pub(super) struct NativeLeg {
     pub target: String,
 }
 
-const NATIVE_TARGETS: [(&str, &str, &str); 6] = [
+const NATIVE_TARGETS: [(&str, &str, &str); 4] = [
     ("linux", "x86_64", "x86_64-unknown-linux-gnu"),
     ("linux", "aarch64", "aarch64-unknown-linux-gnu"),
-    ("macos", "x86_64", "x86_64-apple-darwin"),
-    ("macos", "aarch64", "aarch64-apple-darwin"),
     ("windows", "x86_64", "x86_64-pc-windows-msvc"),
     ("windows", "aarch64", "aarch64-pc-windows-msvc"),
 ];
@@ -45,7 +43,7 @@ fn validate_leg_manifest(legs: &BTreeMap<String, NativeLeg>) -> Result<()> {
     }
     ensure!(
         legs == &required,
-        "Native evidence must include both architectures and renderers for all three operating systems"
+        "Native evidence must include both architectures and renderers for Linux and Windows"
     );
     Ok(())
 }

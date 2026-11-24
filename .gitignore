@@ -1,5 +1,6 @@
 # Build products and measured CI evidence. Cargo.lock is intentionally tracked.
 /target/
+/bin/
 /dist/
 /reproduction/
 /cases/
@@ -79,3 +80,12 @@ Thumbs.db
 
 # Historical collection metadata retained only during migration analysis.
 /*.egg-info/
+
+# Hook Maker: local/private files (auto-managed)
+/.env
+/.env.*
+!/.env.example
+!/.env.sample
+!/.env.template
+!/.env.dist
+/.signing/

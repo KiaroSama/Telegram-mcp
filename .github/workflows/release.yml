@@ -1,0 +1,357 @@
+name: Release native binaries
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (defaults to the selected tag ref)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || (github.ref_type == 'tag' && github.ref_name) || '' }}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build release (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: &release-matrix
+        include:
+          - platform: windows-x64
+            os: windows-2025
+            target: x86_64-pc-windows-msvc
+            extension: zip
+          - platform: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            extension: zip
+          - platform: linux-x64
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            extension: tar.gz
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            extension: tar.gz
+    env:
+      NATIVE_TARGET: ${{ matrix.target }}
+      RUSTUP_TOOLCHAIN: 1.100.0-${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
+        with:
+          toolchain: 1.100.0-${{ matrix.target }}
+          targets: ${{ matrix.target }}
+      - name: Select native MSVC and ARM64 LLVM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $installation = (& $vswhere -latest -products '*' -property installationPath).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $installation) { throw 'A native Visual Studio installation is required.' }
+          $vcvars = Join-Path $installation 'VC/Auxiliary/Build/vcvarsall.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw 'The native Visual Studio developer environment is missing.' }
+          $architecture = if ($env:RUNNER_ARCH -eq 'ARM64') { 'arm64' } else { 'x64' }
+          $bootstrap = Join-Path $env:RUNNER_TEMP 'release-msvc.cmd'
+          [IO.File]::WriteAllText($bootstrap, "@call `"$vcvars`" $architecture >nul`r`n@if errorlevel 1 exit /b 1`r`n@set`r`n")
+          try {
+            $developerEnvironment = & $env:ComSpec /d /c $bootstrap
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize the native MSVC developer environment.' }
+            foreach ($line in $developerEnvironment) {
+              if ($line -match '^(PATH|INCLUDE|LIB|LIBPATH|VCINSTALLDIR|VSINSTALLDIR|VCToolsInstallDir|VSCMD_ARG_HOST_ARCH|VSCMD_ARG_TGT_ARCH)=(.*)$') {
+                "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+              }
+            }
+          } finally { Remove-Item -LiteralPath $bootstrap -Force }
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            $candidates = @(
+              (Join-Path $installation 'VC/Tools/Llvm/ARM64/bin'),
+              (Join-Path $env:ProgramFiles 'LLVM/bin')
+            )
+            $llvm = $candidates | Where-Object {
+              (Test-Path (Join-Path $_ 'clang.exe') -PathType Leaf) -and
+              (Test-Path (Join-Path $_ 'clang-cl.exe') -PathType Leaf)
+            } | Select-Object -First 1
+            if (-not $llvm) { throw 'Native Windows ARM64 crypto dependencies require clang and clang-cl.' }
+            $llvm | Out-File $env:GITHUB_PATH -Encoding utf8 -Append
+          }
+      - name: Build and verify the native executables
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = & rustc -vV
+          if ($LASTEXITCODE -ne 0 -or $version -notcontains "host: $env:NATIVE_TARGET") {
+            throw 'The Rust compiler host does not match the release target.'
+          }
+          cargo build --locked --release --bins --target $env:NATIVE_TARGET
+          if ($LASTEXITCODE -ne 0) { throw 'The locked release build failed.' }
+          $null = New-Item -ItemType Directory 'unsigned'
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          foreach ($name in @('telegram-mcp', 'emoji-studio', 'operator-plugin')) {
+            $binary = "./target/$env:NATIVE_TARGET/release/$name$suffix"
+            $help = (& $binary --help) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $help -notmatch '(?m)^Usage:') { throw "$name --help failed." }
+            Copy-Item -LiteralPath $binary -Destination 'unsigned'
+          }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telegram-mcp-unsigned-${{ matrix.platform }}
+          path: unsigned/
+          if-no-files-found: error
+
+  signing:
+    name: Sign release (${{ matrix.platform }})
+    needs: build
+    environment: numera-signing
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix: *release-matrix
+    env:
+      ARCHIVE_SUFFIX: ${{ matrix.platform }}.${{ matrix.extension }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: telegram-mcp-unsigned-${{ matrix.platform }}
+          path: release-package/bin
+      - &verify-release-tag
+        name: Verify the tag points to this workflow commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[A-Za-z0-9._-]*$ ]] || ! git check-ref-format "refs/tags/$RELEASE_TAG"; then
+            printf 'Select an existing v* tag ref or supply the tag input.\n' >&2
+            exit 1
+          fi
+          ref="refs/tags/$RELEASE_TAG"
+          remote=$(git -c credential.helper= -c 'credential.helper=!gh auth git-credential' \
+            ls-remote --exit-code "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$ref" "$ref^{}")
+          tagged_commit=$(awk -v ref="$ref" '$2 == ref { tag = $1 } $2 == ref "^{}" { commit = $1 } END { print (commit ? commit : tag) }' <<< "$remote")
+          if [[ "$tagged_commit" != "$GITHUB_SHA" ]]; then
+            printf 'Tag does not point to the workflow commit. Dispatch from the tag ref to attest that commit.\n' >&2
+            exit 1
+          fi
+      - &prepare-signing-key
+        name: Open the signing PFX
+        shell: bash
+        env:
+          NUMERA_SIGNING_PFX_BASE64: ${{ secrets.NUMERA_SIGNING_PFX_BASE64 }}
+          NUMERA_SIGNING_PASSWORD: ${{ secrets.NUMERA_SIGNING_PASSWORD }}
+        run: |
+          : "${NUMERA_SIGNING_PFX_BASE64:?Missing NUMERA_SIGNING_PFX_BASE64}"
+          : "${NUMERA_SIGNING_PASSWORD:?Missing NUMERA_SIGNING_PASSWORD}"
+          umask 077
+          pfx="$RUNNER_TEMP/signing.pfx"
+          key="$RUNNER_TEMP/signing-key.pem"
+          touch "$pfx" "$key"
+          chmod 600 "$pfx" "$key"
+          # Git Bash chmod does not restrict native Windows ACLs.
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            system32="$(cygpath -u "${SYSTEMROOT:-$SystemRoot}")/System32"
+            principal=$("$system32/whoami.exe" | tr -d '\r\n')
+            for file in "$pfx" "$key"; do
+              MSYS2_ARG_CONV_EXCL='*' "$system32/icacls.exe" "$(cygpath -aw "$file")" /inheritance:r /grant:r "${principal}:(F)" >/dev/null
+            done
+          fi
+          printf '%s' "$NUMERA_SIGNING_PFX_BASE64" | base64 --decode > "$pfx"
+          pkcs12=(-in "$pfx" -nocerts -nodes -passin env:NUMERA_SIGNING_PASSWORD -out "$key")
+          openssl pkcs12 "${pkcs12[@]}" 2>/dev/null || openssl pkcs12 -legacy "${pkcs12[@]}"
+      - name: Authenticode-sign and verify the Windows executables
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NUMERA_SIGNING_PASSWORD: ${{ secrets.NUMERA_SIGNING_PASSWORD }}
+        run: |
+          $publisher = Get-Content -LiteralPath 'docs/signing/publisher.json' -Raw -Encoding utf8 | ConvertFrom-Json
+          $pfx = Join-Path $env:RUNNER_TEMP 'signing.pfx'
+          $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $architecture = $env:RUNNER_ARCH.ToLowerInvariant()
+          $signtool = Get-ChildItem -LiteralPath $sdk -Directory |
+            Where-Object { $_.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName "$architecture/signtool.exe" } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+          if (-not $signtool) { throw "Windows SDK SignTool ($architecture) is missing." }
+
+          $untrustedRoot = [ComponentModel.Win32Exception]::new([int]0x800B0109).Message
+          foreach ($name in @('telegram-mcp', 'emoji-studio', 'operator-plugin')) {
+            $binary = "release-package/bin/$name.exe"
+            & $signtool sign /fd SHA256 /f $pfx /p $env:NUMERA_SIGNING_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $binary *> $null
+            if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or timestamping failed: $name." }
+            $signature = Get-AuthenticodeSignature -LiteralPath $binary
+            $valid = $signature.Status -eq 'Valid' -or
+              ($signature.Status -eq 'UnknownError' -and $signature.StatusMessage -ceq $untrustedRoot)
+            if (-not $valid -or $signature.SignerCertificate.Thumbprint -ne $publisher.certificate_thumbprint -or
+                -not $signature.TimeStamperCertificate) {
+              throw "Authenticode verification failed: $name ($($signature.Status)): $($signature.StatusMessage)"
+            }
+
+            $tampered = Join-Path $env:RUNNER_TEMP "tampered-$name.exe"
+            Copy-Item -LiteralPath $binary -Destination $tampered
+            try {
+              $stream = [IO.File]::Open($tampered, 'Open', 'ReadWrite')
+              try {
+                $reader = [IO.BinaryReader]::new($stream)
+                $stream.Position = 0x3c
+                $peOffset = $reader.ReadUInt32()
+                $stream.Position = $peOffset + 20
+                $optionalHeaderSize = $reader.ReadUInt16()
+                # PointerToRawData in the first PE section header locates a hashed byte.
+                $stream.Position = $peOffset + 24 + $optionalHeaderSize + 20
+                $offset = $reader.ReadUInt32()
+                if ($offset -eq 0 -or $offset -ge $stream.Length) { throw "Invalid PE section offset: $name." }
+                $stream.Position = $offset
+                $value = $stream.ReadByte()
+                $stream.Position = $offset
+                $stream.WriteByte([byte]($value -bxor 1))
+              } finally { $stream.Dispose() }
+              if ((Get-AuthenticodeSignature -LiteralPath $tampered).Status -ne 'HashMismatch') {
+                throw "Authenticode did not reject the modified executable: $name."
+              }
+            } finally { Remove-Item -LiteralPath $tampered -Force }
+          }
+      - name: Package the native release
+        shell: pwsh
+        run: |
+          $publisher = Get-Content -LiteralPath 'docs/signing/publisher.json' -Raw -Encoding utf8 | ConvertFrom-Json
+          [IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'publisher-key.pem'), $publisher.public_key_pem)
+          $null = New-Item -ItemType Directory 'dist'
+          Copy-Item -LiteralPath 'README.md', 'LICENSE', 'NOTICE' -Destination 'release-package'
+          $archive = "dist/telegram-mcp-$env:RELEASE_TAG-$env:ARCHIVE_SUFFIX"
+          if ($IsWindows) {
+            Copy-Item -LiteralPath 'Manage-Accounts.ps1', 'start-mcp.ps1', 'account-manager' -Recurse -Destination 'release-package'
+            Compress-Archive -Path 'release-package/*' -DestinationPath $archive
+          } else {
+            & chmod 755 release-package/bin/telegram-mcp release-package/bin/emoji-studio release-package/bin/operator-plugin
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot restore executable permissions.' }
+            & tar -czf $archive -C 'release-package' .
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot package the Linux release.' }
+          }
+      - name: Sign the archive and verify tamper rejection
+        shell: bash
+        working-directory: dist
+        run: |
+          archive="telegram-mcp-$RELEASE_TAG-$ARCHIVE_SUFFIX"
+          key="$RUNNER_TEMP/signing-key.pem"
+          pub="$RUNNER_TEMP/publisher-key.pem"
+          sha256sum --binary -- "$archive" > "${archive}.sha256"
+          openssl dgst -sha256 -sign "$key" -out "${archive}.sig" "$archive"
+          openssl dgst -sha256 -verify "$pub" -signature "${archive}.sig" "$archive"
+          tampered=$(mktemp)
+          trap 'rm -f -- "$tampered"' EXIT
+          cp -- "$archive" "$tampered"
+          printf '\000' >> "$tampered"
+          if openssl dgst -sha256 -verify "$pub" -signature "${archive}.sig" "$tampered" >/dev/null 2>&1; then
+            printf 'Signature verification accepted a modified archive.\n' >&2
+            exit 1
+          fi
+      - &cleanup-signing-key
+        name: Remove the temporary signing material
+        if: always()
+        shell: bash
+        run: rm -f -- "$RUNNER_TEMP/signing.pfx" "$RUNNER_TEMP/signing-key.pem"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telegram-mcp-signed-${{ matrix.platform }}
+          path: |
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-${{ env.ARCHIVE_SUFFIX }}
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-${{ env.ARCHIVE_SUFFIX }}.sha256
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-${{ env.ARCHIVE_SUFFIX }}.sig
+          if-no-files-found: error
+
+  publish:
+    name: Attest and publish release
+    needs: signing
+    environment: numera-signing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - *verify-release-tag
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: telegram-mcp-signed-*
+          path: dist
+          merge-multiple: true
+      - name: Verify all four archives and write SHA256SUMS
+        shell: bash
+        working-directory: dist
+        run: |
+          jq -erj '.certificate_pem' ../docs/signing/publisher.json > publisher-cert.pem
+          jq -erj '.public_key_pem' ../docs/signing/publisher.json > publisher-key.pem
+          openssl x509 -in publisher-cert.pem -pubkey -noout | openssl pkey -pubin -outform DER > "$RUNNER_TEMP/publisher-cert-key.der"
+          openssl pkey -pubin -in publisher-key.pem -outform DER | cmp - "$RUNNER_TEMP/publisher-cert-key.der"
+          archives=("telegram-mcp-$RELEASE_TAG-"windows-{x64,arm64}.zip
+                    "telegram-mcp-$RELEASE_TAG-"linux-{x64,arm64}.tar.gz)
+          for archive in "${archives[@]}"; do
+            sha256sum --binary -- "$archive" | cmp - "${archive}.sha256"
+            openssl dgst -sha256 -verify publisher-key.pem -signature "${archive}.sig" "$archive"
+          done
+          sha256sum -- "${archives[@]}" > SHA256SUMS
+          sha256sum --strict --check SHA256SUMS
+      - *prepare-signing-key
+      - name: Sign and verify SHA256SUMS
+        shell: bash
+        working-directory: dist
+        run: |
+          openssl dgst -sha256 -sign "$RUNNER_TEMP/signing-key.pem" -out SHA256SUMS.sig SHA256SUMS
+          openssl dgst -sha256 -verify publisher-key.pem -signature SHA256SUMS.sig SHA256SUMS
+      - *cleanup-signing-key
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-windows-x64.zip
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-windows-arm64.zip
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-linux-x64.tar.gz
+            dist/telegram-mcp-${{ env.RELEASE_TAG }}-linux-arm64.tar.gz
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
+      - name: Publish the verified release assets
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          archives=("telegram-mcp-$RELEASE_TAG-"windows-{x64,arm64}.zip
+                    "telegram-mcp-$RELEASE_TAG-"linux-{x64,arm64}.tar.gz)
+          assets=(SHA256SUMS SHA256SUMS.sig publisher-cert.pem publisher-key.pem)
+          for archive in "${archives[@]}"; do
+            assets+=("$archive" "${archive}.sha256" "${archive}.sig")
+          done
+          if gh release view "$RELEASE_TAG" >/dev/null; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --generate-notes
+          fi

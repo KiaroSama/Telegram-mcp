@@ -1,6 +1,6 @@
 # Native tool catalogue
 
-The current catalogue declares **351 ordinary-chat tools**. Secret-chat tools are
+The current catalogue declares **352 nonsecret tools**. Secret-chat tools are
 deferred pending the owner’s separate Rust backend. MCP `tools/list` returns the actual
 exposed schema after access filters; this document is a readable index, not permission
 to invoke a tool or proof of live Telegram behavior.
@@ -330,6 +330,14 @@ Python console commands are not an alternative runtime.
 
 ### Messaging
 
+`transcribe_audio` takes a local `file_path` in an allowed root. It uses the
+configured native `whisper-cli` and local model, then returns transcript text and
+segment start/end times in seconds. It does not open a Telegram session or send
+the file to a hosted engine. `transcribe_voice` handles Telegram voice and video notes.
+
+Ordinary message readers return `formatting` when Telegram supplies entities. The
+list contains distinct entity kinds and leaves the original text and UTF-16 offsets intact.
+
 | Tool | Required arguments | Read only |
 | --- | --- | --- |
 | `answer_reply_button` | `chat_id`, `button_index`, `expect_text` | No |
@@ -403,6 +411,7 @@ Python console commands are not an alternative runtime.
 | `send_typing` | `chat_id` | No |
 | `send_voice` | `chat_id`, `file_path` | No |
 | `set_default_send_as` | `chat_id`, `send_as` | No |
+| `transcribe_audio` | `file_path` | Yes |
 | `transcribe_voice` | `chat_id`, `message_id` | Yes |
 | `unpin_all_messages` | `chat_id` | No |
 | `unpin_message` | `chat_id`, `message_id` | No |

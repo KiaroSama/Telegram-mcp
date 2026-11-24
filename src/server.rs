@@ -122,6 +122,12 @@ impl Mcp {
             .find(|t| t.name.as_ref() == name)
             .context("Tool is not exposed by this server")?;
         validate_arguments(&mut args, &tool.input_schema)?;
+        if name == "transcribe_audio" {
+            self.runtime.state.resolve_file(
+                std::path::Path::new(crate::args::text(&args, "file_path")?),
+                crate::state::FileAccess::Read,
+            )?;
+        }
         let budget = if name.starts_with("export_") {
             Duration::from_secs(120)
         } else {
@@ -134,7 +140,7 @@ impl Mcp {
             account.to_ascii_lowercase()
         } else if matches!(
             name,
-            "export_status" | "cancel_export" | "get_invite_link_qr"
+            "export_status" | "cancel_export" | "get_invite_link_qr" | "transcribe_audio"
         ) {
             "default".into()
         } else {
@@ -228,6 +234,7 @@ impl Mcp {
                 | "export_status"
                 | "cancel_export"
                 | "get_invite_link_qr"
+                | "transcribe_audio"
         ) && !(name == "add_proxies"
             && args.get("source").is_some_and(|v| !v.is_null()));
         let slot = if local_only {
@@ -342,6 +349,12 @@ impl Mcp {
                     name,
                     &args,
                     &policy,
+                )
+                .await
+            } else if name == "transcribe_audio" {
+                crate::tools::messaging::transcribe::transcribe_audio_with_state(
+                    &self.runtime.state,
+                    &args,
                 )
                 .await
             } else if name == "get_invite_link_qr" {
@@ -535,4 +548,80 @@ pub async fn serve(address: Option<std::net::SocketAddr>) -> Result<()> {
     }
     tracing::info!("Native Telegram MCP service stopped");
     Ok(())
+}
+
+#[cfg(test)]
+mod local_audio_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn transcribe_audio_checks_file_roots_without_entering_account_preflight() {
+        const ROOT: &str = "TEST_LOCAL_TRANSCRIPTION_ROOT";
+        let Some(root) = std::env::var_os(ROOT).map(std::path::PathBuf::from) else {
+            let temporary = tempfile::tempdir().unwrap();
+            std::fs::write(
+                temporary.path().join("test.env"),
+                "TELEGRAM_SESSION_NAME_ONE=one\nTELEGRAM_SESSION_NAME_TWO=two\nTELEGRAM_TRANSCRIBE=off\n",
+            )
+            .unwrap();
+            let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+            for (key, _) in std::env::vars_os() {
+                if key.to_string_lossy().starts_with("TELEGRAM_") {
+                    command.env_remove(key);
+                }
+            }
+            command
+                .args([
+                    "--exact",
+                    "server::local_audio_tests::transcribe_audio_checks_file_roots_without_entering_account_preflight",
+                ])
+                .env(ROOT, temporary.path())
+                .kill_on_drop(true);
+            let output = tokio::time::timeout(Duration::from_secs(10), command.output())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        };
+        crate::account_manager::select_source(&root.join("test.env")).unwrap();
+        let files = root.join("files");
+        std::fs::create_dir(&files).unwrap();
+        let inside = files.join("inside.wav");
+        let outside = root.join("outside.wav");
+        for path in [&inside, &outside] {
+            std::fs::write(path, b"fixture audio").unwrap();
+        }
+        let state = Arc::new(State::at(root.join("state"), vec![files]).unwrap());
+        let server = Mcp {
+            runtime: Arc::new(Runtime {
+                accounts: Mutex::new(HashMap::new()),
+                guard: Safeguard::new(Arc::clone(&state)),
+                state,
+                tools: catalogue::catalogue_for_mode("all").unwrap(),
+                policy: access::AccessPolicy::default(),
+            }),
+        };
+        let accounts = server.runtime.accounts.lock().await;
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            server.execute("transcribe_audio", json!({"file_path":inside})),
+        )
+        .await
+        .expect("Standalone transcription cannot wait for the Telegram account registry")
+        .unwrap();
+        assert_eq!(result["reason"], "transcription_disabled");
+        let error = server
+            .execute("transcribe_audio", json!({"file_path":outside}))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("outside configured file roots"));
+        assert!(accounts.is_empty());
+    }
 }

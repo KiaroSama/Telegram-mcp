@@ -26,13 +26,14 @@ function Get-ServerTrees {
     }
     $checkout = [regex]::Escape($Root.TrimEnd('\', '/'))
     $launcherPattern = $checkout + '[\\/]start-mcp\.ps1(?:"|\s|$)'
-    $nativePattern = $checkout + '[\\/](?:target[\\/](?:release|debug)[\\/])?telegram-mcp\.exe"?\s+serve(?:\s|$)'
-    $runners = 'pwsh.exe', 'powershell.exe', 'telegram-mcp.exe'
+    $nativePattern = $checkout + '[\\/](?:(?:bin|target[\\/](?:release|debug))[\\/])?telegram-mcp(?:\.exe)?"?\s+serve(?:\s|$)'
+    $nativeRunners = 'telegram-mcp.exe', 'telegram-mcp'
+    $runners = @('pwsh.exe', 'powershell.exe') + $nativeRunners
     $matched = @($processes | Where-Object {
-            $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
+            $_.CommandLine -and $_.Name -in $runners -and
             -not $protected.ContainsKey([int] $_.ProcessId) -and
-            (($_.Name.ToLowerInvariant() -eq 'telegram-mcp.exe' -and $_.CommandLine -match $nativePattern) -or
-                ($_.Name.ToLowerInvariant() -ne 'telegram-mcp.exe' -and $_.CommandLine -match $launcherPattern))
+            (($_.Name -in $nativeRunners -and $_.CommandLine -match $nativePattern) -or
+                ($_.Name -notin $nativeRunners -and $_.CommandLine -match $launcherPattern))
         })
     $ids = @($matched | ForEach-Object { [int] $_.ProcessId })
     return @($matched | Where-Object { $ids -notcontains [int] $_.ParentProcessId } |

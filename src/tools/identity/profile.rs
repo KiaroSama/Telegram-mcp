@@ -262,6 +262,10 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 .map(|v| int_value(v, "photo_id"))
                 .transpose()?;
             ensure!(
+                wanted != Some(0),
+                "photo_id must be a nonzero Telegram photo id"
+            );
+            ensure!(
                 wanted.is_none() || a.get("bot").is_none_or(Value::is_null),
                 "Telegram cannot target deletion of a selected bot's historical photo; omit photo_id to clear its current photo"
             );

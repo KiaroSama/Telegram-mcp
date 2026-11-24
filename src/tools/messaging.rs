@@ -37,6 +37,7 @@ pub async fn call(api: &dyn Telegram, name: &str, args: &Value) -> Option<Result
 
 /// Concrete routes implemented by this module (used to audit catalogue coverage).
 pub const TOOL_NAMES: &[&str] = &[
+    "transcribe_audio",
     "transcribe_voice",
     "rate_voice_transcription",
     "get_send_as",

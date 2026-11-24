@@ -9,7 +9,7 @@ function Get-NativeBinary {
         return (Get-Item -LiteralPath $env:TELEGRAM_MCP_BINARY).FullName
     }
     $names = if ($env:OS -eq 'Windows_NT') { @('telegram-mcp.exe', 'telegram-mcp') } else { @('telegram-mcp', 'telegram-mcp.exe') }
-    foreach ($directory in @('', 'target/release', 'target/debug')) {
+    foreach ($directory in @('bin', '', 'target/release', 'target/debug')) {
         foreach ($name in $names) {
             $relative = if ($directory) { Join-Path $directory $name } else { $name }
             $candidate = Join-Path $Root $relative
@@ -18,7 +18,7 @@ function Get-NativeBinary {
     }
     $command = Get-Command telegram-mcp -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }
-    throw 'The native telegram-mcp executable is missing. Run cargo build --locked --release, or set TELEGRAM_MCP_BINARY.'
+    throw 'The native telegram-mcp executable is missing. Place it in bin/, run cargo build --locked --release, or set TELEGRAM_MCP_BINARY.'
 }
 
 function Test-SessionString {

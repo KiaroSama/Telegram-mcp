@@ -21,16 +21,26 @@ pub fn package(source: &Path, output: &Path, client: &str) -> Result<()> {
         "Unexpected plugin identity"
     );
     if client == "antigravity" {
-        let manifest =
-            serde_json::json!({"name":manifest["name"], "description":manifest["description"]});
+        let mut manifest: Value = serde_json::from_slice(
+            payload
+                .get(".antigravity-plugin/plugin.json")
+                .context("Antigravity manifest is missing")?,
+        )?;
+        ensure!(
+            manifest["name"].as_str() == Some("telegram-operator"),
+            "Unexpected Antigravity plugin identity"
+        );
+        // The published Antigravity v1 schema does not recognize category.
+        manifest
+            .as_object_mut()
+            .context("Invalid Antigravity manifest")?
+            .remove("category");
         let mut text = serde_json::to_vec_pretty(&manifest)?;
         text.push(b'\n');
-        payload.insert("plugin.json".into(), text);
         payload.retain(|name, _| {
-            ![".claude-plugin/", ".codex-plugin/", ".cursor-plugin/"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
+            matches!(name.as_str(), "README.md" | "mcp_config.json") || name.starts_with("skills/")
         });
+        payload.insert("plugin.json".into(), text);
     }
     for name in ["LICENSE", "NOTICE"] {
         let path = source.join(name);

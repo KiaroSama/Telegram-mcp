@@ -21,16 +21,15 @@ separate PR; this migration does not authorize merging it into `main`.
 
 ## Source revisions reviewed
 
-The core upstream sources below were read on **2026-11-15**. Native architecture and
-CI-tool behavior were additionally reviewed on **2026-11-16**. Dates describe the
-referenced source commit or release, rather than claiming every project released on
-the review date. Historical byte-oracle versions remain distinct from current sources.
+The core upstream review took place on 2026-11-15 and 2026-11-16. The selected
+Chigwell changes through #419 were reviewed on 2026-11-24. Table dates refer to
+commits or releases. Historical byte-oracle versions remain distinct from current sources.
 
 | Source | Reviewed revision | Source date | Review and adaptation scope |
 | --- | --- | --- | --- |
 | This fork | `bd4b454c5392ef084ab265b92ca89ebc04d596df` | Migration base | Existing tools, account state, approvals and fidelity contracts |
 | [grammers](https://codeberg.org/Lonami/grammers/commit/e61cf8585e1e9969ab81eda9fb4725a1500e2d86) | `e61cf8585e1e9969ab81eda9fb4725a1500e2d86`, 0.12.0 | 2026-11-08 | Native Telegram transport, layer 233 TL schema, update and authorization custody |
-| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/eed9d699643116cb769d9faf6cb12c8a7e734041) | `eed9d699643116cb769d9faf6cb12c8a7e734041` | 2026-11-14 | Chat/topic access filters, resumable metadata events, cursor readers and useful tool additions |
+| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/b1263b564c834b9eb91daae1667790a4247b2b8f) | `b1263b564c834b9eb91daae1667790a4247b2b8f` | 2026-11-23 | Selected changes through #419: formatting kinds, reconnect catch-up, private-chat leave, exact photo IDs, local Whisper serialization and timestamps, and bounded login retries |
 | [Official MCP Rust SDK](https://github.com/modelcontextprotocol/rust-sdk/commit/0e2396f73a88617141b31f645de6f1171ed5f993) | `0e2396f73a88617141b31f645de6f1171ed5f993`; rmcp 3.10 API | 2026-11-15 | Stdio, authenticated streamable HTTP, shared-session bridge and cancellation |
 | [Telegram Desktop](https://github.com/telegramdesktop/tdesktop/releases/tag/v7.4.4) | v7.4.4, `bf4f714036f21c750d535dab199c811b3f9bfdd4` | 2026-11-13 | Current export changes: date cursors, migrated groups and JSON/HTML escaping |
 | [Qt qtbase](https://github.com/qt/qtbase/tree/v6.12.0) | v6.12.0, `025bdad181de241e81bf853c8a2d7bf3d19261a9` | 2026-09-26 | Current JPEG allocation and ICC validation changes; Qt 5.15.19 remains the historical oracle |
@@ -47,6 +46,13 @@ The pinned grammers schema is layer 233; the former Telethon source pin announce
 Upstream changes are adapted to this fork's validation, account isolation, approvals,
 filesystem and exact-text contracts. A blind merge of upstream Python code would not
 satisfy those contracts or the Rust requirement. Attribution remains in `NOTICE`.
+
+For #409, grammers already signals a home-DC disconnect and requests a difference
+from the existing update cursor. The Rust service keeps its single authenticated
+session per account. For #415, timestamped file transcription is local-only; no
+hosted upload fallback was carried over. For #419, grammers reuses the current
+code token and maps Telegram's `PHONE_CODE_*` responses to one error, so login
+limits retries and tells the operator to restart if the code expired.
 
 ### Export and rendering review
 

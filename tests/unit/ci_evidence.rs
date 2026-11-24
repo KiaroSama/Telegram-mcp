@@ -17,10 +17,6 @@ fn package_image_for_target(name: &str, target: &str) -> Vec<u8> {
         image[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
         image[16..18].copy_from_slice(&2u16.to_le_bytes());
         image[18..20].copy_from_slice(&(if arm { 183u16 } else { 62 }).to_le_bytes());
-    } else if target.contains("darwin") {
-        image[..4].copy_from_slice(&0xfeedfacfu32.to_le_bytes());
-        image[4..8].copy_from_slice(&(if arm { 0x0100000cu32 } else { 0x01000007 }).to_le_bytes());
-        image[12..16].copy_from_slice(&2u32.to_le_bytes());
     } else {
         image[..2].copy_from_slice(b"MZ");
         image[60..64].copy_from_slice(&64u32.to_le_bytes());
@@ -283,7 +279,6 @@ fn both_architectures_require_complete_native_and_renderer_identity_evidence() {
         .collect();
     let cases = BTreeMap::from([
         ("linux".into(), vec!["native::ran".into()]),
-        ("macos".into(), vec!["native::ran".into()]),
         ("windows".into(), vec!["native::ran".into()]),
     ]);
     let commit = "ab".repeat(20);
@@ -332,7 +327,7 @@ fn architecture_manifest_and_record_fields_cannot_silently_omit_a_target() {
     missing.remove("windows-aarch64");
     assert!(validate_leg_manifest(&missing).is_err());
     let mut mislabeled = expected.clone();
-    mislabeled.get_mut("macos-x86_64").unwrap().target = "aarch64-apple-darwin".into();
+    mislabeled.get_mut("linux-x86_64").unwrap().target = "aarch64-unknown-linux-gnu".into();
     assert!(validate_leg_manifest(&mislabeled).is_err());
     let (label, leg) = expected.iter().next().unwrap();
     let value = serde_json::to_value(case_fixture(label, leg)).unwrap();

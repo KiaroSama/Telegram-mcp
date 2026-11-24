@@ -185,10 +185,13 @@ fn run_matches(run: &Value, sha: &str, attempt: u64) -> bool {
     run["head_sha"].as_str() == Some(sha) && run["run_attempt"].as_u64() == Some(attempt)
 }
 fn job_matches(job: &Value, run_id: u64, attempt: u64, sha: &str, run_url: &str) -> bool {
-    let prefix = format!("{run_url}/job/");
     job["html_url"]
         .as_str()
-        .and_then(|url| url.strip_prefix(&prefix))
+        .and_then(|url| url.strip_prefix(run_url))
+        .and_then(|path| {
+            path.strip_prefix("/jobs/")
+                .or_else(|| path.strip_prefix("/job/"))
+        })
         .is_some_and(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
         && job["run_id"].as_u64() == Some(run_id)
         && job["head_sha"].as_str() == Some(sha)
@@ -202,6 +205,25 @@ fn conclusion(job: &Value) -> (&'static str, &'static str) {
         (Some("completed"), Some("skipped")) => ("error", "skipped"),
         (Some("completed"), Some("cancelled")) => ("error", "cancelled"),
         _ => ("error", "not completed successfully"),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn status_accepts_plural_job_url_only_with_numeric_id() {
+    let sha = "ab".repeat(20);
+    let url = "https://github.com/owner/repo/actions/runs/100";
+    for (path, valid) in [
+        ("/jobs/123", true),
+        ("/jobs/", false),
+        ("/jobs/123/extra", false),
+        ("1/jobs/123", false),
+    ] {
+        let job = json!({
+            "head_sha": sha, "run_attempt": 2, "run_id": 100,
+            "html_url": format!("{url}{path}")
+        });
+        assert_eq!(job_matches(&job, 100, 2, &sha, url), valid, "{path}");
     }
 }
 

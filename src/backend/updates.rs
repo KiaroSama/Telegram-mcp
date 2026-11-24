@@ -415,6 +415,8 @@ pub(super) async fn run(
     session: Arc<PersistentSession>,
     account: String,
 ) {
+    // The pinned sender reports home-DC disconnects to this receiver, which
+    // requests a difference on the same pool and persisted account cursor.
     let create = UpdatesReceiver::create(
         handle.thin.clone(),
         handle.session.clone(),

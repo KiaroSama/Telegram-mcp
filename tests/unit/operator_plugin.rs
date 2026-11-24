@@ -48,12 +48,72 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
     package::package(&source, &antigravity, "antigravity").unwrap();
     let normal = archive(&portable);
     let special = archive(&antigravity);
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&normal["telegram-operator/plugin.json"]).unwrap();
-    assert!(manifest.get("$schema").is_some());
+    let manifests = [
+        "plugin.json",
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+        ".cursor-plugin/plugin.json",
+        ".antigravity-plugin/plugin.json",
+    ];
+    let read_json = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&normal[&format!("telegram-operator/{name}")]).unwrap()
+    };
+    for (index, name) in manifests.iter().enumerate() {
+        let manifest = read_json(name);
+        assert_eq!(manifest["name"], "telegram-operator", "{name}");
+        assert_eq!(manifest["version"], "1.4.0", "{name}");
+        for field in ["logo", "icon", "composerIcon"] {
+            assert!(manifest.get(field).is_none(), "{name}: {field}");
+            assert!(
+                manifest["interface"].get(field).is_none(),
+                "{name}: {field}"
+            );
+        }
+        if index == 0 {
+            assert_eq!(
+                manifest["$schema"],
+                "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+            );
+            assert!(manifest.get("skills").is_none());
+        }
+    }
+    for name in [
+        ".claude-plugin/marketplace.json",
+        ".agents/plugins/marketplace.json",
+        ".cursor-plugin/marketplace.json",
+    ] {
+        let marketplace = read_json(name);
+        assert_eq!(
+            marketplace["plugins"][0]["name"], "telegram-operator",
+            "{name}"
+        );
+        assert_eq!(marketplace["plugins"][0]["version"], "1.4.0", "{name}");
+    }
+    let stdio = serde_json::json!({"command": "telegram-mcp", "args": []});
+    for name in [".mcp.json", "mcp_config.json"] {
+        assert_eq!(read_json(name)["mcpServers"]["telegram-mcp"], stdio);
+    }
+    let mcp = read_json("mcp.json");
+    assert_eq!(
+        mcp["$schema"],
+        "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
+    );
+    assert_eq!(
+        mcp["mcpServers"]["telegram-mcp"],
+        serde_json::json!({"type": "stdio", "command": "telegram-mcp", "args": []})
+    );
+    let mut expected = read_json(".antigravity-plugin/plugin.json");
+    expected.as_object_mut().unwrap().remove("category");
     let ag: serde_json::Value =
         serde_json::from_slice(&special["telegram-operator/plugin.json"]).unwrap();
-    assert_eq!(ag.as_object().unwrap().len(), 2);
+    assert_eq!(ag, expected);
+    assert_eq!(
+        special["telegram-operator/mcp_config.json"],
+        normal["telegram-operator/mcp_config.json"]
+    );
+    assert!(!special.contains_key("telegram-operator/mcp.json"));
+    assert!(!special.contains_key("telegram-operator/.mcp.json"));
+    assert!(!special.contains_key("telegram-operator/.agents/plugins/marketplace.json"));
     let skills: Vec<_> = normal
         .keys()
         .filter(|name| name.contains("/skills/"))
@@ -80,6 +140,16 @@ fn package_refuses_extra_payload_file_before_creating_archive() {
     fs::write(source.join("skills/.env"), "SYNTHETIC=not-a-secret\n").unwrap();
     let output = root.path().join("refused.zip");
     assert!(package::package(&source, &output, "portable").is_err());
+    assert!(!output.exists());
+}
+
+#[test]
+fn package_refuses_a_malformed_native_manifest_before_creating_an_archive() {
+    let (root, source) = fixture();
+    fs::write(source.join(".cursor-plugin/plugin.json"), b"{").unwrap();
+    let output = root.path().join("refused.zip");
+    let error = package::package(&source, &output, "portable").unwrap_err();
+    assert!(error.to_string().contains(".cursor-plugin/plugin.json"));
     assert!(!output.exists());
 }
 
@@ -147,7 +217,11 @@ fn installer_dot_segments_cannot_write_into_the_canonical_source() {
 #[test]
 fn outputs_cannot_poison_canonical_payload_trees() {
     let (_root, source) = fixture();
-    assert!(install::install(&source, &source.join(".codex-plugin/copied-skills")).is_err());
+    for directory in [".codex-plugin", ".agents/plugins", ".antigravity-plugin"] {
+        let destination = source.join(directory).join("copied-skills");
+        assert!(install::install(&source, &destination).is_err());
+        assert!(!destination.exists());
+    }
     assert!(
         package::package(
             &source,
