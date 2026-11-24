@@ -74,7 +74,10 @@ fn output_lease(state: &State, output: &std::path::Path) -> Result<std::fs::File
     // A stable private sidecar serializes cooperating writers without locking
     // the data bytes: Windows byte-range locks also prohibit another read handle.
     let digest = Sha256::digest(output.as_os_str().as_encoded_bytes());
-    let path = state.root().join(format!("unread-export-{digest:x}.lock"));
+    let path = state.root().join(format!(
+        "unread-export-{}.lock",
+        crate::lowercase_hex(&digest)
+    ));
     if path
         .symlink_metadata()
         .is_ok_and(|metadata| !metadata.is_file() || metadata.file_type().is_symlink())

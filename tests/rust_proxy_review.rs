@@ -1,7 +1,7 @@
 //! Independent transport review fixtures. Only loopback sockets and synthetic
 //! bytes are used; these tests never contain or request Telegram auth keys.
 use grammers_mtproto::{DequeBuffer, transport::Transport};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::{net::SocketAddr, time::Duration};
 use telegram_mcp::{

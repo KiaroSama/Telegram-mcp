@@ -220,7 +220,7 @@ async fn emoji_insert_sends_the_inspected_snapshot_with_the_approved_edit() {
     const TOKEN: &str = "a-synthetic-owner-token-with-more-than-32-characters";
     type Calls = Arc<Mutex<Vec<(String, Value)>>>;
     fn proof(purpose: &[u8], nonce: &str, target: &str, status: u16, body: &[u8]) -> String {
-        use hmac::{Hmac, Mac};
+        use hmac::{Hmac, KeyInit, Mac};
         let mut mac = Hmac::<sha2::Sha256>::new_from_slice(TOKEN.as_bytes()).unwrap();
         for part in [
             b"telegram-mcp-health-v2\0".as_slice(),

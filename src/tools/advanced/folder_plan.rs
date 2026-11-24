@@ -166,7 +166,7 @@ pub(super) fn state(folder: &Value, self_id: Option<i64>) -> Result<Value> {
     let hash = Sha256::digest(serde_json::to_vec(&canonical(
         &json!({"id":folder["id"],"type":kind,"definition":for_hash}),
     ))?);
-    let mut out = json!({"id":folder["id"],"type":kind,"editable":!shared,"definition":definition,"revision":format!("{hash:x}")});
+    let mut out = json!({"id":folder["id"],"type":kind,"editable":!shared,"definition":definition,"revision":crate::lowercase_hex(&hash)});
     if shared {
         out["has_my_invites"] = json!(folder["has_my_invites"].as_bool().unwrap_or(false));
     }

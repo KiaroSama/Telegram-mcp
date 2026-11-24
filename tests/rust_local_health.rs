@@ -1,5 +1,5 @@
 mod local_support;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use local_support::fixture;
 use serde_json::{Value, json};
 use sha2::Sha256;

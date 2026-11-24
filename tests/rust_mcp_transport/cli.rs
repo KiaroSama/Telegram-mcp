@@ -73,7 +73,10 @@ async fn source_value(value: &str) {
     assert_eq!(account["config_key"], "TELEGRAM_SESSION_NAME_WORK");
     assert_eq!(
         account["config_digest"],
-        format!("{:x}", Sha256::digest(value.as_bytes()))
+        Sha256::digest(value.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     );
     assert_eq!(std::fs::read(fixture.cwd.join(".env")).unwrap(), before);
     fixture.assert_no_telegram_sessions();

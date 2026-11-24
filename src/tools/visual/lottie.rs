@@ -171,8 +171,8 @@ pub fn render_tgs(data: &[u8], count: usize, max_dimension: i64) -> Result<Vec<(
     let mut renderer = Renderer::load()?;
     let data = CString::new(serde_json::to_string(&value)?)?;
     let key = CString::new(format!(
-        "telegram-mcp-{:x}",
-        Sha256::digest(data.as_bytes())
+        "telegram-mcp-{}",
+        crate::lowercase_hex(&Sha256::digest(data.as_bytes()))
     ))?;
     let path = CString::new("")?;
     renderer.animation = unsafe { (renderer.create)(data.as_ptr(), key.as_ptr(), path.as_ptr()) };

@@ -14,7 +14,7 @@
 [![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7)](docs/COMMANDS.md)
 [![Repository source size: 7.05 MB](https://img.shields.io/badge/repo%20size-7.05%20MB-ca8a04)](Cargo.toml)
 [![grammers 0.12 on Telegram layer 233](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20233-15803d)](docs/MIGRATION.md)
-[![Official Rust MCP SDK rmcp 3.10](https://img.shields.io/badge/mcp%20sdk-rmcp%203.10-b45309)](Cargo.toml)
+[![Official Rust MCP SDK rmcp 3.11](https://img.shields.io/badge/mcp%20sdk-rmcp%203.11-b45309)](Cargo.toml)
 [![Supports 5 agent plugin formats](https://img.shields.io/badge/plugins-5%20formats-334155)](docs/operator-plugin.md)
 [![352 native non-secret MCP tools](https://img.shields.io/badge/tools-352%20native-7c3aed)](docs/api-coverage.md)
 [![CI includes CodeQL and Gitleaks workflows](https://img.shields.io/badge/security-CodeQL%20%7C%20Gitleaks-c2410c)](.github/workflows)
@@ -22,7 +22,7 @@
 
 </div>
 
-Telegram MCP can read and search chats, send messages, handle media, and manage groups and channels within the account's Telegram permissions. Version 3.0.0 uses `grammers` 0.12.0 from [Codeberg](https://codeberg.org/Lonami/grammers) at Telegram API layer 233 and the [official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk) (`rmcp` 3.10). The server does not need Python or a virtual environment.
+Telegram MCP can read and search chats, send messages, handle media, and manage groups and channels within the account's Telegram permissions. Version 3.0.0 uses `grammers` 0.12.0 from [Codeberg](https://codeberg.org/Lonami/grammers) at Telegram API layer 233 and the [official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk) (`rmcp` 3.11). The server does not need Python or a virtual environment.
 
 ## Install
 

@@ -67,6 +67,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 *.tmp
+/tmp/
+/.cache/
 /Original Repository.url
 /claude_desktop_config.json
 /aliases.json
