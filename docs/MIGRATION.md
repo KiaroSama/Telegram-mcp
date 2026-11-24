@@ -8,16 +8,18 @@ separate PR; this migration does not authorize merging it into `main`.
 ## Authorized scope
 
 - Rewrite the application, local helpers and automated behavior tests in Rust.
-- Preserve and update `start-mcp.ps1`, `Manage-Accounts.ps1`, `account-manager/*.ps1`
-  and their PowerShell tests as the explicit launcher exception.
+- Retain `Manage-Accounts.ps1` and `start-mcp.ps1` as the only PowerShell launchers.
+  The account manager helpers are native Rust, and the launcher tests are in
+  `tests/rust_launchers.rs` and its modules.
 - Replace Telethon with grammers and implement missing application adapters locally.
 - Preserve verification types and CI quality; exact legacy test-count equality was
   explicitly waived in favor of meaningful tests appropriate to Rust.
-- Build Linux, macOS and Windows releases on every push/PR, and expose exact-head
-  statuses. Build success alone is not complete validation.
-- Review useful upstream improvements and current dependency documentation.
-- Defer secret-chat integration until the owner supplies the separate Rust rewrite of
-  `Telethon-Secret-Chat`. Do not retain its Python runtime as an invisible dependency.
+- Build Windows and Linux releases for x64 and arm64 and report checks against the
+  exact commit. Build success alone does not establish runtime behavior.
+- Review upstream changes and dependency documentation.
+- Use `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats, without the legacy
+  Python runtime. Version 3.1.0 exposes 386 native tools: 352 ordinary tools and all
+  34 [secret-chat tools](COMMANDS.md#secret-chat-tools).
 
 ## Source revisions reviewed
 
@@ -102,8 +104,8 @@ names, establish the practical limits of coverage.
 Release builds run before behavioral gates. Artifacts can exist for a commit whose
 other checks failed; read the full exact-head status set. Cancelled, skipped, missing,
 wrong-commit or stale-attempt evidence never produces a successful custom status.
-Each of the six OS/architecture release packages includes `telegram-mcp`, `emoji-studio` and
-`operator-plugin`, plus verified executable machine headers, per-binary SHA-256 and
+Each of the four Windows and Linux release packages includes `telegram-mcp`,
+`emoji-studio` and `operator-plugin`, plus verified executable machine headers, per-binary SHA-256 and
 commit/compiler/lock provenance. Case reports record the actual operating system,
 CPU architecture and native compiler host; all expected base/renderer legs are required.
 The Docker image provides the shared server; it does not currently distribute the two
@@ -119,7 +121,7 @@ and exact verified Qt oracle-blob exception. Neither gate claims universal crede
 or byte coverage.
 
 The 85% threshold is retained for **combined executable application-core source-line
-coverage** across base and renderer legs on all three operating systems and both CPU architectures. The reviewed
+coverage** across base and renderer legs on Windows and Linux for x64 and arm64. The reviewed
 file list and the SHA-256 of the original `pyproject.toml` are recorded in
 `.github/coverage-scope.json`. The original collector explicitly measured deterministic
 application helpers and omitted tool adapters and development/skill scripts. Native
@@ -170,24 +172,37 @@ linker before the accepted coverage configuration is applied. If neither linker 
 the leg fails. A release build alone cannot
 establish that instrumentation works on a new target.
 
+## Secret-chat store migration
+
+Version 3.1.0 uses [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat)
+for native MTProto 2.0 secret chats. Ordinary and secret chats share one connection
+per authorization key. The server commits incoming encrypted updates to durable
+storage before acknowledging them.
+
+The first open of an account with a supported legacy secret-chat store takes an
+exclusive lock and makes a byte-for-byte, read-only backup under
+`<state_root>/secret-chats/legacy-backups/`. The server then migrates chats, keys,
+sequence counters, settings, saved history and media metadata to the native v1 store
+without loss. It leaves the original files intact. A successful reopen uses the
+native store without rerunning migration or replacing the backup.
+
+If backup, migration or custody initialization fails, the server refuses to open
+the account before connecting. Keep the original files and backups private. Do not
+delete them to bypass an error. The automatic importer covers supported legacy
+layouts only. Use [`check_secret_custody`](COMMANDS.md#custody-pause-delivery-and-backend-control-9)
+to check custody status.
+
+## Telegram Operator plugin upgrade
+
+`telegram-operator` 1.5.0 contains skills only. Upgrading removes obsolete bundled
+MCP configuration. If your client used that configuration, [add the MCP server
+separately](../README.md#connect-an-mcp-client).
 
 ## Deliberate limits and migration cautions
 
-**Secret chats:** no connected encryption backend, secret-chat key migration, encrypted
-message delivery or secret-history parity is claimed. Preserve existing stores. The
-future adapter must review that backend's key/counter persistence, peer erasure,
-recovery, cancellation and custody contracts before activation.
-
-**Legacy authorization custody gate:** known owned secret-chat sidecars block use of
-an imported/legacy authorization before network startup. The reviewed grammers update
-flow can implicitly acknowledge qts through full differences even without ReceivedQueue;
-leaving the encryption tools disabled alone would not protect those updates. Fresh,
-separate native authorization works, and legacy session/key files remain unchanged.
-This gate covers detected owned layouts, not unknown external stores. Do not delete
-state to bypass it; connect the owner's reviewed Rust secret backend when available.
-Cross-label authorization identity uses bounded, constant-time comparison of 256-byte
-keys. Owned temporary comparison buffers are zeroized; original configuration and
-persisted session stores remain unchanged.
+**Authorization identity:** cross-label authorization checks compare 256-byte keys
+in constant time. The server zeroizes temporary comparison buffers and leaves
+original configuration and persisted session stores unchanged.
 
 **Session formats:** native grammers state is distinct from Telethon SQLite/string
 sessions. Configured supported StringSession and SQLite schema7/8 authorization is
@@ -248,6 +263,7 @@ features, permissions, network routing and server responses remain untested.
 
 - [grammers source and README](https://codeberg.org/Lonami/grammers)
 - [grammers 0.12.0 source revision](https://codeberg.org/Lonami/grammers/commit/e61cf8585e1e9969ab81eda9fb4725a1500e2d86)
+- [kiaro-secret-chat source](https://github.com/KiaroSama/Telethon-Secret-Chat)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
 - [Current upstream Telegram MCP](https://github.com/chigwell/telegram-mcp)
 - [CodeQL Rust build-mode support](https://docs.github.com/en/code-security/reference/code-scanning/codeql/build-options-for-compiled-languages#building-rust)

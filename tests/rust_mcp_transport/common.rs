@@ -276,8 +276,8 @@ pub fn assert_catalogue(rows: &[Value]) {
     assert_eq!(accounts["inputSchema"]["additionalProperties"], false);
     assert!(names.contains("send_message"));
     assert!(names.contains("get_privacy_settings"));
-    assert!(!names.contains("secret_chat_status"));
-    assert!(!names.contains("send_secret_message"));
+    assert!(names.contains("secret_chat_status"));
+    assert!(names.contains("send_secret_message"));
 }
 pub fn text_result(response: &Value) -> Value {
     assert_ne!(

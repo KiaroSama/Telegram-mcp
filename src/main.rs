@@ -69,6 +69,9 @@ enum Command {
         #[arg(long)]
         state_dir: Option<std::path::PathBuf>,
     },
+    /// Open the interactive account manager.
+    #[command(visible_alias = "account-manager")]
+    Manage,
     /// Report configured accounts without revealing credentials.
     Accounts {
         #[arg(long)]
@@ -132,9 +135,27 @@ fn main() -> Result<()> {
     }
     telegram_mcp::account_manager::select_source(&env_file)?;
     telegram_mcp::account_manager::capture_process_config();
-    let snapshot = telegram_mcp::account_manager::read_config(&env_file)?;
+    let mut snapshot = telegram_mcp::account_manager::read_config(&env_file)?;
+    if matches!(
+        &cli.command,
+        Some(
+            Command::Manage | Command::Serve { .. } | Command::StatePath | Command::Approve { .. }
+        ) | None
+    ) && !snapshot.values.contains_key("TELEGRAM_STATE_DIR")
+        && std::env::var_os("TELEGRAM_STATE_DIR").is_none()
+        && let Some(value) =
+            telegram_mcp::account_manager::interactive::checkout_state_dir(&env_file)?
+    {
+        snapshot
+            .values
+            .insert("TELEGRAM_STATE_DIR".to_owned(), value);
+    }
+    let mut loaded_env = Vec::new();
     for (key, value) in snapshot.values {
         if std::env::var_os(&key).is_none() {
+            if matches!(&cli.command, Some(Command::Manage)) {
+                loaded_env.push(key.clone());
+            }
             // SAFETY: startup is synchronous. No worker, logging or network
             // threads exist until the Tokio runtime is constructed below.
             unsafe {
@@ -145,10 +166,14 @@ fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli))
+        .block_on(run(cli, &env_file, &loaded_env))
 }
-async fn run(cli: Cli) -> Result<()> {
+async fn run(cli: Cli, env_file: &std::path::Path, loaded_env: &[String]) -> Result<()> {
     match cli.command.unwrap_or(Command::Serve { http: None }) {
+        Command::Manage => {
+            telegram_mcp::account_manager::interactive::run_with_loaded_env(env_file, loaded_env)
+                .await?
+        }
         Command::Bridge => telegram_mcp::server::bridge::run().await?,
         Command::StatePath => {
             println!("{}", telegram_mcp::state::State::global()?.root().display())

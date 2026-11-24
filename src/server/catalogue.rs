@@ -13,6 +13,7 @@ pub fn catalogue_for_mode(mode: &str) -> Result<Vec<Tool>> {
         .chain(crate::tools::messaging::TOOL_NAMES)
         .chain(crate::tools::advanced::TOOL_NAMES)
         .chain(crate::tools::local::TOOL_NAMES)
+        .chain(crate::tools::secret::TOOL_NAMES)
         .chain(crate::tools::visual::TOOL_NAMES)
         .chain(crate::tools::EXTRA_TOOL_NAMES)
         .copied()
@@ -185,4 +186,31 @@ fn validate(value: &Value, spec: &Value, key: &str) -> Result<()> {
         bail!("Argument {key} exceeds its byte budget");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_mode_exposes_only_read_only_secret_tools() {
+        let tools = catalogue_for_mode("read-only").unwrap();
+        let names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .filter(|name| crate::tools::secret::TOOL_NAMES.contains(name))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "get_secret_backend_status",
+                "get_secret_pause_status",
+                "list_secret_chats",
+                "list_secret_deliveries",
+                "read_secret_messages",
+                "search_secret_messages",
+                "secret_chat_status",
+            ]
+        );
+    }
 }

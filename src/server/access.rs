@@ -1,6 +1,9 @@
 //! Chat and forum-topic restrictions ported from the latest upstream policy.
+use super::recipient::{
+    SECRET_CHAT_PREFIX, secret_chat_fields, secret_cloud_field, wire_secret_chat_id,
+};
 use crate::backend::Telegram;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
@@ -11,6 +14,7 @@ mod tests;
 pub struct AccessPolicy {
     enabled: bool,
     chats: BTreeMap<String, Option<BTreeSet<i64>>>,
+    secret_chats: BTreeSet<i32>,
 }
 fn key(text: &str) -> String {
     text.trim().trim_start_matches('@').to_ascii_lowercase()
@@ -58,12 +62,19 @@ impl AccessPolicy {
         };
         let mut policy = Self {
             enabled: true,
-            chats: BTreeMap::new(),
+            ..Self::default()
         };
         for item in raw.split(',') {
             let item = item.trim();
             if item.is_empty() {
                 bail!("Empty chat allowlist entry");
+            }
+            if let Some(id) = item.strip_prefix(SECRET_CHAT_PREFIX) {
+                let id = id.parse::<i32>().ok().filter(|id| *id != 0).context(
+                    "Secret-chat allowlist entries must use secret/<non-zero signed 32-bit wire ID>",
+                )?;
+                policy.secret_chats.insert(id);
+                continue;
             }
             let (chat, topic) = if let Some((chat, topic)) = item.rsplit_once(':') {
                 let topic = topic
@@ -130,10 +141,13 @@ impl AccessPolicy {
     /// trusted resolver proved an originally permitted target. Response fields
     /// and bindings from another account/request cannot widen this scope.
     pub async fn scoped(&self, name: &str, args: &Value, api: &dyn Telegram) -> Result<Self> {
-        let mut scoped = self.clone();
         if !self.enabled {
-            return Ok(scoped);
+            return Ok(self.clone());
         }
+        if crate::tools::secret::TOOL_NAMES.contains(&name) {
+            return self.scoped_secret(name, args, api).await;
+        }
+        let mut scoped = self.clone();
         if name == "add_contact" && args.get("username").is_none_or(|value| value.is_null()) {
             bail!(
                 "Phone-only contact import cannot prove a permitted identity while a chat allowlist is active"
@@ -335,6 +349,49 @@ impl AccessPolicy {
         }
         Ok(scoped)
     }
+    async fn scoped_secret(&self, name: &str, args: &Value, api: &dyn Telegram) -> Result<Self> {
+        let fields = secret_chat_fields(name);
+        if fields.is_empty() && name != "create_secret_chat" {
+            bail!(
+                "This account-wide secret-chat operation is unavailable while a chat allowlist is active"
+            );
+        }
+        let mut scoped = self.clone();
+        scoped.secret_chats.clear();
+        for &field in fields {
+            let id = args
+                .get(field)
+                .and_then(wire_secret_chat_id)
+                .with_context(|| {
+                    format!("A valid {field} is required while a chat allowlist is active")
+                })?;
+            ensure!(
+                self.secret_chats.contains(&id),
+                "Secret chat is outside TELEGRAM_ALLOWED_CHAT_IDS"
+            );
+            scoped.secret_chats.insert(id);
+        }
+        if let Some(field) = secret_cloud_field(name)
+            && (name != "export_secret_chat" || !args[field].is_null())
+        {
+            let value = crate::args::required(args, field)?;
+            let resolved = api.resolve_peer(value).await?;
+            if matches!(name, "create_secret_chat" | "export_secret_chat") {
+                ensure!(
+                    resolved["_"] == "inputPeerUser",
+                    "{field} must resolve to a Telegram user"
+                );
+            }
+            let literal = value.as_str().map(key).unwrap_or_else(|| value.to_string());
+            let marked = marked_peer(&resolved).or_else(|| api.pinned_identity(&resolved));
+            ensure!(
+                self.scope_for(&literal, marked.as_deref())
+                    .is_some_and(|scope| scope.is_none()),
+                "Cloud peer is outside the permitted whole-chat scope in TELEGRAM_ALLOWED_CHAT_IDS"
+            );
+        }
+        Ok(scoped)
+    }
     fn scope_for(&self, literal: &str, marked: Option<&str>) -> Option<Option<BTreeSet<i64>>> {
         match (
             self.chats.get(literal),
@@ -366,14 +423,16 @@ impl AccessPolicy {
         }
     }
     pub fn filter(&self, value: &mut Value) -> Result<()> {
-        if !self.enabled {
-            return Ok(());
-        }
-        self.filter_value(value, 0);
-        if let Some(object) = value.as_object_mut() {
-            object.insert("access_filtered".into(), json!(true));
-        }
+        self.filter_scoped(value, false);
         Ok(())
+    }
+    fn filter_scoped(&self, value: &mut Value, secret: bool) {
+        if self.enabled {
+            self.filter_value(value, 0, secret);
+            if let Some(object) = value.as_object_mut() {
+                object.insert("access_filtered".into(), json!(true));
+            }
+        }
     }
     pub fn filter_for(&self, name: &str, value: &mut Value) -> Result<()> {
         // The event ring filters immutable metadata using both marked peer and
@@ -417,9 +476,10 @@ impl AccessPolicy {
                 });
             }
         }
-        self.filter(value)
+        self.filter_scoped(value, crate::tools::secret::TOOL_NAMES.contains(&name));
+        Ok(())
     }
-    fn filter_value(&self, value: &mut Value, depth: usize) {
+    fn filter_value(&self, value: &mut Value, depth: usize, secret: bool) {
         if depth > 64 {
             *value = Value::Null;
             return;
@@ -427,6 +487,15 @@ impl AccessPolicy {
         match value {
             Value::Array(values) => {
                 values.retain(|value| {
+                    if secret {
+                        return ["chat_id", "secret_chat_id"]
+                            .iter()
+                            .filter_map(|field| value.get(field))
+                            .all(|id| {
+                                wire_secret_chat_id(id)
+                                    .is_some_and(|id| self.secret_chats.contains(&id))
+                            });
+                    }
                     if let Some(peer) = value.get("peer_id")
                         && let Some(id) = marked_peer(peer)
                     {
@@ -440,12 +509,13 @@ impl AccessPolicy {
                     true
                 });
                 for value in values {
-                    self.filter_value(value, depth + 1);
+                    self.filter_value(value, depth + 1, secret);
                 }
             }
             Value::Object(object) => {
                 for (name, values) in object.iter_mut() {
-                    if matches!(name.as_str(), "chats" | "dialogs")
+                    if !secret
+                        && matches!(name.as_str(), "chats" | "dialogs")
                         && let Some(rows) = values.as_array_mut()
                     {
                         rows.retain(|row| {
@@ -458,7 +528,7 @@ impl AccessPolicy {
                             self.chats.contains_key(&id)
                         });
                     }
-                    self.filter_value(values, depth + 1);
+                    self.filter_value(values, depth + 1, secret);
                 }
             }
             _ => {}

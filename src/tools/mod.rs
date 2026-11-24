@@ -3,6 +3,7 @@ pub mod advanced;
 pub mod identity;
 pub mod local;
 pub mod messaging;
+pub mod secret;
 pub mod visual;
 use crate::backend::Telegram;
 use anyhow::{Result, bail};
@@ -24,6 +25,9 @@ pub async fn call(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
         return result;
     }
     if let Some(result) = advanced::call(api, name, args).await {
+        return result;
+    }
+    if let Some(result) = secret::call(api, name, args).await {
         return result;
     }
     if let Some(result) = visual::call(api, name, args).await {

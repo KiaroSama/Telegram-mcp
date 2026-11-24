@@ -8,6 +8,11 @@ coverage/
 htmlcov/
 logs/
 files/
+.state/
+target/
+bin/
+tmp/
+.cache/
 __pycache__/
 .pytest_cache/
 .codebase-memory/
