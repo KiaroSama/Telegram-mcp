@@ -23,7 +23,25 @@ fn directory(path: &Path, created: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn legacy_configs(destination: &Path) -> Result<Vec<PathBuf>> {
+fn is_legacy_config(path: &Path, expected: &Value) -> Result<bool> {
+    match path.symlink_metadata() {
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("Cannot inspect a legacy MCP config"),
+        Ok(_) => {}
+    }
+    let metadata = payload::plain(path)?;
+    ensure!(
+        metadata.is_file(),
+        "Legacy MCP config is not a regular file"
+    );
+    if metadata.len() > 1_000_000 {
+        return Ok(false);
+    }
+    let bytes = fs::read(path).context("Cannot read a legacy MCP config")?;
+    Ok(serde_json::from_slice::<Value>(&bytes).is_ok_and(|config| &config == expected))
+}
+
+fn legacy_configs(destination: &Path) -> Result<Vec<(PathBuf, Value)>> {
     let mut obsolete = Vec::new();
     let standard = json!({"mcpServers": {"telegram-mcp": {"command": "telegram-mcp", "args": []}}});
     let mut portable = standard.clone();
@@ -35,34 +53,27 @@ fn legacy_configs(destination: &Path) -> Result<Vec<PathBuf>> {
         ("mcp.json", &portable),
     ] {
         let path = destination.join(name);
-        match path.symlink_metadata() {
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error).context("Cannot inspect a legacy MCP config"),
-            Ok(_) => {}
-        }
-        let metadata = payload::plain(&path)?;
-        ensure!(
-            metadata.is_file(),
-            "Legacy MCP config is not a regular file"
-        );
-        if metadata.len() > 1_000_000 {
-            continue;
-        }
-        let bytes = fs::read(&path).context("Cannot read a legacy MCP config")?;
-        if serde_json::from_slice::<Value>(&bytes).is_ok_and(|config| &config == expected) {
-            obsolete.push(path);
+        if is_legacy_config(&path, expected)? {
+            obsolete.push((path, expected.clone()));
         }
     }
     Ok(obsolete)
 }
 
-fn remove_legacy_configs(paths: Vec<PathBuf>) -> Result<()> {
-    for path in paths {
-        ensure!(
-            payload::plain(&path)?.is_file(),
-            "Legacy MCP config is not a regular file"
-        );
-        fs::remove_file(path).context("Cannot remove a legacy MCP config")?;
+fn remove_legacy_configs(paths: Vec<(PathBuf, Value)>) -> Result<()> {
+    let mut removed: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    for (path, expected) in paths {
+        if !is_legacy_config(&path, &expected)? {
+            continue;
+        }
+        let bytes = fs::read(&path).context("Cannot back up a legacy MCP config before removal")?;
+        if let Err(error) = fs::remove_file(&path) {
+            for (previous, payload) in removed.into_iter().rev() {
+                let _ = fs::write(previous, payload);
+            }
+            return Err(error).context("Cannot remove a legacy MCP config");
+        }
+        removed.push((path, bytes));
     }
     Ok(())
 }

@@ -15,12 +15,18 @@ use crate::state::State;
 
 /// Manage the accounts owned by the selected dotenv file.
 pub async fn run(env_file: &Path) -> Result<()> {
+    run_with_loaded_env(env_file, &[]).await
+}
+
+#[doc(hidden)]
+pub async fn run_with_loaded_env(env_file: &Path, loaded_env: &[String]) -> Result<()> {
     let root = std::env::current_dir()?;
     let mut manager = Manager {
         console: Console::new(),
         log: RunLog::open(&root),
         env_file: root.join(env_file),
         root,
+        loaded_env,
     };
     manager.log.record("INFO", "Account manager started");
     let result = async {
@@ -39,14 +45,15 @@ pub async fn run(env_file: &Path) -> Result<()> {
     result
 }
 
-struct Manager {
+struct Manager<'a> {
     console: Console,
     log: RunLog,
     root: PathBuf,
     env_file: PathBuf,
+    loaded_env: &'a [String],
 }
 
-impl Manager {
+impl Manager<'_> {
     async fn menu(&mut self) -> Result<()> {
         if !self.env_file.is_file() {
             println!("No .env file exists at {}.", self.env_file.display());
@@ -170,7 +177,7 @@ impl Manager {
         let service = if existing.is_some() {
             server::stop(&self.root)?
         } else {
-            false
+            None
         };
         let result = crate::backend::login_transaction(
             label,
@@ -183,16 +190,10 @@ impl Manager {
         )
         .await;
         self.restore_service(service);
-        match result {
-            Ok(_) => {
-                self.log.record("INFO", "Saved native authorization");
-                println!("Saved native authorization for '{label}'.");
-                Ok(())
-            }
-            Err(error) => Err(error.context(
-                "The generator did not save a replacement. Previous configuration was not changed",
-            )),
-        }
+        result?;
+        self.log.record("INFO", "Saved native authorization");
+        println!("Saved native authorization for '{label}'.");
+        Ok(())
     }
 
     async fn health_or_unknown(&self, profile: Option<&ConfiguredProfile>) -> Value {
@@ -343,8 +344,19 @@ impl Manager {
                 from,
                 &to,
             ) {
-                Ok(true) => println!("  secrets.md: '## {env_name}' is now '## {new_env_name}'"),
-                Ok(false) => {}
+                Ok(files::RegistryRename::Renamed) => {
+                    println!("  secrets.md: '## {env_name}' is now '## {new_env_name}'")
+                }
+                Ok(files::RegistryRename::PublishedSyncFailed) => {
+                    println!(
+                        "  secrets.md: '## {new_env_name}' is visible, but directory durability was not confirmed."
+                    );
+                    self.log.record(
+                        "WARNING",
+                        "The local secrets registry was published without confirmed directory durability",
+                    );
+                }
+                Ok(files::RegistryRename::Unchanged) => {}
                 Err(_) => {
                     println!("The local secrets registry was not updated. Rename its '## {env_name}' heading by hand.");
                     self.log.record("WARNING", "The local secrets registry was not updated");
@@ -369,11 +381,12 @@ impl Manager {
         result
     }
 
-    fn restore_service(&self, stopped: bool) {
-        if !stopped {
+    fn restore_service(&self, stopped: Option<server::StoppedService>) {
+        let Some(stopped) = stopped else {
             return;
-        }
-        match server::start(&self.root, &self.env_file) {
+        };
+        let config = stopped.config.as_deref().unwrap_or(&self.env_file);
+        match server::start(&self.root, config, self.loaded_env) {
             Ok(pid) => {
                 self.log.record("INFO", "Restarted the MCP server");
                 println!("MCP server started again in the background (pid {pid}).");

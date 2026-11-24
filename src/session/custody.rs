@@ -83,17 +83,20 @@ pub fn check_deferred_custody_with_config(
         .map(zeroize::Zeroizing::new)
         .context("No home authorization key is available for secret-chat custody")?;
     let owner = crate::secret::legacy_owner(&directory, label)?;
-    if snapshot.authorization_origin == "native"
-        && (owner.is_none() || identity.map(|i| i.0) != owner)
-    {
-        bail!("Fresh native authorization cannot adopt unverified legacy secret-chat custody");
-    }
-    if identity.is_some_and(|(_, bot)| bot == Some(true)) {
+    let Some((user, bot)) = identity else {
+        bail!(
+            "No verified Telegram user identity is available for legacy secret-chat custody; verify the session owner before publishing migration"
+        );
+    };
+    if bot == Some(true) {
         bail!("Bot authorization cannot adopt legacy secret-chat custody");
     }
-    let user = identity.map(|i| i.0).or(owner).context(
-        "No verified Telegram user identity is available for legacy secret-chat custody",
-    )?;
+    if owner.is_some_and(|expected| expected != user) {
+        bail!("Verified session user does not match legacy secret-chat custody owner");
+    }
+    if snapshot.authorization_origin == "native" && owner.is_none() {
+        bail!("Fresh native authorization cannot adopt unverified legacy secret-chat custody");
+    }
     let binding = crate::secret::session_binding(user, snapshot.home_dc, &key)?;
     drop(crate::secret::migrate_legacy(
         state.root(),

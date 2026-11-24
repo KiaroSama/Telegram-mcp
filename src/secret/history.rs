@@ -66,17 +66,43 @@ impl SecretHistory {
             chat_id != 0 && row.is_object(),
             "Invalid secret-chat history entry"
         );
-        let id = message_id(&row);
         let _guard = self.guard()?;
         let key = chat_id.to_string();
+        if forgotten(&load(&self.settings)?, &key) {
+            return Ok(());
+        }
+        self.append_locked(key, row, reference)
+    }
+
+    fn append_locked(
+        &self,
+        key: String,
+        row: Value,
+        reference: Option<&MediaReference>,
+    ) -> Result<()> {
+        let id = message_id(&row);
+        let ttl = row["self_destructs_after_seconds"].as_u64().unwrap_or(0);
         if let Some(reference) = reference {
             let id = id.context("Secret-chat media entry needs a message ID")?;
             let mut media = load(&self.media)?;
             let records = media.entry(&key).or_insert_with(|| json!({}));
-            records.as_object_mut().context("Invalid secret-chat media registry")?.insert(id.to_string(), json!({
-                "reference": reference.to_json()?, "ttl": row["self_destructs_after_seconds"].as_u64().unwrap_or(0),
-            }));
-            save(&self.media, &media)?;
+            let records = records
+                .as_object_mut()
+                .context("Invalid secret-chat media registry")?;
+            let id = id.to_string();
+            let reference = reference.to_json()?;
+            if !records.get(&id).is_some_and(|saved| {
+                saved["reference"] == reference && saved["ttl"].as_u64() == Some(ttl)
+            }) {
+                records.insert(
+                    id,
+                    json!({"reference": reference, "ttl": ttl, "received_at": row["date"]}),
+                );
+                save(&self.media, &media)?;
+            }
+        }
+        if ttl > 0 {
+            return Ok(());
         }
         let mut history = load(&self.history)?;
         let rows = history.entry(key).or_insert_with(|| json!([]));
@@ -95,6 +121,48 @@ impl SecretHistory {
         }
         rows.push(row);
         save(&self.history, &history)
+    }
+
+    pub(super) fn commit_delivery(
+        &self,
+        chat_id: i32,
+        seq: i32,
+        row: Value,
+        reference: Option<&MediaReference>,
+    ) -> Result<()> {
+        let id = message_id(&row).context("Secret-chat delivery has no message ID")?;
+        let _guard = self.guard()?;
+        let mut settings = load(&self.settings)?;
+        let chat = chat_id.to_string();
+        ensure!(
+            !forgotten(&settings, &chat),
+            "Secret chat was forgotten locally"
+        );
+        let receipts = settings
+            .entry("delivery_receipts")
+            .or_insert_with(|| json!({}));
+        let key = format!("{chat_id}:{seq}");
+        if let Some(saved) = receipts.get(&key) {
+            ensure!(
+                saved.as_i64() == Some(id),
+                "Secret-chat delivery identity changed"
+            );
+        }
+        self.append_locked(chat, row, reference)?;
+        receipts
+            .as_object_mut()
+            .context("Invalid secret-chat delivery receipts")?
+            .insert(key, json!(id));
+        save(&self.settings, &settings)
+    }
+
+    pub(super) fn delivery_committed(&self, chat_id: i32, seq: i32) -> Result<bool> {
+        let _guard = self.guard()?;
+        Ok(load(&self.settings)?
+            .get("delivery_receipts")
+            .and_then(|receipts| receipts.get(format!("{chat_id}:{seq}")))
+            .and_then(Value::as_i64)
+            .is_some())
     }
 
     pub fn read(&self, chat_id: i32, limit: usize) -> Result<Vec<Value>> {
@@ -220,21 +288,25 @@ impl SecretHistory {
 
     pub fn erase_local_chat(&self, chat_id: i32) -> Result<usize> {
         let count = self.clear(chat_id)?;
-        let _guard = self.guard()?;
-        let mut settings = load(&self.settings)?;
-        let forgotten = settings.entry("forgotten").or_insert_with(|| json!({}));
-        forgotten[chat_id.to_string()] = json!(true);
-        save(&self.settings, &settings)?;
+        self.forget_chat(chat_id)?;
         Ok(count)
+    }
+
+    pub(super) fn forget_chat(&self, chat_id: i32) -> Result<()> {
+        let _guard = self.guard()?;
+        let key = chat_id.to_string();
+        let mut media = load(&self.media)?;
+        if media.remove(&key).is_some() {
+            save(&self.media, &media)?;
+        }
+        let mut settings = load(&self.settings)?;
+        settings.entry("forgotten").or_insert_with(|| json!({}))[key] = json!(true);
+        save(&self.settings, &settings)
     }
 
     pub fn is_forgotten(&self, chat_id: i32) -> Result<bool> {
         let _guard = self.guard()?;
-        Ok(load(&self.settings)?
-            .get("forgotten")
-            .and_then(|ids| ids.get(chat_id.to_string()))
-            .and_then(Value::as_bool)
-            .unwrap_or(false))
+        Ok(forgotten(&load(&self.settings)?, &chat_id.to_string()))
     }
 
     pub fn auto_save_folder(&self) -> Result<Option<PathBuf>> {
@@ -253,13 +325,147 @@ impl SecretHistory {
         let folder = folder.map(|path| mkdir(state, path)).transpose()?;
         let _guard = self.guard()?;
         let mut settings = load(&self.settings)?;
+        if let Some(previous) = settings.remove("folder") {
+            let folders = settings
+                .entry("archive_folders")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .context("Invalid secret-chat archive folders")?;
+            if !folders.contains(&previous) {
+                folders.push(previous);
+            }
+        }
         if let Some(folder) = &folder {
             settings.insert("folder".into(), serde_json::to_value(folder)?);
-        } else {
-            settings.remove("folder");
         }
         save(&self.settings, &settings)?;
         Ok(folder)
+    }
+
+    pub(super) fn archive_rows(
+        &self,
+        state: &State,
+        chat_id: i32,
+    ) -> Result<Vec<(Value, PathBuf)>> {
+        let _guard = self.guard()?;
+        let settings = load(&self.settings)?;
+        let mut rows = std::collections::BTreeMap::new();
+        let folders = settings
+            .get("archive_folders")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(settings.get("folder"));
+        for folder in folders {
+            let folder = Path::new(
+                folder
+                    .as_str()
+                    .context("Invalid secret-chat archive folder")?,
+            );
+            let directory = folder.join(chat_id.to_string());
+            let resolved = state.resolve_file(&directory, FileAccess::Write)?;
+            if metadata(&directory)?.is_none() {
+                continue;
+            }
+            let directory = resolved;
+            for entry in fs::read_dir(&directory)? {
+                let path = entry?.path();
+                let Some(id) = path
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .and_then(|stem| stem.parse::<i64>().ok())
+                else {
+                    continue;
+                };
+                if path.extension().is_none_or(|extension| extension != "json") {
+                    continue;
+                }
+                super::plain_file(&path)?;
+                let path = state.resolve_file(&path, FileAccess::Read)?;
+                ensure!(
+                    path.starts_with(&directory),
+                    "Secret-chat archive row is outside its directory"
+                );
+                let bytes = read_private(&path, MAX_BYTES)?
+                    .context("Secret-chat archive row is missing")?;
+                let row: Value =
+                    serde_json::from_slice(&bytes).context("Invalid secret-chat archive row")?;
+                ensure!(
+                    message_id(&row) == Some(id),
+                    "Secret-chat archive row ID does not match its filename"
+                );
+                if row["self_destructs_after_seconds"].as_u64().unwrap_or(0) == 0 {
+                    rows.insert(id, (row, directory.clone()));
+                }
+            }
+        }
+        let mut rows: Vec<_> = rows.into_values().collect();
+        rows.sort_by(|(a, _), (b, _)| a["date"].as_str().cmp(&b["date"].as_str()));
+        Ok(rows)
+    }
+
+    pub(super) fn delete_saved_files(
+        &self,
+        state: &State,
+        chat_id: i32,
+        selected: Option<&[i64]>,
+    ) -> Result<(usize, Vec<String>)> {
+        let _guard = self.guard()?;
+        let settings = load(&self.settings)?;
+        let wanted: Option<std::collections::HashSet<i64>> =
+            selected.map(|ids| ids.iter().copied().collect());
+        let mut removed = 0usize;
+        let mut failed = Vec::new();
+        let folders = settings
+            .get("archive_folders")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .chain(settings.get("folder"));
+        for folder in folders {
+            let folder = Path::new(
+                folder
+                    .as_str()
+                    .context("Invalid secret-chat archive folder")?,
+            );
+            let directory = folder.join(chat_id.to_string());
+            let resolved = state.resolve_file(&directory, FileAccess::Write)?;
+            if metadata(&directory)?.is_none() {
+                continue;
+            }
+            let prefix = format!("secret-{chat_id}-");
+            for entry in fs::read_dir(&resolved)? {
+                let path = entry?.path();
+                let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                    continue;
+                };
+                let id = if let Some(stem) = name.strip_suffix(".json") {
+                    stem.parse::<i64>().ok()
+                } else if let Some(rest) = name.strip_prefix(&prefix) {
+                    rest.strip_suffix(".bin")
+                        .and_then(|s| s.parse::<i64>().ok())
+                } else {
+                    None
+                };
+                let Some(id) = id else {
+                    continue;
+                };
+                if wanted.as_ref().is_some_and(|set| !set.contains(&id)) {
+                    continue;
+                }
+                if super::plain_file(&path).unwrap_or(false)
+                    && state.resolve_file(&path, FileAccess::Write).is_ok()
+                {
+                    match fs::remove_file(&path) {
+                        Ok(()) => removed += 1,
+                        Err(_) => failed.push(path.display().to_string()),
+                    }
+                } else {
+                    failed.push(path.display().to_string());
+                }
+            }
+        }
+        Ok((removed, failed))
     }
 
     pub(crate) fn archive_row(
@@ -275,10 +481,15 @@ impl SecretHistory {
         {
             return Ok(None);
         }
-        let Some(folder) = self.auto_save_folder()? else {
+        let _guard = self.guard()?;
+        let settings = load(&self.settings)?;
+        if forgotten(&settings, &chat_id.to_string()) {
+            return Ok(None);
+        }
+        let Some(folder) = settings.get("folder").and_then(Value::as_str) else {
             return Ok(None);
         };
-        let folder = mkdir(state, &folder.join(chat_id.to_string()))?;
+        let folder = mkdir(state, &Path::new(folder).join(chat_id.to_string()))?;
         if let Some(id) = message_id(row) {
             let path = state.resolve_file(&folder.join(format!("{id}.json")), FileAccess::Write)?;
             if !super::plain_file(&path)? {
@@ -296,13 +507,11 @@ impl SecretHistory {
             message.ttl,
             message.media_reference.is_some(),
         );
-        if message.ttl <= 0 {
-            self.append(
-                message.chat_id,
-                row.clone(),
-                message.media_reference.as_ref(),
-            )?;
-        }
+        self.append(
+            message.chat_id,
+            row.clone(),
+            message.media_reference.as_ref(),
+        )?;
         Ok(row)
     }
 
@@ -344,6 +553,10 @@ pub(super) fn message_id(row: &Value) -> Option<i64> {
     row["message_id"]
         .as_i64()
         .or_else(|| row["message_id"].as_str()?.parse().ok())
+}
+
+fn forgotten(settings: &Map<String, Value>, key: &str) -> bool {
+    settings.get("forgotten").and_then(|ids| ids.get(key)) == Some(&Value::Bool(true))
 }
 
 fn load(path: &Path) -> Result<Map<String, Value>> {

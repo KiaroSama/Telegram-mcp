@@ -49,7 +49,12 @@ impl SecretRuntime {
                         "Changing the running strong-ingress limit {key} is unsupported"
                     );
                 }
-                self.backend_status()
+                let mut status = self.backend_status()?;
+                if mode == "normal" {
+                    status["unchanged"] = json!(true);
+                    status["note"] = json!("The native backend keeps durable ingress enabled");
+                }
+                Ok(status)
             }
             "secret_chat_status" => {
                 let id = id()?;
@@ -94,9 +99,9 @@ impl SecretRuntime {
                         self.manager.status(id)?.state == ChatState::Closed,
                         "Only a closed secret chat can be forgotten"
                     );
-                    let removed = self.history.erase_local_chat(id)?;
+                    self.history.forget_chat(id)?;
                     return Ok(
-                        json!({"chat_id":id,"closed":true,"forgotten":true,"protocol_tombstone_retained":true,"messages_removed":removed}),
+                        json!({"chat_id":id,"closed":true,"forgotten":true,"protocol_tombstone_retained":true,"messages_removed":0}),
                     );
                 }
                 let both = method == "delete_secret_chat_both_sides";
@@ -137,7 +142,9 @@ impl SecretRuntime {
             }
             "read_secret_messages" => {
                 let id = id()?;
-                self.status(id)?;
+                if !self.history.is_forgotten(id)? {
+                    self.manager.status(id)?;
+                }
                 Ok(json!({"chat_id":id,"messages":self.history.read(id,limit())?}))
             }
             "search_secret_messages" => {
@@ -169,11 +176,19 @@ impl SecretRuntime {
             "save_secret_media" | "receive_secret_media" => {
                 let id = id()?;
                 let message = required_int(&args, "message_id")?;
-                let honour = args["honour_sender_restriction"].as_bool().unwrap_or(false);
+                let honour = method == "receive_secret_media"
+                    || args["honour_sender_restriction"].as_bool().unwrap_or(false);
                 let reference = self.history.media_with_restriction(id, message, honour)?;
-                Ok(
-                    json!({"chat_id":lifted(id),"secret_chat_id":id,"message_id":message,"saved":true,"path":self.write_media(&reference,message,path(&args,"destination")).await?}),
-                )
+                let (saved_path, durable) = self
+                    .write_media(&reference, message, path(&args, "destination"))
+                    .await?;
+                let mut out = json!({"chat_id":lifted(id),"secret_chat_id":id,"message_id":message,"saved":true,"path":saved_path,"durability_confirmed":durable});
+                if !durable {
+                    out["warning"] = json!(
+                        "Destination was published, but directory durability could not be confirmed."
+                    );
+                }
+                Ok(out)
             }
             "forward_secret_media" => {
                 let from = chat_id(&args, "from_chat_id")?;
@@ -191,8 +206,7 @@ impl SecretRuntime {
                         integer(&args, "reply_to_message_id"),
                     )
                     .await?;
-                self.record_sent(to, id, caption, true)?;
-                Ok(json!({"chat_id":to,"message_id":id}))
+                Ok(self.sent_result(to, id, caption, true))
             }
             "copy_into_secret_chat" => {
                 let target = alias_chat(&args, "to_chat_id", "to_secret_chat_id")?;
@@ -233,9 +247,11 @@ impl SecretRuntime {
                     "Copying cloud media into a secret chat is not supported by the pinned backend"
                 );
                 let text = string(source, "message")?;
-                let sent = self.manager.send_message(target, text, None, None).await?;
-                self.record_sent(target, sent, text, false)?;
-                Ok(json!({"chat_id":target,"message_id":sent}))
+                let sent = self
+                    .manager
+                    .send_message(target, text, Some(Vec::new()), None)
+                    .await?;
+                Ok(self.sent_result(target, sent, text, false))
             }
             "delete_secret_message" => {
                 let id = id()?;
@@ -271,40 +287,64 @@ impl SecretRuntime {
                 } else {
                     Some(ids(&args["message_ids"])?)
                 };
+                let (deleted, failed) =
+                    self.history
+                        .delete_saved_files(&self.state, id, selected.as_deref())?;
                 Ok(
-                    json!({"chat_id":id,"messages_removed":self.history.delete_saved(id,selected.as_deref())?}),
+                    json!({"chat_id":lifted(id),"secret_chat_id":id,"deleted":deleted,"failed":failed}),
                 )
             }
             "mark_secret_read" => {
                 let id = id()?;
                 let input = &args["max_date_or_ids"];
-                let ids = if !args["message_id"].is_null() {
-                    vec![required_int(&args, "message_id")?]
-                } else if input.is_array() {
-                    ids(input)?
+                let (ids, cutoff) = if args["message_id"].is_null() && input.is_array() {
+                    (ids(input)?, None)
                 } else {
-                    let cutoff = input.as_i64();
-                    self.history
-                        .read(id, 1000)?
+                    let rows = self.history.read(id, usize::MAX)?;
+                    let received = rows
                         .iter()
-                        .filter(|row| {
-                            row["is_outgoing"] == false
-                                && cutoff.is_none_or(|time| {
-                                    row["date"]
-                                        .as_str()
-                                        .and_then(|date| {
-                                            chrono::DateTime::parse_from_rfc3339(date).ok()
-                                        })
-                                        .is_some_and(|date| date.timestamp() <= time)
-                                })
-                        })
-                        .filter_map(message_id)
-                        .collect()
+                        .filter(|row| row["is_outgoing"] == false)
+                        .filter_map(|row| {
+                            Some((
+                                message_id(row)?,
+                                row["date"]
+                                    .as_str()?
+                                    .parse::<chrono::DateTime<chrono::Utc>>()
+                                    .ok()?,
+                            ))
+                        });
+                    let cutoff = if !args["message_id"].is_null() {
+                        let wanted = required_int(&args, "message_id")?;
+                        Some(
+                            received
+                                .clone()
+                                .find(|(id, _)| *id == wanted)
+                                .context("No received message with that ID and date is retained")?
+                                .1,
+                        )
+                    } else if let Some(time) = input.as_i64() {
+                        Some(
+                            chrono::DateTime::from_timestamp(time, 0)
+                                .context("Invalid secret-chat read cutoff")?,
+                        )
+                    } else {
+                        received.clone().map(|(_, date)| date).max()
+                    };
+                    (
+                        received
+                            .filter(|(_, date)| cutoff.is_some_and(|cutoff| *date <= cutoff))
+                            .map(|(id, _)| id)
+                            .collect(),
+                        cutoff,
+                    )
                 };
-                if !ids.is_empty() {
-                    self.manager.mark_read(id, ids.clone()).await?;
+                let marked = ids.len();
+                if marked > 0 {
+                    self.manager.mark_read(id, ids).await?;
                 }
-                Ok(json!({"chat_id":id,"marked":ids.len()}))
+                Ok(
+                    json!({"chat_id":id,"marked":marked,"read_up_to_date":cutoff.map(|date| date.to_rfc3339())}),
+                )
             }
             "send_secret_typing" => {
                 let id = id()?;
@@ -330,36 +370,7 @@ impl SecretRuntime {
                 self.history.set_auto_save_folder(&self.state, None)?;
                 Ok(json!({"enabled":false}))
             }
-            "export_secret_chat" => {
-                let id = id()?;
-                for field in [
-                    "photos",
-                    "videos",
-                    "voice_messages",
-                    "video_messages",
-                    "stickers",
-                    "gifs",
-                    "files",
-                    "size_limit_mb",
-                    "date_from",
-                    "date_to",
-                    "peer_user",
-                ] {
-                    ensure!(
-                        args[field].is_null() || args[field].as_str() == Some(""),
-                        "Secret-chat export filter {field} is not supported"
-                    );
-                }
-                let destination = path(&args, "destination");
-                let format = args["format"]
-                    .as_str()
-                    .filter(|format| !format.is_empty())
-                    .or_else(|| destination.and_then(|path| path.extension()?.to_str()))
-                    .unwrap_or("json");
-                Ok(
-                    json!({"chat_id":id,"path":self.export(id,ExportFormat::parse(format)?,destination,args["include_media"].as_bool().unwrap_or(false)).await?}),
-                )
-            }
+            "export_secret_chat" => self.start_export(id()?, &args),
             "pause_secret_chat" | "get_secret_pause_status" | "resume_secret_chat" => {
                 let id = id()?;
                 match method {
@@ -379,23 +390,32 @@ impl SecretRuntime {
                 let id = id()?;
                 let offset = integer(&args, "offset").unwrap_or_default().clamp(0, 4096) as usize;
                 let rows: Vec<_> = self.manager.pending_deliveries(id)?.into_iter().skip(offset).take(limit()).map(|delivery| {
-                    let wrapper = kiaro_secret_chat::framing::unwrap(&delivery.message.body)?;
-                    use kiaro_secret_chat::enums::DecryptedMessage as Message;
-                    let message = match wrapper.message {
-                        Message::Message(msg) => Some(row(msg.random_id,false,&msg.message,msg.ttl,delivery.message.file.is_some())),
-                        Message::Legacy36b091de(msg) => Some(row(msg.random_id,false,&msg.message,msg.ttl,delivery.message.file.is_some())),
-                        Message::Legacy204d3878(msg) => Some(row(msg.random_id,false,&msg.message,msg.ttl,delivery.message.file.is_some())),
-                        Message::Legacy1f814f1f(msg) => Some(row(msg.random_id,false,&msg.message,0,delivery.message.file.is_some())),
-                        _ => None,
-                    };
-                    Ok::<_,SecretError>(json!({"chat_id":lifted(id),"secret_chat_id":id,"seq_no":delivery.seq_no,"message":message}))
-                }).collect::<std::result::Result<_,_>>()?;
+                    let message = delivery_snapshot(&delivery)?.map(|(row, _)| row);
+                    Ok::<_, anyhow::Error>(json!({"chat_id":lifted(id),"secret_chat_id":id,"seq_no":delivery.seq_no,"message":message}))
+                }).collect::<Result<_>>()?;
                 Ok(json!({"chat_id":id,"deliveries":rows}))
             }
             "acknowledge_secret_delivery" => {
                 let id = id()?;
                 let seq = i32::try_from(required_int(&args, "seq_no")?)?;
-                self.manager.acknowledge_delivery(id, seq)?;
+                self.status(id)?;
+                if let Some(delivery) = self
+                    .manager
+                    .pending_deliveries(id)?
+                    .into_iter()
+                    .find(|delivery| delivery.seq_no == seq)
+                {
+                    let (row, reference) = delivery_snapshot(&delivery)?
+                        .context("No message snapshot for this secret-chat delivery")?;
+                    self.history
+                        .commit_delivery(id, seq, row, reference.as_ref())?;
+                    self.manager.acknowledge_delivery(id, seq)?;
+                } else {
+                    ensure!(
+                        self.history.delivery_committed(id, seq)?,
+                        "Unknown secret-chat delivery sequence"
+                    );
+                }
                 Ok(json!({"chat_id":id,"seq_no":seq,"acknowledged":true}))
             }
             _ => bail!("Unknown secret-chat method"),
@@ -441,8 +461,30 @@ impl SecretRuntime {
         } else {
             previous
         };
-        if timed && ttl != previous {
-            self.manager.set_ttl(id, ttl).await?;
+        if timed
+            && ttl != previous
+            && let Err(error) = self.manager.set_ttl(id, ttl).await
+        {
+            let outcome = match self.manager.status(id) {
+                Ok(chat) if chat.ttl == previous => "the local timer is unchanged",
+                Ok(_) if self.manager.set_ttl(id, previous).await.is_ok() => {
+                    "the prior timer was restored"
+                }
+                _ => "restoration of the prior timer could not be confirmed",
+            };
+            return Err(anyhow::Error::new(error)
+                .context(format!("Timed secret-chat message was not sent; {outcome}")));
+        }
+        if timed {
+            let live_ttl = self.manager.status(id)?.ttl;
+            if live_ttl != ttl {
+                if live_ttl != previous {
+                    let _ = self.manager.set_ttl(id, previous).await;
+                }
+                bail!(
+                    "Secret-chat timer changed concurrently from {ttl}s to {live_ttl}s before sending; message was not sent"
+                );
+            }
         }
         let sent = if let Some((path, options)) = source.zip(options) {
             self.manager
@@ -453,7 +495,8 @@ impl SecretRuntime {
                 .send_message(id, &formatted, entities, reply)
                 .await
         };
-        let restoration = if timed && ttl != previous {
+        let observed_ttl = self.manager.status(id).map(|chat| chat.ttl).unwrap_or(ttl);
+        let restoration = if timed && observed_ttl != previous {
             self.manager.set_ttl(id, previous).await
         } else {
             Ok(())
@@ -468,12 +511,19 @@ impl SecretRuntime {
                 }));
             }
         };
-        if ttl == 0 {
-            self.record_sent(id, msg, &formatted, media)?;
+        let mut result = if observed_ttl == 0 {
+            self.sent_result(id, msg, &formatted, media)
+        } else {
+            json!({"chat_id":id,"message_id":msg})
+        };
+        result["ttl_seconds"] = json!(observed_ttl);
+        if timed && observed_ttl != ttl {
+            result["requested_ttl_seconds"] = json!(ttl);
+            result["ttl_changed_concurrently"] = json!(true);
         }
-        Ok(
-            json!({"chat_id":id,"message_id":msg,"ttl_seconds":ttl,"previous_timer":previous,"timer_restored":restoration.is_ok()}),
-        )
+        result["previous_timer"] = json!(previous);
+        result["timer_restored"] = json!(restoration.is_ok());
+        Ok(result)
     }
 
     fn file_options(
@@ -532,11 +582,20 @@ impl SecretRuntime {
         })
     }
 
+    fn sent_result(&self, id: i32, random_id: i64, text: &str, media: bool) -> Value {
+        let mut result = json!({"chat_id":id,"message_id":random_id});
+        if self.record_sent(id, random_id, text, media).is_err() {
+            result["history_warning"] =
+                json!("Telegram confirmed the send, but local history could not be saved");
+        }
+        result
+    }
+
     fn record_sent(&self, id: i32, random_id: i64, text: &str, media: bool) -> Result<()> {
-        let ttl = self.manager.status(id)?.ttl;
-        if ttl == 0 {
-            self.history
-                .append(id, row(random_id, true, text, ttl, media), None)?;
+        if self.manager.status(id)?.ttl == 0 {
+            let row = row(random_id, true, text, 0, media);
+            self.history.append(id, row.clone(), None)?;
+            self.history.archive_row(&self.state, id, &row)?;
         }
         Ok(())
     }
@@ -553,7 +612,7 @@ fn format_message(
     mode: Option<&str>,
 ) -> Result<(String, Option<Vec<tl::enums::MessageEntity>>)> {
     let (text, entities) = match mode.unwrap_or("plain").to_ascii_lowercase().as_str() {
-        "plain" | "none" | "" => return Ok((text.into(), None)),
+        "plain" | "none" | "" => return Ok((text.into(), Some(Vec::new()))),
         "markdown" | "md" => grammers_client::parsers::parse_markdown_message(text),
         "html" => grammers_client::parsers::parse_html_message(text),
         _ => bail!("Unsupported secret-chat parse mode"),

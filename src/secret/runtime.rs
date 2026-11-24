@@ -174,7 +174,7 @@ impl SecretRuntime {
         destination: Option<&Path>,
     ) -> Result<PathBuf> {
         let reference = self.history.media(chat_id, id)?;
-        self.write_media(&reference, id, destination).await
+        Ok(self.write_media(&reference, id, destination).await?.0)
     }
 
     async fn write_media(
@@ -182,7 +182,7 @@ impl SecretRuntime {
         reference: &MediaReference,
         id: i64,
         destination: Option<&Path>,
-    ) -> Result<PathBuf> {
+    ) -> Result<(PathBuf, bool)> {
         let path = export::output(
             &self.state,
             destination,
@@ -197,8 +197,17 @@ impl SecretRuntime {
                 .receive_file_with_limit(reference, MAX_BYTES)
                 .await?,
         );
-        write_atomic(&path, &bytes, false)?;
-        Ok(path)
+        match write_atomic(&path, &bytes, false) {
+            Ok(()) => Ok((path, true)),
+            Err(error)
+                if error
+                    .to_string()
+                    .contains("Secret-chat file was published but directory durability could not be confirmed") =>
+            {
+                Ok((path, false))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn export(
@@ -206,12 +215,23 @@ impl SecretRuntime {
         chat_id: i32,
         format: ExportFormat,
         destination: Option<&Path>,
-        include_media: bool,
-    ) -> Result<PathBuf> {
-        self.status(chat_id)?;
-        let mut rows = self.history.read(chat_id, usize::MAX)?;
-        rows.reverse();
-        let path = export::write_history(
+        filter: &export::ExportFilter,
+        cancel: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<(Vec<PathBuf>, usize)> {
+        let archive = self.history.archive_rows(&self.state, chat_id)?;
+        if archive.is_empty() {
+            self.status(chat_id)?;
+        }
+        let filtered: Vec<_> = archive
+            .into_iter()
+            .filter(|(row, _)| filter.matches_row(row))
+            .collect();
+        if cancel.is_some_and(|rx| *rx.borrow()) {
+            return Err(crate::export::jobs::Cancelled.into());
+        }
+        let (rows, sources): (Vec<_>, Vec<_>) = filtered.into_iter().unzip();
+        let exported_count = rows.len();
+        let paths = export::write_history(
             &self.state,
             &self.label,
             chat_id,
@@ -219,21 +239,105 @@ impl SecretRuntime {
             format,
             destination,
         )?;
-        if include_media {
-            let assets = path.with_extension("media");
-            for row in rows {
-                if row["type"]
-                    .as_str()
-                    .is_some_and(|kind| !matches!(kind, "text" | "service"))
-                    && let Some(id) = message_id(&row)
-                {
-                    let directory = super::history::mkdir(&self.state, &assets)?;
-                    self.save_media(chat_id, id, Some(&directory)).await.context("Secret-chat export media could not be saved; history file was retained")?;
+        let assets = paths[0].with_extension("media");
+        for (row, source) in rows.iter().zip(sources) {
+            if cancel.is_some_and(|rx| *rx.borrow()) {
+                return Err(crate::export::jobs::Cancelled.into());
+            }
+            if row["type"]
+                .as_str()
+                .is_some_and(|kind| !matches!(kind, "text" | "service"))
+                && let Some(id) = message_id(row)
+            {
+                let name = format!("secret-{chat_id}-{id}.bin");
+                let source = source.join(&name);
+                if !super::plain_file(&source)? && row["is_outgoing"] == true {
+                    continue;
                 }
+                let source = self.state.resolve_file(&source, FileAccess::Read).context(
+                    "Secret-chat archived media is unavailable; history file was retained",
+                )?;
+                let bytes =
+                    Zeroizing::new(super::read_private(&source, MAX_BYTES)?.context(
+                        "Secret-chat archived media is missing; history file was retained",
+                    )?);
+                if !filter.allows_media(row, bytes.len()) {
+                    continue;
+                }
+                let directory = super::history::mkdir(&self.state, &assets)?;
+                let destination = export::output(&self.state, Some(&directory), &name)?;
+                write_atomic(&destination, &bytes, false)?;
             }
         }
-        Ok(path)
+        Ok((paths, exported_count))
     }
+
+    fn start_export(&self, id: i32, args: &Value) -> Result<Value> {
+        let filter = export::ExportFilter::from_args(args)?;
+        let dest = args["destination"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let format = args["format"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| dest.as_deref().and_then(|p| p.extension()?.to_str()))
+            .unwrap_or("json");
+        let format = ExportFormat::parse(format)?;
+        let folder = dest
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .or_else(|| {
+                self.state
+                    .default_downloads()
+                    .ok()
+                    .map(|p| p.display().to_string())
+            })
+            .unwrap_or_default();
+        let runtime = self.clone();
+        crate::export::jobs::start_secret(
+            serde_json::json!(i64::from(id) - 2_000_000_000_000),
+            folder,
+            move |cancel| async move {
+                runtime
+                    .export(id, format, dest.as_deref(), &filter, Some(&cancel))
+                    .await
+            },
+        )
+    }
+}
+
+fn delivery_snapshot(
+    delivery: &kiaro_secret_chat::custody::RelayDelivery,
+) -> Result<Option<(Value, Option<MediaReference>)>> {
+    use grammers_tl_types::Deserializable;
+    use kiaro_secret_chat::enums::DecryptedMessage as Message;
+    let message = kiaro_secret_chat::framing::unwrap(&delivery.message.body)?.message;
+    let (id, text, ttl, media) = match message {
+        Message::Message(m) => (m.random_id, m.message, m.ttl, m.media),
+        Message::Legacy36b091de(m) => (m.random_id, m.message, m.ttl, m.media),
+        Message::Legacy204d3878(m) => (m.random_id, m.message, m.ttl, Some(m.media)),
+        Message::Legacy1f814f1f(m) => (m.random_id, m.message, 0, Some(m.media)),
+        _ => return Ok(None),
+    };
+    let reference = match (media, delivery.message.file.as_deref()) {
+        (Some(media), Some(file)) if kiaro_secret_chat::media::file_parts(&media).is_ok() => {
+            match tl::enums::EncryptedFile::from_bytes(file).map_err(|_| SecretError::Media)? {
+                tl::enums::EncryptedFile::File(file) => {
+                    Some(MediaReference::new(delivery.chat_id, &file, &media)?)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let mut row = row(id, false, &text, ttl, reference.is_some());
+    row["date"] = serde_json::json!(
+        chrono::DateTime::from_timestamp(delivery.message.date.into(), 0)
+            .context("Invalid secret-chat delivery date")?
+            .to_rfc3339()
+    );
+    Ok(Some((row, reference)))
 }
 
 fn startup_error(stage: &str, error: SecretError) -> anyhow::Error {
@@ -260,8 +364,17 @@ impl Prepared {
             .map_err(|error| startup_error("attach ingress", error))
     }
 
-    pub(crate) async fn start(self, client: Client) -> Result<Arc<SecretRuntime>> {
+    pub(crate) async fn start<F, Fut>(
+        self,
+        client: Client,
+        on_recovered: F,
+    ) -> Result<Arc<SecretRuntime>>
+    where
+        F: FnOnce(Vec<kiaro_secret_chat::ingress::IngressBatch>) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
         let initialize = |error| startup_error("verify and initialize ingress", error);
+        let ingress = Arc::clone(&self.ingress);
         let manager = StrongSecretChatManager::new(
             client.clone(),
             self.ingress,
@@ -339,6 +452,13 @@ impl Prepared {
                 Ok(())
             })
             .map_err(register)?;
+        let pending = ingress
+            .pending_batches()
+            .map_err(|error| startup_error("read pending ingress batches", error))?;
+        if let Err(error) = on_recovered(pending).await {
+            let _ = runtime.stop().await;
+            return Err(error);
+        }
         if let Err(error) = runtime.manager.start().await {
             let _ = runtime.stop().await;
             return Err(startup_error("recover durable work", error));

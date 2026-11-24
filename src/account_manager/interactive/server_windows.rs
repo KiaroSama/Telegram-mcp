@@ -1,4 +1,5 @@
 //! Native Windows process discovery. Only a checkout launcher or its serve process can seed a stop.
+use super::StoppedService;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     collections::{HashMap, HashSet},
@@ -74,6 +75,7 @@ struct Process {
     pid: u32,
     parent: u32,
     name: String,
+    start: Option<u64>,
 }
 
 fn snapshot() -> Result<Vec<Process>> {
@@ -98,10 +100,13 @@ fn snapshot() -> Result<Vec<Process>> {
             .iter()
             .position(|&unit| unit == 0)
             .unwrap_or(entry.name.len());
+        let recorded_start =
+            open(entry.pid, PROCESS_QUERY_LIMITED_INFORMATION).and_then(|h| started(&h));
         processes.push(Process {
             pid: entry.pid,
             parent: entry.parent,
             name: String::from_utf16_lossy(&entry.name[..end]).to_ascii_lowercase(),
+            start: recorded_start,
         });
         // SAFETY: same live snapshot and reusable C buffer as in the first call.
         more = unsafe { Process32NextW(handle.as_raw_handle(), &mut entry) } != 0;
@@ -244,41 +249,78 @@ fn path_text(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-fn is_service(root: &Path, image: &Path, args: &[OsString]) -> bool {
-    let Some(name) = image
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(str::to_ascii_lowercase)
-    else {
-        return false;
-    };
+/// Compare two filesystem paths by exact OS canonical identity when both exist
+/// (so case-sensitive NTFS directories stay distinct while different spellings
+/// of the same case-insensitive directory still match), falling back to
+/// normalized text for non-existent synthetic paths in unit tests.
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => path_text(left) == path_text(right),
+    }
+}
+
+fn launcher_args<'a>(root: &Path, mut args: &'a [OsString]) -> Option<&'a [OsString]> {
+    while let Some((option, rest)) = args.split_first() {
+        match option.to_str()?.to_ascii_lowercase().as_str() {
+            "-file" | "-f" | "-fi" | "-fil" => {
+                let (script, forwarded) = rest.split_first()?;
+                return same_path(Path::new(script), &root.join("start-mcp.ps1"))
+                    .then_some(forwarded);
+            }
+            "-nologo" | "-nol" | "-noprofile" | "-nop" | "-noninteractive" | "-noni"
+            | "-noexit" | "-noe" | "-interactive" | "-i" | "-sta" | "-mta" => args = rest,
+            "-executionpolicy" | "-ep" | "-ex" | "-windowstyle" | "-w" | "-workingdirectory"
+            | "-wd" | "-inputformat" | "-inp" | "-if" | "-outputformat" | "-o" | "-of" => {
+                args = rest.get(1..)?;
+            }
+            // A positional script, command, or unrecognized option ends the ownership scan.
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn config_argument(args: &[OsString]) -> Option<PathBuf> {
+    for (index, arg) in args.iter().enumerate() {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--config" {
+            return args.get(index + 1).map(PathBuf::from);
+        }
+        if let Some(value) = arg.to_str().and_then(|arg| arg.strip_prefix("--config=")) {
+            return Some(PathBuf::from(value));
+        }
+    }
+    None
+}
+
+fn service_args<'a>(root: &Path, image: &Path, args: &'a [OsString]) -> Option<&'a [OsString]> {
+    let name = image.file_name()?.to_str()?.to_ascii_lowercase();
+    let args = args.get(1..)?;
     match name.as_str() {
-        "pwsh.exe" | "powershell.exe" => args
-            .windows(2)
-            .skip(1)
-            .find_map(
-                |pair| match pair[0].to_string_lossy().to_ascii_lowercase().as_str() {
-                    "-file" | "-f" => Some(
-                        path_text(Path::new(&pair[1])) == path_text(&root.join("start-mcp.ps1")),
-                    ),
-                    "-command" | "-c" | "-encodedcommand" | "-enc" => Some(false),
-                    _ => None,
-                },
-            )
-            .unwrap_or(false),
+        "pwsh.exe" | "powershell.exe" => launcher_args(root, args),
         "telegram-mcp.exe" | "telegram-mcp" => {
-            args.get(1).is_some_and(|argument| argument == "serve")
+            let command = match args.first()? {
+                arg if arg == "--config" => args.get(2),
+                arg if arg.as_encoded_bytes().starts_with(b"--config=") => args.get(1),
+                arg => Some(arg),
+            };
+            (command.is_some_and(|argument| argument == "serve")
                 && ["", "bin", "target/release", "target/debug"]
                     .into_iter()
-                    .any(|dir| path_text(&root.join(dir).join(&name)) == path_text(image))
+                    .any(|dir| same_path(&root.join(dir).join(&name), image)))
+            .then_some(args)
         }
-        _ => false,
+        _ => None,
     }
 }
 
 struct OwnedProcess {
     handle: OwnedHandle,
     start: u64,
+    config: Option<PathBuf>,
 }
 
 fn owned_processes(root: &Path, terminate: bool) -> Result<Vec<OwnedProcess>> {
@@ -306,14 +348,18 @@ fn owned_processes(root: &Path, terminate: bool) -> Result<Vec<OwnedProcess>> {
         let Some(start) = started(&handle) else {
             continue;
         };
-        if !image(&handle)
-            .zip(command_args(&handle))
-            .is_some_and(|(image, args)| is_service(root, &image, &args))
-        {
+        let Some((image, args)) = image(&handle).zip(command_args(&handle)) else {
             continue;
-        }
+        };
+        let Some(args) = service_args(root, &image, &args) else {
+            continue;
+        };
         if !terminate {
-            return Ok(vec![OwnedProcess { handle, start }]);
+            return Ok(vec![OwnedProcess {
+                handle,
+                start,
+                config: None,
+            }]);
         }
         // Hold the inspected handle until acquiring a second one that has termination rights.
         let terminator = open(process.pid, query | PROCESS_TERMINATE)
@@ -327,6 +373,7 @@ fn owned_processes(root: &Path, terminate: bool) -> Result<Vec<OwnedProcess>> {
             OwnedProcess {
                 handle: terminator,
                 start,
+                config: config_argument(args),
             },
         );
     }
@@ -339,6 +386,9 @@ fn owned_processes(root: &Path, terminate: bool) -> Result<Vec<OwnedProcess>> {
             let Some(parent) = selected.get(&process.parent) else {
                 continue;
             };
+            let Some(recorded) = process.start else {
+                continue;
+            };
             let Some(handle) = open(process.pid, query | PROCESS_TERMINATE) else {
                 ensure!(
                     open(process.pid, query).is_none(),
@@ -346,10 +396,19 @@ fn owned_processes(root: &Path, terminate: bool) -> Result<Vec<OwnedProcess>> {
                 );
                 continue;
             };
-            let Some(start) = started(&handle).filter(|start| *start >= parent.start) else {
+            let Some(start) =
+                started(&handle).filter(|start| *start == recorded && *start >= parent.start)
+            else {
                 continue;
             };
-            selected.insert(process.pid, OwnedProcess { handle, start });
+            selected.insert(
+                process.pid,
+                OwnedProcess {
+                    handle,
+                    start,
+                    config: None,
+                },
+            );
         }
         if selected.len() == previous {
             break;
@@ -364,52 +423,77 @@ pub(in crate::account_manager::interactive) fn running(root: &Path) -> Result<bo
     Ok(!owned_processes(root, false)?.is_empty())
 }
 
-pub(in crate::account_manager::interactive) fn stop(root: &Path) -> Result<bool> {
-    let processes = owned_processes(root, true)?;
-    if processes.is_empty() {
-        return Ok(false);
-    }
+pub(in crate::account_manager::interactive) fn stop(root: &Path) -> Result<Option<StoppedService>> {
     let deadline = Instant::now() + Duration::from_secs(15);
-    for process in &processes {
-        let handle = process.handle.as_raw_handle();
-        // SAFETY: the pinned process handle has synchronize and terminate rights.
-        unsafe {
-            if WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
-                && TerminateProcess(handle, 1) == 0
-                && WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
-            {
-                bail!("An MCP server process could not be stopped");
+    let mut stopped_any = false;
+    let mut recorded_config = None;
+    // Re-check after termination so a child spawned by a launcher between the
+    // initial snapshot and TerminateProcess is also caught and terminated.
+    for _ in 0..3 {
+        let processes = owned_processes(root, true)?;
+        if processes.is_empty() {
+            return Ok(stopped_any.then_some(StoppedService {
+                config: recorded_config,
+            }));
+        }
+        stopped_any = true;
+        if recorded_config.is_none() {
+            recorded_config = processes.iter().find_map(|process| process.config.clone());
+        }
+        for process in &processes {
+            let handle = process.handle.as_raw_handle();
+            // SAFETY: the pinned process handle has synchronize and terminate rights.
+            unsafe {
+                if WaitForSingleObject(handle, 0) == WAIT_TIMEOUT
+                    && TerminateProcess(handle, 1) == 0
+                    && WaitForSingleObject(handle, 0) != WAIT_OBJECT_0
+                {
+                    bail!("An MCP server process could not be stopped");
+                }
             }
         }
+        for process in &processes {
+            // SAFETY: the pinned process handle has synchronize rights and remains live through this call.
+            let status = unsafe {
+                WaitForSingleObject(
+                    process.handle.as_raw_handle(),
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis() as u32,
+                )
+            };
+            ensure!(
+                status == WAIT_OBJECT_0,
+                "The MCP server did not stop within 15 seconds"
+            );
+        }
     }
-    for process in processes {
-        // SAFETY: the pinned process handle has synchronize rights and remains live through this call.
-        let status = unsafe {
-            WaitForSingleObject(
-                process.handle.as_raw_handle(),
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .as_millis() as u32,
-            )
-        };
-        ensure!(
-            status == WAIT_OBJECT_0,
-            "The MCP server did not stop within 15 seconds"
-        );
-    }
-    Ok(true)
+    ensure!(
+        owned_processes(root, false)?.is_empty(),
+        "The MCP server continued spawning child processes; checkout is not quiescent"
+    );
+    Ok(stopped_any.then_some(StoppedService {
+        config: recorded_config,
+    }))
 }
 
-pub(in crate::account_manager::interactive) fn start(root: &Path, env_file: &Path) -> Result<u32> {
-    let address = super::super::super::bind_address()?;
-    let child = Command::new("pwsh.exe")
-        .args(["-NoLogo", "-NoProfile", "-File"])
+pub(in crate::account_manager::interactive) fn start(
+    root: &Path,
+    env_file: &Path,
+    loaded_env: &[String],
+) -> Result<u32> {
+    let mut command = Command::new("pwsh.exe");
+    for name in loaded_env {
+        command.env_remove(name);
+    }
+    // Force HTTP as before, but let the native server resolve the selected file's address.
+    let child = command
+        .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
         .arg(root.join("start-mcp.ps1"))
         .arg("--config")
         .arg(env_file)
-        .arg("--http")
-        .arg(address.to_string())
         .current_dir(root)
+        .env("MCP_TRANSPORT", "http")
         .env("TELEGRAM_MCP_BINARY", std::env::current_exe()?)
         .creation_flags(CREATE_NEW_CONSOLE)
         .show_window(0)
@@ -428,24 +512,63 @@ mod tests {
         let shell = Path::new(r"C:\pwsh.exe");
         let native = root.join(r"target\release\telegram-mcp.exe");
         let launcher = r"C:\fixture checkout\start-mcp.ps1";
-        let matches = |image: &Path, args: &[&str]| {
-            is_service(
-                root,
-                image,
-                &args.iter().copied().map(OsString::from).collect::<Vec<_>>(),
-            )
+        let inspect = |image: &Path, args: &[&str]| {
+            let args: Vec<_> = args.iter().copied().map(OsString::from).collect();
+            service_args(root, image, &args).map(config_argument)
         };
-        assert!(matches(shell, &["pwsh", "-NoProfile", "-File", launcher]));
-        assert!(!matches(
-            shell,
-            &["pwsh", "-Command", "script", "-File", launcher]
-        ));
+        let matches = |image: &Path, args: &[&str]| inspect(image, args).is_some();
+        let config = r"C:\configs\privaté file.env";
+        let expected = Some(Some(PathBuf::from(config)));
+        assert_eq!(
+            inspect(
+                shell,
+                &[
+                    "pwsh",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-File",
+                    launcher,
+                    "--config",
+                    config,
+                ]
+            ),
+            expected
+        );
+        for args in [
+            ["pwsh", "-Command", "script", "-File", launcher].as_slice(),
+            &["pwsh", r"C:\other\worker.ps1", "-File", launcher],
+            &[
+                "pwsh",
+                "-NoProfile",
+                r"C:\other\worker.ps1",
+                "-File",
+                launcher,
+            ],
+            &["pwsh", "-CommandWithArgs", "script", "-File", launcher],
+        ] {
+            assert!(!matches(shell, args));
+        }
         assert!(!matches(
             shell,
             &["pwsh", "-File", r"C:\foreign\start-mcp.ps1", launcher]
         ));
-        assert!(matches(&native, &["telegram-mcp", "serve"]));
+        assert_eq!(inspect(&native, &["telegram-mcp", "serve"]), Some(None));
+        assert_eq!(
+            inspect(&native, &["telegram-mcp", "--config", config, "serve"]),
+            expected
+        );
+        assert_eq!(
+            inspect(
+                &native,
+                &["telegram-mcp", "serve", &format!("--config={config}")]
+            ),
+            expected
+        );
         assert!(!matches(&native, &["telegram-mcp", "login", "serve"]));
+        assert!(!matches(
+            &native,
+            &["telegram-mcp", "--config", config, "login"]
+        ));
         assert!(!matches(&native, &["telegram-mcp", "session-health"]));
         assert!(!matches(
             Path::new(r"C:\foreign\telegram-mcp.exe"),

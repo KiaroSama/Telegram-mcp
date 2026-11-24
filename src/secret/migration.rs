@@ -149,6 +149,7 @@ pub(crate) fn open_store(
         }
         let bytes = key_bytes(&key, false)?;
         let store = EncryptedIngressStorage::open(encrypted, *bytes, binding.clone(), MAX_BYTES)?;
+        crate::state::storage::sync_directory(&directory)?;
         return Ok(Some(store));
     }
     if !legacy {
@@ -226,19 +227,18 @@ pub(crate) fn open_store(
             .load()?
             .context("Migrated custody state is missing")?
     };
-    let checksums: BTreeMap<_, _> = files
-        .iter()
-        .map(|(suffix, bytes)| (format!("{label}{suffix}"), hash(bytes)))
-        .collect();
     let base = directory.join("legacy-backups");
     private_directory(&base)?;
     let saved_receipt = match saved_receipt {
         Some(saved) => {
+            let original = validate_backup(&base, &saved)?;
             ensure!(
-                saved.sha256 == checksums,
+                SOURCES.into_iter().all(|suffix| {
+                    saved.sha256.get(&format!("{original}{suffix}"))
+                        == files.get(suffix).map(|bytes| hash(bytes)).as_ref()
+                }),
                 "Legacy secret-chat files changed since backup"
             );
-            validate_backup(&base, &saved)?;
             saved
         }
         None => {
@@ -252,13 +252,20 @@ pub(crate) fn open_store(
                 write_atomic(&path, bytes, false)?;
                 let mut permissions = fs::metadata(&path)?.permissions();
                 permissions.set_readonly(true);
-                fs::set_permissions(path, permissions)?;
+                fs::set_permissions(&path, permissions)?;
+                #[cfg(unix)]
+                File::open(&path)?.sync_all()?;
             }
+            crate::state::storage::sync_directory(&destination)?;
+            crate::state::storage::sync_directory(&base)?;
             let saved = Receipt {
                 version: 1,
                 authorization: binding.digest(),
                 backup,
-                sha256: checksums,
+                sha256: files
+                    .iter()
+                    .map(|(suffix, bytes)| (format!("{label}{suffix}"), hash(bytes)))
+                    .collect(),
             };
             validate_backup(&base, &saved)?;
             write_atomic(&receipt, &serde_json::to_vec(&saved)?, false)?;
@@ -285,8 +292,7 @@ pub(crate) fn open_store(
     }
     // Publish the complete store last; the receipt permits an interrupted migration to resume.
     fs::hard_link(staged_store, &encrypted).context("Cannot publish migrated secret-chat state")?;
-    #[cfg(unix)]
-    File::open(&directory)?.sync_all()?;
+    crate::state::storage::sync_directory(&directory)?;
     ensure!(
         saved_receipt.authorization == binding.digest(),
         "Secret-chat migration authorization changed"
@@ -340,7 +346,7 @@ fn key_bytes(path: &Path, create: bool) -> Result<Zeroizing<[u8; 32]>> {
     Ok(key)
 }
 
-fn validate_backup(base: &Path, receipt: &Receipt) -> Result<()> {
+fn validate_backup<'a>(base: &Path, receipt: &'a Receipt) -> Result<&'a str> {
     // Account renames leave the original label in the receipt and backup.
     let (label, timestamp) = receipt
         .backup
@@ -387,7 +393,7 @@ fn validate_backup(base: &Path, receipt: &Receipt) -> Result<()> {
             "Secret-chat backup is writable"
         );
     }
-    Ok(())
+    Ok(label)
 }
 
 fn hash(bytes: &[u8]) -> String {

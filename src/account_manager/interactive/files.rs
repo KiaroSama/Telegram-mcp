@@ -1,7 +1,6 @@
 use anyhow::{Context, Result, bail};
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Read, Write},
@@ -10,7 +9,7 @@ use std::{
 use tempfile::NamedTempFile;
 
 use super::super::config::{config_write_lock, file_values, write_env_value_locked};
-use super::super::{config_digest, label_for, parse_config, read_config};
+use super::super::{config_digest, label_for, read_config};
 use crate::state::{
     State,
     storage::{private_directory, restrict, sync_directory},
@@ -48,7 +47,10 @@ pub(super) fn configured_profiles(path: &Path) -> Result<Vec<ConfiguredProfile>>
         return Ok(Vec::new());
     };
     // The native parser determines which variables are active; line order is for display only.
-    let values = parse_config(&text, &BTreeMap::new())?;
+    let snapshot = read_config(path)?;
+    if snapshot.digest != config_digest(&text) {
+        bail!("Configuration changed while listing profiles; try again");
+    }
     let mut profiles: Vec<ConfiguredProfile> = Vec::new();
     for line in text.trim_start_matches('\u{feff}').lines() {
         let line = line.trim_start();
@@ -60,7 +62,11 @@ pub(super) fn configured_profiles(path: &Path) -> Result<Vec<ConfiguredProfile>>
         let Ok(label) = label_for(env_name) else {
             continue;
         };
-        let Some(value) = values.get(env_name).filter(|value| !value.is_empty()) else {
+        let Some(value) = snapshot
+            .values
+            .get(env_name)
+            .filter(|value| !value.is_empty())
+        else {
             continue;
         };
         let profile = ConfiguredProfile {
@@ -181,25 +187,40 @@ fn write_private(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
     Ok(())
 }
 
+pub(super) enum RegistryRename {
+    Unchanged,
+    Renamed,
+    PublishedSyncFailed,
+}
+
 pub(super) fn rename_registry(
     path: &Path,
     old_key: &str,
     new_key: &str,
     old_label: &str,
     new_label: &str,
-) -> Result<bool> {
+) -> Result<RegistryRename> {
     let Some(text) = read_regular(path)? else {
-        return Ok(false);
+        return Ok(RegistryRename::Unchanged);
     };
     let Some(renamed) = rename_registry_section(&text, old_key, new_key, old_label, new_label)?
     else {
-        return Ok(false);
+        return Ok(RegistryRename::Unchanged);
     };
     if read_regular(path)?.as_deref() != Some(text.as_str()) {
         bail!("The registry changed during rename");
     }
-    write_private(path, renamed.as_bytes(), true)?;
-    Ok(true)
+    match write_private(path, renamed.as_bytes(), true) {
+        Ok(()) => Ok(RegistryRename::Renamed),
+        Err(error)
+            if error
+                .to_string()
+                .contains("Private file was published but directory synchronization failed") =>
+        {
+            Ok(RegistryRename::PublishedSyncFailed)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn rename_registry_section(

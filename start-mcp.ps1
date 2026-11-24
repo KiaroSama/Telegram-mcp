@@ -309,9 +309,43 @@ function Stop-OtherInstances {
 }
 
 try {
+    # Opened by a person: whatever copy is already running goes first, so opening the
+    # launcher always ends with THIS copy serving - instead of waiting 20 seconds on
+    # the session lock and exiting, which read as a crash every time.
+    # Run takeover BEFORE resolving the state directory and log path so serve and logs
+    # both use the configuration current at launch rather than a pre-wait snapshot.
+    $takeoverNotes = @()
+    if ($IsWindows -and (Test-OpenedByPerson)) {
+        # Same reservation as the supervisor: hold across takeover AND startup,
+        # including the interval before the replacement has opened its port.
+        $canonical = $PSScriptRoot.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)) }
+        finally { $sha.Dispose() }
+        $key = ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant().Substring(0, 24)
+        $launchMutex = [Threading.Mutex]::new($false, "Local\telegram-mcp-launch-$key")
+        try { $launchMutexHeld = $launchMutex.WaitOne(30000) }
+        catch [Threading.AbandonedMutexException] { $launchMutexHeld = $true }
+        if (-not $launchMutexHeld) { throw 'Another launcher owns startup; no process was stopped.' }
+        # Keep the named object alive as manual intent, without holding its mutex:
+        # another person may still take over this manual run. Automatic starters
+        # refuse any existing reservation object, including this unowned one.
+        $launchMutex.ReleaseMutex()
+        $launchMutexHeld = $false
+        $takeover = Stop-OtherInstances -Root $PSScriptRoot
+        if ($takeover.Stopped.Count) {
+            $takeoverNotes += "Stopped the copy of this server that was already running (pid $($takeover.Stopped -join ', ')) " +
+            'so this one can start. Clients connected to it reconnect to this one.'
+        }
+        if ($takeover.Survived.Count) {
+            throw 'The previous service did not stop; replacement was refused.'
+        }
+    }
+
     # Not `throw 'not requested'`: routing the opt-out through the same catch as a
     # real failure is what made both of them print the same word.
     $script:LogFailure = $null
+    $stateDirectory = $null
     try {
         if (-not $script:LogEnabled) { throw [OperationCanceledException]::new('opted out') }
         $stateDirectory = Get-StateDirectory
@@ -380,42 +414,11 @@ try {
     if ($logPath) {
         [IO.File]::AppendAllText($logPath, "$startMessage$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
     }
-
-    # Opened by a person: whatever copy is already running goes first, so opening the
-    # launcher always ends with THIS copy serving - instead of waiting 20 seconds on
-    # the session lock and exiting, which read as a crash every time.
-    if ($IsWindows -and (Test-OpenedByPerson)) {
-        # Same reservation as the supervisor: hold across takeover AND startup,
-        # including the interval before the replacement has opened its port.
-        $canonical = $PSScriptRoot.Replace('/', '\').TrimEnd('\').ToLowerInvariant()
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try { $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($canonical)) }
-        finally { $sha.Dispose() }
-        $key = ([BitConverter]::ToString($digest)).Replace('-', '').ToLowerInvariant().Substring(0, 24)
-        $launchMutex = [Threading.Mutex]::new($false, "Local\telegram-mcp-launch-$key")
-        try { $launchMutexHeld = $launchMutex.WaitOne(30000) }
-        catch [Threading.AbandonedMutexException] { $launchMutexHeld = $true }
-        if (-not $launchMutexHeld) { throw 'Another launcher owns startup; no process was stopped.' }
-        # Keep the named object alive as manual intent, without holding its mutex:
-        # another person may still take over this manual run. Automatic starters
-        # refuse any existing reservation object, including this unowned one.
-        $launchMutex.ReleaseMutex()
-        $launchMutexHeld = $false
-        $takeover = Stop-OtherInstances -Root $PSScriptRoot
-        $notes = @()
-        if ($takeover.Stopped.Count) {
-            $notes += "Stopped the copy of this server that was already running (pid $($takeover.Stopped -join ', ')) " +
-            'so this one can start. Clients connected to it reconnect to this one.'
-        }
-        if ($takeover.Survived.Count) {
-            throw 'The previous service did not stop; replacement was refused.'
-        }
-        foreach ($note in $notes) {
-            $line = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] $note"
-            [Console]::Error.WriteLine($line)
-            if ($logPath) {
-                [IO.File]::AppendAllText($logPath, "$line$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
-            }
+    foreach ($note in $takeoverNotes) {
+        $line = "[$([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss UTC'))] [INFO] [launcher] $note"
+        [Console]::Error.WriteLine($line)
+        if ($logPath) {
+            [IO.File]::AppendAllText($logPath, "$line$([Environment]::NewLine)", [Text.UTF8Encoding]::new($false))
         }
     }
 
@@ -425,7 +428,7 @@ try {
     $previousLogLimit = $env:TELEGRAM_MCP_LOG_MAX_BYTES
     $previousStateDirectory = $env:TELEGRAM_STATE_DIR
     # Keep serve and diagnostics on the same native-resolved .env state when logging is enabled.
-    if ($null -eq $previousStateDirectory -and $logPath) {
+    if ($null -eq $previousStateDirectory -and $logPath -and $stateDirectory) {
         $env:TELEGRAM_STATE_DIR = $stateDirectory
     }
     $env:TELEGRAM_MCP_LOG_FILE = if ($logPath) { $logPath } else { 'off' }
