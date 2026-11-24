@@ -43,6 +43,11 @@
     "src/safeguard/tables.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/safeguard/taint.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/safeguard/terminal.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
+    "src/secret/export.rs": "Native secret-chat export writer corresponding to legacy measured telegram_mcp.secret_archive and tdexport contracts; full file retained.",
+    "src/secret/history.rs": "Native secret-chat decrypted history, media and archive store corresponding to legacy measured telegram_mcp.secret_history and secret_media_refs contracts; full file retained.",
+    "src/secret/migration.rs": "Native exclusive-locked legacy secret-chat read-only backup and v1 migration core corresponding to legacy measured telegram_mcp.secret_custody and secret_activation contracts; full file retained.",
+    "src/secret/mod.rs": "Native secret-chat module root and shared path/identity helpers corresponding to legacy measured telegram_mcp.secret_common contracts; full file retained.",
+    "src/secret/runtime.rs": "Native secret-chat DurableIngress and StrongSecretChatManager lifecycle wiring corresponding to legacy measured telegram_mcp.secret_backend and secret_ingress_status contracts; full file retained.",
     "src/server.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/server/access.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/server/bridge.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
@@ -111,6 +116,11 @@
     "src/transfer/http.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches."
   },
   "exclude": {
+    "src/account_manager/interactive.rs": "Interactive account-manager terminal workflow ported from legacy PowerShell account-manager/*.ps1 outside the legacy explicit Python coverage source list; native launcher and account-manager integration suites remain required.",
+    "src/account_manager/interactive/console.rs": "Interactive terminal presentation helpers ported from legacy PowerShell account-manager/Console.ps1 outside the legacy explicit Python coverage source list; native launcher integration suites remain required.",
+    "src/account_manager/interactive/files.rs": "Interactive launcher environment and file-safety helpers ported from legacy PowerShell account-manager/{EnvFile,FileSafety,Health,Native}.ps1 outside the legacy explicit Python coverage source list; native launcher integration suites remain required.",
+    "src/account_manager/interactive/server.rs": "Cross-platform background-server launcher shim ported from legacy PowerShell account-manager/Server.ps1 outside the legacy explicit Python coverage source list; native launcher integration suites remain required.",
+    "src/account_manager/interactive/server_windows.rs": "Windows background-server launcher helper ported from legacy PowerShell account-manager/Server.ps1 outside the legacy explicit Python coverage source list; Windows launcher integration suites remain required.",
     "src/bin/ci.rs": "Development CI and operator-distribution helper; legacy CI/plugin scripts were outside the explicit coverage source list. Their tests and CI gates still run.",
     "src/bin/ci/coverage.rs": "Development CI measurement helper; legacy CI scripts were outside the explicit coverage source list. Scope, parser and corruption tests remain required.",
     "src/bin/ci/evidence.rs": "Development CI and operator-distribution helper; legacy CI/plugin scripts were outside the explicit coverage source list. Their tests and CI gates still run.",
@@ -134,6 +144,7 @@
     "src/emoji/sheet.rs": "Standalone Emoji Studio helper; legacy skill scripts were outside the explicit coverage source list. Native helper behavioral tests still run.",
     "src/emoji/studio.rs": "Standalone Emoji Studio helper; legacy skill scripts were outside the explicit coverage source list. Native helper behavioral tests still run.",
     "src/emoji/vision.rs": "Standalone Emoji Studio helper; legacy skill scripts were outside the explicit coverage source list. Native helper behavioral tests still run.",
+    "src/secret/runtime/calls.rs": "Live MTProto secret-chat transport RPC dispatch adapter marshaling requests to StrongSecretChatManager; offline custody, migration and all 34 secret-chat tool dispatch suites remain required.",
     "src/tools/advanced.rs": "Tool-domain dispatch adapter; legacy telegram_mcp.tools adapters were outside the explicit coverage source list. Catalogue and dispatch tests remain required.",
     "src/tools/advanced/business.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
     "src/tools/advanced/checklists.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
@@ -157,6 +168,13 @@
     "src/tools/identity/invites.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
     "src/tools/identity/notifications.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
     "src/tools/identity/profile.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
-    "src/tools/identity/profile/privacy.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required."
+    "src/tools/identity/profile/privacy.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
+    "src/tools/secret.rs": "Tool-domain dispatch adapter; legacy telegram_mcp.tools adapters were outside the explicit coverage source list. Catalogue and dispatch tests remain required.",
+    "src/tools/secret/actions.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
+    "src/tools/secret/autosave.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
+    "src/tools/secret/chats.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
+    "src/tools/secret/custody.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
+    "src/tools/secret/messaging.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required.",
+    "src/tools/secret/timed.rs": "Telegram API domain adapter corresponding to legacy telegram_mcp.tools modules outside the explicit coverage source list; real request-shape and behavioral suites remain required."
   }
 }
