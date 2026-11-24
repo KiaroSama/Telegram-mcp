@@ -443,11 +443,17 @@ impl Prepared {
             .on("ChatClosed", label, move |event| {
                 if let Event::ChatClosed {
                     chat_id,
-                    history_deleted: true,
+                    history_deleted,
                     ..
                 } = event
                 {
-                    history.clear(chat_id).map_err(|_| SecretError::Storage)?;
+                    if history_deleted {
+                        history.clear(chat_id).map_err(|_| SecretError::Storage)?;
+                    } else {
+                        history
+                            .clear_media(chat_id)
+                            .map_err(|_| SecretError::Storage)?;
+                    }
                 }
                 Ok(())
             })
