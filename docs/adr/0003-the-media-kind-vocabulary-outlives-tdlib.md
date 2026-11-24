@@ -1,5 +1,11 @@
 # The media kind vocabulary outlives TDLib
 
+> Rust migration note: this is a historical decision record. Its original source
+> paths describe the former implementation; current native behavior and any
+> remaining limits are documented in [MIGRATION.md](../MIGRATION.md). Secret-chat
+> integration is deferred until the owner supplies the separate Rust backend.
+
+
 The eight media kinds live in `telegram_mcp/secret_media_content.py` as `KINDS`,
 next to their only caller: the TDLib-backed secret chat tools. That file is
 scheduled for deletion. TDLib is being replaced by the Telethon Secret Chat

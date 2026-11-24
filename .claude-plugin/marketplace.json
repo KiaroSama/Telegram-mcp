@@ -1,18 +1,19 @@
 {
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
   "name": "telegram-operator-local",
   "owner": {
     "name": "KiaroSama"
   },
   "metadata": {
     "description": "Local Telegram operator workflow catalog",
-    "version": "1.2.0"
+    "version": "1.4.0"
   },
   "plugins": [
     {
       "name": "telegram-operator",
       "source": "./",
       "description": "Five authorized Telegram workflows",
-      "version": "1.2.0"
+      "version": "1.4.0"
     }
   ]
 }

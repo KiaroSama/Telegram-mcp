@@ -8,7 +8,7 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$projectRoot = Split-Path -Parent $PSScriptRoot
+$repositoryRoot = Split-Path -Parent $PSScriptRoot
 
 function Get-LauncherSource {
     <#
@@ -32,16 +32,16 @@ $sandbox = Join-Path ([IO.Path]::GetTempPath()) ("tg-accounts-" + [guid]::NewGui
 [void] (New-Item -ItemType Directory -Path $sandbox)
 
 try {
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'Manage-Accounts.ps1') -Destination $sandbox
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Manage-Accounts.ps1') -Destination $sandbox
     # The launcher dot-sources account-manager/*.ps1, so the sandbox is not a launcher
     # without them - and the extraction below has to see their functions too.
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'account-manager') -Destination $sandbox -Recurse
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'account-manager') -Destination $sandbox -Recurse
 
     $envPath = Join-Path $sandbox '.env'
     $original = @(
         '# a comment that must survive'
         'TELEGRAM_API_ID=12345'
-        'TELEGRAM_API_HASH=0123456789abcdef0123456789abcdef'
+        ('TELEGRAM_API_HASH=' + ('0' * 32))
         ''
         'TELEGRAM_SESSION_STRING=1AAAAAoriginal'
         'TELEGRAM_SESSION_STRING_WORK=1AAAAAwork'
@@ -71,6 +71,7 @@ try {
 
     $harness = @"
 `$PSScriptRoot = '$sandbox'
+`$script:ProjectRoot = `$PSScriptRoot
 `$envPath = Join-Path `$PSScriptRoot '.env'
 `$script:LogPath = `$null
 `$script:Quitting = `$false
@@ -205,7 +206,12 @@ $($functions.Value -join "`n`n")
         'Backup-EnvFile'       = { $null }
         'Get-ServerTrees'      = { param($Root) @() }
         'Stop-TelegramServer'  = { param($Root) $false }
-        'Move-AccountState'    = { param($From, $To) @() }
+        'Move-AccountState'    = {
+            param($From, $To, $ConfigurationKey)
+            if ($ConfigurationKey -ne 'TELEGRAM_SESSION_NAME_ONDISK') { throw 'The original file-owned source key was not passed to native rename.' }
+            Rename-EnvKey -From $ConfigurationKey -To 'TELEGRAM_SESSION_NAME_MOVED' | Out-Null
+            @()
+        }
         'Rename-SecretsEntry'  = { param($Path, $OldKey, $NewKey, $OldLabel, $NewLabel) $false }
         # This harness leaves $PSScriptRoot empty inside the extracted functions, so
         # the secrets.md path cannot resolve here; tests/test_account_rename.ps1 covers it.
@@ -321,7 +327,7 @@ $($functions.Value -join "`n`n")
 
     # --- labels a person actually types --------------------------------------
     #
-    # python-dotenv REFUSES a key containing a space: it warns and drops the line,
+    # the environment parser REFUSES a key containing a space: it warns and drops the line,
     # so "KGB Verifier" stored literally would save an account that never loads.
     # Spaces and hyphens must therefore reach .env as underscores.
     $cases = @(
@@ -344,7 +350,7 @@ $($functions.Value -join "`n`n")
     }
     Write-Host 'ok  blank cancels, and a character with no safe mapping is refused'
 
-    # The stored key must be one python-dotenv can parse back.
+    # The stored key must be one the environment parser can parse back.
     $label = ConvertTo-Label -Raw 'KGB Verifier'
     Set-EnvValue -Key "TELEGRAM_SESSION_STRING_$($label.ToUpperInvariant())" -Value '1AAAAAkgb'
     $line = @([IO.File]::ReadAllLines($envPath) | Where-Object { $_ -match '^TELEGRAM_SESSION_STRING_KGB' })
@@ -400,22 +406,57 @@ $($functions.Value -join "`n`n")
     }
     Write-Host 'ok  no login-method flag is forced, so the generator offers both'
 
-    # `uv run` rebuilds and reinstalls the project when a source file changed, and
-    # prints build/wheel progress on top of the login prompt. The venv is already
-    # there; uv is only for when it is not.
-    $venvAt = $code.IndexOf('.venv\Scripts\python.exe')
-    $uvAt = $code.IndexOf('Get-Command uv')
-    if ($venvAt -lt 0 -or $uvAt -lt 0) { throw 'The generator launch lost one of its two interpreters.' }
-    if ($venvAt -gt $uvAt) { throw 'uv is tried before the venv, which reintroduces the rebuild noise.' }
-    Write-Host 'ok  the existing venv is preferred over a uv rebuild'
+    if ($code -notmatch 'Get-NativeBinary' -or $code -notmatch "'login'") {
+        throw 'The account manager no longer invokes the native login command.'
+    }
+    if ($code -match 'Get-Command uv|python.exe|cargo build') {
+        throw 'Interactive login must use the installed native executable without rebuilding.'
+    }
+    Write-Host 'ok  installed native login is used without a toolchain rebuild'
 
-    if ($code -notmatch 'UV_LINK_MODE') {
-        throw 'The uv fallback does not apply uv''s own fix for the hardlink warning.'
+    if ($code -notmatch '--env-file' -or $code -notmatch '--no-echo') {
+        throw 'Native login lost its explicit configuration file or credential suppression.'
     }
-    if ($code -notmatch '\$env:UV_LINK_MODE = \$previousLinkMode') {
-        throw 'UV_LINK_MODE is set for the process and never restored.'
+    if ($code -notmatch '--expected-config-digest|--expected-user-id') {
+        throw 'Native repair no longer binds replacement to the reviewed account generation.'
     }
-    Write-Host 'ok  the uv fallback silences the hardlink warning and restores the variable'
+    Write-Host 'ok  native login carries configuration and generation guards'
+
+    # A legacy-only replacement must obtain the existing identity before stopping
+    # the shared service and forward it to the native identity guard.
+    & {
+        param($Definition, $Sandbox)
+        . ([ScriptBlock]::Create($Definition))
+        $envPath = Join-Path $Sandbox '.env'
+        $PSScriptRoot = $Sandbox
+        $script:ProjectRoot = $Sandbox
+        $fixture = Join-Path $Sandbox 'login-probe.ps1'
+        $record = Join-Path $Sandbox 'login-arguments.json'
+        [IO.File]::WriteAllText($fixture, @'
+param([Parameter(ValueFromRemainingArguments=$true)] [string[]] $Arguments)
+[IO.File]::WriteAllText($env:TG_TEST_LOGIN_ARGUMENTS, (ConvertTo-Json -InputObject $Arguments))
+exit 0
+'@)
+        $script:loginProbePath = $fixture
+        function Get-NativeBinary { param($Root) $script:loginProbePath }
+        function Get-SessionHealth { param($Key) [pscustomobject] @{ status = 'healthy'; user_id = 4242; config_digest = ('d' * 64) } }
+        function Stop-TelegramServer { param($Root) $false }
+        function Write-Hint { param($Message) }
+        $oldRecord = $env:TG_TEST_LOGIN_ARGUMENTS
+        try {
+            $env:TG_TEST_LOGIN_ARGUMENTS = $record
+            Invoke-SessionGenerator -Label work -ReplaceKey TELEGRAM_SESSION_STRING_WORK -AlreadyConfirmed
+            $arguments = [IO.File]::ReadAllText($record) | ConvertFrom-Json
+            $identityIndex = [Array]::IndexOf($arguments, '--expected-user-id')
+            $digestIndex = [Array]::IndexOf($arguments, '--expected-config-digest')
+            if ($identityIndex -lt 0 -or $arguments[$identityIndex + 1] -ne '4242') { throw 'Legacy replacement lost the health-confirmed account identity.' }
+            if ($digestIndex -lt 0 -or $arguments[$digestIndex + 1] -ne ('d' * 64)) { throw 'Legacy replacement lost its configuration generation.' }
+        }
+        finally { $env:TG_TEST_LOGIN_ARGUMENTS = $oldRecord }
+    } $generator.Value $sandbox
+    if ($source -match 'Generate a session string only' -or $source -notmatch "'5' = 'Log in and save a new account'") {
+        throw 'The native persistent-login menu still promises a session-string-only operation.'
+    }
 
     # The main menu has no previous step. FFmWiz states this in a comment and does
     # not advertise back there; the same has to hold here or the hint lies.
@@ -434,10 +475,16 @@ finally {
 # question is whether `0` unwinds one level and `exit` unwinds all of them.
 $e2e = Join-Path ([IO.Path]::GetTempPath()) ("tg-accounts-e2e-" + [guid]::NewGuid())
 [void] (New-Item -ItemType Directory -Path $e2e)
+$savedStateDirectory = $env:TELEGRAM_STATE_DIR
+$env:TELEGRAM_STATE_DIR = Join-Path $e2e 'private-state'
 try {
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'Manage-Accounts.ps1') -Destination $e2e
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'account-manager') -Destination $e2e -Recurse
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'Manage-Accounts.ps1') -Destination $e2e
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'account-manager') -Destination $e2e -Recurse
     $e2eEnv = Join-Path $e2e '.env'
+    # Extracted helpers outlive the first sandbox. Give later direct state
+    # checks the same live fixture ownership as the shipped child script.
+    $script:ProjectRoot = $e2e
+    $envPath = $e2eEnv
     $before = @('TELEGRAM_API_ID=1', 'TELEGRAM_SESSION_STRING_WORK=1AAAAAwork')
     [IO.File]::WriteAllLines($e2eEnv, $before, [Text.UTF8Encoding]::new($false))
 
@@ -467,8 +514,9 @@ try {
     # stay gone - a re-introduced second sign-in would put a second device back on
     # the account, which is the exact thing Principle I forbids.
 
-    $source = Get-LauncherSource -Root $projectRoot
-    $generator = [IO.File]::ReadAllText((Join-Path $projectRoot 'session_string_generator.py'))
+    $source = Get-LauncherSource -Root $repositoryRoot
+    $generator = ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/backend.rs'))) +
+        ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/account_manager/login.rs')))
 
     foreach ($dead in @('Invoke-SecretChatLogin', 'Get-SecretChatStates', 'Get-SecretChatSummary')) {
         if ($source -match [regex]::Escape($dead)) {
@@ -482,6 +530,9 @@ try {
     }
     if (($source -match 'tdlib') -or ($generator -match 'tdlib')) {
         throw 'A TDLib reference survives in the account path.'
+    }
+    if ($generator -notmatch 'request_login_code' -or $generator -notmatch 'transaction\.commit\(id\)') {
+        throw 'Native login must verify one authorization before committing its staged session.'
     }
     Write-Host 'ok  adding an account asks for one code and finishes there'
 
@@ -655,21 +706,16 @@ try {
     Remove-SecretChatKeys -Label 'a_label_with_no_store_at_all'
     Write-Host 'ok  a missing key store is not an error'
 
-    # The two languages must agree on the path, or the removal above deletes
-    # nothing and the whole class of bug returns in silence.
-    $python = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    if (Test-Path -LiteralPath $python -PathType Leaf) {
-        Push-Location -LiteralPath $projectRoot
-        try {
-            $fromPython = & $python -c "from telegram_mcp.secret_backend import _storage_for; print(_storage_for('probe').path)" 2>$null
-        }
-        finally { Pop-Location }
-        $fromPowerShell = Join-Path $stateRoot 'probe'
-        if ("$fromPython".Trim() -ne $fromPowerShell) {
-            throw "The two halves disagree on the key store path: PowerShell '$fromPowerShell' vs Python '$fromPython'."
-        }
-        Write-Host 'ok  PowerShell and Python resolve the same key store'
+    # The native process and the retained launcher must agree on private state.
+    $native = Get-NativeBinary -Root $repositoryRoot
+    $nativeState = (& $native state-path | Select-Object -Last 1).Trim()
+    # Both resolve through native canonicalization, including junctions and
+    # short names. Comparing textual GetFullPath spellings is insufficient.
+    $launcherState = (Get-StateDirectory).Trim()
+    if ($LASTEXITCODE -ne 0 -or $nativeState -ne $launcherState) {
+        throw 'Native Rust and PowerShell disagree on their private state directory.'
     }
+    Write-Host 'ok  PowerShell and native Rust resolve the same state directory'
 
     $removeBlock = [regex]::Match($source, '(?ms)^function Remove-Account \{.*?^\}').Value
     if ($removeBlock -notmatch 'Remove-SecretChatKeys -Label \$label') {
@@ -687,14 +733,14 @@ try {
             throw "The launcher still tells the owner to restart for an account change: '$claim'."
         }
     }
-    $profileSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'telegram_mcp/tools/profile.py'))
+    $profileSource = [IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/tools/identity/profile.rs'))
     if ($profileSource -match 'Restart the MCP server') {
-        throw 'get_me still tells the caller to restart; a replaced session is picked up on its own.'
+        throw 'Native profile tools still claim account replacement needs a restart.'
     }
-    # And the mechanism that makes that true has to still be wired in.
-    $connection = [IO.File]::ReadAllText((Join-Path $projectRoot 'telegram_mcp/connection.py'))
-    if ($connection -notmatch '(?ms)def get_client.*?refresh_accounts\(\)') {
-        throw 'get_client no longer refreshes from .env, so "no restart needed" became false.'
+    $connection = ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/account_manager/config.rs'))) +
+        ([IO.File]::ReadAllText((Join-Path $repositoryRoot 'src/backend/config.rs')))
+    if ($connection -notmatch 'current_config') {
+        throw 'Native account configuration no longer refreshes its immutable file snapshot.'
     }
     Write-Host 'ok  no message claims a restart is needed, and the reload is still wired in'
 
@@ -704,7 +750,7 @@ try {
     # could take the listing down. There is no second half, so there is no probe.
     $show = [regex]::Match($source, '(?ms)^function Show-Accounts \{.*?^\}').Value
     if (-not $show) { throw 'Could not isolate Show-Accounts.' }
-    foreach ($spawn in @('Start-Process', '& $python', 'python.exe')) {
+    foreach ($spawn in @('Start-Process', '& $native', 'python.exe')) {
         if ($show -match [regex]::Escape($spawn)) {
             throw "Show-Accounts spawns '$spawn'; listing accounts must not run anything."
         }
@@ -714,6 +760,7 @@ try {
 
 }
 finally {
+    $env:TELEGRAM_STATE_DIR = $savedStateDirectory
     Remove-Item -LiteralPath $e2e -Recurse -Force -ErrorAction SilentlyContinue
 }
 

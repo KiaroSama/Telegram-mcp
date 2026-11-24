@@ -10,8 +10,8 @@
 function Get-ServerTrees {
     <#
       The top process of every running copy of this checkout's server - the same
-      match `start-mcp.ps1`'s own takeover uses: pwsh/powershell/python/uv whose
-      command line names this checkout's start-mcp.ps1 or main.py. This process and
+      match `start-mcp.ps1`'s own takeover uses: PowerShell and the native executable whose
+      command line names this checkout's start-mcp.ps1 or telegram-mcp.exe. This process and
       its ancestors never count.
     #>
     param([Parameter(Mandatory)] [string] $Root)
@@ -24,11 +24,16 @@ function Get-ServerTrees {
         $protected[$walk] = $true
         $walk = $parents[$walk]
     }
-    $pattern = [regex]::Escape($Root.TrimEnd('\', '/')) + '[\\/](start-mcp\.ps1|main\.py)'
-    $runners = 'pwsh.exe', 'powershell.exe', 'python.exe', 'pythonw.exe', 'uv.exe'
+    $checkout = [regex]::Escape($Root.TrimEnd('\', '/'))
+    $launcherPattern = $checkout + '[\\/]start-mcp\.ps1(?:"|\s|$)'
+    $nativePattern = $checkout + '[\\/](?:(?:bin|target[\\/](?:release|debug))[\\/])?telegram-mcp(?:\.exe)?"?\s+serve(?:\s|$)'
+    $nativeRunners = 'telegram-mcp.exe', 'telegram-mcp'
+    $runners = @('pwsh.exe', 'powershell.exe') + $nativeRunners
     $matched = @($processes | Where-Object {
-            $_.CommandLine -and $runners -contains $_.Name.ToLowerInvariant() -and
-            -not $protected.ContainsKey([int] $_.ProcessId) -and $_.CommandLine -match $pattern
+            $_.CommandLine -and $_.Name -in $runners -and
+            -not $protected.ContainsKey([int] $_.ProcessId) -and
+            (($_.Name -in $nativeRunners -and $_.CommandLine -match $nativePattern) -or
+                ($_.Name -notin $nativeRunners -and $_.CommandLine -match $launcherPattern))
         })
     $ids = @($matched | ForEach-Object { [int] $_.ProcessId })
     return @($matched | Where-Object { $ids -notcontains [int] $_.ParentProcessId } |
@@ -67,12 +72,15 @@ function Start-TelegramServer {
       supervisor started in the meantime and the supervisor then yields to it.
     #>
     param([Parameter(Mandatory)] [string] $Root)
-    # No `??`: the launcher still runs under Windows PowerShell 5.1.
     $shell = Get-Command pwsh.exe -ErrorAction SilentlyContinue
-    if (-not $shell) { $shell = Get-Command powershell.exe }
+    if (-not $shell) { throw 'PowerShell 7 (pwsh.exe) is required to restart the server.' }
     $launcher = Join-Path $Root 'start-mcp.ps1'
+    $native = Get-NativeBinary -Root $Root
+    $address = (& $native bind-address --config $envPath | Select-Object -Last 1)
+    if ($LASTEXITCODE -ne 0 -or -not $address) { throw 'The native service address could not be resolved.' }
+    $address = "$address".Trim()
     $process = Start-Process -FilePath $shell.Source -WindowStyle Hidden -WorkingDirectory $Root -PassThru `
-        -ArgumentList ('-NoLogo -NoProfile -File "{0}"' -f $launcher)
+        -ArgumentList ('-NoLogo -NoProfile -File "{0}" --config "{1}" --http {2}' -f $launcher, $envPath, $address)
     Write-Log "Started the MCP server again (pid $($process.Id))"
     return $process.Id
 }

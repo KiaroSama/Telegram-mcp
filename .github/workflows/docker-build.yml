@@ -1,18 +1,20 @@
-name: Docker Build & Compose Validation
+name: Docker build and persistence
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.sha }}
-  cancel-in-progress: false
+env:
+  VALIDATED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   status_begin:
     name: CI status pending
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/ci-status.yml
     permissions:
       contents: read
@@ -21,10 +23,105 @@ jobs:
     with:
       phase: begin
       workflow: docker-build.yml
-
+  docker_build:
+    name: Build native Docker image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - run: docker build --tag telegram-mcp:ci .
+      - name: The image runs its compiled binary without credentials
+        run: docker run --rm telegram-mcp:ci --version
+      - name: Store the exact tested image for persistence checks
+        run: docker save telegram-mcp:ci --output telegram-mcp-image.tar
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-container-image
+          path: telegram-mcp-image.tar
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+  docker_persistence:
+    name: State survives container replacement
+    needs: docker_build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-container-image
+      - run: docker load --input telegram-mcp-image.tar
+      - name: The compiled service resolves state under the persistent mount
+        run: |
+          set -euo pipefail
+          resolved=$(docker run --rm telegram-mcp:ci state-path)
+          case "$resolved" in /data/*) ;; *) exit 1 ;; esac
+      - name: One non-root container writes private fixture state
+        run: |
+          set -euo pipefail
+          docker volume create telegram-mcp-ci-state
+          docker run --rm --volume telegram-mcp-ci-state:/data --entrypoint sh telegram-mcp:ci -c '
+            set -eu
+            test "$(id -u)" != 0
+            test "$(stat -c %a /data/state/telegram-mcp)" = 700
+            printf "%s\n" "synthetic-persistence-fixture" > /data/state/telegram-mcp/fixture.txt
+          '
+      - name: A replacement container reads exactly the same bytes
+        run: |
+          set -euo pipefail
+          docker run --rm --volume telegram-mcp-ci-state:/data --entrypoint sh telegram-mcp:ci -c '
+            set -eu
+            test "$(cat /data/state/telegram-mcp/fixture.txt)" = synthetic-persistence-fixture
+            test "$(stat -c %a /data/state/telegram-mcp)" = 700
+          '
+      - name: Remove the isolated fixture volume
+        if: always()
+        run: docker volume rm --force telegram-mcp-ci-state
+  docker_compose:
+    name: Validate authenticated Docker Compose
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.VALIDATED_SHA }}
+          persist-credentials: false
+      - name: Validate with explicit synthetic configuration
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          # Compose validation needs paths, not a running TLS service. These
+          # files deliberately contain no usable certificates or private keys.
+          fixture_dir=$(mktemp -d)
+          trap 'rm -rf "$fixture_dir"' EXIT
+          touch "$fixture_dir/server.pem" "$fixture_dir/server-key.pem"
+          if env -u TELEGRAM_HTTP_TLS_CERT -u TELEGRAM_HTTP_TLS_KEY \
+              docker compose config --quiet 2> "$fixture_dir/missing-tls.log"; then
+            echo "Compose accepted missing mandatory TLS paths" >&2
+            exit 1
+          fi
+          export TELEGRAM_HTTP_TOKEN=synthetic-compose-token-at-least-32-characters
+          export TELEGRAM_HTTP_TLS_CERT="$fixture_dir/server.pem"
+          export TELEGRAM_HTTP_TLS_KEY="$fixture_dir/server-key.pem"
+          docker compose config --quiet
+          docker compose config --format json > "$fixture_dir/compose.json"
+          jq -e '
+            .services["telegram-mcp"] as $service
+            | ($service.environment.TELEGRAM_HTTP_TOKEN | length >= 32)
+              and $service.environment.TELEGRAM_STATE_DIR == "/data/state/telegram-mcp"
+              and $service.environment.TELEGRAM_HTTP_TLS_CERT == "/run/telegram-tls/server.pem"
+              and $service.environment.TELEGRAM_HTTP_TLS_KEY == "/run/telegram-tls/server-key.pem"
+              and ([ $service.volumes[]
+                     | select(.type == "bind" and (.target | startswith("/run/telegram-tls/"))) ]
+                   | length == 2 and all(.[]; .read_only == true and (.bind.create_host_path // false) == false))
+          ' "$fixture_dir/compose.json"
   status_finish:
     name: CI status final
-    if: always()
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     needs: [status_begin, docker_build, docker_persistence, docker_compose]
     uses: ./.github/workflows/ci-status.yml
     permissions:
@@ -34,127 +131,3 @@ jobs:
     with:
       phase: finish
       workflow: docker-build.yml
-
-  docker_build:
-    name: Build Docker Image
-    needs: status_begin
-    timeout-minutes: 15
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Set up QEMU (for multi-platform builds)
-        uses: docker/setup-qemu-action@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Build Docker image
-        run: docker build --file Dockerfile --tag telegram-mcp:ci .
-
-  # The acceptance M10 is actually about: not "does the image build" but "does
-  # the account survive being replaced". Only `/data` was declared persistent and
-  # only the Telethon session pointed there, so `state_dir()` - and with it every
-  # TDLib database, the identity note beside each one, any quarantined database,
-  # the alias store and the event feed - lived in the container's own filesystem
-  # and went with it. Losing a TDLib database is not a re-login: its secret-chat
-  # keys cannot be re-derived.
-  #
-  # Here rather than on a developer's machine because that is where Docker is.
-  # Nothing signs in: the state is fixture bytes, and what is proved is that the
-  # same bytes are still there through a container the volume outlived.
-  docker_persistence:
-    name: State Survives A Container Replacement
-    timeout-minutes: 20
-    runs-on: ubuntu-latest
-    needs: docker_build
-    env:
-      # `settings` reads these at import time. They are placeholders and nothing
-      # in this job connects to Telegram: the subject is where files land.
-      CREDS: "-e TELEGRAM_API_ID=12345 -e TELEGRAM_API_HASH=placeholder"
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Build the image
-        run: docker build --file Dockerfile --tag telegram-mcp:persistence .
-
-      - name: The image resolves its state under the mount
-        run: |
-          set -euo pipefail
-          # Placeholders: `settings` requires them at IMPORT, and nothing here
-          # connects to anything. What is being read is a path, not an account.
-          resolved=$(docker run --rm $CREDS --entrypoint python telegram-mcp:persistence -c             "from telegram_mcp.settings import state_dir; print(state_dir())")
-          echo "state_dir() -> $resolved"
-          case "$resolved" in
-            /data/*) ;;
-            *) echo "state_dir() resolved to $resolved, which no volume covers"; exit 1 ;;
-          esac
-
-      - name: The non-root account can write it, privately
-        run: |
-          set -euo pipefail
-          docker volume create tgstate >/dev/null
-          docker run --rm -v tgstate:/data --entrypoint sh telegram-mcp:persistence -c '
-            set -e
-            test "$(id -un)" != root || { echo "running as root"; exit 1; }
-            mkdir -p /data/state/telegram-mcp/tdlib/work
-            echo "keys that cannot be re-derived" > /data/state/telegram-mcp/tdlib/work/td.binlog
-            echo "{\"user_id\": 4242}" > /data/state/telegram-mcp/tdlib/work/owner.json
-            echo "alias fixture" > /data/state/telegram-mcp/aliases.json
-            perms=$(stat -c %a /data/state)
-            echo "/data/state mode: $perms"
-            test "$perms" = "700" || { echo "state directory is not private"; exit 1; }
-          '
-
-      - name: Replace the container; the volume stays
-        run: |
-          set -euo pipefail
-          docker rmi -f telegram-mcp:persistence
-          docker build --file Dockerfile --tag telegram-mcp:persistence .
-
-      - name: The bytes are still there
-        run: |
-          set -euo pipefail
-          docker run --rm -v tgstate:/data --entrypoint sh telegram-mcp:persistence -c '
-            set -e
-            test -f /data/state/telegram-mcp/tdlib/work/td.binlog || { echo "the TDLib database did not survive"; exit 1; }
-            grep -q "cannot be re-derived" /data/state/telegram-mcp/tdlib/work/td.binlog
-            grep -q 4242 /data/state/telegram-mcp/tdlib/work/owner.json
-            grep -q "alias fixture" /data/state/telegram-mcp/aliases.json
-            echo "every fixture survived the replacement"
-          '
-
-      - name: A deployment that overrides the location still wins
-        run: |
-          set -euo pipefail
-          resolved=$(docker run --rm $CREDS -e XDG_STATE_HOME=/data/elsewhere --entrypoint python             telegram-mcp:persistence -c "from telegram_mcp.settings import state_dir; print(state_dir())")
-          echo "overridden state_dir() -> $resolved"
-          test "$resolved" = "/data/elsewhere/telegram-mcp"
-
-      - name: Remove the volume
-        if: always()
-        run: docker volume rm -f tgstate || true
-
-  docker_compose:
-    name: Build & Validate Docker Compose
-    timeout-minutes: 5
-    runs-on: ubuntu-latest
-    needs: docker_build
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v7
-
-      - name: Create dummy .env file
-        run: |
-          echo "TELEGRAM_API_ID=DUMMY_ID" > .env
-          echo "TELEGRAM_API_HASH=DUMMY_HASH" >> .env
-          echo "TELEGRAM_SESSION_STRING=DUMMY_SESSION" >> .env
-          # Add other required variables with dummy values if needed
-
-      # `config` only: the image itself is built by the docker_build job above,
-      # from the same Dockerfile. Building it again here on a fresh runner with
-      # no shared cache cost a full second build for no extra signal.
-      - name: Validate Compose file syntax
-        run: docker compose config

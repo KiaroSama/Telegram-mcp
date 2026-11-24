@@ -1,5 +1,11 @@
 # 6. One authorization carries every capability
 
+> Rust migration note: this is a historical decision record. Its original source
+> paths describe the former implementation; current native behavior and any
+> remaining limits are documented in [MIGRATION.md](../MIGRATION.md). Secret-chat
+> integration is deferred until the owner supplies the separate Rust backend.
+
+
 Date: 2026-09-21
 
 ## Status

@@ -30,6 +30,15 @@ These adaptations retain this project's account, approval, fidelity, filesystem
 and transfer contracts. The upstream Apache-2.0 attribution applies to adapted
 portions and does not replace this program's GPL-3.0-or-later licence.
 
+The 2026-11-15 Rust migration reviewed chigwell/telegram-mcp commit
+eed9d699643116cb769d9faf6cb12c8a7e734041, including current chat/topic access
+filters and reader behavior, while retaining this fork's stricter account,
+approval, filesystem and fidelity contracts. Native Rust adapters replace the
+former Python runtime. Descriptions of Python paths below document the origin
+of prior adapted code and retained oracle fixtures; they do not declare a
+Python runtime dependency of the native implementation. The secret-chat backend
+connection is deferred pending the owner's separate Rust rewrite.
+
 Apache 2.0 is one-way compatible with GPLv3. The Apache Software Foundation
 states it directly: "Apache 2 software can therefore be included in GPLv3
 projects, because the GPLv3 license accepts our software into GPLv3 works."
@@ -63,31 +72,36 @@ The relicence covers every part of the work that is this project's to license:
 
 TELEGRAM DESKTOP EXPORT
 
-telegram_mcp/tdexport/ is a Python port of the chat export in Telegram Desktop
+The former telegram_mcp/tdexport/ implementation was a Python port of the chat export in Telegram Desktop
 (https://github.com/telegramdesktop/tdesktop, tag v7.2.10,
 Telegram/SourceFiles/export/), Copyright (C) the Telegram Desktop authors,
 licensed under the GNU General Public License version 3 with an OpenSSL
-exception. telegram_mcp/tdexport/assets/ (css/, js/, images/) is copied
-unchanged from Telegram/Resources/export_html/ of the same tag. Both are
-included here under GPLv3, the licence of this work, so an export this server
-writes is the same as one Telegram Desktop writes.
+exception. Its telegram_mcp/tdexport/assets/ (css/, js/, images/) originated as
+unchanged copies of Telegram/Resources/export_html/ of the same tag. These
+origins remain attributed under GPLv3, the licence of this work. The Rust
+rewrite preserves structural and text behavior through native exporters; it
+does not claim byte-identical Telegram Desktop output. The current upstream
+review, including v7.4.4, and fidelity limits are recorded in docs/MIGRATION.md.
 
-Photo thumbnails port Telegram Desktop's Qt 5.15.19 scaling and JPEG settings:
-telegram_mcp/tdexport/qt_scale.py ports QImage's SmoothTransformation
+The former photo-thumbnail implementation ported Telegram Desktop's Qt 5.15.19
+scaling and JPEG settings. telegram_mcp/tdexport/qt_scale.py ported QImage's SmoothTransformation
 (qtbase src/gui/painting/qimagescale.cpp and interpolate_4_pixels from
 qdrawhelper_p.h), Copyright (C) The Qt Company Ltd., licensed under LGPL-3.0 /
 GPL-2.0-or-later / GPL-3.0; the smooth-scaling code there is derived from
 Imlib2 (Copyright (C) Carsten Haitzler and others; Daniel M. Duley), under its
 BSD-style licence, whose notice is kept here. telegram_mcp/tdexport/qt_jpeg.py
-reproduces the settings of Qt's JPEG writer (qjpeghandler.cpp). The encoding
-itself is done by mozjpeg 4.1.5 (https://github.com/mozilla/mozjpeg; IJG,
+reproduced the settings of Qt's JPEG writer (qjpeghandler.cpp). That encoding
+used mozjpeg 4.1.5 (https://github.com/mozilla/mozjpeg; IJG,
 BSD-3-Clause and zlib licences, including the libjpeg-turbo code it contains),
-reached through the optional imagecodecs package (BSD-3-Clause); neither is
-bundled here. telegram_mcp/tdexport/qt_icc.py ports QtGui's matrix/TRC ICC parser,
+through the optional imagecodecs package (BSD-3-Clause). Neither was bundled.
+telegram_mcp/tdexport/qt_icc.py ported QtGui's matrix/TRC ICC parser,
 color-space matrices, transfer curves and color-transform LUTs from Qt 5.15.19,
 Copyright (C) 2016, 2018 The Qt Company Ltd., under the same GPL-3.0 option noted
 above. Synthetic oracle fixtures were generated with that exact patched source;
-no native Qt runtime is bundled or required by the Python port.
+no native Qt runtime was bundled or required by that port. The native Rust
+image encoder does not currently reproduce every Qt ICC transform or mozjpeg
+byte stream. Retained oracle fixtures and all notices continue to document
+the origin and limits of the adapted work.
 
 
 QIMAGE SMOOTH-SCALING NOTICE AND CREDITS

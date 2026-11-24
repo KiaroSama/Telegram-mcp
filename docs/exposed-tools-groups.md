@@ -1,129 +1,40 @@
-# Should `TELEGRAM_EXPOSED_TOOLS` be able to name a group?
+# Native tool exposure and chat restrictions
 
-A design spike, not a proposal to build. Measured against commit `2f143e6`,
-2026-08-30, when the server registered **180** tools. The surface has grown
-since; the counts below are a snapshot, and the scope note says how to
-re-derive them.
+The native server validates its complete ordinary-chat catalogue before exposing it.
+Unknown tool names or catalogue entries without a native route fail startup. Secret-chat
+tools remain deferred and are not silently routed through ordinary cloud-chat APIs.
 
-`TELEGRAM_EXPOSED_TOOLS` is the only lever an operator has for narrowing what an
-agent can do with their Telegram account. Its grammar is
-`read-only+<tool>,<tool>` parsed against literal tool names by
-`_get_exposed_tools_mode` and applied by `_apply_exposed_tools_mode`, both in
-`telegram_mcp/runtime.py`; an unknown name aborts startup from the
-`_EXPOSED_TOOLS_MODES` check inside the first. That abort is correct and must
-survive any change here.
+## Exposure modes
 
-Named rather than cited by line: this file used to point at
-`runtime.py:180-246`, and the 2026-09-05 split of the error layer out of that
-module moved every one of those numbers.
+`TELEGRAM_EXPOSED_TOOLS` supports the current native syntax:
 
-The question is whether a token like `+module:messages` or `+safe` should be
-allowed beside a literal name.
+| Value | Result |
+| --- | --- |
+| `all` | All implemented nonsecret tools |
+| `read-only` | Only tools annotated as read-only |
+| `read-only+send_message,reply_to_message` | Read-only tools plus the explicitly named additions |
+| `all-delete_messages,clear_history` | All tools except the named exclusions |
+| `read-only+send_message-delete_messages` | Read-only base, explicit additions, then exclusions |
 
-## What an operator has to type today
+Use actual names from MCP `tools/list` or [COMMANDS.md](COMMANDS.md). Unknown names
+are errors; they are not ignored. Filtering applies to discovery and invocation, so
+calling a hidden name directly does not bypass it. Tool annotations describe effects;
+they do not grant owner approval, account access or Telegram administrator rights.
 
-Three realistic postures, and the number of tool names each needs spelled out by
-hand at the measured 2026-08-30 snapshot. Since 2026-10-11, literal exclusions
-are also supported: `all-tool,tool` or `read-only+tool,tool-tool,tool`.
-Exclusions win; unknown or malformed names still abort before pruning. This
-narrows discovery, not account authorization; group tokens remain unimplemented.
+## Allowed chats and forum topics
 
-| Posture | Value | Names |
-|---|---|---|
-| Read-only plus the ability to send a message | `read-only+send_message` | **1** |
-| Read-only plus messaging generally | `read-only+send_message,reply_to_message,forward_message,copy_message,edit_message,delete_message,send_file,send_album,send_voice,send_sticker,send_gif,save_draft,clear_draft,send_reaction,remove_reaction` | **15** |
-| Everything except anything destructive | every non-destructive tool named individually | **107** |
+`TELEGRAM_ALLOWED_CHAT_IDS` is a comma-separated allowlist of explicit peers. A peer
+may optionally name a positive forum-topic ID using `chat:topic`, for example
+`-1001234567890:42,@team:7`. A chat entry without a topic permits that chat as a whole.
+Multiple topic entries for the same chat are combined.
 
-That is the argument, and it is weaker than it first looks. The common case —
-read-only plus one or two specific writes — costs one or two names, which nobody
-would call friction. The list only becomes unmanageable at "everything except
-destructive", which is precisely the posture an annotation could express in one
-word.
+Peer type and marked IDs are resolved before a request is allowed. A topic-restricted
+chat requires a permitted `topic_id` and an operation whose adapter can enforce that
+restriction. Unsupported operations fail explicitly rather than treating topic access
+as access to the entire chat. Source and destination peers are checked for relays.
+Account-wide searches and exports that cannot safely enforce the allowlist are refused.
+Returned chat/dialog collections are filtered, and filtered output is identified.
 
-The sharper cost is not typing it once. It is that **a stale list is a hard
-startup failure**: rename or remove a tool and every operator who named it is
-now unable to start the server until they edit `.env`. A group token would not
-have that failure mode, which is a real argument for one.
-
-## Are the annotations trustworthy enough to key on?
-
-This is the question that decides everything, and it was measured rather than
-assumed. Scanning every `@mcp.tool` decorator:
-
-| | Count |
-|---|---|
-| Tools | 180 |
-| `readOnlyHint=True` | 83 |
-| `destructiveHint=True` | 73 |
-| **Neither hint set** | **4** |
-
-The four with no hint at all are `set_contact_alias`, `delete_contact_alias`,
-`enable_incoming_feed`, `disable_incoming_feed`. None is read-only; none is
-destructive in the "destroys data at Telegram" sense; all four change durable
-local state. So the gap is not sloppiness — it is a third category the current
-two booleans cannot express, and an annotation-keyed design would silently place
-all four on whichever side its default chose.
-
-**That is the finding.** The annotations are accurate where they are set, and
-83 + 73 = 156 of 180 carry one. But `readOnlyHint=False` and
-`destructiveHint=False` do not mean the same thing, and 24 tools sit in the gap
-between them.
-
-## The candidate designs
-
-**By module** — `+module:messages`. Precise, and every tool already lives in
-exactly one module. Two objections: it leaks the internal file layout into a
-public configuration surface, and a module split silently changes what an
-existing token means. This project split `tools/messages.py` and
-`telegram_mcp/connection.py` within one week; that is not hypothetical.
-
-**By annotation** — `+read-only`, `+non-destructive`. Follows intent rather than
-layout, survives refactoring, and reads well. Its problem is the 24-tool gap
-above: `+non-destructive` would have to decide about `enable_incoming_feed`
-without being told, and whichever way it decided would be invisible.
-
-**Both, with a precedence rule.** Doubles the surface for a lever whose whole
-value is that it is simple enough to reason about.
-
-## What any of them must not break
-
-`runtime.py:237` aborts startup on an unknown tool name. Whatever a group token
-is, the same has to hold: **an unknown or empty group must fail loudly at
-startup, never resolve to "nothing" and never to "everything".** A token that
-silently matched zero tools would narrow the surface without saying so; one that
-silently matched all of them would widen it. Both failures are invisible from
-the outside, which is the worst property a security lever can have.
-
-## Recommendation
-
-**Do not build group tokens yet. Fix the annotations first.**
-
-The friction this would solve is real only for the "everything except
-destructive" posture, and that is exactly the posture an annotation-keyed token
-cannot express correctly today, because 24 tools sit in a gap the two booleans
-do not cover. Building the resolver first would ship a lever that is confidently
-wrong about an eighth of the surface.
-
-The ordered work, if this is wanted:
-
-1. **Give the annotations a third state, or a rule for the gap.** Decide what
-   `enable_incoming_feed` and `set_contact_alias` are, write it down, and make
-   the choice checkable — a test that every registered tool carries an explicit
-   classification, the way `tests/test_tool_registry.py` guards the star-import
-   trap. This is worth doing on its own merits, whether or not a group token
-   ever exists.
-2. **Then** add `+read-only` and `+non-destructive` as tokens keyed on those
-   annotations, with the same fail-loud-on-unknown behaviour as a tool name.
-3. Leave module tokens out. The layout is not a public contract, and this
-   project moves it.
-
-What would change this recommendation: if step 1 revealed the gap were two or
-three tools rather than 24, the annotation design would be safe immediately and
-worth building in the same change.
-
-## Scope note
-
-This spike inspected `runtime.py:180-246`, `README.md:212-226`, every
-`@mcp.tool` decorator in `telegram_mcp/tools/`, and nothing else. It changed no
-code. The tool counts go stale as the surface grows — re-derive them with
-`grep -rc "@mcp.tool" telegram_mcp/tools/*.py` before relying on the tables above.
+The allowlist is adapted from the current upstream topic-policy work while preserving
+this fork's stricter refusal behavior. It is an application access boundary, not a
+replacement for Telegram's permissions or an exhaustive account-data isolation claim.

@@ -1,5 +1,11 @@
 # A session lease belongs to the client that took it, not to the label
 
+> Rust migration note: this is a historical decision record. Its original source
+> paths describe the former implementation; current native behavior and any
+> remaining limits are documented in [MIGRATION.md](../MIGRATION.md). Secret-chat
+> integration is deferred until the owner supplies the separate Rust backend.
+
+
 A lease was keyed by label, which reads as the obvious choice: a label is what the
 operator configures and what every caller already has in hand. It is also wrong,
 because a label is reusable and a lease is a lifetime. During a reload the label
