@@ -11,13 +11,16 @@ use tempfile::NamedTempFile;
 
 use super::super::config::{config_write_lock, file_values, write_env_value_locked};
 use super::super::{config_digest, label_for, parse_config, read_config};
-use crate::state::storage::{private_directory, restrict, sync_directory};
+use crate::state::{
+    State,
+    storage::{private_directory, restrict, sync_directory},
+};
 
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
-pub(super) struct Account {
+pub(super) struct ConfiguredProfile {
     pub label: String,
-    pub key: String,
+    pub env_name: String,
     pub digest: String,
 }
 
@@ -40,46 +43,46 @@ fn read_regular(path: &Path) -> Result<Option<String>> {
     })?))
 }
 
-pub(super) fn accounts(path: &Path) -> Result<Vec<Account>> {
+pub(super) fn configured_profiles(path: &Path) -> Result<Vec<ConfiguredProfile>> {
     let Some(text) = read_regular(path)? else {
         return Ok(Vec::new());
     };
-    // The native parser determines whether a key is active; line order is for display only.
+    // The native parser determines which variables are active; line order is for display only.
     let values = parse_config(&text, &BTreeMap::new())?;
-    let mut accounts: Vec<Account> = Vec::new();
+    let mut profiles: Vec<ConfiguredProfile> = Vec::new();
     for line in text.trim_start_matches('\u{feff}').lines() {
         let line = line.trim_start();
         let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, _)) = line.split_once('=') else {
+        let Some((env_name, _)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
-        let Ok(label) = label_for(key) else {
+        let env_name = env_name.trim();
+        let Ok(label) = label_for(env_name) else {
             continue;
         };
-        let Some(value) = values.get(key).filter(|value| !value.is_empty()) else {
+        let Some(value) = values.get(env_name).filter(|value| !value.is_empty()) else {
             continue;
         };
-        let account = Account {
+        let profile = ConfiguredProfile {
             label,
-            key: key.to_owned(),
+            env_name: env_name.to_owned(),
             digest: config_digest(value),
         };
-        if let Some(previous) = accounts
+        if let Some(previous) = profiles
             .iter_mut()
-            .find(|previous| previous.label == account.label)
+            .find(|previous| previous.label == profile.label)
         {
-            if key != "TELEGRAM_SESSION_STRING" && key != "TELEGRAM_SESSION_NAME" {
-                *previous = account;
+            if env_name != "TELEGRAM_SESSION_STRING" && env_name != "TELEGRAM_SESSION_NAME" {
+                *previous = profile;
             }
         } else {
-            accounts.push(account);
+            profiles.push(profile);
         }
     }
-    Ok(accounts)
+    Ok(profiles)
 }
 
-pub(super) fn key_for(prefix: &str, label: &str) -> String {
+pub(super) fn env_name_for(prefix: &str, label: &str) -> String {
     if label == "default" {
         prefix.to_owned()
     } else {
@@ -87,10 +90,31 @@ pub(super) fn key_for(prefix: &str, label: &str) -> String {
     }
 }
 
+pub(super) fn rename_profile_files(
+    state: &State,
+    env_file: &Path,
+    env_name: &str,
+    from: &str,
+    to: &str,
+) -> Result<Vec<String>> {
+    const PATH_CHARS: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._/";
+    // The transaction returns generated relative paths, including those under secret-chats/.
+    let names =
+        crate::account_manager::rename_configured_account(state, from, to, env_file, env_name)?;
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            name.chars()
+                .filter_map(|ch| PATH_CHARS.chars().find(|&allowed| allowed == ch))
+                .collect()
+        })
+        .collect())
+}
+
 pub(super) fn import_session(
     path: &Path,
     label: &str,
-    existing: Option<&Account>,
+    existing: Option<&ConfiguredProfile>,
     session: &str,
 ) -> Result<()> {
     let guard = config_write_lock(path)?;
@@ -107,8 +131,10 @@ pub(super) fn import_session(
         !value.is_empty() && label_for(key).is_ok_and(|owner| owner == label)
     });
     let key = match (existing, matching.next()) {
-        (None, None) => key_for("TELEGRAM_SESSION_STRING", label),
-        (Some(existing), Some((key, _))) if &existing.key == key && matching.next().is_none() => {
+        (None, None) => env_name_for("TELEGRAM_SESSION_STRING", label),
+        (Some(existing), Some((key, _)))
+            if &existing.env_name == key && matching.next().is_none() =>
+        {
             if !key.starts_with("TELEGRAM_SESSION_STRING") {
                 bail!("Use native login to replace a native authorization");
             }
@@ -120,7 +146,7 @@ pub(super) fn import_session(
         &guard,
         &key,
         session,
-        existing.map(|account| account.digest.as_str()),
+        existing.map(|profile| profile.digest.as_str()),
     )?;
     if publication == super::super::config::Publication::Uncertain {
         bail!("The import is visible, but its durability could not be confirmed");

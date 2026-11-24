@@ -43,7 +43,8 @@ fn public_configuration_projection_preserves_contract_without_credential_or_unre
     assert_eq!(row["native_session"], false);
     assert_eq!(row["source"], "configuration");
     assert_eq!(row["backend"], "grammers");
-    assert_eq!(row["secret_chat_available"], false);
+    assert_eq!(row["secret_chat_available"], true);
+    assert_eq!(output["secret_chat_available"], true);
     assert_eq!(row.as_object().unwrap().len(), 8);
     for canary in [
         source_text,

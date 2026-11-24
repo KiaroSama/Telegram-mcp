@@ -5,12 +5,12 @@ mod server;
 
 use anyhow::Result;
 use console::Console;
-use files::{Account, RunLog};
+use files::{ConfiguredProfile, RunLog};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
-use super::{read_config, rename_configured_account, session_health, session_validate};
+use super::{read_config, session_health, session_validate};
 use crate::state::State;
 
 /// Manage the accounts owned by the selected dotenv file.
@@ -69,7 +69,8 @@ impl Manager {
                 continue;
             };
             let result = match choice.as_str() {
-                "1" => files::accounts(&self.env_file).map(|accounts| show_accounts(&accounts)),
+                "1" => files::configured_profiles(&self.env_file)
+                    .map(|profiles| show_profiles(&profiles)),
                 "2" => self.add().await,
                 "3" => self.remove(),
                 "4" => self.rename(),
@@ -89,18 +90,18 @@ impl Manager {
     }
 
     async fn add(&mut self) -> Result<()> {
-        let accounts = files::accounts(&self.env_file)?;
+        let profiles = files::configured_profiles(&self.env_file)?;
         let Some(label) = self
             .console
             .label("Label for the new account (e.g. work, personal)")?
         else {
             return cancelled();
         };
-        let existing = accounts.iter().find(|account| account.label == label);
-        if let Some(account) = existing {
+        let existing = profiles.iter().find(|profile| profile.label == label);
+        if let Some(profile) = existing {
             println!(
                 "An account labelled '{label}' already exists ({}).",
-                account.key
+                profile.env_name
             );
             if !self.console.confirm("Replace its session?")? {
                 return cancelled();
@@ -113,9 +114,9 @@ impl Manager {
         {
             let health = self.health_or_unknown(existing).await;
             self.login(&label, existing, &health).await?;
-            if files::accounts(&self.env_file)?
+            if files::configured_profiles(&self.env_file)?
                 .iter()
-                .any(|account| account.label == label)
+                .any(|profile| profile.label == label)
             {
                 println!("The generator saved '{label}' to .env.");
                 println!("A running server picks this up on its own.");
@@ -144,7 +145,7 @@ impl Manager {
         self.log.record("INFO", "Saved an imported account");
         self.report_backup();
         println!("A running server picks this up on its own.");
-        if files::accounts(&self.env_file)?.len() > 1 {
+        if files::configured_profiles(&self.env_file)?.len() > 1 {
             println!("Name the account on tool calls, for example account={label}.");
         }
         Ok(())
@@ -160,7 +161,12 @@ impl Manager {
         Ok(())
     }
 
-    async fn login(&self, label: &str, existing: Option<&Account>, health: &Value) -> Result<()> {
+    async fn login(
+        &self,
+        label: &str,
+        existing: Option<&ConfiguredProfile>,
+        health: &Value,
+    ) -> Result<()> {
         let service = if existing.is_some() {
             server::stop(&self.root)?
         } else {
@@ -169,10 +175,10 @@ impl Manager {
         let result = crate::backend::login_transaction(
             label,
             &self.env_file,
-            existing.map(|account| account.key.as_str()),
+            existing.map(|profile| profile.env_name.as_str()),
             health["config_digest"]
                 .as_str()
-                .or_else(|| existing.map(|account| account.digest.as_str())),
+                .or_else(|| existing.map(|profile| profile.digest.as_str())),
             health["user_id"].as_i64().filter(|id| *id > 0),
         )
         .await;
@@ -189,9 +195,9 @@ impl Manager {
         }
     }
 
-    async fn health_or_unknown(&self, account: Option<&Account>) -> Value {
-        match account {
-            Some(account) => session_health(&self.env_file, &account.key)
+    async fn health_or_unknown(&self, profile: Option<&ConfiguredProfile>) -> Value {
+        match profile {
+            Some(profile) => session_health(&self.env_file, &profile.env_name)
                 .await
                 .unwrap_or_else(|_| serde_json::json!({"status": "unknown"})),
             None => Value::Null,
@@ -199,19 +205,19 @@ impl Manager {
     }
 
     async fn health(&mut self) -> Result<()> {
-        let accounts = files::accounts(&self.env_file)?;
-        if accounts.is_empty() {
+        let profiles = files::configured_profiles(&self.env_file)?;
+        if profiles.is_empty() {
             println!("No accounts are configured.");
             return Ok(());
         }
         println!("Checking current Telegram authorization (no login prompts)...");
         let mut repair = Vec::new();
-        for account in &accounts {
-            let health = self.health_or_unknown(Some(account)).await;
+        for profile in &profiles {
+            let health = self.health_or_unknown(Some(profile)).await;
             let status = health_status(&health);
-            println!("  {:<20} {status}", account.label);
+            println!("  {:<20} {status}", profile.label);
             if repairable(status) {
-                repair.push((account, health));
+                repair.push((profile, health));
             }
         }
         println!("Network/unknown/busy means unverified, not invalid. No credential was changed.");
@@ -219,45 +225,47 @@ impl Manager {
             return Ok(());
         }
         println!("Accounts that need re-login:");
-        for (index, (account, _)) in repair.iter().enumerate() {
-            println!("  {}. {}", index + 1, account.label);
+        for (index, (profile, _)) in repair.iter().enumerate() {
+            println!("  {}. {}", index + 1, profile.label);
         }
         let Some(index) = self.console.number("Number to re-login", repair.len())? else {
             println!("Cancelled. Nothing was changed.");
             return Ok(());
         };
-        let (account, health) = &repair[index];
+        let (profile, health) = &repair[index];
         println!(
             "Log in to the same Telegram account. Old device-bound secret chats cannot be restored by a new login; their files will be kept."
         );
-        let label = &account.label;
+        let label = &profile.label;
         if self.console.confirm(&format!("Re-login for '{label}'?"))? {
-            self.login(&account.label, Some(account), health).await?;
+            self.login(&profile.label, Some(profile), health).await?;
             println!(
                 "Replacement saved for '{}'. The server verifies it before activation.",
-                account.label
+                profile.label
             );
         }
         Ok(())
     }
 
     fn remove(&mut self) -> Result<()> {
-        let accounts = files::accounts(&self.env_file)?;
-        if accounts.is_empty() {
+        let profiles = files::configured_profiles(&self.env_file)?;
+        if profiles.is_empty() {
             println!("There is nothing to remove.");
             return Ok(());
         }
-        show_accounts(&accounts);
-        let Some(index) = self.console.number("Number to remove", accounts.len())? else {
+        show_profiles(&profiles);
+        let Some(index) = self.console.number("Number to remove", profiles.len())? else {
             return cancelled();
         };
-        let Account { label, key, .. } = &accounts[index];
-        if accounts.len() == 1 {
+        let ConfiguredProfile {
+            label, env_name, ..
+        } = &profiles[index];
+        if profiles.len() == 1 {
             println!(
                 "This is the only account. The server cannot start until another is configured."
             );
         }
-        println!("This removes {key} from .env and archives its private records.");
+        println!("This removes {env_name} from .env and archives its private records.");
         println!(
             "The Telegram session stays authorised. To revoke it, go to Telegram Settings > Devices."
         );
@@ -265,7 +273,9 @@ impl Manager {
             return cancelled();
         }
         let state = State::global()?;
-        self.with_stopped_service(|| super::removal_report(&state, label, &self.env_file, key))?;
+        self.with_stopped_service(|| {
+            super::removal_report(&state, label, &self.env_file, env_name)
+        })?;
         self.log
             .record("INFO", "Removed an account; state archived privately");
         println!("Removed '{label}'.");
@@ -274,18 +284,20 @@ impl Manager {
     }
 
     fn rename(&mut self) -> Result<()> {
-        let accounts = files::accounts(&self.env_file)?;
-        if accounts.is_empty() {
+        let profiles = files::configured_profiles(&self.env_file)?;
+        if profiles.is_empty() {
             println!("There is nothing to rename.");
             return Ok(());
         }
-        show_accounts(&accounts);
-        let Some(index) = self.console.number("Number to rename", accounts.len())? else {
+        show_profiles(&profiles);
+        let Some(index) = self.console.number("Number to rename", profiles.len())? else {
             return cancelled();
         };
-        let Account {
-            label: from, key, ..
-        } = &accounts[index];
+        let ConfiguredProfile {
+            label: from,
+            env_name,
+            ..
+        } = &profiles[index];
         if from == "default" {
             println!(
                 "The default account cannot be renamed here. Remove it and add it back under a label."
@@ -299,7 +311,7 @@ impl Manager {
             println!("That is already its label.");
             return Ok(());
         }
-        if accounts.iter().any(|account| account.label == to) {
+        if profiles.iter().any(|profile| profile.label == to) {
             println!("'{to}' is already taken.");
             return Ok(());
         }
@@ -317,18 +329,24 @@ impl Manager {
         }
         let state = State::global()?;
         let moved = self.with_stopped_service(|| {
-            let moved = rename_configured_account(&state, from, &to, &self.env_file, key)?;
-            let key_prefix = if key.starts_with("TELEGRAM_SESSION_NAME") {
+            let moved = files::rename_profile_files(&state, &self.env_file, env_name, from, &to)?;
+            let prefix = if env_name.starts_with("TELEGRAM_SESSION_NAME") {
                 "TELEGRAM_SESSION_NAME"
             } else {
                 "TELEGRAM_SESSION_STRING"
             };
-            let new_key = files::key_for(key_prefix, &to);
-            match files::rename_registry(&self.root.join("secrets.md"), key, &new_key, from, &to) {
-                Ok(true) => println!("  secrets.md: '## {key}' is now '## {new_key}'"),
+            let new_env_name = files::env_name_for(prefix, &to);
+            match files::rename_registry(
+                &self.root.join("secrets.md"),
+                env_name,
+                &new_env_name,
+                from,
+                &to,
+            ) {
+                Ok(true) => println!("  secrets.md: '## {env_name}' is now '## {new_env_name}'"),
                 Ok(false) => {}
                 Err(_) => {
-                    println!("The local secrets registry was not updated. Rename its '## {key}' heading by hand.");
+                    println!("The local secrets registry was not updated. Rename its '## {env_name}' heading by hand.");
                     self.log.record("WARNING", "The local secrets registry was not updated");
                 }
             }
@@ -380,16 +398,16 @@ fn cancelled() -> Result<()> {
     Ok(())
 }
 
-fn show_accounts(accounts: &[Account]) {
-    if accounts.is_empty() {
+fn show_profiles(profiles: &[ConfiguredProfile]) {
+    if profiles.is_empty() {
         println!(
             "No accounts are configured yet. Choose 'Add an account' to configure the first one."
         );
         return;
     }
-    println!("Configured accounts ({}):", accounts.len());
-    for (index, account) in accounts.iter().enumerate() {
-        let default = if account.label == "default" {
+    println!("Configured accounts ({}):", profiles.len());
+    for (index, profile) in profiles.iter().enumerate() {
+        let default = if profile.label == "default" {
             " (default configuration)"
         } else {
             ""
@@ -397,12 +415,12 @@ fn show_accounts(accounts: &[Account]) {
         println!(
             "  {}. {:<16} {}{default}",
             index + 1,
-            account.label,
-            account.key
+            profile.label,
+            profile.env_name
         );
     }
     println!("Configured does not mean authorized. Option 6 checks current session health.");
-    if accounts.len() > 1 {
+    if profiles.len() > 1 {
         println!("Name the account on tool calls with account=<label>.");
     }
 }
