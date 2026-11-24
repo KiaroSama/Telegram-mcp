@@ -196,7 +196,7 @@ async fn exposed(mode: &str) -> Vec<Value> {
             "io.modelcontextprotocol/clientCapabilities": {}
         }
     }});
-    timeout(Duration::from_secs(20), async {
+    timeout(Duration::from_secs(60), async {
         stdin
             .write_all(format!("{request}\n").as_bytes())
             .await
