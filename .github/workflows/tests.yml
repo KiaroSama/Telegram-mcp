@@ -1132,7 +1132,8 @@ jobs:
       - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-audit@0.23.0
-      - run: cargo audit --deny warnings
+      # chrono 0.4.45 (also pulled by rmcp 3.10.0 and schemars 1.2.3) has no patched replacement yet.
+      - run: cargo audit --deny warnings --ignore RUSTSEC-2026-0543
 
   case_counts:
     name: Every operating system matches reviewed case inventory

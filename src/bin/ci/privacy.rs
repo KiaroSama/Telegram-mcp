@@ -32,6 +32,9 @@ fn rules() -> Result<Vec<(&'static str, Regex)>> {
 
 fn protected(path: &str) -> bool {
     let normalized = path.replace('\\', "/");
+    if normalized == ".agents/plugins/marketplace.json" {
+        return false;
+    }
     let parts: Vec<_> = normalized.split('/').collect();
     parts.iter().any(|p| {
         matches!(

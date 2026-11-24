@@ -36,6 +36,13 @@ fn protects_accounts_but_allows_public_plugin_manifests() {
     assert!(!protected(".codex-plugin/plugin.json"));
 }
 #[test]
+fn allows_only_the_root_codex_marketplace_manifest() {
+    assert!(!protected(".agents/plugins/marketplace.json"));
+    assert!(!protected(r".agents\plugins\marketplace.json"));
+    assert!(protected(".agents/notes.md"));
+    assert!(protected("sub/.agents/plugins/marketplace.json"));
+}
+#[test]
 fn matches_real_home_names_and_allows_generic_examples() {
     assert!(
         !problems(
