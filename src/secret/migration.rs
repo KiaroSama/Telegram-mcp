@@ -250,9 +250,13 @@ pub(crate) fn open_store(
             for (suffix, bytes) in &files {
                 let path = destination.join(format!("{label}{suffix}"));
                 write_atomic(&path, bytes, false)?;
+                #[cfg(windows)]
+                let handle = OpenOptions::new().read(true).write(true).open(&path)?;
                 let mut permissions = fs::metadata(&path)?.permissions();
                 permissions.set_readonly(true);
                 fs::set_permissions(&path, permissions)?;
+                #[cfg(windows)]
+                handle.sync_all()?;
                 #[cfg(unix)]
                 File::open(&path)?.sync_all()?;
             }
