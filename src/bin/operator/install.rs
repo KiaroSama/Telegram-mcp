@@ -1,8 +1,9 @@
 use super::payload;
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
+use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
+    io::{ErrorKind, Write},
     path::{Path, PathBuf},
 };
 
@@ -19,6 +20,50 @@ fn directory(path: &Path, created: &mut Vec<PathBuf>) -> Result<()> {
     }
     fs::create_dir(path)?;
     created.push(path.to_owned());
+    Ok(())
+}
+
+fn legacy_configs(destination: &Path) -> Result<Vec<PathBuf>> {
+    let mut obsolete = Vec::new();
+    let standard = json!({"mcpServers": {"telegram-mcp": {"command": "telegram-mcp", "args": []}}});
+    let mut portable = standard.clone();
+    portable["$schema"] = json!("https://agent-plugins.org/schemas/1.0.0/mcp.schema.json");
+    portable["mcpServers"]["telegram-mcp"]["type"] = json!("stdio");
+    for (name, expected) in [
+        (".mcp.json", &standard),
+        ("mcp_config.json", &standard),
+        ("mcp.json", &portable),
+    ] {
+        let path = destination.join(name);
+        match path.symlink_metadata() {
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("Cannot inspect a legacy MCP config"),
+            Ok(_) => {}
+        }
+        let metadata = payload::plain(&path)?;
+        ensure!(
+            metadata.is_file(),
+            "Legacy MCP config is not a regular file"
+        );
+        if metadata.len() > 1_000_000 {
+            continue;
+        }
+        let bytes = fs::read(&path).context("Cannot read a legacy MCP config")?;
+        if serde_json::from_slice::<Value>(&bytes).is_ok_and(|config| &config == expected) {
+            obsolete.push(path);
+        }
+    }
+    Ok(obsolete)
+}
+
+fn remove_legacy_configs(paths: Vec<PathBuf>) -> Result<()> {
+    for path in paths {
+        ensure!(
+            payload::plain(&path)?.is_file(),
+            "Legacy MCP config is not a regular file"
+        );
+        fs::remove_file(path).context("Cannot remove a legacy MCP config")?;
+    }
     Ok(())
 }
 
@@ -44,11 +89,33 @@ where
             "Skill destination must be a directory"
         );
     }
-    for (name, _) in payload::SKILLS {
-        ensure!(
-            destination.join(name).symlink_metadata().is_err(),
-            "A target skill already exists; existing skills were not overwritten"
-        );
+    let obsolete = if destination == source {
+        Vec::new()
+    } else {
+        legacy_configs(&destination)?
+    };
+    if payload::SKILLS
+        .iter()
+        .any(|(name, _)| destination.join(name).symlink_metadata().is_ok())
+    {
+        let collision = "A target skill already exists; existing skills were not overwritten";
+        ensure!(!obsolete.is_empty(), collision);
+        for (name, data) in &payload {
+            let Some(relative) = name.strip_prefix("skills/") else {
+                continue;
+            };
+            let relative = Path::new(relative);
+            payload::check_parents(&destination, relative).context(collision)?;
+            let target = destination.join(relative);
+            let metadata = payload::plain(&target).context(collision)?;
+            ensure!(
+                metadata.is_file()
+                    && metadata.len() == data.len() as u64
+                    && fs::read(target)? == *data,
+                collision
+            );
+        }
+        return remove_legacy_configs(obsolete);
     }
     let mut directories = Vec::new();
     let mut files = Vec::new();
@@ -80,7 +147,7 @@ where
             files.push(target.clone());
             write(&mut file, data)?;
         }
-        Ok(())
+        remove_legacy_configs(obsolete)
     })();
     if result.is_err() {
         let mut incomplete = false;

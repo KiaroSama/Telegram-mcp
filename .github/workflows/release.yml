@@ -243,7 +243,7 @@ jobs:
           Copy-Item -LiteralPath 'README.md', 'LICENSE', 'NOTICE' -Destination 'release-package'
           $archive = "dist/telegram-mcp-$env:RELEASE_TAG-$env:ARCHIVE_SUFFIX"
           if ($IsWindows) {
-            Copy-Item -LiteralPath 'Manage-Accounts.ps1', 'start-mcp.ps1', 'account-manager' -Recurse -Destination 'release-package'
+            Copy-Item -LiteralPath 'Manage-Accounts.ps1', 'start-mcp.ps1' -Destination 'release-package'
             Compress-Archive -Path 'release-package/*' -DestinationPath $archive
           } else {
             & chmod 755 release-package/bin/telegram-mcp release-package/bin/emoji-studio release-package/bin/operator-plugin

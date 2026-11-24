@@ -75,12 +75,29 @@ pub const GATED: &[&str] = &[
     "update_folder",
     "upgrade_to_supergroup",
     "upgrade_group_to_supergroup",
+    "acknowledge_secret_delivery",
+    "check_secret_custody",
+    "clear_secret_history",
+    "close_secret_chat",
+    "configure_secret_backend",
+    "delete_saved_secret_messages",
+    "delete_secret_chat",
+    "delete_secret_chat_both_sides",
+    "delete_secret_message",
+    "export_secret_chat",
+    "pause_secret_chat",
+    "receive_secret_media",
+    "resume_secret_chat",
+    "start_secret_auto_save",
+    "stop_secret_auto_save",
 ];
 
 pub const SEEN_SIGNAL: &[&str] = &[
     "mark_as_read",
+    "mark_secret_read",
     "mark_topic_as_read",
     "resolve_business_chat_link",
+    "send_secret_typing",
 ];
 
 pub const SEND: &[&str] = &[
@@ -104,6 +121,12 @@ pub const SEND: &[&str] = &[
     "send_scheduled_message",
     "send_sticker",
     "send_voice",
+    "copy_into_secret_chat",
+    "forward_secret_media",
+    "send_secret_media",
+    "send_secret_message",
+    "send_timed_secret_media",
+    "send_timed_secret_message",
 ];
 
 pub const FREE_WRITES: &[&str] = &[
@@ -220,4 +243,8 @@ pub const FREE_WRITES: &[&str] = &[
     "upload_file",
     "vote_in_poll",
     "vote_poll",
+    "create_secret_chat",
+    "forget_secret_chat",
+    "save_secret_media",
+    "set_secret_chat_timer",
 ];

@@ -407,13 +407,26 @@ async fn deliver_message(
     Ok(true)
 }
 
-pub(super) async fn run(
+#[cfg(test)]
+async fn run(
     client: Client,
     handle: SenderPoolFatHandle,
     updates: tokio::sync::mpsc::Receiver<UpdatesLike>,
     state: Arc<State>,
     session: Arc<PersistentSession>,
     account: String,
+) {
+    run_with_secret(client, handle, updates, state, session, account, None).await;
+}
+
+pub(super) async fn run_with_secret(
+    client: Client,
+    handle: SenderPoolFatHandle,
+    updates: tokio::sync::mpsc::Receiver<UpdatesLike>,
+    state: Arc<State>,
+    session: Arc<PersistentSession>,
+    account: String,
+    secret: Option<Arc<crate::secret::SecretRuntime>>,
 ) {
     // The pinned sender reports home-DC disconnects to this receiver, which
     // requests a difference on the same pool and persisted account cursor.
@@ -452,7 +465,11 @@ pub(super) async fn run(
             process_batch(&session, batch, |raw| {
                 deliver_message(&client, &session, &state, &policy, &account, &peers, raw)
             })
-            .await
+            .await?;
+            if let Some(secret) = &secret {
+                secret.manager().drain_ingress().await?;
+            }
+            Ok::<_, anyhow::Error>(())
         };
         let outcome = tokio::select! {biased;_=session.wait_for_write_uncertainty()=>break,result=outcome=>result};
         if outcome.is_err() {

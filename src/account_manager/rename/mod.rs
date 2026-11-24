@@ -366,16 +366,22 @@ fn rename_with_config(
     if state.root().join(&native.0).exists() {
         files.push(native);
     }
-    // Preserve deferred secret-chat state and its labels without importing it.
-    for pattern in [
-        "{}",
-        "{}.owner.json",
-        "{}-history.json",
-        "{}-media.json",
-        "{}-consumer.json",
+    // Move the legacy and native stores without touching backups or lock files.
+    for suffix in [
+        "",
+        ".owner.json",
+        "-history.json",
+        "-media.json",
+        "-consumer.json",
+        ".v1.enc",
+        ".store.key",
+        ".migration.json",
+        ".history.v1.json",
+        ".media.v1.json",
+        ".archive.v1.json",
     ] {
-        let source = format!("secret-chats/{}", pattern.replace("{}", &from));
-        let target = format!("secret-chats/{}", pattern.replace("{}", &to));
+        let source = format!("secret-chats/{from}{suffix}");
+        let target = format!("secret-chats/{to}{suffix}");
         if local_path(state, &source)?.exists() {
             files.push((source, target));
         }
@@ -562,8 +568,7 @@ fn rename_with_config(
             state.write_json_transaction_unlocked(name, &row["after"])?;
             changed.push(name.to_owned());
         }
-        // Native files and deferred secret-chat sidecars can have different
-        // parents. Confirm every move before publishing the configuration key.
+        // Confirm moves in both state directories before publishing the configuration key.
         sync_move_parents(state, &files)?;
         let publication = if let Some((config, plan)) = configuration {
             let key = plan["key"]

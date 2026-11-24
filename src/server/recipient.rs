@@ -20,6 +20,62 @@ pub(super) fn with_operation_guard(
     })
 }
 
+pub(super) const SECRET_CHAT_PREFIX: &str = "secret/";
+
+pub(super) fn secret_cloud_field(name: &str) -> Option<&'static str> {
+    match name {
+        "create_secret_chat" => Some("user_id"),
+        "copy_into_secret_chat" => Some("from_chat_id"),
+        "export_secret_chat" => Some("peer_user"),
+        _ => None,
+    }
+}
+
+pub(super) fn secret_chat_fields(name: &str) -> &'static [&'static str] {
+    match name {
+        "clear_secret_history" => &["chat_id", "confirm_chat_id"],
+        "copy_into_secret_chat" => &["to_chat_id"],
+        "forward_secret_media" => &["from_chat_id", "to_chat_id"],
+        "delete_secret_message"
+        | "mark_secret_read"
+        | "read_secret_messages"
+        | "save_secret_media"
+        | "search_secret_messages"
+        | "secret_chat_status"
+        | "send_secret_media"
+        | "send_secret_message"
+        | "send_secret_typing"
+        | "send_timed_secret_media"
+        | "send_timed_secret_message"
+        | "set_secret_chat_timer" => &["chat_id"],
+        "acknowledge_secret_delivery"
+        | "close_secret_chat"
+        | "delete_saved_secret_messages"
+        | "delete_secret_chat"
+        | "delete_secret_chat_both_sides"
+        | "export_secret_chat"
+        | "forget_secret_chat"
+        | "get_secret_pause_status"
+        | "list_secret_deliveries"
+        | "pause_secret_chat"
+        | "receive_secret_media"
+        | "resume_secret_chat" => &["secret_chat_id"],
+        _ => &[],
+    }
+}
+
+pub(super) fn wire_secret_chat_id(value: &Value) -> Option<i32> {
+    const OFFSET: i64 = 2_000_000_000_000;
+    let id = value.as_i64()?;
+    // The old public tools also accepted the wire ID shifted by either offset.
+    let wire = match id {
+        ..=-1_000_000_000_000 => id + OFFSET,
+        OFFSET.. => id - OFFSET,
+        _ => id,
+    };
+    i32::try_from(wire).ok().filter(|id| *id > 0)
+}
+
 pub(super) async fn bind(
     name: &str,
     inner: Arc<dyn Telegram>,
@@ -33,33 +89,48 @@ pub(super) async fn bind(
     let mut approval = args.clone();
     let mut originals = vec![];
     let mut selectors = Vec::new();
-    for field in [
-        "chat",
-        "chat_id",
-        "to_chat_id",
-        "from_chat_id",
-        "channel",
-        "channel_id",
-        "group_id",
-        "community",
-        "first_chat",
-        "source_chat_id",
-        "destination_chat_id",
-        "contact_id",
-        "user_id",
-        "user",
-        "bot",
-        "bot_username",
-        "from_user",
-        "peer_id",
-        "user_ids",
-        "chat_ids",
-        "peers",
-    ] {
-        selectors.push((
-            format!("/{field}"),
-            matches!(field, "user_ids" | "chat_ids" | "peers"),
-        ));
+    if crate::tools::secret::TOOL_NAMES.contains(&name) {
+        if let Some(field) = secret_cloud_field(name) {
+            selectors.push((format!("/{field}"), false));
+        }
+        for &field in secret_chat_fields(name) {
+            if let Some(value) = args.get(field).filter(|v| !v.is_null()) {
+                let id = wire_secret_chat_id(value).with_context(|| {
+                    format!("{field} must identify a positive signed 32-bit secret chat")
+                })?;
+                // Approval identities are namespaced; dispatch still gets the original IDs.
+                approval[field] = json!(format!("{SECRET_CHAT_PREFIX}{id}"));
+            }
+        }
+    } else {
+        for field in [
+            "chat",
+            "chat_id",
+            "to_chat_id",
+            "from_chat_id",
+            "channel",
+            "channel_id",
+            "group_id",
+            "community",
+            "first_chat",
+            "source_chat_id",
+            "destination_chat_id",
+            "contact_id",
+            "user_id",
+            "user",
+            "bot",
+            "bot_username",
+            "from_user",
+            "peer_id",
+            "user_ids",
+            "chat_ids",
+            "peers",
+        ] {
+            selectors.push((
+                format!("/{field}"),
+                matches!(field, "user_ids" | "chat_ids" | "peers"),
+            ));
+        }
     }
     if matches!(
         name,

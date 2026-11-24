@@ -1,6 +1,7 @@
 //! Account configuration provenance and owner-driven local transactions.
 mod config;
 mod health;
+pub mod interactive;
 mod login;
 mod recovery;
 mod rename;
