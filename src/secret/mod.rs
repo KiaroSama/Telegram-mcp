@@ -69,14 +69,14 @@ fn private_directory(path: &Path) -> Result<()> {
     match fs::create_dir(path) {
         Ok(()) => {
             crate::state::storage::restrict(path, true)?;
-            crate::state::storage::sync_directory(
-                path.parent()
-                    .context("Secret-chat directory has no parent")?,
-            )?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error).context("Cannot create secret-chat directory"),
     }
+    crate::state::storage::sync_directory(
+        path.parent()
+            .context("Secret-chat directory has no parent")?,
+    )?;
     ensure!(
         metadata(path)?.is_some_and(|m| m.is_dir()),
         "Secret-chat directory is not a regular directory"

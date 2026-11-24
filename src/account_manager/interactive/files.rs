@@ -51,6 +51,8 @@ pub(super) fn configured_profiles(path: &Path) -> Result<Vec<ConfiguredProfile>>
     if snapshot.digest != config_digest(&text) {
         bail!("Configuration changed while listing profiles; try again");
     }
+    let file_values =
+        crate::account_manager::parse_config(&text, &std::collections::BTreeMap::new())?;
     let mut profiles: Vec<ConfiguredProfile> = Vec::new();
     for line in text.trim_start_matches('\u{feff}').lines() {
         let line = line.trim_start();
@@ -62,17 +64,19 @@ pub(super) fn configured_profiles(path: &Path) -> Result<Vec<ConfiguredProfile>>
         let Ok(label) = label_for(env_name) else {
             continue;
         };
-        let Some(value) = snapshot
+        if snapshot
             .values
             .get(env_name)
             .filter(|value| !value.is_empty())
-        else {
+            .is_none()
+        {
             continue;
-        };
+        }
+        let raw_value = file_values.get(env_name).map(String::as_str).unwrap_or("");
         let profile = ConfiguredProfile {
             label,
             env_name: env_name.to_owned(),
-            digest: config_digest(value),
+            digest: config_digest(raw_value),
         };
         if let Some(previous) = profiles
             .iter_mut()

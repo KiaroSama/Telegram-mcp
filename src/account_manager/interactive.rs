@@ -385,7 +385,8 @@ impl Manager<'_> {
         let Some(stopped) = stopped else {
             return;
         };
-        let config = stopped.config.as_deref().unwrap_or(&self.env_file);
+        let default_env = self.root.join(".env");
+        let config = stopped.config.as_deref().unwrap_or(&default_env);
         match server::start(&self.root, config, self.loaded_env) {
             Ok(pid) => {
                 self.log.record("INFO", "Restarted the MCP server");

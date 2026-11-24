@@ -286,6 +286,15 @@ impl SecretHistory {
         Ok(count)
     }
 
+    pub(crate) fn clear_media(&self, chat_id: i32) -> Result<()> {
+        let _guard = self.guard()?;
+        let mut media = load(&self.media)?;
+        if media.remove(&chat_id.to_string()).is_some() {
+            save(&self.media, &media)?;
+        }
+        Ok(())
+    }
+
     pub fn clear(&self, chat_id: i32) -> Result<usize> {
         self.delete_saved(chat_id, None)
     }

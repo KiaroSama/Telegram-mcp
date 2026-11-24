@@ -61,17 +61,35 @@ fn legacy_configs(destination: &Path) -> Result<Vec<(PathBuf, Value)>> {
 }
 
 fn remove_legacy_configs(paths: Vec<(PathBuf, Value)>) -> Result<()> {
-    let mut removed: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut staged: Vec<(PathBuf, Value, Vec<u8>)> = Vec::new();
     for (path, expected) in paths {
         if !is_legacy_config(&path, &expected)? {
             continue;
         }
         let bytes = fs::read(&path).context("Cannot back up a legacy MCP config before removal")?;
-        if let Err(error) = fs::remove_file(&path) {
-            for (previous, payload) in removed.into_iter().rev() {
-                let _ = fs::write(previous, payload);
+        staged.push((path, expected, bytes));
+    }
+    let mut removed: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    for (path, expected, bytes) in staged {
+        let step = (|| -> Result<()> {
+            if is_legacy_config(&path, &expected)? {
+                fs::remove_file(&path).context("Cannot remove a legacy MCP config")?;
             }
-            return Err(error).context("Cannot remove a legacy MCP config");
+            Ok(())
+        })();
+        if let Err(error) = step {
+            let mut rollback_failed = false;
+            for (previous, payload) in removed.into_iter().rev() {
+                if fs::write(previous, payload).is_err() {
+                    rollback_failed = true;
+                }
+            }
+            if rollback_failed {
+                return Err(error.context(
+                    "Legacy MCP config cleanup failed and restoring earlier files was incomplete",
+                ));
+            }
+            return Err(error);
         }
         removed.push((path, bytes));
     }
