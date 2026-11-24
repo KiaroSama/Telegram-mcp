@@ -266,7 +266,11 @@ fn shipped_takeover_distinguishes_manual_and_automatic_starts() {
     let other = Checkout::new();
     let start = |fixture: &Checkout| {
         let script = fixture.root().join("start-mcp.ps1");
-        fs::write(&script, "Start-Sleep -Seconds 120\n").unwrap();
+        fs::write(
+            &script,
+            "Set-Content -LiteralPath (Join-Path $PSScriptRoot 'ready') -Value 'ok'\nStart-Sleep -Seconds 120\n",
+        )
+        .unwrap();
         FixtureProcess(
             fixture
                 .command("pwsh.exe")
@@ -281,6 +285,8 @@ fn shipped_takeover_distinguishes_manual_and_automatic_starts() {
     };
     let mut own = start(&checkout);
     let mut foreign = start(&other);
+    wait_for_file(&checkout.root().join("ready"));
+    wait_for_file(&other.root().join("ready"));
     let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("start-mcp.ps1");
     let mut command = checkout.command("pwsh.exe");
     success(run(command.args(["-NoProfile", "-NonInteractive", "-Command", r#"
@@ -296,9 +302,9 @@ fn shipped_takeover_distinguishes_manual_and_automatic_starts() {
         if (-not (Test-OpenedByPerson -InputRedirected $false -HostArguments @('pwsh', '-File', 'x'))) { throw 'Manual launch did not qualify for takeover' }
         if (Test-OpenedByPerson -InputRedirected $true -HostArguments @('pwsh', '-File', 'x')) { throw 'Redirected launch qualified for takeover' }
         if (Test-OpenedByPerson -InputRedirected $false -HostArguments @('pwsh', '-NonInteractive', '-File', 'x')) { throw 'Supervisor launch qualified for takeover' }
-        $result = Stop-OtherInstances -Root (Get-Location).Path
+        $result = Stop-OtherInstances -Root $env:FIXTURE_ROOT
         if ($result.Survived.Count -or $result.Stopped -notcontains [int]$env:FIXTURE_PID) { throw 'Checkout process did not stop' }
-    "#]).env("FIXTURE_LAUNCHER", shipped).env("FIXTURE_PID", own.0.id().to_string()), ""));
+    "#]).env("FIXTURE_LAUNCHER", shipped).env("FIXTURE_ROOT", checkout.root()).env("FIXTURE_PID", own.0.id().to_string()), ""));
     assert!(own.0.try_wait().unwrap().is_some());
     assert!(foreign.0.try_wait().unwrap().is_none());
 }

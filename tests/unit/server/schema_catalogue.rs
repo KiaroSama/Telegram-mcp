@@ -15,15 +15,14 @@ fn all_catalogue_tools_have_native_implementations() {
     assert!(actual.contains("send_message"));
     assert!(actual.contains("get_history"));
     assert!(actual.contains("get_poll_results"));
-    // Device authorization settings remain cloud API tools; the separate
-    // end-to-end encrypted messaging backend is the deferred integration.
-    for deferred in [
+    // All 34 secret-chat tools are now integrated natively alongside cloud tools.
+    for secret_tool in [
         "create_secret_chat",
         "send_secret_message",
         "send_secret_media",
         "delete_secret_chat",
     ] {
-        assert!(!actual.contains(deferred));
+        assert!(actual.contains(secret_tool));
     }
     for tool in tools {
         assert!(
