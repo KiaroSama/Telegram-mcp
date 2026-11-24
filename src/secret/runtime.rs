@@ -236,18 +236,41 @@ impl SecretRuntime {
     }
 }
 
+fn startup_error(stage: &str, error: SecretError) -> anyhow::Error {
+    let cause = match error {
+        SecretError::Authorization => "Telegram authorization or connection proof failed",
+        SecretError::IngressUnavailable => "durable update ingress is unavailable",
+        SecretError::Storage => "the protected store could not be read or committed",
+        SecretError::InvalidState | SecretError::Context(_) => "protected state was rejected",
+        SecretError::Capacity => "a custody limit was exceeded",
+        SecretError::Randomness => "system randomness is unavailable",
+        SecretError::ManagerStopping => "the manager is stopping",
+        SecretError::ChatState => "the chat state or callback registration was rejected",
+        SecretError::Transport => "a Telegram request did not complete",
+        _ => "the secret-chat manager refused the operation",
+    };
+    anyhow::anyhow!("Cannot start the account's durable secret-chat manager ({stage}): {cause}")
+}
+
 impl Prepared {
     pub(crate) async fn attach(&mut self, pool: &SenderPoolFatHandle) -> Result<()> {
-        Ok(self.ingress.prepare(pool, self.baseline.take()).await?)
+        self.ingress
+            .prepare(pool, self.baseline.take())
+            .await
+            .map_err(|error| startup_error("attach ingress", error))
     }
 
     pub(crate) async fn start(self, client: Client) -> Result<Arc<SecretRuntime>> {
+        let initialize = |error| startup_error("verify and initialize ingress", error);
         let manager = StrongSecretChatManager::new(
             client.clone(),
             self.ingress,
-            CustodyLimits::new(4096, MAX_BYTES, 30.0 * 86400.0)?,
+            CustodyLimits::new(4096, MAX_BYTES, 30.0 * 86400.0).map_err(initialize)?,
         )
-        .await?;
+        .await
+        .map_err(initialize)?;
+        let register = |error| startup_error("register history callbacks", error);
+        let label = super::HISTORY_HANDLER_LABEL;
         let runtime = Arc::new(SecretRuntime {
             manager,
             history: self.history,
@@ -259,7 +282,7 @@ impl Prepared {
         let weak = Arc::downgrade(&runtime);
         runtime
             .manager
-            .on_async("MessageReceived", "mcp-history", move |event| {
+            .on_async("MessageReceived", label, move |event| {
                 let weak = weak.clone();
                 async move {
                     let Some(runtime) = weak.upgrade() else {
@@ -290,19 +313,21 @@ impl Prepared {
                     }
                     Ok(())
                 }
-            })?;
+            })
+            .map_err(register)?;
         let history = Arc::clone(&runtime.history);
         runtime
             .manager
-            .on("ServiceActionReceived", "mcp-history", move |event| {
+            .on("ServiceActionReceived", label, move |event| {
                 history
                     .record_service(event)
                     .map_err(|_| SecretError::Storage)
-            })?;
+            })
+            .map_err(register)?;
         let history = Arc::clone(&runtime.history);
         runtime
             .manager
-            .on("ChatClosed", "mcp-history", move |event| {
+            .on("ChatClosed", label, move |event| {
                 if let Event::ChatClosed {
                     chat_id,
                     history_deleted: true,
@@ -312,10 +337,11 @@ impl Prepared {
                     history.clear(chat_id).map_err(|_| SecretError::Storage)?;
                 }
                 Ok(())
-            })?;
+            })
+            .map_err(register)?;
         if let Err(error) = runtime.manager.start().await {
             let _ = runtime.stop().await;
-            return Err(error.into());
+            return Err(startup_error("recover durable work", error));
         }
         Ok(runtime)
     }

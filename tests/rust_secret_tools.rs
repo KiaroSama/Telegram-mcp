@@ -337,16 +337,23 @@ async fn each_published_schema_validates_and_routes_to_its_secret_backend_method
 
 #[tokio::test]
 async fn autosave_and_custody_forward_validated_options_and_normalized_ids() {
-    let result = tools::call(
-        &Echo,
-        "list_secret_deliveries",
-        &json!({"secret_chat_id": -1_999_999_999_958_i64}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result["params"]["chat_id"], 42);
-    assert_eq!(result["params"]["limit"], 50);
-    assert_eq!(result["params"]["offset"], 0);
+    for (id, wire) in [
+        (-1_999_999_999_958_i64, 42),
+        (-698_877_786, -698_877_786),
+        (-2_000_698_877_786, -698_877_786),
+        (1_999_301_122_214, -698_877_786),
+    ] {
+        let result = tools::call(
+            &Echo,
+            "list_secret_deliveries",
+            &json!({"secret_chat_id": id}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["params"]["chat_id"], wire);
+        assert_eq!(result["params"]["limit"], 50);
+        assert_eq!(result["params"]["offset"], 0);
+    }
 
     let result = tools::call(
         &Echo,

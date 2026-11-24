@@ -6,7 +6,7 @@ pub mod messaging;
 pub mod timed;
 
 use crate::{args::required, backend::Telegram};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub const TOOL_NAMES: &[&str] = &[
@@ -68,15 +68,7 @@ fn secret_id(args: &Value, key: &str) -> Result<i64> {
     let value = required(args, key)?
         .as_i64()
         .with_context(|| format!("{key} must be an integer"))?;
-    // v2 published offset IDs; the native manager needs the wire chat ID.
-    let id = match value {
-        ..=-1_000_000_000_000 => value + 2_000_000_000_000,
-        1_000_000_000_000.. => value - 2_000_000_000_000,
-        _ => value,
-    };
-    ensure!(
-        (1..=i64::from(i32::MAX)).contains(&id),
-        "{key} must identify a positive signed 32-bit secret chat"
-    );
-    Ok(id)
+    crate::secret::wire_chat_id(value)
+        .map(i64::from)
+        .with_context(|| format!("{key} must identify a non-zero signed 32-bit secret chat"))
 }

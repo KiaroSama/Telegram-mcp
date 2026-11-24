@@ -70,10 +70,9 @@ impl AccessPolicy {
                 bail!("Empty chat allowlist entry");
             }
             if let Some(id) = item.strip_prefix(SECRET_CHAT_PREFIX) {
-                let id =
-                    id.parse::<i32>().ok().filter(|id| *id > 0).context(
-                        "Secret-chat allowlist entries must use secret/<positive wire ID>",
-                    )?;
+                let id = id.parse::<i32>().ok().filter(|id| *id != 0).context(
+                    "Secret-chat allowlist entries must use secret/<non-zero signed 32-bit wire ID>",
+                )?;
                 policy.secret_chats.insert(id);
                 continue;
             }

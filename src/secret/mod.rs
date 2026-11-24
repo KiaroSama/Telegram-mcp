@@ -21,6 +21,20 @@ use std::{
 
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 
+#[doc(hidden)]
+pub const HISTORY_HANDLER_LABEL: &str = "mcp_history";
+
+pub(crate) const CHAT_OFFSET: i64 = 2_000_000_000_000;
+
+pub(crate) fn wire_chat_id(value: i64) -> Option<i32> {
+    let wire = match value {
+        ..=-1_000_000_000_000 => value + CHAT_OFFSET,
+        1_000_000_000_000.. => value - CHAT_OFFSET,
+        _ => value,
+    };
+    i32::try_from(wire).ok().filter(|id| *id != 0)
+}
+
 fn metadata(path: &Path) -> Result<Option<fs::Metadata>> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {

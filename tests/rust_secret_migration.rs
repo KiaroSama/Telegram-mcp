@@ -243,6 +243,15 @@ fn corrupt_legacy_store_is_left_untouched() {
     fs::write(&source, b"{ invalid json").unwrap();
     assert!(migrate_legacy(dir.path(), LABEL, &binding()).is_err());
     assert_eq!(fs::read(&source).unwrap(), b"{ invalid json");
+
+    let mismatched = br#"{"chats":{"-698877786":{"id":7,"access_hash":31,"peer_user_id":43,"is_outbound":true,"state":"closed","in_seq_no":0,"out_seq_no":0}},"in":{},"out":{},"settings":{}}"#;
+    fs::write(&source, mismatched).unwrap();
+    let error = migrate_legacy(dir.path(), LABEL, &binding()).err().unwrap();
+    assert_eq!(
+        error.to_string(),
+        "Legacy secret-chat identifier does not match its record"
+    );
+    assert_eq!(fs::read(&source).unwrap(), mismatched);
     assert!(!custody.join("offline.v1.enc").exists());
     assert!(!custody.join("offline.migration.json").exists());
 }

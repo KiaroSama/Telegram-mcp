@@ -77,6 +77,34 @@ fn configured_custody_migrates_only_for_the_bound_account() {
     std::fs::write(&source, legacy).unwrap();
     check_deferred_custody_with_config(&f.state, "work", &config).unwrap();
     assert!(directory.join("work.v1.enc").is_file());
+
+    use grammers_client::Client;
+    use grammers_mtsender::SenderPool;
+    use grammers_session::storages::MemorySession;
+    use kiaro_secret_chat::{
+        manager::SecretChatManager, storage::MemoryStorage, transport::GrammersTransport,
+    };
+    use telegram_mcp::secret::HISTORY_HANDLER_LABEL;
+
+    let pool = SenderPool::new(Arc::new(MemorySession::from(session)), 1);
+    let manager = SecretChatManager::new(
+        GrammersTransport::new(Client::new(pool.handle.clone())),
+        MemoryStorage::default(),
+        "ab".repeat(32),
+        Default::default(),
+    )
+    .unwrap();
+    manager
+        .on_async("MessageReceived", HISTORY_HANDLER_LABEL, |_| async {
+            Ok(())
+        })
+        .unwrap();
+    manager
+        .on("ServiceActionReceived", HISTORY_HANDLER_LABEL, |_| Ok(()))
+        .unwrap();
+    manager
+        .on("ChatClosed", HISTORY_HANDLER_LABEL, |_| Ok(()))
+        .unwrap();
     assert!(directory.join("work.migration.json").is_file());
     let backup = std::fs::read_dir(directory.join("legacy-backups"))
         .unwrap()
