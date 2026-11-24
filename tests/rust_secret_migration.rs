@@ -1,4 +1,9 @@
-use kiaro_secret_chat::{binding::AuthorizationBinding, storage::Storage};
+use kiaro_secret_chat::{
+    binding::AuthorizationBinding,
+    custody::{CustodyLimits, CustodyStorage},
+    ingress::EncryptedIngressStorage,
+    storage::Storage,
+};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
 use telegram_mcp::secret::migrate_legacy;
@@ -156,7 +161,7 @@ fn multiple_chats_and_sidecars_survive_migration() {
         .fingerprint();
     let chat = |id| json!({"id":id,"access_hash":31,"peer_user_id":43,"is_outbound":true,"state":"ready","ttl":10,"layer":73,"wrapper_layer":46,"in_seq_no":4,"out_seq_no":5,"peer_in_seq_no":3,"key":{"__bytes__":"5a".repeat(burned.len())},"key_fingerprint":fingerprint});
     let (dir, _) = fixture(
-        &json!({"chats":{"13":chat(13),"15":chat(15)},"in":{},"out":{},"settings":{"auto_save":{"on":false}}}),
+        &json!({"chats":{"-698877786":chat(-698_877_786),"13":chat(13),"15":chat(15)},"in":{},"out":{},"settings":{"auto_save":{"on":false}}}),
     );
     let custody = dir.path().join("secret-chats");
     let history = br#"{"13":[{"message_id":321,"text":"offline sample"}]}"#;
@@ -168,11 +173,29 @@ fn multiple_chats_and_sidecars_survive_migration() {
     ] {
         fs::write(custody.join(format!("{LABEL}{suffix}")), bytes).unwrap();
     }
-    let store = migrate_legacy(dir.path(), LABEL, &binding())
-        .unwrap()
-        .unwrap();
+    let binding = binding();
+    drop(
+        migrate_legacy(dir.path(), LABEL, &binding)
+            .unwrap()
+            .unwrap(),
+    );
+    let key = fs::read(custody.join("offline.store.key")).unwrap();
+    let max_bytes = 64 * 1024 * 1024;
+    let reopened = EncryptedIngressStorage::open(
+        custody.join("offline.v1.enc"),
+        key.try_into().unwrap(),
+        binding.clone(),
+        max_bytes,
+    )
+    .unwrap();
+    let limits = CustodyLimits::new(4096, max_bytes, 30.0 * 86400.0).unwrap();
+    let store = CustodyStorage::new(reopened, binding.digest(), limits)
+        .expect("migrated secret chats must reopen with bounded custody");
     let state = store.load().unwrap().unwrap();
-    assert_eq!(state.chats.keys().copied().collect::<Vec<_>>(), [13, 15]);
+    assert_eq!(
+        state.chats.keys().copied().collect::<Vec<_>>(),
+        [-698_877_786, 13, 15]
+    );
     let first = &state.chats[&13];
     assert_eq!(
         (first.ttl, first.capability_layer, first.wrapper_layer),
