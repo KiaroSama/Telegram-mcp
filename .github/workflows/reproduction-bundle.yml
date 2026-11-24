@@ -1,7 +1,5 @@
-name: Locked Reproduction Bundle
+name: Locked Rust reproduction bundle
 
-# Opt-in in normal operation. A change to this workflow also tests the bundle
-# itself in a pull request, without running on every application change.
 on:
   workflow_dispatch:
 
@@ -10,132 +8,49 @@ permissions:
 
 jobs:
   bundle:
-    name: Build Offline Linux Reproduction Bundle
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    name: Build offline Rust reproduction bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
     steps:
-      - name: Check out tracked source without persistent credentials
-        uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
           fetch-depth: 0
-
-      - name: Set up the recorded Python interpreter
-        id: python
-        uses: actions/setup-python@v7
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
-          python-version: '3.13'
-
-      - name: Select this interpreter for uv
-        shell: bash
-        run: echo "UV_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
-
-      - name: Install the pinned resolver
-        uses: astral-sh/setup-uv@v10.3.3
-        with:
-          version: '0.13.0'
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-
-      - name: Install the exact locked development and optional dependencies
-        run: uv sync --locked --all-extras
-
-      - name: Scan tracked source before exporting it
-        run: uv run --locked --all-extras python scripts/secret_scan.py
-
-      - name: Check reachable history before exporting Git objects
-        run: uv run --locked --all-extras python scripts/history_secret_scan.py
-
-      - name: Record provenance and archive only explicit safe inputs
-        shell: bash
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Refuse private source or history before exporting Git objects
+        run: |
+          cargo run --locked --bin ci -- privacy
+          cargo run --locked --bin ci -- privacy-history
+          cargo run --locked --bin ci -- gitleaks
+      - name: Archive explicit source and locked Rust dependencies
         run: |
           set -euo pipefail
           mkdir -p reproduction
           git rev-parse HEAD > reproduction/commit.txt
-          sha256sum uv.lock > reproduction/lock.sha256
-          uv --version > reproduction/uv-version.txt
-          uv run --locked --all-extras python -c 'import platform,sys; print(sys.version); print(platform.platform())' > reproduction/python.txt
-          # The installed native packages are ABI-specific. A text version banner
-          # alone cannot validate an offline restore or identify a substituted
-          # package. Record only explicit metadata, never the process environment.
-          uv run --locked --all-extras python - <<'PY'
-          import hashlib
-          import importlib.metadata
-          import json
-          import platform
-          import subprocess
-          import sys
-          import sysconfig
-          from pathlib import Path
-
-          root = Path('reproduction')
-          metadata = {
-              'schema_version': 1,
-              'commit': subprocess.check_output(
-                  ['git', 'rev-parse', 'HEAD'], text=True, timeout=30
-              ).strip(),
-              'lock_sha256': hashlib.sha256(Path('uv.lock').read_bytes()).hexdigest(),
-              'python_version': platform.python_version(),
-              'implementation': sys.implementation.name,
-              'cache_tag': sys.implementation.cache_tag,
-              'soabi': sysconfig.get_config_var('SOABI'),
-              'platform': sysconfig.get_platform(),
-              'libc': platform.libc_ver(),
-              'profiles': ['dev', 'all-extras'],
-              'distributions': sorted(
-                  [{'name': d.metadata['Name'], 'version': d.version}
-                   for d in importlib.metadata.distributions()],
-                  key=lambda d: (d['name'].lower(), d['version']),
-              ),
-          }
-          root.joinpath('environment.json').write_text(
-              json.dumps(metadata, indent=2, sort_keys=True) + '\n', encoding='utf-8'
-          )
-          # Blob IDs and modes establish which tracked bytes were archived. This
-          # contains no Git configuration, auth headers, reflogs or local state.
-          entries = subprocess.check_output(
-              ['git', 'ls-files', '--stage', '-z'], timeout=30
-          ).split(b'\0')
-          inventory = []
-          for entry in entries:
-              if not entry:
-                  continue
-              attributes, path = entry.split(b'\t', 1)
-              mode, oid, stage = attributes.decode('ascii').split()
-              if stage != '0':
-                  raise RuntimeError('Unmerged source cannot be reproduced')
-              inventory.append({'path': path.decode('utf-8'), 'mode': mode, 'blob': oid})
-          root.joinpath('source-inventory.json').write_text(
-              json.dumps(inventory, indent=2, sort_keys=True) + '\n', encoding='utf-8'
-          )
-          PY
-          git diff --exit-code -- pyproject.toml uv.lock
+          rustc --version --verbose > reproduction/rustc.txt
+          cargo --version > reproduction/cargo.txt
+          sha256sum Cargo.lock > reproduction/lock.sha256
           git archive --format=tar.gz HEAD > reproduction/source.tar.gz
-          # Tests use git ls-files and the original commit identity. A tar export
-          # cannot replay those checks; a bundle contains objects, not Git config.
           git bundle create reproduction/source.bundle HEAD
           git bundle verify reproduction/source.bundle
-          git clone --quiet --no-checkout reproduction/source.bundle "$RUNNER_TEMP/reproduction-check"
-          git -C "$RUNNER_TEMP/reproduction-check" checkout --quiet --detach "$(git rev-parse HEAD)"
-          git -C "$RUNNER_TEMP/reproduction-check" fsck --full
-          git ls-files -z > "$RUNNER_TEMP/original-files"
-          git -C "$RUNNER_TEMP/reproduction-check" ls-files -z > "$RUNNER_TEMP/replayed-files"
-          cmp "$RUNNER_TEMP/original-files" "$RUNNER_TEMP/replayed-files"
-          # Only installed packages: no Git config, environment dump, home
-          # directory, session database, pip cache or runner credentials.
-          tar -C .venv/lib/python3.13 -czf reproduction/site-packages.tar.gz site-packages
-          du -h reproduction/*
-          test "$(du -sb reproduction | cut -f1)" -lt 157286400
-          sha256sum reproduction/*.tar.gz > reproduction/archives.sha256
-          # Hash metadata too, so the declared ABI and inventory can be verified
-          # alongside the archives after the artifact leaves GitHub Actions.
-          sha256sum reproduction/*.json reproduction/*.txt reproduction/*.tar.gz reproduction/*.bundle > reproduction/manifest.sha256
-
-      - name: Upload short-lived reproduction evidence
-        uses: actions/upload-artifact@v7
+          git clone --quiet reproduction/source.bundle reproduction/replayed
+          git -C reproduction/replayed fsck --full
+          cd reproduction/replayed
+          mkdir -p .cargo
+          cargo vendor --locked vendor > .cargo/config.toml
+          CARGO_HOME="$RUNNER_TEMP/empty-cargo-cache" cargo build --offline --locked --bin telegram-mcp
+          cd ../..
+          rm -rf reproduction/replayed/target reproduction/replayed/.git
+          tar -C reproduction -czf reproduction/locked-source-and-vendor.tar.gz replayed
+          rm -rf reproduction/replayed
+          sha256sum reproduction/*.txt reproduction/*.sha256 reproduction/*.tar.gz reproduction/*.bundle > reproduction/manifest.sha256
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: locked-linux-py313-reproduction
+          name: locked-rust-linux-reproduction
           path: reproduction/
-          if-no-files-found: error
           retention-days: 3
           compression-level: 0
+          if-no-files-found: error

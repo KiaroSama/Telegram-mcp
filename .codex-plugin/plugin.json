@@ -1,6 +1,6 @@
 {
   "name": "telegram-operator",
-  "version": "1.2.0",
+  "version": "1.4.0",
   "description": "Authorized Telegram reconstruction, migration, backup, access review and formatting workflows.",
   "author": {
     "name": "KiaroSama"
@@ -8,5 +8,15 @@
   "homepage": "https://github.com/KiaroSama/Telegram-mcp",
   "repository": "https://github.com/KiaroSama/Telegram-mcp",
   "license": "GPL-3.0-or-later",
-  "skills": "./skills/"
+  "keywords": ["telegram", "mcp", "skills", "migration", "backup"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Telegram Operator",
+    "shortDescription": "Telegram workflow skills and local MCP",
+    "longDescription": "Reconstruct Telegram bot behavior and message formatting, plan migrations, verify backups, and review access with Telegram Operator skills and a local MCP server.",
+    "developerName": "KiaroSama",
+    "category": "Developer Tools",
+    "websiteURL": "https://github.com/KiaroSama/Telegram-mcp"
+  }
 }

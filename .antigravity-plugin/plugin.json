@@ -1,0 +1,19 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "telegram-operator",
+  "displayName": "Telegram Operator",
+  "version": "1.4.0",
+  "description": "Authorized Telegram reconstruction, migration, backup, access review and formatting workflows.",
+  "suggestedPrompts": [
+    "Audit the administrators and invite settings of a Telegram channel I manage without changing anything.",
+    "Build a migration checklist for my Telegram group, including how to verify copied messages and media.",
+    "Inspect a Telegram message's formatting and identify its premium custom emoji before I copy it."
+  ],
+  "category": ["Communication", "Developer Tools"],
+  "author": {
+    "name": "KiaroSama"
+  },
+  "homepage": "https://github.com/KiaroSama/Telegram-mcp",
+  "repository": "https://github.com/KiaroSama/Telegram-mcp",
+  "license": "GPL-3.0-or-later"
+}

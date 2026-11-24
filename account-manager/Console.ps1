@@ -125,7 +125,7 @@ function ConvertTo-Label {
       Turn what a person typed into a label that can actually be stored.
 
       The label is spliced into an environment variable NAME
-      (`TELEGRAM_SESSION_STRING_<LABEL>`), and python-dotenv refuses to parse a
+      (`TELEGRAM_SESSION_STRING_<LABEL>`), and the environment parser refuses to parse a
       line whose key contains a space - it prints a warning and DROPS the line.
       So "KGB Verifier" written literally would produce an account that is saved
       and then never loads, which is the worst of both outcomes.

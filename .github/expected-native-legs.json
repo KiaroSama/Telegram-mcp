@@ -1,0 +1,42 @@
+{
+  "linux-x86_64": {
+    "platform": "linux",
+    "architecture": "x86_64",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "linux-aarch64": {
+    "platform": "linux",
+    "architecture": "aarch64",
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "windows-x86_64": {
+    "platform": "windows",
+    "architecture": "x86_64",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "windows-aarch64": {
+    "platform": "windows",
+    "architecture": "aarch64",
+    "target": "aarch64-pc-windows-msvc"
+  },
+  "renderer-linux-x86_64": {
+    "platform": "linux",
+    "architecture": "x86_64",
+    "target": "x86_64-unknown-linux-gnu"
+  },
+  "renderer-linux-aarch64": {
+    "platform": "linux",
+    "architecture": "aarch64",
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "renderer-windows-x86_64": {
+    "platform": "windows",
+    "architecture": "x86_64",
+    "target": "x86_64-pc-windows-msvc"
+  },
+  "renderer-windows-aarch64": {
+    "platform": "windows",
+    "architecture": "aarch64",
+    "target": "aarch64-pc-windows-msvc"
+  }
+}

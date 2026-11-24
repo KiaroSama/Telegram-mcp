@@ -10,20 +10,56 @@
     `$script:` variables. Nothing here reads `$PSScriptRoot` - that automatic
     variable points at the file it is WRITTEN in, so a function that moved here
     and still used it would resolve against `lib\` instead of the project root.
-    That is exactly why the venv-calling functions stayed in the launcher.
+    That is exactly why the native-executable-calling functions stayed in the launcher.
 #>
 
 # --- private files ------------------------------------------------------------
 
 function Get-StateDirectory {
-    <#
-      Where runtime state goes: NOT beside the source, which may be read-only,
-      may be a git checkout, and is where a `logs/` directory ends up committed
-      or synced. Same rule as `telegram_mcp.aliases.aliases_file_path`, so an
-      operator has one place to look and one place to lock down.
-    #>
-    $base = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { Join-Path $HOME '.local/state' }
-    return Join-Path $base 'telegram-mcp'
+    # Ask the native parser for its canonical root, using the same selector as serve.
+    $sourceRoot = Get-Variable -Name ProjectRoot -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if (-not $sourceRoot) { $sourceRoot = $PSScriptRoot }
+    $selector = $null
+    $forwarded = Get-Variable -Name ServerArguments -ValueOnly -ErrorAction SilentlyContinue
+    $forwarded = @($forwarded)
+    for ($index = 0; $index -lt $forwarded.Count; $index++) {
+        if ($forwarded[$index] -eq '--config') {
+            if ($index + 1 -ge $forwarded.Count) { throw '--config requires a configuration path.' }
+            $index++
+            $selector = $forwarded[$index]
+        }
+        elseif ($forwarded[$index] -like '--config=*') { $selector = $forwarded[$index].Substring(9) }
+    }
+    if (-not $selector) {
+        $selector = Get-Variable -Name envPath -ValueOnly -ErrorAction SilentlyContinue
+    }
+    $selection = if ($selector) { @('--config', $selector) } else { @() }
+    $signature = "$sourceRoot|$env:TELEGRAM_STATE_DIR|$env:XDG_STATE_HOME|$selector|$env:TELEGRAM_ENV_FILE"
+    $cached = Get-Variable -Name NativeStateDirectory -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    $cachedSignature = Get-Variable -Name NativeStateDirectorySignature -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ($cached -and $cachedSignature -eq $signature) { return $cached }
+    $native = $null
+    try {
+        $native = Get-NativeBinary -Root $sourceRoot
+        Push-Location -LiteralPath $sourceRoot
+        try {
+            $value = (& $native state-path @selection 2>$null | Select-Object -Last 1)
+            $code = $LASTEXITCODE
+        }
+        finally { Pop-Location }
+        if ($code -ne 0 -or -not $value -or -not [IO.Path]::IsPathRooted("$value".Trim())) {
+            throw 'The native private state directory could not be resolved.'
+        }
+        $script:NativeStateDirectory = "$value".Trim()
+        $script:NativeStateDirectorySignature = $signature
+        return $script:NativeStateDirectory
+    }
+    catch { if ($native) { throw } }
+    # This permits diagnostics before the executable is installed. Serving itself
+    # still requires native discovery and cannot proceed through this fallback.
+    if ($env:TELEGRAM_STATE_DIR) { return $env:TELEGRAM_STATE_DIR }
+    if ($env:XDG_STATE_HOME) { return Join-Path $env:XDG_STATE_HOME 'telegram-mcp' }
+    return Join-Path (Join-Path $HOME '.local/state') 'telegram-mcp'
 }
 
 function Set-OwnerOnlyAcl {

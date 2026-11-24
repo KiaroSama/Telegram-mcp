@@ -1,47 +1,37 @@
-version: '3.8'
-
 services:
   telegram-mcp:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: telegram-mcp
-    # Load environment variables from a .env file in the same directory
     env_file:
       - .env
-    # Serve streamable HTTP so one long-lived container is shared by all MCP
-    # clients (see the Transports section in README.md).
+    command: ["serve", "--http", "0.0.0.0:8765"]
     environment:
-      MCP_TRANSPORT: http
-      # 0.0.0.0 here is the container's own interface, not the host's: the real
-      # boundary is the `127.0.0.1:` prefix on the published port below.
-      # Publishing this port without that prefix exposes full Telegram account
-      # control to every interface — the server's own bind guard cannot see the
-      # difference between the two, so this file is where the decision lives.
-      MCP_HOST: 0.0.0.0
-      # Acknowledges that bind. Without it the server refuses to start at all, and
-      # the operator's next move is to set this from the guard's own error message
-      # — which is how it ends up set for an unrelated reason on a container that
-      # later drops the loopback prefix. Setting it here, next to the prefix that
-      # actually protects the endpoint, keeps the two decisions in one place.
-      MCP_ALLOW_UNAUTHENTICATED_REMOTE: "1"
-    # The endpoint is unauthenticated: the `127.0.0.1:` prefix is what keeps it on
-    # this machine. Removing it publishes the server with the guard already
-    # acknowledged above, which is the one edit in this file that needs thought.
+      # All non-loopback binds require TLS and an explicit authentication token.
+      TELEGRAM_HTTP_TOKEN: ${TELEGRAM_HTTP_TOKEN:?Set a private token of at least 32 characters in .env}
+      TELEGRAM_HTTP_TLS_CERT: /run/telegram-tls/server.pem
+      TELEGRAM_HTTP_TLS_KEY: /run/telegram-tls/server-key.pem
+      TELEGRAM_STATE_DIR: /data/state/telegram-mcp
+      XDG_STATE_HOME: /data/state
     ports:
       - "127.0.0.1:8765:8765"
-    # Optional: uncomment to persist the Telegram session file across container
-    # replacements. Only needed if you are NOT using TELEGRAM_SESSION_STRING.
-    #
-    # /data holds EVERYTHING that must outlive the container: the Telethon
-    # session file, and - under /data/state, where XDG_STATE_HOME points - the
-    # TDLib databases, the identity note beside each one, any quarantined
-    # database, the alias store and the event feed. Mounting it is what makes
-    # `docker compose up` after a rebuild the same account rather than a new one.
-    #
-    # The target is /data, never /app: mounting over /app hides the application
-    # itself and the container starts with no code to run. TELEGRAM_SESSION_NAME
-    # already points at /data in the image, so this needs no further config.
-    # volumes:
-    #   - ./telegram_sessions:/data
+    volumes:
+      - telegram-state:/data
+      - type: bind
+        source: ${TELEGRAM_HTTP_TLS_CERT:?Set the absolute host certificate path in .env}
+        target: /run/telegram-tls/server.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TELEGRAM_HTTP_TLS_KEY:?Set the absolute host private-key path in .env}
+        target: /run/telegram-tls/server-key.pem
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  telegram-state:

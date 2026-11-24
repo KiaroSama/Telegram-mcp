@@ -15,4 +15,6 @@ historical identity. Missing source-device secret history cannot be recovered he
 
 Sources: https://core.telegram.org/api/takeout,
 https://desktop.telegram.org/changelog, https://core.telegram.org/api/end-to-end.
-Actual export_status/secret_chat_status schemas define available capabilities.
+Actual tools/list and export_status schemas define available capabilities. Secret-chat
+integration is deferred until the owner supplies its Rust backend; do not assume
+secret_chat_status exists or substitute an ordinary-chat operation.

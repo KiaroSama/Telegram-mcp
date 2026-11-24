@@ -1,5 +1,11 @@
 # A timed send mutates the chat to send one message
 
+> Rust migration note: this is a historical decision record. Its original source
+> paths describe the former implementation; current native behavior and any
+> remaining limits are documented in [MIGRATION.md](../MIGRATION.md). Secret-chat
+> integration is deferred until the owner supplies the separate Rust backend.
+
+
 An ordinary chat carries a self-destruct timer on each piece of media, so a caller
 sends one disappearing photo and nothing about the chat changes. A secret chat has
 no such thing — Telegram answers a per-message timer there with "Messages can
