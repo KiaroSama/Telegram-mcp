@@ -10,7 +10,7 @@ pub use history::SecretHistory;
 pub use migration::migrate_legacy;
 pub(crate) use migration::{custody_dir, has_legacy, legacy_owner, open_store};
 pub use runtime::SecretRuntime;
-pub(crate) use runtime::session_binding;
+pub(crate) use runtime::{Prepared, session_binding};
 
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -67,7 +67,13 @@ fn plain_file(path: &Path) -> Result<bool> {
 
 fn private_directory(path: &Path) -> Result<()> {
     match fs::create_dir(path) {
-        Ok(()) => crate::state::storage::restrict(path, true)?,
+        Ok(()) => {
+            crate::state::storage::restrict(path, true)?;
+            crate::state::storage::sync_directory(
+                path.parent()
+                    .context("Secret-chat directory has no parent")?,
+            )?;
+        }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error).context("Cannot create secret-chat directory"),
     }
@@ -105,7 +111,8 @@ fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<()> {
     } else {
         temp.persist_noclobber(path).map_err(|error| error.error)?;
     }
-    #[cfg(unix)]
-    fs::File::open(parent)?.sync_all()?;
+    crate::state::storage::sync_directory(parent).context(
+        "Secret-chat file was published but directory durability could not be confirmed",
+    )?;
     Ok(())
 }

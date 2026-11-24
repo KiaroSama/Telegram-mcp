@@ -12,15 +12,24 @@ fn fixture() -> Checkout {
 #[test]
 fn menu_lists_file_owned_accounts_in_order_and_cancels_without_backing_up() {
     let checkout = fixture();
-    let (text, _) = success(checkout.native(&["manage"], "1\n3\n0\n3\n1\nn\nexit\n"));
+    let config = CONFIG.replace("invalid-fixture", "${MANAGER_FIXTURE_SESSION}");
+    fs::write(checkout.env_file(), &config).unwrap();
+    let (text, stderr) = success(run(
+        checkout
+            .command(NATIVE)
+            .arg("manage")
+            .env("MANAGER_FIXTURE_SESSION", "invalid-fixture"),
+        "1\n3\n0\n3\n1\nn\nexit\n",
+    ));
     assert!(text.contains("Configured accounts (2)"));
     assert!(text.find("1. work").unwrap() < text.find("2. default").unwrap());
     assert!(!text.contains("invalid-fixture"));
+    assert!(!stderr.contains("invalid-fixture"));
     assert!(!text.contains("inactive"));
     assert!(text.matches("Cancelled.").count() >= 2);
     assert!(text.contains("Selection {quit=exit}"));
     assert!(text.contains("{back=0, quit=exit}"));
-    assert_eq!(fs::read_to_string(checkout.env_file()).unwrap(), CONFIG);
+    assert_eq!(fs::read_to_string(checkout.env_file()).unwrap(), config);
     assert!(checkout.files(".", ".env.backup-").is_empty());
 }
 
@@ -41,6 +50,22 @@ fn first_use_respects_decline_eof_and_acceptance() {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
     }
+
+    let checkout = fixture();
+    fs::write(checkout.root().join("selected.env"), "").unwrap();
+    let output = checkout.native(&["--config", "selected.env", "approve", "fixture"], "");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Approval requires an interactive owner terminal")
+    );
+    assert!(checkout.state().is_dir());
+    assert!(!checkout.root().join("xdg state/telegram-mcp").exists());
+    let (path, _) = success(checkout.native(&["--config", "selected.env", "state-path"], ""));
+    assert_eq!(
+        Path::new(path.trim()),
+        checkout.state().canonicalize().unwrap()
+    );
 }
 
 fn legacy_session(byte: u8) -> String {
@@ -162,25 +187,33 @@ fn remove_archives_only_the_selected_accounts_private_state() {
     let checkout = fixture();
     let state = checkout.state().join("secret-chats");
     fs::create_dir_all(state.join("work")).unwrap();
-    for name in [
-        "work-history.json",
-        "work-media.json",
-        "work.owner.json",
-        "default-media.json",
-    ] {
-        fs::write(state.join(name), b"synthetic fixture").unwrap();
+    let artifacts = [
+        ("", "/fixture.dat", "work store"),
+        ("-history.json", "", "work history"),
+        ("-media.json", "", "work media"),
+        (".owner.json", "", "work owner"),
+    ];
+    for (suffix, child, contents) in artifacts {
+        fs::write(state.join(format!("work{suffix}{child}")), contents).unwrap();
     }
+    fs::write(state.join("default-media.json"), b"default media").unwrap();
     let (text, _) = success(checkout.native(&["manage"], "3\n1\n\nexit\n"));
     assert!(text.contains("Removed 'work'"));
-    for name in [
-        "work",
-        "work-history.json",
-        "work-media.json",
-        "work.owner.json",
-    ] {
-        assert!(!state.join(name).exists());
+    let archives = checkout.files("local state/secret-chats", "__removed_work_");
+    assert_eq!(archives.len(), artifacts.len());
+    let archive = archives.iter().find(|path| path.is_dir()).unwrap();
+    let archived_label = archive.file_name().unwrap().to_str().unwrap();
+    for (suffix, child, contents) in artifacts {
+        assert!(!state.join(format!("work{suffix}")).exists());
+        assert_eq!(
+            fs::read(state.join(format!("{archived_label}{suffix}{child}"))).unwrap(),
+            contents.as_bytes()
+        );
     }
-    assert!(state.join("default-media.json").exists());
+    assert_eq!(
+        fs::read(state.join("default-media.json")).unwrap(),
+        b"default media"
+    );
     assert!(
         !read_config(&checkout.env_file())
             .unwrap()

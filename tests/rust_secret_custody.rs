@@ -69,8 +69,36 @@ fn configured_custody_migrates_only_for_the_bound_account() {
     };
     let source = directory.join("work");
     let owner = directory.join("work.owner.json");
-    std::fs::write(&source, b"broken-json").unwrap();
+    std::fs::write(&source, legacy).unwrap();
     std::fs::write(&owner, br#"{"user_id":91}"#).unwrap();
+    // An imported session without a verified cached self peer must not bind or publish custody.
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    assert!(!directory.join("work.v1.enc").exists());
+    assert!(!directory.join("work.migration.json").exists());
+    let wrong_self = grammers_session::types::PeerInfo::User {
+        id: 92,
+        auth: None,
+        bot: Some(false),
+        is_self: Some(true),
+    };
+    let wrong_native = json!({"home_dc":session.home_dc,"dc_options":session.dc_options.values().collect::<Vec<_>>(),"peer_infos":[wrong_self],"updates_state":session.updates_state,"authorization_origin":"legacy"});
+    f.state
+        .write_json("work.session.json", &wrong_native)
+        .unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    assert!(!directory.join("work.v1.enc").exists());
+    assert!(!directory.join("work.migration.json").exists());
+    let verified_self = grammers_session::types::PeerInfo::User {
+        id: 91,
+        auth: None,
+        bot: Some(false),
+        is_self: Some(true),
+    };
+    let verified_native = json!({"home_dc":session.home_dc,"dc_options":session.dc_options.values().collect::<Vec<_>>(),"peer_infos":[verified_self],"updates_state":session.updates_state,"authorization_origin":"legacy"});
+    f.state
+        .write_json("work.session.json", &verified_native)
+        .unwrap();
+    std::fs::write(&source, b"broken-json").unwrap();
     assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
     assert_eq!(std::fs::read(&source).unwrap(), b"broken-json");
     assert!(!directory.join("work.v1.enc").exists());

@@ -19,7 +19,7 @@ fn binding() -> AuthorizationBinding {
 }
 
 fn fixture(legacy: &Value) -> (tempfile::TempDir, Vec<u8>) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let bytes = serde_json::to_vec_pretty(legacy).unwrap();
     let custody = dir.path().join("secret-chats");
     fs::create_dir(&custody).unwrap();
@@ -133,6 +133,26 @@ fn renamed_migrated_account_reopens_without_changing_historical_backup() {
     }
 
     assert_eq!(backups(&custody), backup_dirs);
+    for (suffix, bytes) in native_files {
+        assert!(!custody.join(format!("old_label{suffix}")).exists());
+        assert_eq!(
+            fs::read(custody.join(format!("new_label{suffix}"))).unwrap(),
+            bytes
+        );
+    }
+
+    // Simulate interruption after writing the receipt but before publishing the store.
+    fs::remove_file(custody.join("new_label.v1.enc")).unwrap();
+    let sidecar = custody.join("new_label-history.json");
+    fs::write(&sidecar, br#"{"changed":true}"#).unwrap();
+    assert!(migrate_legacy(dir.path(), "new_label", &binding).is_err());
+    fs::write(sidecar, b"{}").unwrap();
+    let store = migrate_legacy(dir.path(), "new_label", &binding)
+        .unwrap()
+        .unwrap();
+    assert_eq!(store.load().unwrap().unwrap().settings["fixture"], true);
+    drop(store);
+    assert_eq!(backups(&custody), backup_dirs);
     assert_eq!(fs::read_dir(backup).unwrap().count(), backup_files.len());
     for (path, bytes) in backup_files {
         assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -143,13 +163,6 @@ fn renamed_migrated_account_reopens_without_changing_historical_backup() {
             let suffix = name.strip_prefix("old_label").unwrap();
             restore_fixture_permissions(&path, &custody.join(format!("new_label{suffix}")));
         }
-    }
-    for (suffix, bytes) in native_files {
-        assert!(!custody.join(format!("old_label{suffix}")).exists());
-        assert_eq!(
-            fs::read(custody.join(format!("new_label{suffix}"))).unwrap(),
-            bytes
-        );
     }
 }
 
@@ -282,29 +295,48 @@ fn corrupt_legacy_store_is_left_untouched() {
 #[test]
 fn refuses_linked_legacy_sidecar_and_path_escape() {
     let (dir, _) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
+    let custody = dir.path().join("secret-chats");
     let target = dir.path().join("foreign");
-    fs::create_dir(&target).unwrap();
-    fs::write(target.join("canary"), b"{}").unwrap();
-    let link = dir.path().join("secret-chats/offline-history.json");
+    let (link, source) = if cfg!(windows) {
+        (custody.clone(), target.join("offline-history.json"))
+    } else {
+        (custody.join("offline-history.json"), target.clone())
+    };
+    #[cfg(windows)]
+    fs::rename(&custody, &target).unwrap();
+    fs::write(&source, b"{}").unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&target, &link).unwrap();
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        let command = format!(r#"mklink /J "{}" "{}""#, link.display(), target.display());
         let output = std::process::Command::new("cmd.exe")
-            .args(["/D", "/C"])
-            .raw_arg(command)
+            .current_dir(dir.path())
+            .args(["/D", "/C", "mklink", "/J", "secret-chats", "foreign"])
             .output()
             .unwrap();
-        assert!(
-            output.status.success(),
-            "Cannot create junction: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert!(output.status.success(), "Cannot create directory junction");
     }
-    assert!(migrate_legacy(dir.path(), LABEL, &binding()).is_err());
+    let error = migrate_legacy(dir.path(), LABEL, &binding()).err().unwrap();
+    let message = error.to_string();
+    assert!(
+        message.contains("symbolic link") || cfg!(windows) && message.contains("reparse point")
+    );
+    assert!(!custody.join("offline.v1.enc").exists());
     assert!(migrate_legacy(dir.path(), "../foreign", &binding()).is_err());
-    assert_eq!(fs::read(target.join("canary")).unwrap(), b"{}");
-    assert!(!dir.path().join("secret-chats/offline.v1.enc").exists());
+    assert_eq!(fs::read(source).unwrap(), b"{}");
+
+    #[cfg(unix)]
+    fs::remove_file(&link).unwrap();
+    #[cfg(windows)]
+    fs::remove_dir(&link).unwrap();
+    fs::rename(&target, &link).unwrap();
+    assert!(
+        migrate_legacy(dir.path(), LABEL, &binding())
+            .unwrap()
+            .is_some()
+    );
+    #[cfg(windows)]
+    for name in [LABEL, "offline-history.json"] {
+        restore_fixture_permissions(&backups(&custody)[0].join(name), &custody.join(name));
+    }
 }

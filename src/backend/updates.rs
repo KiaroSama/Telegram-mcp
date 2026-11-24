@@ -419,6 +419,38 @@ async fn run(
     run_with_secret(client, handle, updates, state, session, account, None).await;
 }
 
+pub(super) async fn publish_recovered_cloud(
+    client: &Client,
+    state: &Arc<State>,
+    session: &Arc<PersistentSession>,
+    account: &str,
+    batches: &[kiaro_secret_chat::ingress::IngressBatch],
+) -> Result<()> {
+    if batches.is_empty() {
+        return Ok(());
+    }
+    let policy = AccessPolicy::from_environment()?;
+    for batch in batches {
+        let (updates, users, chats) = batch
+            .updates()
+            .context("Cannot decode recovered ingress updates")?;
+        let peers = users
+            .into_iter()
+            .map(|user| Peer::User(User::from_raw(client, user)))
+            .chain(chats.into_iter().map(|chat| Peer::from_raw(client, chat)))
+            .map(|peer| (peer.id(), peer))
+            .collect::<HashMap<_, _>>();
+        session
+            .cache_peers(peers.values().map(PeerInfo::from).collect())
+            .await?;
+        for (update, _) in updates {
+            let _ =
+                deliver_message(client, session, state, &policy, account, &peers, update).await?;
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn run_with_secret(
     client: Client,
     handle: SenderPoolFatHandle,
@@ -466,8 +498,24 @@ pub(super) async fn run_with_secret(
                 deliver_message(&client, &session, &state, &policy, &account, &peers, raw)
             })
             .await?;
-            if let Some(secret) = &secret {
-                secret.manager().drain_ingress().await?;
+            if let Some(secret) = &secret
+                && let Err(error) = secret.manager().drain_ingress().await
+            {
+                use kiaro_secret_chat::error::Error;
+                let cause = match &error {
+                    Error::Context(context) => context.refusal(),
+                    error => error,
+                };
+                if matches!(
+                    cause,
+                    Error::ManagerStopping
+                        | Error::NotRunning
+                        | Error::Authorization
+                        | Error::InvalidState
+                ) {
+                    return Err(error.into());
+                }
+                tracing::warn!("Secret-chat ingress replay deferred; cloud updates remain active");
             }
             Ok::<_, anyhow::Error>(())
         };

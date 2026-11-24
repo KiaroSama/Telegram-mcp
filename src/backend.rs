@@ -2,6 +2,7 @@
 mod config;
 mod files;
 mod peers;
+mod startup;
 mod updates;
 use crate::{session::PersistentSession, state::State, tl::Schema};
 use anyhow::{Context, Result, bail};
@@ -186,8 +187,13 @@ impl Native {
                 }
             }
         }
-        // Recheck the exact imported authorization before creating a sender;
+        // Recheck the exact imported authorization before creating any sender;
         // the selected legacy source could have changed after the first probe.
+        PersistentSession::check_custody_identity(&state, label, snapshot)?;
+        let route = crate::proxy::route(Arc::clone(&state), snapshot, policy_label).await?;
+        if !staged {
+            startup::ensure_self_peer(&session, api_id, &route).await?;
+        }
         crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
         let source =
             source.map(|(key, value)| (key, crate::account_manager::config_digest(&value)));
@@ -207,7 +213,6 @@ impl Native {
         } else {
             crate::secret::SecretRuntime::prepare(Arc::clone(&state), label, &session).await?
         };
-        let route = crate::proxy::route(Arc::clone(&state), snapshot, policy_label).await?;
         route.configure(&mut connection);
         let SenderPool {
             runner,
@@ -218,22 +223,19 @@ impl Native {
         if let Some(prepared) = &mut prepared {
             prepared.attach(&handle).await?;
         }
-        let task = tokio::spawn(async move {
+        let mut task = tokio::spawn(async move {
             let _ = runner.run().await;
         });
-        let secret = if let Some(prepared) = prepared {
-            match prepared.start(client.clone()).await {
-                Ok(runtime) => Some(runtime),
-                Err(error) => {
-                    handle.quit();
-                    task.abort();
-                    let _ = task.await;
-                    return Err(error);
-                }
-            }
-        } else {
-            None
-        };
+        let secret = startup::start_secret(
+            prepared,
+            client.clone(),
+            Arc::clone(&state),
+            Arc::clone(&session),
+            label.to_owned(),
+            &handle,
+            &mut task,
+        )
+        .await?;
         let native = Self(Arc::new(Inner {
             client: client.clone(),
             handle,

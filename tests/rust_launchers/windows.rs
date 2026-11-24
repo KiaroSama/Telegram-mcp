@@ -214,8 +214,8 @@ fn manager_restarts_only_its_checkout_after_success_and_failed_rename() {
                 r#"
                 $ErrorActionPreference = 'Stop'
                 if ($args.Count -ne 0) {
-                    if ($args[0] -ne '--config' -or $args[2] -ne '--http') { exit 90 }
-                    [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'restarted'), $args[3])
+                    if ($args[0] -ne '--config' -or $args.Count -ne 2 -or $env:MCP_TRANSPORT -ne 'http') { exit 90 }
+                    [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'restarted'), $args[1])
                     exit 0
                 }
                 [IO.File]::WriteAllText((Join-Path $PSScriptRoot 'ready'), 'ready')

@@ -138,7 +138,9 @@ fn main() -> Result<()> {
     let mut snapshot = telegram_mcp::account_manager::read_config(&env_file)?;
     if matches!(
         &cli.command,
-        Some(Command::Manage | Command::Serve { .. } | Command::StatePath) | None
+        Some(
+            Command::Manage | Command::Serve { .. } | Command::StatePath | Command::Approve { .. }
+        ) | None
     ) && !snapshot.values.contains_key("TELEGRAM_STATE_DIR")
         && std::env::var_os("TELEGRAM_STATE_DIR").is_none()
         && let Some(value) =
@@ -148,8 +150,12 @@ fn main() -> Result<()> {
             .values
             .insert("TELEGRAM_STATE_DIR".to_owned(), value);
     }
+    let mut loaded_env = Vec::new();
     for (key, value) in snapshot.values {
         if std::env::var_os(&key).is_none() {
+            if matches!(&cli.command, Some(Command::Manage)) {
+                loaded_env.push(key.clone());
+            }
             // SAFETY: startup is synchronous. No worker, logging or network
             // threads exist until the Tokio runtime is constructed below.
             unsafe {
@@ -160,11 +166,14 @@ fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
-        .block_on(run(cli, &env_file))
+        .block_on(run(cli, &env_file, &loaded_env))
 }
-async fn run(cli: Cli, env_file: &std::path::Path) -> Result<()> {
+async fn run(cli: Cli, env_file: &std::path::Path, loaded_env: &[String]) -> Result<()> {
     match cli.command.unwrap_or(Command::Serve { http: None }) {
-        Command::Manage => telegram_mcp::account_manager::interactive::run(env_file).await?,
+        Command::Manage => {
+            telegram_mcp::account_manager::interactive::run_with_loaded_env(env_file, loaded_env)
+                .await?
+        }
         Command::Bridge => telegram_mcp::server::bridge::run().await?,
         Command::StatePath => {
             println!("{}", telegram_mcp::state::State::global()?.root().display())
