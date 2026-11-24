@@ -131,6 +131,10 @@ impl SecretHistory {
         reference: Option<&MediaReference>,
     ) -> Result<()> {
         let id = message_id(&row).context("Secret-chat delivery has no message ID")?;
+        ensure!(
+            row["self_destructs_after_seconds"].as_u64().unwrap_or(0) == 0,
+            "Timed secret-chat deliveries cannot be persisted into ordinary consumer snapshots; delivery left pending"
+        );
         let _guard = self.guard()?;
         let mut settings = load(&self.settings)?;
         let chat = chat_id.to_string();

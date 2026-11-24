@@ -242,22 +242,14 @@ fn image(process: &OwnedHandle) -> Option<PathBuf> {
     )))
 }
 
-fn path_text(path: &Path) -> String {
-    let text = path.to_string_lossy().replace('/', "\\");
-    text.strip_prefix("\\\\?\\")
-        .unwrap_or(&text)
-        .to_ascii_lowercase()
-}
-
-/// Compare two filesystem paths by exact OS canonical identity when both exist
-/// (so case-sensitive NTFS directories stay distinct while different spellings
-/// of the same case-insensitive directory still match), falling back to
-/// normalized text for non-existent synthetic paths in unit tests.
+/// Compare two filesystem paths by exact OS canonical identity, failing closed
+/// on any canonicalization error so deleted or inaccessible paths never match
+/// another checkout.
 fn same_path(left: &Path, right: &Path) -> bool {
-    match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => path_text(left) == path_text(right),
-    }
+    matches!(
+        (std::fs::canonicalize(left), std::fs::canonicalize(right)),
+        (Ok(a), Ok(b)) if a == b
+    )
 }
 
 fn launcher_args<'a>(root: &Path, mut args: &'a [OsString]) -> Option<&'a [OsString]> {
@@ -508,10 +500,15 @@ mod tests {
 
     #[test]
     fn checkout_process_identity_requires_an_exact_script_or_serve_image() {
-        let root = Path::new(r"C:\fixture checkout");
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
         let shell = Path::new(r"C:\pwsh.exe");
         let native = root.join(r"target\release\telegram-mcp.exe");
-        let launcher = r"C:\fixture checkout\start-mcp.ps1";
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, b"").unwrap();
+        let launcher_path = root.join("start-mcp.ps1");
+        std::fs::write(&launcher_path, b"").unwrap();
+        let launcher = launcher_path.to_str().unwrap();
         let inspect = |image: &Path, args: &[&str]| {
             let args: Vec<_> = args.iter().copied().map(OsString::from).collect();
             service_args(root, image, &args).map(config_argument)
@@ -574,5 +571,8 @@ mod tests {
             Path::new(r"C:\foreign\telegram-mcp.exe"),
             &["telegram-mcp", "serve"]
         ));
+        // Deleting the launcher fails closed rather than matching via string fallback.
+        std::fs::remove_file(&launcher_path).unwrap();
+        assert!(!matches(shell, &["pwsh", "-File", launcher]));
     }
 }
