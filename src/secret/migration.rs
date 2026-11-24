@@ -5,10 +5,11 @@ use kiaro_secret_chat::{
     binding::AuthorizationBinding,
     chat::{Chat, ChatState, DhRecord, Envelope, Exchange, Outgoing, ServiceDelivery},
     crypto::SharedKey,
+    custody::{CustodyLimits, CustodyStorage},
     dh::SecretExponent,
     error::CloseReason,
     ingress::EncryptedIngressStorage,
-    storage::{SecretRecord, State, Storage, StoreMode},
+    storage::{MemoryStorage, SecretRecord, State, Storage, StoreMode},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -209,6 +210,22 @@ pub(crate) fn open_store(
     state
         .validate()
         .context("Migrated secret-chat state is invalid")?;
+    // Generate custody controls before publishing the encrypted state.
+    state = {
+        let authorization = binding.digest();
+        let mut empty = State::empty(authorization.clone())?;
+        empty.mode = StoreMode::Ingress;
+        let mut memory = MemoryStorage::default();
+        memory.commit(&empty)?;
+        let limits = CustodyLimits::new(4096, MAX_BYTES, 30.0 * 86400.0)?;
+        let mut custody = CustodyStorage::new(memory, authorization, limits)?;
+        custody
+            .commit(&state)
+            .context("Cannot initialize migrated secret-chat custody")?;
+        custody
+            .load()?
+            .context("Migrated custody state is missing")?
+    };
     let checksums: BTreeMap<_, _> = files
         .iter()
         .map(|(suffix, bytes)| (format!("{label}{suffix}"), hash(bytes)))
