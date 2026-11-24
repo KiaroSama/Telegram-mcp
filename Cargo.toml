@@ -30,7 +30,7 @@ grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 hmac = "0.12"
 libc = "0.2"
-libloading = "0.8"
+libloading = "0.9"
 md5 = "0.8"
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 lopdf = { version = "0.47", default-features = false }
