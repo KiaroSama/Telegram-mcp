@@ -576,22 +576,10 @@ fn required_int(args: &Value, key: &str) -> Result<i64> {
     integer(args, key).with_context(|| format!("A valid {key} is required"))
 }
 fn chat_id(args: &Value, key: &str) -> Result<i32> {
-    positive_chat(required_int(args, key)?)
+    crate::secret::wire_chat_id(required_int(args, key)?).context("Invalid secret-chat ID")
 }
-const CHAT_OFFSET: i64 = 2_000_000_000_000;
 fn lifted(id: i32) -> i64 {
-    i64::from(id) - CHAT_OFFSET
-}
-fn positive_chat(value: i64) -> Result<i32> {
-    let id = i32::try_from(if value < 0 {
-        value + CHAT_OFFSET
-    } else if value >= CHAT_OFFSET {
-        value - CHAT_OFFSET
-    } else {
-        value
-    })?;
-    ensure!(id > 0, "Invalid secret-chat ID");
-    Ok(id)
+    i64::from(id) - crate::secret::CHAT_OFFSET
 }
 fn alias_chat(args: &Value, field: &str, alias: &str) -> Result<i32> {
     if args[field].is_null() {

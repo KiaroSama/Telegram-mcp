@@ -389,7 +389,7 @@ fn id(text: &str) -> Result<i32> {
         .parse::<i32>()
         .map_err(|_| anyhow::anyhow!("Invalid legacy secret-chat identifier"))?;
     ensure!(
-        id > 0 && id.to_string() == text,
+        id != 0 && id.to_string() == text,
         "Invalid legacy secret-chat identifier"
     );
     Ok(id)

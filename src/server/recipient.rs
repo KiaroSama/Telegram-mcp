@@ -65,15 +65,7 @@ pub(super) fn secret_chat_fields(name: &str) -> &'static [&'static str] {
 }
 
 pub(super) fn wire_secret_chat_id(value: &Value) -> Option<i32> {
-    const OFFSET: i64 = 2_000_000_000_000;
-    let id = value.as_i64()?;
-    // The old public tools also accepted the wire ID shifted by either offset.
-    let wire = match id {
-        ..=-1_000_000_000_000 => id + OFFSET,
-        OFFSET.. => id - OFFSET,
-        _ => id,
-    };
-    i32::try_from(wire).ok().filter(|id| *id > 0)
+    crate::secret::wire_chat_id(value.as_i64()?)
 }
 
 pub(super) async fn bind(
@@ -96,7 +88,7 @@ pub(super) async fn bind(
         for &field in secret_chat_fields(name) {
             if let Some(value) = args.get(field).filter(|v| !v.is_null()) {
                 let id = wire_secret_chat_id(value).with_context(|| {
-                    format!("{field} must identify a positive signed 32-bit secret chat")
+                    format!("{field} must identify a non-zero signed 32-bit secret chat")
                 })?;
                 // Approval identities are namespaced; dispatch still gets the original IDs.
                 approval[field] = json!(format!("{SECRET_CHAT_PREFIX}{id}"));

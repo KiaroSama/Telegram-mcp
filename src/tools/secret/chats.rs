@@ -74,15 +74,9 @@ pub(super) fn optional_integer(args: &Value, key: &str) -> Result<Option<i64>> {
 
 pub(super) fn chat_id(args: &Value, key: &str) -> Result<i64> {
     let id = required_integer(args, key)?;
-    // Legacy tools accept both the raw ID and IDs from the old published namespace.
-    let raw = match id {
-        ..=-1_000_000_000_000 => id + 2_000_000_000_000,
-        1_000_000_000_000.. => id - 2_000_000_000_000,
-        _ => id,
-    };
     ensure!(
-        (1..=i64::from(i32::MAX)).contains(&raw),
-        "{key} must be a valid secret-chat ID"
+        crate::secret::wire_chat_id(id).is_some(),
+        "{key} must identify a non-zero signed 32-bit secret chat"
     );
     Ok(id)
 }
@@ -122,9 +116,25 @@ mod tests {
 
     #[test]
     fn validates_both_chat_id_forms_without_changing_them() {
-        for id in [17_i64, -1_999_999_999_983, 2_000_000_000_017] {
+        for id in [
+            17_i64,
+            -1_999_999_999_983,
+            2_000_000_000_017,
+            -698_877_786,
+            -2_000_698_877_786,
+            1_999_301_122_214,
+            i64::from(i32::MIN),
+        ] {
             let result = payload("secret_chat_status", &json!({"chat_id":id}));
             assert_eq!(result.ok(), Some(json!({"chat_id":id})));
+        }
+        for id in [
+            0,
+            -2_000_000_000_000_i64,
+            2_000_000_000_000,
+            i64::from(i32::MIN) - 1,
+        ] {
+            assert!(payload("secret_chat_status", &json!({"chat_id":id})).is_err());
         }
         assert!(payload("close_secret_chat", &json!({"chat_id":17})).is_err());
     }

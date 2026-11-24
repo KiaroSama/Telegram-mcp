@@ -228,9 +228,7 @@ impl Native {
                     handle.quit();
                     task.abort();
                     let _ = task.await;
-                    return Err(
-                        error.context("Cannot start the account's durable secret-chat manager")
-                    );
+                    return Err(error);
                 }
             }
         } else {

@@ -111,8 +111,8 @@ async fn secret_recipient_binding_resolves_only_cloud_fields() {
         ),
         (
             "clear_secret_history",
-            json!({"chat_id":-1_999_999_999_993i64,"confirm_chat_id":-1_999_999_999_993i64}),
-            json!({"chat_id":"secret/7","confirm_chat_id":"secret/7"}),
+            json!({"chat_id":-698_877_786,"confirm_chat_id":-2_000_698_877_786i64}),
+            json!({"chat_id":"secret/-698877786","confirm_chat_id":"secret/-698877786"}),
         ),
     ] {
         let (_, mut approval) = bind(name, api.clone(), &args).await.unwrap();
@@ -131,20 +131,25 @@ async fn secret_recipient_binding_resolves_only_cloud_fields() {
 #[tokio::test]
 async fn secret_allowlist_requires_an_explicit_wire_id_not_a_matching_cloud_peer() {
     let api = SecretPeers::default();
-    let cloud = AccessPolicy::parse(Some("7,-1999999999993")).unwrap();
-    for args in [
-        json!({"secret_chat_id":7}),
-        json!({"secret_chat_id":-1_999_999_999_993i64}),
+    let cloud = AccessPolicy::parse(Some("7,-1999999999993,-698877786,-2000698877786")).unwrap();
+    let secret = AccessPolicy::parse(Some("secret/7,secret/-698877786")).unwrap();
+    for id in [
+        7i64,
+        -1_999_999_999_993,
+        2_000_000_000_007,
+        -698_877_786,
+        -2_000_698_877_786,
+        1_999_301_122_214,
     ] {
+        let args = json!({"secret_chat_id": id});
         assert!(cloud.check("close_secret_chat", &args, &api).await.is_err());
-    }
-    let secret = AccessPolicy::parse(Some("secret/7")).unwrap();
-    for id in [7i64, -1_999_999_999_993, 2_000_000_000_007] {
         secret
-            .check("close_secret_chat", &json!({"secret_chat_id":id}), &api)
+            .check("close_secret_chat", &args, &api)
             .await
             .unwrap();
     }
+    assert!(AccessPolicy::parse(Some("secret/0")).is_err());
+    assert!(AccessPolicy::parse(Some("secret/-2147483649")).is_err());
     assert!(api.0.lock().unwrap().is_empty());
     assert!(
         secret

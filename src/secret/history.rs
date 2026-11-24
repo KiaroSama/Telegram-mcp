@@ -63,7 +63,7 @@ impl SecretHistory {
         reference: Option<&MediaReference>,
     ) -> Result<()> {
         ensure!(
-            chat_id > 0 && row.is_object(),
+            chat_id != 0 && row.is_object(),
             "Invalid secret-chat history entry"
         );
         let id = message_id(&row);
