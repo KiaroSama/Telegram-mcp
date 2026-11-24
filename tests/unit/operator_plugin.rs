@@ -42,6 +42,10 @@ fn archive(path: &Path) -> BTreeMap<String, Vec<u8>> {
 #[test]
 fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
     let (root, source) = fixture();
+    let obsolete = ["mcp.json", ".mcp.json", "mcp_config.json"];
+    for name in obsolete {
+        fs::write(source.join(name), b"obsolete config").unwrap();
+    }
     let portable = root.path().join("portable.zip");
     let antigravity = root.path().join("antigravity.zip");
     package::package(&source, &portable, "portable").unwrap();
@@ -61,8 +65,8 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
     for (index, name) in manifests.iter().enumerate() {
         let manifest = read_json(name);
         assert_eq!(manifest["name"], "telegram-operator", "{name}");
-        assert_eq!(manifest["version"], "1.4.0", "{name}");
-        for field in ["logo", "icon", "composerIcon"] {
+        assert_eq!(manifest["version"], "1.5.0", "{name}");
+        for field in ["mcpServers", "logo", "icon", "composerIcon"] {
             assert!(manifest.get(field).is_none(), "{name}: {field}");
             assert!(
                 manifest["interface"].get(field).is_none(),
@@ -87,32 +91,29 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
             marketplace["plugins"][0]["name"], "telegram-operator",
             "{name}"
         );
-        assert_eq!(marketplace["plugins"][0]["version"], "1.4.0", "{name}");
+        assert_eq!(marketplace["plugins"][0]["version"], "1.5.0", "{name}");
+        for object in [&marketplace, &marketplace["plugins"][0]] {
+            for field in ["mcpServers", "logo", "icon", "composerIcon"] {
+                assert!(object.get(field).is_none(), "{name}: {field}");
+            }
+        }
     }
-    let stdio = serde_json::json!({"command": "telegram-mcp", "args": []});
-    for name in [".mcp.json", "mcp_config.json"] {
-        assert_eq!(read_json(name)["mcpServers"]["telegram-mcp"], stdio);
+    assert_eq!(
+        read_json(".claude-plugin/marketplace.json")["metadata"]["version"],
+        "1.5.0"
+    );
+    for name in obsolete {
+        let path = format!("telegram-operator/{name}");
+        assert!(!normal.contains_key(&path), "{path}");
+        assert!(!special.contains_key(&path), "{path}");
     }
-    let mcp = read_json("mcp.json");
-    assert_eq!(
-        mcp["$schema"],
-        "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"
-    );
-    assert_eq!(
-        mcp["mcpServers"]["telegram-mcp"],
-        serde_json::json!({"type": "stdio", "command": "telegram-mcp", "args": []})
-    );
     let mut expected = read_json(".antigravity-plugin/plugin.json");
     expected.as_object_mut().unwrap().remove("category");
     let ag: serde_json::Value =
         serde_json::from_slice(&special["telegram-operator/plugin.json"]).unwrap();
     assert_eq!(ag, expected);
-    assert_eq!(
-        special["telegram-operator/mcp_config.json"],
-        normal["telegram-operator/mcp_config.json"]
-    );
-    assert!(!special.contains_key("telegram-operator/mcp.json"));
-    assert!(!special.contains_key("telegram-operator/.mcp.json"));
+    assert_eq!(normal.len(), 21);
+    assert_eq!(special.len(), 14);
     assert!(!special.contains_key("telegram-operator/.agents/plugins/marketplace.json"));
     let skills: Vec<_> = normal
         .keys()
@@ -154,6 +155,20 @@ fn package_refuses_a_malformed_native_manifest_before_creating_an_archive() {
 }
 
 #[test]
+fn package_refuses_an_mcp_declaration_in_a_marketplace_entry() {
+    let (root, source) = fixture();
+    let manifest = source.join(".claude-plugin/marketplace.json");
+    let mut data: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    data["plugins"][0]["mcpServers"] = serde_json::json!("./.mcp.json");
+    fs::write(manifest, serde_json::to_vec(&data).unwrap()).unwrap();
+    let output = root.path().join("refused.zip");
+    let error = package::package(&source, &output, "portable").unwrap_err();
+    assert!(error.to_string().contains("mcpServers"));
+    assert!(!output.exists());
+}
+
+#[test]
 fn package_refuses_invalid_utf8_before_creating_archive() {
     let (root, source) = fixture();
     fs::write(
@@ -184,6 +199,77 @@ fn installer_copies_all_five_complete_skills_and_refuses_collision() {
     assert_eq!(fs::read_dir(destination).unwrap().count(), 5);
 }
 
+fn write_legacy_configs(destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    let stdio = serde_json::json!({"command": "telegram-mcp", "args": []});
+    let config = serde_json::json!({"mcpServers": {"telegram-mcp": stdio}});
+    for name in [".mcp.json", "mcp_config.json"] {
+        fs::write(destination.join(name), config.to_string()).unwrap();
+    }
+    let mut portable = config;
+    portable["$schema"] =
+        serde_json::json!("https://agent-plugins.org/schemas/1.0.0/mcp.schema.json");
+    portable["mcpServers"]["telegram-mcp"]["type"] = serde_json::json!("stdio");
+    fs::write(destination.join("mcp.json"), portable.to_string()).unwrap();
+}
+
+#[test]
+fn installer_removes_legacy_configs_on_install_and_upgrade() {
+    let (root, source) = fixture();
+    let destination = root.path().join("skills");
+    let keep = destination.join("owner.json");
+    fs::create_dir(&destination).unwrap();
+    fs::write(&keep, b"owner data").unwrap();
+    for _ in 0..2 {
+        write_legacy_configs(&destination);
+        install::install(&source, &destination).unwrap();
+        for name in ["mcp.json", ".mcp.json", "mcp_config.json"] {
+            assert!(!destination.join(name).exists(), "{name}");
+        }
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 6);
+        assert_eq!(fs::read(&keep).unwrap(), b"owner data");
+    }
+}
+
+#[test]
+fn installer_does_not_clean_up_after_a_skill_collision() {
+    let (root, source) = fixture();
+    let destination = root.path().join("skills");
+    write_legacy_configs(&destination);
+    let skill = destination.join("telegram-access-audit/SKILL.md");
+    fs::create_dir(skill.parent().unwrap()).unwrap();
+    fs::write(&skill, b"custom skill").unwrap();
+    let error = install::install(&source, &destination).unwrap_err();
+    assert!(error.to_string().contains("not overwritten"));
+    assert_eq!(fs::read(skill).unwrap(), b"custom skill");
+    assert!(destination.join(".mcp.json").is_file());
+}
+
+#[test]
+fn installer_preserves_custom_mcp_configuration() {
+    let (root, source) = fixture();
+    let destination = root.path().join("skills");
+    let config = destination.join(".mcp.json");
+    let custom = br#"{"mcpServers":{"telegram-mcp":{"command":"configured-server","args":[]}}}"#;
+    fs::create_dir(&destination).unwrap();
+    fs::write(&config, custom).unwrap();
+    install::install(&source, &destination).unwrap();
+    assert_eq!(fs::read(config).unwrap(), custom);
+}
+
+#[test]
+fn installer_refuses_a_directory_named_like_a_legacy_config() {
+    let (root, source) = fixture();
+    let destination = root.path().join("skills");
+    let directory = destination.join(".mcp.json");
+    fs::create_dir_all(&directory).unwrap();
+    let keep = directory.join("owner.json");
+    fs::write(&keep, b"owner data").unwrap();
+    assert!(install::install(&source, &destination).is_err());
+    assert_eq!(fs::read(keep).unwrap(), b"owner data");
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+}
+
 #[test]
 fn installer_failure_rolls_back_only_new_owned_files() {
     let (root, source) = fixture();
@@ -191,6 +277,9 @@ fn installer_failure_rolls_back_only_new_owned_files() {
     fs::create_dir(&destination).unwrap();
     let keep = destination.join("owner.txt");
     fs::write(&keep, "preserve").unwrap();
+    write_legacy_configs(&destination);
+    let legacy = destination.join(".mcp.json");
+    let previous = fs::read(&legacy).unwrap();
     let mut calls = 0;
     let result = install::install_with(&source, &destination, |file, bytes| -> Result<()> {
         calls += 1;
@@ -202,7 +291,8 @@ fn installer_failure_rolls_back_only_new_owned_files() {
         Ok(())
     });
     assert!(result.is_err());
-    assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 4);
+    assert_eq!(fs::read(legacy).unwrap(), previous);
     assert_eq!(fs::read_to_string(keep).unwrap(), "preserve");
 }
 

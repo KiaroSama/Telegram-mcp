@@ -314,7 +314,8 @@ try {
     $script:LogFailure = $null
     try {
         if (-not $script:LogEnabled) { throw [OperationCanceledException]::new('opted out') }
-        $logsDirectory = Join-Path (Get-StateDirectory) 'logs'
+        $stateDirectory = Get-StateDirectory
+        $logsDirectory = Join-Path $stateDirectory 'logs'
         [void] (New-Item -ItemType Directory -Path $logsDirectory -Force)
         # The directory first, and fatally: its inheritable entries are what make
         # every log file born inside it owner-only, including the rolled parts the
@@ -422,6 +423,11 @@ try {
     # connected directly to the MCP client and never passes through a tee.
     $previousLogFile = $env:TELEGRAM_MCP_LOG_FILE
     $previousLogLimit = $env:TELEGRAM_MCP_LOG_MAX_BYTES
+    $previousStateDirectory = $env:TELEGRAM_STATE_DIR
+    # Keep serve and diagnostics on the same native-resolved .env state when logging is enabled.
+    if ($null -eq $previousStateDirectory -and $logPath) {
+        $env:TELEGRAM_STATE_DIR = $stateDirectory
+    }
     $env:TELEGRAM_MCP_LOG_FILE = if ($logPath) { $logPath } else { 'off' }
     $env:TELEGRAM_MCP_LOG_MAX_BYTES = "$script:LogMaxBytes"
     Push-Location -LiteralPath $PSScriptRoot
@@ -434,6 +440,7 @@ try {
         Pop-Location
         $env:TELEGRAM_MCP_LOG_FILE = $previousLogFile
         $env:TELEGRAM_MCP_LOG_MAX_BYTES = $previousLogLimit
+        $env:TELEGRAM_STATE_DIR = $previousStateDirectory
     }
 
     # A native ownership-refusal exit status means another instance of

@@ -30,6 +30,10 @@ use std::{
 pub trait Telegram: Send + Sync {
     async fn invoke(&self, method: &str, params: Value) -> Result<Value>;
     async fn resolve_peer(&self, input: &Value) -> Result<Value>;
+    /// Use the existing invoke seam so account and recipient wrappers retain their policy.
+    async fn secret_call(&self, method: &str, params: Value) -> Result<Value> {
+        self.invoke(&format!("local.secret.{method}"), params).await
+    }
     /// Stable identity previously proved for an exact private peer reference.
     /// Implementations must never derive this authority from caller metadata.
     fn pinned_identity(&self, _peer: &Value) -> Option<String> {
@@ -109,6 +113,7 @@ struct Inner {
     nonce: u128,
     authorized_dcs: tokio::sync::Mutex<std::collections::HashSet<i32>>,
     route: crate::proxy::Route,
+    secret: Option<Arc<crate::secret::SecretRuntime>>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -144,7 +149,7 @@ impl Native {
             bail!("Account is no longer configured; no authorization was opened");
         }
         let api_id = config::api_id(snapshot)?;
-        crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
+        PersistentSession::check_custody_identity(&state, label, snapshot)?;
         let session = Arc::new(PersistentSession::open(Arc::clone(&state), label)?);
         if !state.root().join(format!("{label}.session.json")).exists()
             && let Some((key, value)) = &source
@@ -197,6 +202,11 @@ impl Native {
             ..Default::default()
         };
         session.check_health()?;
+        let mut prepared = if staged {
+            None
+        } else {
+            crate::secret::SecretRuntime::prepare(Arc::clone(&state), label, &session).await?
+        };
         let route = crate::proxy::route(Arc::clone(&state), snapshot, policy_label).await?;
         route.configure(&mut connection);
         let SenderPool {
@@ -205,9 +215,27 @@ impl Native {
             updates,
         } = SenderPool::with_configuration(Arc::clone(&session), api_id, connection);
         let client = Client::new(handle.clone());
+        if let Some(prepared) = &mut prepared {
+            prepared.attach(&handle).await?;
+        }
         let task = tokio::spawn(async move {
             let _ = runner.run().await;
         });
+        let secret = if let Some(prepared) = prepared {
+            match prepared.start(client.clone()).await {
+                Ok(runtime) => Some(runtime),
+                Err(error) => {
+                    handle.quit();
+                    task.abort();
+                    let _ = task.await;
+                    return Err(
+                        error.context("Cannot start the account's durable secret-chat manager")
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let native = Self(Arc::new(Inner {
             client: client.clone(),
             handle,
@@ -220,6 +248,7 @@ impl Native {
             authorized_dcs: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             stats_dc: AtomicI32::new(0),
             tasks: std::sync::Mutex::new(vec![task]),
+            secret,
         }));
         let watched = Arc::clone(&native.0.session);
         let stop = native.0.handle.thin.clone();
@@ -227,13 +256,14 @@ impl Native {
             watched.wait_for_write_uncertainty().await;
             stop.quit();
         });
-        let update_task = tokio::spawn(updates::run(
+        let update_task = tokio::spawn(updates::run_with_secret(
             client,
             native.0.handle.clone(),
             updates,
             state,
             Arc::clone(&native.0.session),
             label.to_owned(),
+            native.0.secret.clone(),
         ));
         native
             .0
@@ -249,7 +279,17 @@ impl Native {
             .as_ref()
             .map(|(key, digest)| format!("{key}:{digest}"))
     }
+    pub fn secret_runtime(&self) -> Result<&crate::secret::SecretRuntime> {
+        self.0
+            .secret
+            .as_deref()
+            .context("Secret runtime unavailable for this account")
+    }
     pub async fn shutdown(self) -> Result<()> {
+        let secret = match self.0.secret.as_ref() {
+            Some(secret) => secret.stop().await,
+            None => Ok(()),
+        };
         self.0.handle.quit();
         let tasks = {
             std::mem::take(
@@ -271,7 +311,7 @@ impl Native {
                 )?
                 .ok();
         }
-        Ok(())
+        secret
     }
     async fn authorize_dc(&self, dc: i32) -> Result<()> {
         if dc == self.0.session.home_dc_id()? {
@@ -409,6 +449,10 @@ impl Telegram for Native {
                 )
             }
             "local.connection_route" => Ok(self.0.route.metadata()),
+            _ if let Some(secret) = method.strip_prefix("local.secret.") => {
+                self.0.session.check_health()?;
+                self.secret_runtime()?.call(self, secret, params).await
+            }
             _ => self.invoke_raw(method, params).await,
         };
         if method != "account.updateStatus" {

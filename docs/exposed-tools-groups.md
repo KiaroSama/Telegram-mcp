@@ -1,8 +1,8 @@
 # Native tool exposure and chat restrictions
 
-The native server validates its complete ordinary-chat catalogue before exposing it.
-Unknown tool names or catalogue entries without a native route fail startup. Secret-chat
-tools remain deferred and are not silently routed through ordinary cloud-chat APIs.
+The server validates all 386 native tools before exposing them: 352 ordinary tools
+and 34 secret-chat tools. Startup fails if a configured tool name is unknown or a
+catalogue entry has no native route.
 
 ## Exposure modes
 
@@ -10,16 +10,35 @@ tools remain deferred and are not silently routed through ordinary cloud-chat AP
 
 | Value | Result |
 | --- | --- |
-| `all` | All implemented nonsecret tools |
+| `all` | All 386 native tools, including secret-chat tools |
 | `read-only` | Only tools annotated as read-only |
 | `read-only+send_message,reply_to_message` | Read-only tools plus the explicitly named additions |
-| `all-delete_messages,clear_history` | All tools except the named exclusions |
-| `read-only+send_message-delete_messages` | Read-only base, explicit additions, then exclusions |
+| `all-delete_message,clear_secret_history` | All tools except the named exclusions |
+| `read-only+send_message-list_secret_chats` | Read-only base, explicit additions, then exclusions |
 
 Use actual names from MCP `tools/list` or [COMMANDS.md](COMMANDS.md). Unknown names
 are errors; they are not ignored. Filtering applies to discovery and invocation, so
 calling a hidden name directly does not bypass it. Tool annotations describe effects;
 they do not grant owner approval, account access or Telegram administrator rights.
+
+## Secret-chat groups
+
+The [secret-chat catalogue](COMMANDS.md#secret-chat-tools) lists all 34 native
+MTProto 2.0 tools from `kiaro-secret-chat` 0.3.0:
+
+| Group | Tools |
+| --- | ---: |
+| [Lifecycle and status](COMMANDS.md#lifecycle-and-status-6) | 6 |
+| [Messaging and media](COMMANDS.md#messaging-and-media-5) | 5 |
+| [Timed ephemeral messaging](COMMANDS.md#timed-ephemeral-messaging-2) | 2 |
+| [Actions and search](COMMANDS.md#actions-and-search-6) | 6 |
+| [Auto-save, deletion and export](COMMANDS.md#auto-save-deletion-and-export-6) | 6 |
+| [Custody, pause, delivery and backend control](COMMANDS.md#custody-pause-delivery-and-backend-control-9) | 9 |
+
+The same exposure filters apply to these tools. Hiding them does not turn off
+secret-chat ingress or migration. On first open, the server makes a read-only
+backup and migrates supported legacy stores losslessly before connecting. See
+[secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
 
 ## Allowed chats and forum topics
 

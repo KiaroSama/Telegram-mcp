@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "telegram-mcp": {
-      "command": "telegram-mcp",
-      "args": []
-    }
-  }
-}

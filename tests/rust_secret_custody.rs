@@ -4,7 +4,7 @@ use grammers_session::{Session, SessionData, types::UpdateState};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 use telegram_mcp::{
-    session::{PersistentSession, check_deferred_custody},
+    session::{PersistentSession, check_deferred_custody, check_deferred_custody_with_config},
     state::State,
 };
 
@@ -45,6 +45,54 @@ impl Fixture {
         self.state
             .read_json("work.session.json", Value::Null)
             .unwrap()
+    }
+}
+
+#[test]
+fn configured_custody_migrates_only_for_the_bound_account() {
+    let f = Fixture::new();
+    let mut session = SessionData::default();
+    session
+        .dc_options
+        .get_mut(&session.home_dc)
+        .unwrap()
+        .auth_key = Some([73; 256]);
+    let native = json!({"home_dc":session.home_dc,"dc_options":session.dc_options.values().collect::<Vec<_>>(),"peer_infos":[],"updates_state":session.updates_state,"authorization_origin":"legacy"});
+    f.state.write_json("work.session.json", &native).unwrap();
+    let directory = f.directory();
+    let legacy = br#"{"chats":{},"in":{},"out":{},"settings":{}}"#;
+    let config = telegram_mcp::account_manager::ConfigSnapshot {
+        values: Default::default(),
+        digest: String::new(),
+        process_keys: Default::default(),
+        path: f.state.root().join("test.env"),
+    };
+    let source = directory.join("work");
+    let owner = directory.join("work.owner.json");
+    std::fs::write(&source, b"broken-json").unwrap();
+    std::fs::write(&owner, br#"{"user_id":91}"#).unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    assert_eq!(std::fs::read(&source).unwrap(), b"broken-json");
+    assert!(!directory.join("work.v1.enc").exists());
+    std::fs::write(&source, legacy).unwrap();
+    check_deferred_custody_with_config(&f.state, "work", &config).unwrap();
+    assert!(directory.join("work.v1.enc").is_file());
+    assert!(directory.join("work.migration.json").is_file());
+    let backup = std::fs::read_dir(directory.join("legacy-backups"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(std::fs::read(backup.join("work")).unwrap(), legacy);
+    std::fs::write(&owner, br#"{"user_id":92}"#).unwrap();
+    assert!(check_deferred_custody_with_config(&f.state, "work", &config).is_err());
+    #[cfg(windows)]
+    for entry in std::fs::read_dir(backup).unwrap() {
+        let entry = entry.unwrap();
+        let original = directory.join(entry.file_name());
+        let permissions = std::fs::metadata(original).unwrap().permissions();
+        std::fs::set_permissions(entry.path(), permissions).unwrap();
     }
 }
 

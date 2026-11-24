@@ -12,6 +12,20 @@ pub(super) fn revision(value: Option<&str>) -> Result<&str> {
     Ok(value)
 }
 
+pub(super) fn validate_push_head(
+    after: &str,
+    head: &str,
+    git: impl FnOnce(&[&str]) -> Result<String>,
+) -> Result<()> {
+    ensure!(
+        after == head
+            || git(&["rev-parse", "--verify", &format!("{after}^{{commit}}")])
+                .is_ok_and(|commit| commit.trim() == head),
+        "Push introduction scan checkout differs from the pushed head"
+    );
+    Ok(())
+}
+
 fn merge_base(head: &str) -> Result<String> {
     let base = process::git(&["merge-base", "origin/main", head])?
         .trim()
@@ -43,10 +57,7 @@ pub fn introduced_range() -> Result<(String, &'static str)> {
         )
     } else if event_name == "push" {
         let after = revision(event["after"].as_str())?;
-        ensure!(
-            after == head,
-            "Push introduction scan checkout differs from the pushed head"
-        );
+        validate_push_head(after, &head, process::git)?;
         let before = revision(event["before"].as_str())?;
         if before.bytes().all(|byte| byte == b'0') {
             (

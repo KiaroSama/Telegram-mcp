@@ -61,6 +61,194 @@ impl Telegram for Peers {
         }
     }
 }
+#[derive(Default)]
+struct SecretPeers(std::sync::Mutex<Vec<Value>>);
+
+#[async_trait]
+impl Telegram for SecretPeers {
+    async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+        bail!("Recipient and policy preflight should not dispatch a tool")
+    }
+
+    async fn resolve_peer(&self, value: &Value) -> Result<Value> {
+        self.0.lock().unwrap().push(value.clone());
+        let id = value.as_i64().unwrap_or(7);
+        Ok(json!({"_":"inputPeerUser","user_id":id,"access_hash":13}))
+    }
+}
+
+#[tokio::test]
+async fn secret_recipient_binding_resolves_only_cloud_fields() {
+    use crate::server::recipient::bind;
+    use std::sync::Arc;
+
+    let api = Arc::new(SecretPeers::default());
+    for (name, args, expected) in [
+        (
+            "create_secret_chat",
+            json!({"user_id":"@allowed"}),
+            json!({"user_id":"7"}),
+        ),
+        (
+            "copy_into_secret_chat",
+            json!({"from_chat_id":7,"to_chat_id":7}),
+            json!({"from_chat_id":"7","to_chat_id":"secret/7"}),
+        ),
+        (
+            "export_secret_chat",
+            json!({"secret_chat_id":7,"peer_user":"@allowed"}),
+            json!({"secret_chat_id":"secret/7","peer_user":"7"}),
+        ),
+        (
+            "export_secret_chat",
+            json!({"secret_chat_id":7,"peer_user":null}),
+            json!({"secret_chat_id":"secret/7","peer_user":null}),
+        ),
+        (
+            "forward_secret_media",
+            json!({"from_chat_id":7,"to_chat_id":8}),
+            json!({"from_chat_id":"secret/7","to_chat_id":"secret/8"}),
+        ),
+        (
+            "clear_secret_history",
+            json!({"chat_id":-1_999_999_999_993i64,"confirm_chat_id":-1_999_999_999_993i64}),
+            json!({"chat_id":"secret/7","confirm_chat_id":"secret/7"}),
+        ),
+    ] {
+        let (_, mut approval) = bind(name, api.clone(), &args).await.unwrap();
+        approval
+            .as_object_mut()
+            .unwrap()
+            .remove("_requested_peer_targets");
+        assert_eq!(approval, expected, "{name}");
+    }
+    assert_eq!(
+        *api.0.lock().unwrap(),
+        vec![json!("@allowed"), json!(7), json!("@allowed")]
+    );
+}
+
+#[tokio::test]
+async fn secret_allowlist_requires_an_explicit_wire_id_not_a_matching_cloud_peer() {
+    let api = SecretPeers::default();
+    let cloud = AccessPolicy::parse(Some("7,-1999999999993")).unwrap();
+    for args in [
+        json!({"secret_chat_id":7}),
+        json!({"secret_chat_id":-1_999_999_999_993i64}),
+    ] {
+        assert!(cloud.check("close_secret_chat", &args, &api).await.is_err());
+    }
+    let secret = AccessPolicy::parse(Some("secret/7")).unwrap();
+    for id in [7i64, -1_999_999_999_993, 2_000_000_000_007] {
+        secret
+            .check("close_secret_chat", &json!({"secret_chat_id":id}), &api)
+            .await
+            .unwrap();
+    }
+    assert!(api.0.lock().unwrap().is_empty());
+    assert!(
+        secret
+            .check("get_chat", &json!({"chat_id":7}), &api)
+            .await
+            .is_err()
+    );
+    assert!(AccessPolicy::parse(Some("secret/7:3")).is_err());
+}
+
+#[tokio::test]
+async fn secret_allowlist_blocks_unscoped_calls_and_requires_every_secret_target() {
+    let api = SecretPeers::default();
+    let policy = AccessPolicy::parse(Some("secret/7")).unwrap();
+    for (name, args) in [
+        ("list_secret_chats", json!({})),
+        ("secret_chat_status", json!({"chat_id":null})),
+        ("get_secret_backend_status", json!({})),
+        ("start_secret_auto_save", json!({"folder":"exports"})),
+        (
+            "forward_secret_media",
+            json!({"from_chat_id":8,"to_chat_id":7}),
+        ),
+        (
+            "forward_secret_media",
+            json!({"from_chat_id":7,"to_chat_id":8}),
+        ),
+        (
+            "clear_secret_history",
+            json!({"chat_id":7,"confirm_chat_id":8}),
+        ),
+    ] {
+        assert!(policy.check(name, &args, &api).await.is_err(), "{name}");
+    }
+    policy
+        .check(
+            "forward_secret_media",
+            &json!({"from_chat_id":7,"to_chat_id":7}),
+            &api,
+        )
+        .await
+        .unwrap();
+    AccessPolicy::default()
+        .check("list_secret_chats", &json!({}), &api)
+        .await
+        .unwrap();
+    assert!(api.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn secret_search_results_are_filtered_to_the_requested_secret_chat() {
+    let policy = AccessPolicy::parse(Some("secret/7,secret/8,8"))
+        .unwrap()
+        .scoped(
+            "search_secret_messages",
+            &json!({"chat_id":7,"query":"test"}),
+            &SecretPeers::default(),
+        )
+        .await
+        .unwrap();
+    let mut value = json!({"messages":[{"chat_id":7},{"chat_id":8}]});
+    policy
+        .filter_for("search_secret_messages", &mut value)
+        .unwrap();
+    assert_eq!(value["messages"], json!([{"chat_id":7}]));
+}
+
+#[tokio::test]
+async fn secret_allowlist_checks_cloud_source_and_optional_export_user_separately() {
+    let api = SecretPeers::default();
+    let policy = AccessPolicy::parse(Some("secret/7,8")).unwrap();
+    for (name, args, allowed) in [
+        ("create_secret_chat", json!({"user_id":8}), true),
+        ("create_secret_chat", json!({"user_id":7}), false),
+        (
+            "copy_into_secret_chat",
+            json!({"from_chat_id":8,"to_chat_id":7}),
+            true,
+        ),
+        (
+            "copy_into_secret_chat",
+            json!({"from_chat_id":7,"to_chat_id":7}),
+            false,
+        ),
+        (
+            "export_secret_chat",
+            json!({"secret_chat_id":7,"peer_user":8}),
+            true,
+        ),
+        (
+            "export_secret_chat",
+            json!({"secret_chat_id":7,"peer_user":7}),
+            false,
+        ),
+        ("export_secret_chat", json!({"secret_chat_id":7}), true),
+    ] {
+        assert_eq!(
+            policy.check(name, &args, &api).await.is_ok(),
+            allowed,
+            "{name}"
+        );
+    }
+}
+
 fn message(id: i64) -> Value {
     json!({"_":"message","id":1,"peer_id":{"_":"peerChannel","channel_id":id.to_string()},"message":"body"})
 }

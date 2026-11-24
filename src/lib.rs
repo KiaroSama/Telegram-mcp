@@ -9,6 +9,7 @@ pub mod export;
 pub mod logging;
 pub mod proxy;
 pub mod safeguard;
+pub mod secret;
 pub mod server;
 pub mod session;
 pub mod state;

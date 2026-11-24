@@ -25,6 +25,14 @@ fn command(root: &Path) -> Command {
 fn native_installer_cli_uses_explicit_source_and_preserves_collision() {
     let root = temporary_root();
     let project = root.path().join("target workspace");
+    let skills = project.join(".opencode/skills");
+    fs::create_dir_all(&skills).unwrap();
+    let stale = skills.join(".mcp.json");
+    fs::write(
+        &stale,
+        br#"{"mcpServers":{"telegram-mcp":{"command":"telegram-mcp","args":[]}}}"#,
+    )
+    .unwrap();
     let run = command(root.path())
         .args(["install", "--client", "opencode", "--project"])
         .arg(&project)
@@ -40,12 +48,8 @@ fn native_installer_cli_uses_explicit_source_and_preserves_collision() {
             .unwrap()
             .contains("Installed five complete skills")
     );
-    assert_eq!(
-        fs::read_dir(project.join(".opencode/skills"))
-            .unwrap()
-            .count(),
-        5
-    );
+    assert!(!stale.exists());
+    assert_eq!(fs::read_dir(&skills).unwrap().count(), 5);
     let again = command(root.path())
         .args(["install", "--client", "opencode", "--project"])
         .arg(&project)
@@ -83,11 +87,8 @@ fn native_packager_cli_creates_a_real_archive_without_runtime_state() {
         String::from_utf8_lossy(&run.stderr)
     );
     let mut archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
-    assert_eq!(archive.len(), 24);
+    assert_eq!(archive.len(), 21);
     for name in [
-        "mcp.json",
-        ".mcp.json",
-        "mcp_config.json",
         ".agents/plugins/marketplace.json",
         ".cursor-plugin/marketplace.json",
         ".antigravity-plugin/plugin.json",
@@ -103,6 +104,10 @@ fn native_packager_cli_creates_a_real_archive_without_runtime_state() {
                 && !name.contains("private-state")
                 && !name.ends_with(".session")
         );
+        assert!(!matches!(
+            name.rsplit('/').next(),
+            Some("mcp.json" | ".mcp.json" | "mcp_config.json")
+        ));
     }
 }
 

@@ -144,11 +144,7 @@ pub fn scan() -> Result<()> {
             eprintln!("Unmigrated executable source is tracked: {path}");
             findings += 1;
         }
-        if extension == "ps1"
-            && !(matches!(path, "start-mcp.ps1" | "Manage-Accounts.ps1")
-                || path.starts_with("account-manager/")
-                || path.starts_with("tests/"))
-        {
+        if extension == "ps1" && !matches!(path, "start-mcp.ps1" | "Manage-Accounts.ps1") {
             eprintln!("PowerShell source is outside the authorized launcher exception: {path}");
             findings += 1;
         }

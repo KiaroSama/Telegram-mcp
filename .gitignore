@@ -27,6 +27,7 @@
 *.sqlite-*
 *.db
 *.db-*
+/.state/
 *.log
 *.log.*
 /logs/

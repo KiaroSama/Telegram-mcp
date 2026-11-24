@@ -1,13 +1,9 @@
 # Native tool catalogue
 
-The current catalogue declares **352 nonsecret tools**. Secret-chat tools are
-deferred pending the owner’s separate Rust backend. MCP `tools/list` returns the actual
-exposed schema after access filters; this document is a readable index, not permission
-to invoke a tool or proof of live Telegram behavior.
-
-Argument names below come from `resources/tool-catalogue.json`. Optional fields and
-defaults remain in the full JSON schema. Account labels, owner approvals, Telegram
-permissions and file-root restrictions apply independently of read-only annotations.
+The catalogue lists 386 native tools: 352 ordinary tools and 34 [secret-chat tools](#secret-chat-tools).
+MCP `tools/list` returns the schema for tools available to the client after exposure filters.
+Use that schema for optional fields and defaults. Account access, owner approvals,
+Telegram permissions and file-root restrictions apply regardless of tool annotations.
 
 ## CLI entry points
 
@@ -35,8 +31,8 @@ permissions and file-root restrictions apply independently of read-only annotati
 | `operator-plugin --source PATH install ...` | Explicit standalone skill copy |
 | `operator-plugin --source PATH package ...` | Allowlisted guidance-only ZIP |
 
-Use the actual installed binary’s `--help` for argument availability. Historical
-Python console commands are not an alternative runtime.
+Check the installed binary's `--help` for CLI arguments. The `telegram-operator`
+1.5.0 plugin installs skills only. [Configure the MCP server separately](../README.md#connect-an-mcp-client).
 
 ## MCP tools
 
@@ -429,3 +425,79 @@ list contains distinct entity kinds and leaves the original text and UTF-16 offs
 | `get_telegram_region` | `left`, `top`, `right`, `bottom` | Yes |
 | `get_telegram_screen` | None | Yes |
 | `list_telegram_windows` | None | Yes |
+
+### Secret-chat tools
+
+[`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat) handles
+native MTProto 2.0 secret chats on the existing account connection. On first open,
+the server makes a read-only backup and migrates supported legacy stores losslessly
+before connecting. See [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
+
+All 34 tools take an optional `account`. `read_secret_messages` reads local history
+without sending a read receipt. `mark_secret_read` sends one and requires approval.
+Sending, relaying, and destructive actions also require approval. File operations
+stay within configured roots.
+
+#### Lifecycle and status (6)
+
+| Tool | Required arguments | Read only |
+| --- | --- | --- |
+| `secret_chat_status` | None | Yes |
+| `list_secret_chats` | None | Yes |
+| `create_secret_chat` | `user_id` | No |
+| `set_secret_chat_timer` | `chat_id`, `seconds` | No |
+| `close_secret_chat` | `secret_chat_id` | No |
+| `forget_secret_chat` | `secret_chat_id` | No |
+
+#### Messaging and media (5)
+
+| Tool | Required arguments | Read only |
+| --- | --- | --- |
+| `send_secret_message` | `chat_id`, `message` | No |
+| `send_secret_media` | `chat_id`, `file_path` | No |
+| `read_secret_messages` | `chat_id` | Yes |
+| `save_secret_media` | `chat_id`, `message_id` | No |
+| `forward_secret_media` | `from_chat_id`, `message_id`, `to_chat_id` | No |
+
+#### Timed ephemeral messaging (2)
+
+| Tool | Required arguments | Read only |
+| --- | --- | --- |
+| `send_timed_secret_message` | `chat_id`, `message`, `ttl_seconds` | No |
+| `send_timed_secret_media` | `chat_id`, `file_path`, `ttl_seconds` | No |
+
+#### Actions and search (6)
+
+| Tool | Required arguments | Read only |
+| --- | --- | --- |
+| `delete_secret_message` | `chat_id`, `message_ids` | No |
+| `clear_secret_history` | `chat_id` | No |
+| `mark_secret_read` | `chat_id` | No |
+| `send_secret_typing` | `chat_id` | No |
+| `search_secret_messages` | `query` | Yes |
+| `copy_into_secret_chat` | `from_chat_id`, `message_id`, `to_secret_chat_id` | No |
+
+#### Auto-save, deletion and export (6)
+
+| Tool | Required arguments | Read only |
+| --- | --- | --- |
+| `start_secret_auto_save` | `folder` | No |
+| `stop_secret_auto_save` | None | No |
+| `delete_secret_chat` | `secret_chat_id` | No |
+| `delete_secret_chat_both_sides` | `secret_chat_id` | No |
+| `delete_saved_secret_messages` | `chat_id` | No |
+| `export_secret_chat` | `chat_id` | No |
+
+#### Custody, pause, delivery and backend control (9)
+
+| Tool | Required arguments | Read only |
+| --- | --- | --- |
+| `configure_secret_backend` | None | No |
+| `get_secret_backend_status` | None | Yes |
+| `pause_secret_chat` | `chat_id` | No |
+| `get_secret_pause_status` | `chat_id` | Yes |
+| `check_secret_custody` | None | Yes |
+| `resume_secret_chat` | `chat_id` | No |
+| `list_secret_deliveries` | `chat_id` | Yes |
+| `acknowledge_secret_delivery` | `chat_id`, `seq_no` | No |
+| `receive_secret_media` | `chat_id`, `message_id` | No |

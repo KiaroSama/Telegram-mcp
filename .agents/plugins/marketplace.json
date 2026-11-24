@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "telegram-operator",
-      "version": "1.4.0",
+      "version": "1.5.0",
       "source": {
         "source": "url",
         "url": "https://github.com/KiaroSama/Telegram-mcp.git"
