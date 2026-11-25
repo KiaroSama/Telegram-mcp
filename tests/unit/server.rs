@@ -460,6 +460,9 @@ mod event_boundaries;
 #[path = "server_review.rs"]
 mod review;
 
+#[path = "server/approval_peers.rs"]
+mod approval_peers;
+
 #[tokio::test(start_paused = true)]
 async fn offline_presence_is_bounded_and_does_not_lock_other_account_access() {
     struct PendingPresence(Arc<tokio::sync::Notify>);
