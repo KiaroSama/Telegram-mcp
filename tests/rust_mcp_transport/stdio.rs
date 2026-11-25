@@ -35,6 +35,25 @@ async fn stdio_supports_latest_protocol_with_initialize() {
 }
 
 #[tokio::test]
+async fn stdio_instructions_describe_the_exposed_native_secret_chat_tools() {
+    let fixture = Fixture::new();
+    let mut child = McpProcess::start(fixture.command(&[]));
+    let initialized = child.initialize("2024-11-05").await;
+    let listed = child.request(2, "tools/list", json!({})).await;
+    assert!(child.finish().await.is_empty());
+    assert!(
+        tools(&listed)
+            .iter()
+            .any(|tool| tool["name"] == "send_secret_message")
+    );
+    let instructions = initialized["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("native secret-chat backend"));
+    assert!(!instructions.contains("Secret chats are unavailable"));
+    assert!(instructions.contains("human terminal"));
+    fixture.assert_no_telegram_sessions();
+}
+
+#[tokio::test]
 async fn latest_inline_protocol_works_without_initialize_and_requires_request_metadata() {
     let fixture = Fixture::new();
     let mut child = McpProcess::start(fixture.command(&["serve"]));

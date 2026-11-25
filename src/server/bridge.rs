@@ -19,8 +19,12 @@ struct Bridge {
 }
 impl ServerHandler for Bridge {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::from_build_env())
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::from_build_env());
+        if let Some(owner) = self.remote.peer_info() {
+            info.instructions = owner.instructions.clone();
+        }
+        info
     }
     async fn list_tools(
         &self,
