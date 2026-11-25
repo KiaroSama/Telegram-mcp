@@ -39,30 +39,80 @@ pub fn approve_from_terminal(state: Arc<State>, fingerprint: &str) -> Result<()>
     if !["APPROVE", "ALWAYS"].contains(&reply.trim()) {
         bail!("Approval denied; no grant was written");
     }
-    // Re-check the lifetime after the human review, which may take several minutes.
-    if request["expires"].as_u64().unwrap_or(0) < unix_seconds() {
+    let always = reply.trim() == "ALWAYS";
+    accept(&state, fingerprint, always, false)?;
+    if always {
+        eprintln!("Always approval saved for this tool, chat and account. Retry the operation.");
+    } else {
+        eprintln!("Approved once. Retry the exact operation within 60 seconds.");
+    }
+    Ok(())
+}
+
+pub(super) fn has_grant(
+    state: &State,
+    fingerprint: &str,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<bool> {
+    if super::chat_target(args).is_some_and(|chat| {
+        state.approval_is_granted(args["account"].as_str().unwrap_or("default"), tool, chat)
+    }) {
+        return Ok(true);
+    }
+    let grants = state.read_json("approval-grants.json", json!({}))?;
+    Ok(grants[fingerprint]["expires"]
+        .as_u64()
+        .is_some_and(|expiry| expiry >= unix_seconds()))
+}
+
+pub(super) fn accept_bot(state: &State, fingerprint: &str, always: bool) -> Result<()> {
+    accept(state, fingerprint, always, true)
+}
+
+fn accept(state: &State, fingerprint: &str, always: bool, remove_request: bool) -> Result<()> {
+    let _lock = state.state_lock()?;
+    let mut requests = state.read_json_unlocked("approval-pending.json", json!({}))?;
+    let pending = requests
+        .as_object_mut()
+        .context("Approval request record is invalid")?;
+    let request = pending
+        .get(fingerprint)
+        .context("Approval request is no longer pending")?;
+    let now = unix_seconds();
+    if request["expires"]
+        .as_u64()
+        .is_none_or(|expiry| expiry < now)
+    {
         bail!("Approval request expired while being reviewed");
     }
-    if reply.trim() == "ALWAYS" {
-        let account = request["arguments"]["account"]
-            .as_str()
-            .unwrap_or("default");
-        let chat = request["arguments"]
-            .get("chat_id")
-            .or_else(|| request["arguments"].get("to_chat_id"))
-            .filter(|chat| !chat.is_null())
-            .context("Always approval requires a specific chat")?;
-        state.grant_approval(account, tool, chat)?;
-        eprintln!("Always approval saved for this tool, chat and account. Retry the operation.");
-        return Ok(());
+    let tool = request["tool"]
+        .as_str()
+        .context("Invalid pending approval request")?;
+    let args = &request["arguments"];
+    if request_fingerprint(tool, args)? != fingerprint {
+        bail!("Approval request fingerprint does not match its contents");
     }
-    state.update_json("approval-grants.json", json!({}), |grants| {
-        if !grants.is_object() {
-            bail!("Approval grant record is invalid");
-        }
-        grants[fingerprint] = json!({"expires":unix_seconds()+60});
-        Ok(())
-    })?;
-    eprintln!("Approved once. Retry the exact operation within 60 seconds.");
-    Ok(())
+    let (file, grants) = if always {
+        let chat = super::chat_target(args).context("Always approval requires a specific chat")?;
+        let account = args["account"].as_str().unwrap_or("default");
+        let file = "always-approvals.json";
+        let mut grants = state.read_json_unlocked(file, json!({"grants":[],"folders":[]}))?;
+        crate::state::insert_approval(&mut grants, account, tool, chat)?;
+        (file, grants)
+    } else {
+        let file = "approval-grants.json";
+        let mut grants = state.read_json_unlocked(file, json!({}))?;
+        grants
+            .as_object_mut()
+            .context("Approval grant record is invalid")?
+            .insert(fingerprint.to_owned(), json!({"expires":now+60}));
+        (file, grants)
+    };
+    if remove_request {
+        // Remove the pending request first so an incomplete write fails closed.
+        pending.remove(fingerprint);
+        state.write_json_unlocked("approval-pending.json", &requests)?;
+    }
+    state.write_json_unlocked(file, &grants)
 }

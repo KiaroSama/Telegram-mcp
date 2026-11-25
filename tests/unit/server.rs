@@ -460,6 +460,9 @@ mod event_boundaries;
 #[path = "server_review.rs"]
 mod review;
 
+#[path = "server/approval_bot.rs"]
+mod approval_bot;
+
 #[path = "server/approval_peers.rs"]
 mod approval_peers;
 

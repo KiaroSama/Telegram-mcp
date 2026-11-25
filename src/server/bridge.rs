@@ -233,7 +233,9 @@ impl ServerHandler for Bridge {
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
         self.forward(
             request,
-            tokio::time::Instant::now() + Duration::from_secs(130),
+            tokio::time::Instant::now()
+                + Duration::from_secs(130)
+                + crate::safeguard::bot::configured_timeout().unwrap_or_default(),
         )
         .await
     }

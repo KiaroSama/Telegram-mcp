@@ -2,6 +2,23 @@ use super::{State, normalize_key};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+pub(crate) fn insert_approval(
+    store: &mut Value,
+    account: &str,
+    tool: &str,
+    chat: &Value,
+) -> Result<()> {
+    let rows = store
+        .get_mut("grants")
+        .and_then(Value::as_array_mut)
+        .context("Always-approval store is invalid; existing bytes were preserved")?;
+    let triple = json!([account.to_lowercase(), tool, normalize_key(chat)]);
+    if !rows.contains(&triple) {
+        rows.push(triple);
+    }
+    Ok(())
+}
+
 impl State {
     pub fn always_approvals(&self) -> Value {
         match self.read_json("always-approvals.json", json!({"grants":[],"folders":[]})) {
@@ -32,21 +49,12 @@ impl State {
             .is_some_and(|rows| rows.contains(&expected))
     }
 
+    #[cfg(test)]
     pub(crate) fn grant_approval(&self, account: &str, tool: &str, chat: &Value) -> Result<()> {
         self.update_json(
             "always-approvals.json",
             json!({"grants":[],"folders":[]}),
-            |store| {
-                let rows = store
-                    .get_mut("grants")
-                    .and_then(Value::as_array_mut)
-                    .context("Always-approval store is invalid; existing bytes were preserved")?;
-                let triple = json!([account.to_lowercase(), tool, normalize_key(chat)]);
-                if !rows.contains(&triple) {
-                    rows.push(triple);
-                }
-                Ok(())
-            },
+            |store| insert_approval(store, account, tool, chat),
         )
     }
 
