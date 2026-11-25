@@ -197,42 +197,58 @@ jobs:
             Select-Object -First 1
           if (-not $signtool) { throw "Windows SDK SignTool ($architecture) is missing." }
 
-          $untrustedRoot = [ComponentModel.Win32Exception]::new([int]0x800B0109).Message
-          foreach ($name in @('telegram-mcp', 'emoji-studio', 'operator-plugin')) {
-            $binary = "release-package/bin/$name.exe"
-            & $signtool sign /fd SHA256 /f $pfx /p $env:NUMERA_SIGNING_PASSWORD /tr http://timestamp.digicert.com /td SHA256 $binary *> $null
-            if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or timestamping failed: $name." }
-            $signature = Get-AuthenticodeSignature -LiteralPath $binary
-            $valid = $signature.Status -eq 'Valid' -or
-              ($signature.Status -eq 'UnknownError' -and $signature.StatusMessage -ceq $untrustedRoot)
-            if (-not $valid -or $signature.SignerCertificate.Thumbprint -ne $publisher.certificate_thumbprint -or
-                -not $signature.TimeStamperCertificate) {
-              throw "Authenticode verification failed: $name ($($signature.Status)): $($signature.StatusMessage)"
-            }
+          $securePassword = ConvertTo-SecureString -String $env:NUMERA_SIGNING_PASSWORD -AsPlainText -Force
+          Remove-Item Env:NUMERA_SIGNING_PASSWORD
+          try {
+            $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation 'Cert:\CurrentUser\My' -Password $securePassword |
+              Select-Object -First 1
+          } finally { $securePassword.Dispose() }
 
-            $tampered = Join-Path $env:RUNNER_TEMP "tampered-$name.exe"
-            Copy-Item -LiteralPath $binary -Destination $tampered
-            try {
-              $stream = [IO.File]::Open($tampered, 'Open', 'ReadWrite')
-              try {
-                $reader = [IO.BinaryReader]::new($stream)
-                $stream.Position = 0x3c
-                $peOffset = $reader.ReadUInt32()
-                $stream.Position = $peOffset + 20
-                $optionalHeaderSize = $reader.ReadUInt16()
-                # PointerToRawData in the first PE section header locates a hashed byte.
-                $stream.Position = $peOffset + 24 + $optionalHeaderSize + 20
-                $offset = $reader.ReadUInt32()
-                if ($offset -eq 0 -or $offset -ge $stream.Length) { throw "Invalid PE section offset: $name." }
-                $stream.Position = $offset
-                $value = $stream.ReadByte()
-                $stream.Position = $offset
-                $stream.WriteByte([byte]($value -bxor 1))
-              } finally { $stream.Dispose() }
-              if ((Get-AuthenticodeSignature -LiteralPath $tampered).Status -ne 'HashMismatch') {
-                throw "Authenticode did not reject the modified executable: $name."
+          try {
+            if (-not $cert -or $cert.Thumbprint -ne $publisher.certificate_thumbprint) {
+              throw 'The signing PFX does not match the pinned publisher certificate.'
+            }
+            $untrustedRoot = [ComponentModel.Win32Exception]::new([int]0x800B0109).Message
+            foreach ($name in @('telegram-mcp', 'emoji-studio', 'operator-plugin')) {
+              $binary = "release-package/bin/$name.exe"
+              & $signtool sign /fd SHA256 /s My /sha1 $cert.Thumbprint /tr http://timestamp.digicert.com /td SHA256 $binary *> $null
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode signing or timestamping failed: $name." }
+              $signature = Get-AuthenticodeSignature -LiteralPath $binary
+              $valid = $signature.Status -eq 'Valid' -or
+                ($signature.Status -eq 'UnknownError' -and $signature.StatusMessage -ceq $untrustedRoot)
+              if (-not $valid -or $signature.SignerCertificate.Thumbprint -ne $publisher.certificate_thumbprint -or
+                  -not $signature.TimeStamperCertificate) {
+                throw "Authenticode verification failed: $name ($($signature.Status)): $($signature.StatusMessage)"
               }
-            } finally { Remove-Item -LiteralPath $tampered -Force }
+
+              $tampered = Join-Path $env:RUNNER_TEMP "tampered-$name.exe"
+              Copy-Item -LiteralPath $binary -Destination $tampered
+              try {
+                $stream = [IO.File]::Open($tampered, 'Open', 'ReadWrite')
+                try {
+                  $reader = [IO.BinaryReader]::new($stream)
+                  $stream.Position = 0x3c
+                  $peOffset = $reader.ReadUInt32()
+                  $stream.Position = $peOffset + 20
+                  $optionalHeaderSize = $reader.ReadUInt16()
+                  # PointerToRawData in the first PE section header locates a hashed byte.
+                  $stream.Position = $peOffset + 24 + $optionalHeaderSize + 20
+                  $offset = $reader.ReadUInt32()
+                  if ($offset -eq 0 -or $offset -ge $stream.Length) { throw "Invalid PE section offset: $name." }
+                  $stream.Position = $offset
+                  $value = $stream.ReadByte()
+                  $stream.Position = $offset
+                  $stream.WriteByte([byte]($value -bxor 1))
+                } finally { $stream.Dispose() }
+                if ((Get-AuthenticodeSignature -LiteralPath $tampered).Status -ne 'HashMismatch') {
+                  throw "Authenticode did not reject the modified executable: $name."
+                }
+              } finally { Remove-Item -LiteralPath $tampered -Force }
+            }
+          } finally {
+            if ($cert) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($cert.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            }
           }
       - name: Package the native release
         shell: pwsh

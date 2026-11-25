@@ -1,9 +1,8 @@
 # Rust migration scope and evidence
 
-The Rust branch starts from `KiaroSama/Telegram-mcp` commit
-`bd4b454c5392ef084ab265b92ca89ebc04d596df`. No previous Rust implementation was
-found among the accessible branches or PR history at intake. Work remains in a
-separate PR; this migration does not authorize merging it into `main`.
+The Rust rewrite started from `KiaroSama/Telegram-mcp` commit
+`bd4b454c5392ef084ab265b92ca89ebc04d596df`. The core rewrite shipped in `v3.0.0`.
+The native secret-chat integration for `v3.1.0` has since merged into `main`.
 
 ## Authorized scope
 
