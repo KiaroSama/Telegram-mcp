@@ -639,6 +639,45 @@ async fn stdio_bridge_uses_existing_authenticated_http_owner_without_opening_tel
 }
 
 #[tokio::test]
+async fn stdio_bridge_preserves_owner_instructions_in_initialize_and_discovery() {
+    use rmcp::{
+        ServiceExt,
+        transport::{
+            StreamableHttpClientTransport,
+            streamable_http_client::StreamableHttpClientTransportConfig,
+        },
+    };
+    let fixture = Fixture::new();
+    let server = HttpServer::start(&fixture).await;
+    let configuration = StreamableHttpClientTransportConfig::with_uri(server.url.as_str())
+        .auth_header(&server.token);
+    let owner = ()
+        .serve(StreamableHttpClientTransport::with_client(
+            client(),
+            configuration,
+        ))
+        .await
+        .unwrap();
+    let instructions = owner
+        .peer_info()
+        .unwrap()
+        .instructions
+        .clone()
+        .expect("The owner must publish its account and approval guidance");
+    assert!(!instructions.is_empty());
+    let mut bridge = McpProcess::start(fixture.command(&["bridge"]));
+    let initialized = bridge.initialize("2024-11-05").await;
+    let discovered = bridge
+        .request(2, "server/discover", latest_meta(json!({})))
+        .await;
+    assert!(bridge.finish().await.is_empty());
+    owner.cancel().await.unwrap();
+    server.stop(&fixture).await;
+    assert_eq!(initialized["result"]["instructions"], instructions);
+    assert_eq!(discovered["result"]["instructions"], instructions);
+}
+
+#[tokio::test]
 async fn http_owner_lease_rejects_a_second_process_and_releases_for_restart() {
     let fixture = Fixture::new();
     let server = HttpServer::start(&fixture).await;

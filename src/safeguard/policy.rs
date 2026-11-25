@@ -68,7 +68,9 @@ fn scalars<'a>(value: &'a Value, output: &mut Vec<&'a Value>) {
 
 pub(super) fn chat_key(value: &Value) -> String {
     let raw = normalize_key(value);
-    let lower = raw.to_lowercase();
+    // Match the native peer resolver's signed integer parsing before comparing
+    // protected identities, including a configured ID with a sign or padding.
+    let lower = raw.parse::<i64>().map(|id| id.to_string()).unwrap_or(raw);
     for prefix in [
         "https://t.me/",
         "http://t.me/",
