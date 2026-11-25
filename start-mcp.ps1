@@ -276,8 +276,22 @@ function Stop-OtherInstances {
     }
 
     $checkout = [regex]::Escape($Root.TrimEnd('\', '/'))
-    $launcherPattern = $checkout + '[\\/]start-mcp\.ps1(?:"|\s|$)'
-    $nativePattern = $checkout + '[\\/](?:(?:bin|target[\\/](?:release|debug))[\\/])?telegram-mcp(?:\.exe)?"?\s+serve(?:\s|$)'
+    # Only an explicit -File operand establishes launcher ownership. Stop at other
+    # scripts, command modes, or unknown host options; later arguments can be data.
+    $shellImage = '(?:"(?:[^"]*[\\/])?(?:pwsh|powershell)(?:\.exe)?"|(?:[^\s"]*[\\/])?(?:pwsh|powershell)(?:\.exe)?)'
+    $hostSwitch = '-(?:NoLogo|NoL|NoProfile|NoP|NonInteractive|NonI|NoExit|NoE|Interactive|I|STA|MTA)'
+    $hostValueOption = '-(?:ExecutionPolicy|EP|EX|WindowStyle|W|WorkingDirectory|WD|InputFormat|INP|IF|OutputFormat|O|OF)'
+    $hostValue = '(?:"(?:[^"\\]|\\[^"])*"|[^\s"]+)'
+    $launcherPath = $checkout + '[\\/]start-mcp\.ps1'
+    $launcherArgument = '"' + $launcherPath + '"'
+    if ($Root -notmatch '[\s"]') { $launcherArgument += '|' + $launcherPath }
+    $launcherPattern = '^' + $shellImage + '\s+(?:(?:' + $hostSwitch + '|' + $hostValueOption + '\s+' + $hostValue + ')\s+)*' +
+        '-(?:File|F|Fi|Fil)\s+(?:' + $launcherArgument + ')(?:\s|$)'
+    # Match the executable at the start, never a checkout path mentioned in an argument.
+    # Clap accepts the global config selector before serve, including quoted --config=value.
+    $configPattern = '(?:--config(?:=|\s+)(?:"[^"]*"|[^\s"]+)|"--config=[^"]*")'
+    $nativePattern = '^"?' + $checkout + '[\\/](?:(?:bin|target[\\/](?:release|debug))[\\/])?telegram-mcp(?:\.exe)?"?\s+' +
+        '(?:' + $configPattern + '\s+)*serve(?:\s|$)'
     $nativeRunners = 'telegram-mcp.exe', 'telegram-mcp'
     $runners = @('pwsh.exe', 'powershell.exe') + $nativeRunners
     $targets = @($processes | Where-Object {

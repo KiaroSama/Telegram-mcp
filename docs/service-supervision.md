@@ -71,5 +71,8 @@ that a remote action completed.
 The native bridge implements the bounded startup/attachment behavior described above.
 Historical Python supervision also had additional process-tree, restart-backoff and
 generation-retirement rules; those broader guarantees do not follow from bridge startup.
-Secret-key flushing is deferred with the encryption backend. Never stop an unknown
-listener or delete a state lock to obtain a clean health report.
+The native account shutdown path stops the secret-chat manager before closing its
+sender, and encrypted updates use durable ingress during operation. A forced process
+termination is not proof that graceful shutdown completed. Preserve custody files and
+recovery records; never stop an unknown listener or delete a state lock to obtain a
+clean health report.

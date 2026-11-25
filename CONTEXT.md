@@ -15,8 +15,10 @@ proof that every implementation or test has reached parity. CI reports those gap
 - **Cloud chat:** ordinary Telegram conversation routed through grammers. Fetching a
   message does not automatically mark it read or prove a delivery/view acknowledgment.
 - **Secret chat:** end-to-end encrypted protocol state with independent key/counter
-  custody. Integration is deferred until the owner's separate Rust backend is ready.
-  An ordinary Telegram session cannot regenerate lost secret-chat keys.
+  custody, provided by the pinned `kiaro-secret-chat` backend over the account's
+  shared connection. Durable ingress and verified authorization identity must be
+  established before normal update consumption. An ordinary Telegram session cannot
+  regenerate lost secret-chat keys.
 - **Peer identity:** retain the user/chat/channel distinction and its access hash.
   Numeric identifiers alone may require resolving or warming dialogs. Never send a
   request to a guessed peer when resolution is uncertain.

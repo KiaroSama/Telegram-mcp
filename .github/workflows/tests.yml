@@ -1103,7 +1103,7 @@ jobs:
         run: cargo test --locked --test rust_launchers
 
   audit:
-    name: Locked dependencies have no known advisory
+    name: Locked dependency advisory policy
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -1117,7 +1117,8 @@ jobs:
       - uses: taiki-e/install-action@25f51f6b1bf4e18876107cece836f4f77ac17c8c # v2.90.7
         with:
           tool: cargo-audit@0.23.0
-      # chrono 0.4.45 (also pulled by rmcp 3.10.0 and schemars 1.2.3) has no patched replacement yet.
+      # RUSTSEC-2026-0543 is the reviewed chrono unmaintained notice; no version fixes it.
+      # Keep the exception visible in CONTRIBUTING.md and review it with dependency updates.
       - run: cargo audit --deny warnings --ignore RUSTSEC-2026-0543
 
   case_counts:
