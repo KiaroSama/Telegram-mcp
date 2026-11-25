@@ -5,7 +5,7 @@ mod custody;
 mod import;
 mod transaction;
 use crate::state::State;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 pub use custody::{check_deferred_custody, check_deferred_custody_with_config};
 use fs2::FileExt;
 use grammers_session::{BoxFuture, Session, SessionData, types::*};
@@ -188,6 +188,11 @@ impl PersistentSession {
         };
         let dc = bytes[0] as i32;
         let port = u16::from_be_bytes(bytes[1 + ip_len..3 + ip_len].try_into()?);
+        ensure!(port != 0, "StringSession datacenter port must not be zero");
+        ensure!(
+            bytes[3 + ip_len..].iter().any(|byte| *byte != 0),
+            "StringSession authorization key must not be all zero"
+        );
         let mut current = self.data().map_err(anyhow::Error::new)?;
         let mut data = Self::clone_data(&current);
         if data.dc_options.values().any(|d| d.auth_key.is_some()) {

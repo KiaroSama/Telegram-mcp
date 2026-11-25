@@ -71,6 +71,7 @@ pub fn session_validate(text: &str) -> &'static str {
     };
     if !(1..=5).contains(&bytes[0])
         || u16::from_be_bytes([bytes[ip_len + 1], bytes[ip_len + 2]]) == 0
+        || bytes[ip_len + 3..].iter().all(|byte| *byte == 0)
     {
         return "invalid";
     }

@@ -162,6 +162,137 @@ mod tests {
         MediaReference::new(chat_id, &file, &media).unwrap()
     }
 
+    fn received_media(
+        id: i64,
+        media: kiaro_secret_chat::enums::DecryptedMessageMedia,
+    ) -> MessageReceived {
+        let key = kiaro_secret_chat::media::file_parts(&media).unwrap().key;
+        let file = grammers_tl_types::types::EncryptedFile {
+            id: 501,
+            access_hash: 999,
+            size: 16,
+            dc_id: 2,
+            key_fingerprint: key.fingerprint(),
+        };
+        let reference = MediaReference::new(10, &file, &media).unwrap();
+        MessageReceived {
+            chat_id: 10,
+            random_id: id,
+            seq_no: 1,
+            text: String::new(),
+            entities: None,
+            ttl: 0,
+            media: Some(media),
+            file: Some(file),
+            reply_to: None,
+            media_reference: Some(reference),
+        }
+    }
+
+    #[test]
+    fn history_received_media_captions_survive_restart_and_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, files_dir) = test_state(&tmp);
+        let directory = tmp.path().join("secret");
+        fs::create_dir(&directory).unwrap();
+        let history = SecretHistory::open(&directory, "acc", &BTreeMap::new()).unwrap();
+        history
+            .set_auto_save_folder(&state, Some(&files_dir.join("archive")))
+            .unwrap();
+
+        for (id, body) in [(101, ""), (102, "separate message body")] {
+            let key = FileKey::generate().unwrap();
+            let media = kiaro_secret_chat::types::DecryptedMessageMediaPhoto {
+                thumb: Vec::new(),
+                thumb_w: 0,
+                thumb_h: 0,
+                w: 64,
+                h: 64,
+                size: 16,
+                key: key.key().to_vec(),
+                iv: key.iv().to_vec(),
+                caption: "Sunset over the lake".into(),
+            }
+            .into();
+            let mut message = received_media(id, media);
+            message.text = body.into();
+            let row = history.record_message(&message).unwrap();
+            assert_eq!(row["caption"], "Sunset over the lake");
+            if !body.is_empty() {
+                assert_eq!(row["text"], body);
+            }
+            history.archive_row(&state, 10, &row).unwrap();
+        }
+        drop(history);
+
+        let reopened = SecretHistory::open(&directory, "acc", &BTreeMap::new()).unwrap();
+        assert_eq!(
+            reopened.read(10, 2).unwrap()[0]["caption"],
+            "Sunset over the lake"
+        );
+        assert_eq!(reopened.search(Some(10), "lake", 10).unwrap().len(), 2);
+        assert_eq!(
+            reopened
+                .search(Some(10), "separate message", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        let archived = reopened.archive_rows(&state, 10).unwrap();
+        assert_eq!(archived.len(), 2);
+        assert!(
+            archived
+                .iter()
+                .all(|(row, _)| row["caption"] == "Sunset over the lake")
+        );
+    }
+
+    #[test]
+    fn history_received_media_kinds_drive_export_selection() {
+        let tmp = tempfile::tempdir().unwrap();
+        let directory = tmp.path().join("secret");
+        fs::create_dir(&directory).unwrap();
+        let history = SecretHistory::open(&directory, "acc", &BTreeMap::new()).unwrap();
+        let cases = [
+            (MediaKind::Photo, "photo", "photos"),
+            (MediaKind::Video, "video", "videos"),
+            (MediaKind::Document, "document", "files"),
+            (MediaKind::Audio, "audio", "files"),
+            (MediaKind::Animation, "animation", "gifs"),
+            (MediaKind::Sticker, "sticker", "stickers"),
+            (MediaKind::VideoNote, "video_note", "video_messages"),
+            (MediaKind::VoiceNote, "voice_note", "voice_messages"),
+        ];
+        for (index, (kind, expected, flag)) in cases.into_iter().enumerate() {
+            let key = FileKey::generate().unwrap();
+            let media = document_media(DocumentMediaInput {
+                kind,
+                name: "sample.bin",
+                mime: "application/octet-stream",
+                size: 16,
+                layer: 143,
+                key: &key,
+                caption: "",
+                metadata: &Metadata::default(),
+            })
+            .unwrap();
+            let row = history
+                .record_message(&received_media(index as i64 + 1, media))
+                .unwrap();
+            assert_eq!(row["type"], expected);
+            let mut options = json!({"include_media": false});
+            options[flag] = json!(true);
+            let selected = export::ExportFilter::from_args(&options).unwrap();
+            assert!(selected.allows_media(&row, 16));
+            options[flag] = json!(false);
+            assert!(
+                !export::ExportFilter::from_args(&options)
+                    .unwrap()
+                    .allows_media(&row, 16)
+            );
+        }
+    }
+
     #[test]
     fn wire_chat_id_handles_plain_offset_and_zero() {
         assert_eq!(wire_chat_id(42), Some(42));
@@ -298,6 +429,36 @@ mod tests {
         .unwrap();
         assert_eq!(both_file.len(), 2);
         assert!(both_file[1].extension().unwrap() == "json");
+    }
+
+    #[test]
+    fn export_keeps_distinct_message_text_and_media_caption() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, _) = test_state(&tmp);
+        let rows = vec![json!({
+            "message_id": 102,
+            "is_outgoing": false,
+            "date": "2026-01-01T00:00:00Z",
+            "text": "separate <message> body",
+            "caption": "Sunset & lake",
+        })];
+        for (format, body, caption) in [
+            (
+                ExportFormat::Text,
+                "separate <message> body",
+                "Sunset & lake",
+            ),
+            (
+                ExportFormat::Html,
+                "separate &lt;message&gt; body",
+                "Sunset &amp; lake",
+            ),
+        ] {
+            let paths = export::write_history(&state, "acc", 10, &rows, format, None).unwrap();
+            let output = fs::read_to_string(&paths[0]).unwrap();
+            assert!(output.contains(body));
+            assert!(output.contains(caption));
+        }
     }
 
     #[test]

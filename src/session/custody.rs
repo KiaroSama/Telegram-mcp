@@ -2,7 +2,7 @@ use super::*;
 mod authorization;
 /// A difference request implicitly acknowledges encrypted updates in grammers.
 /// Never attach a legacy authorization to that update consumer while this
-/// account's old encryption custody is waiting for its separate Rust backend.
+/// account's old encryption custody still needs verified migration.
 pub fn check_deferred_custody(state: &State, label: &str) -> Result<()> {
     validate_label(label)?;
     let native = state.read_json(&format!("{label}.session.json"), serde_json::Value::Null)?;
@@ -38,7 +38,7 @@ pub fn check_deferred_custody(state: &State, label: &str) -> Result<()> {
     ] {
         match path.symlink_metadata() {
             Ok(_) => bail!(
-                "This account has existing secret-chat custody. Keep its legacy authorization untouched until the separate Rust secret backend is ready, or log in with a fresh native authorization under a separate label."
+                "This account has existing secret-chat custody. Verify its authorization and migrate the legacy store before connecting, or log in with a fresh native authorization under a separate label."
             ),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(_) => bail!(
@@ -123,16 +123,14 @@ fn check_custody_identity(
 ) -> Result<()> {
     validate_label(label)?;
     let native = state.read_json(&format!("{label}.session.json"), serde_json::Value::Null)?;
-    if native["authorization_origin"].as_str() == Some("native") {
-        return Ok(());
-    }
+    let fresh_native = native["authorization_origin"].as_str() == Some("native");
     let directory = crate::secret::custody_dir(state.root())?;
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(_) => bail!("Cannot verify deferred authorization custody; no connection was opened"),
     };
-    let mut owners = std::collections::BTreeSet::new();
+    let mut owners = std::collections::BTreeMap::new();
     for (count, entry) in entries.enumerate() {
         if count >= 10_000 {
             bail!("Deferred custody exceeds its entry budget; no connection was opened");
@@ -146,11 +144,20 @@ fn check_custody_identity(
         if name == "legacy-backups" {
             continue;
         }
-        let owner = name.strip_suffix(".owner.json").unwrap_or(name);
+        let (owner, native_store) = match name.strip_suffix(".v1.enc") {
+            Some(owner) => (owner, true),
+            None => (name.strip_suffix(".owner.json").unwrap_or(name), false),
+        };
         if owner != label && validate_label(owner).is_ok() {
-            owners.insert(owner.to_owned());
+            owners
+                .entry(owner.to_owned())
+                .and_modify(|saved| *saved |= native_store)
+                .or_insert(native_store);
         }
     }
+    // A new native login is independent of unverified legacy custody, but a
+    // copied native session must not split an existing encrypted store's identity.
+    owners.retain(|_, native_store| !fresh_native || *native_store);
     if owners.is_empty() {
         return Ok(());
     }
@@ -161,8 +168,8 @@ fn check_custody_identity(
         // anybody's encrypted queue; Native does not replace existing snapshots.
         return Ok(());
     }
-    for owner in owners {
-        let owned = authorization::load(state, &owner, config, true)
+    for (owner, native_store) in owners {
+        let owned = authorization::load(state, &owner, config, !native_store)
             .map_err(|_| anyhow::anyhow!("Cannot identify an existing deferred-custody authorization; no connection was opened"))?;
         if owned.is_empty() {
             bail!(
@@ -171,7 +178,7 @@ fn check_custody_identity(
         }
         if keys.intersects(&owned) {
             bail!(
-                "This authorization has existing secret-chat custody under an account label. Keep its legacy authorization untouched until the separate Rust secret backend is ready, or use a fresh native authorization"
+                "This authorization has existing secret-chat custody under another account label. Open that label or use the account rename flow to preserve its keys and protocol state"
             );
         }
     }
