@@ -216,8 +216,8 @@ async fn gif(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
         .map_err(|_| anyhow::anyhow!("Malformed GIF query ID"))?;
     ensure!(!parts[4].is_empty(), "GIF result ID is empty");
     let mut p = json!({"peer":a::peer(api,args,"chat_id").await?,"query_id":query.to_string(),"id":parts[4],"random_id":a::random_id()});
-    if let Some(t) = args.get("topic_id").filter(|v| !v.is_null()) {
-        p["reply_to"] = json!({"_":"inputReplyToMessage","reply_to_msg_id":positive(t)?});
+    if let Some(topic) = crate::tools::messaging::helpers::topic_root(args)? {
+        p["reply_to"] = json!({"_":"inputReplyToMessage","reply_to_msg_id":topic});
     }
     api.invoke("messages.sendInlineBotResult", p).await
 }

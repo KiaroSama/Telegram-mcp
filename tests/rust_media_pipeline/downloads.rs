@@ -345,6 +345,41 @@ async fn disappearing_download_never_issues_a_read_or_listened_acknowledgement()
     );
     assert!(w.downloads.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn disappearing_save_refuses_decoded_absent_or_disabled_ttl_before_transfer() {
+    let (_dir, state) = local_support::fixture();
+    let schema = telegram_mcp::tl::Schema::global();
+    for (index, media) in [
+        json!({"_":"messageMediaPhoto","photo":photo(3)}),
+        json!({"_":"messageMediaPhoto","photo":photo(3),"ttl_seconds":0}),
+        json!({"_":"messageMediaDocument","document":document(4,"ordinary.bin",1)}),
+        json!({"_":"messageMediaDocument","document":document(4,"ordinary.bin",1),"ttl_seconds":0}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let decoded = schema
+            .decode("MessageMedia", &schema.encode_object(&media).unwrap())
+            .unwrap();
+        let w = MediaWire::new(
+            vec![("messages.getMessages", media_message(decoded))],
+            png(),
+        );
+        let destination = state.file_roots()[0].join(format!("ordinary-{index}.bin"));
+        let error = save(
+            &w,
+            &state,
+            "save_disappearing_media",
+            json!({"chat_id":7,"message_id":8,"file_path":destination,"preview":false}),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("no disappearing media"));
+        assert!(w.downloads.lock().unwrap().is_empty());
+        assert!(!destination.exists());
+    }
+}
 #[tokio::test]
 async fn a_failed_optional_preview_preserves_a_successful_disappearing_save() {
     let (_dir, state) = local_support::fixture();

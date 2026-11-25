@@ -302,7 +302,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     if name == "list_disappearing_media" {
         return Ok(
-            json!({"messages":result_messages(&response).into_iter().filter(|m|m["media"].get("ttl_seconds").is_some()).collect::<Vec<_>>()}),
+            json!({"messages":result_messages(&response).into_iter().filter(|m|m["media"]["ttl_seconds"].as_i64().is_some_and(|ttl| ttl > 0)).collect::<Vec<_>>()}),
         );
     }
     if name == "get_messages" {
