@@ -47,6 +47,11 @@ impl Safeguard {
         }
     }
 
+    pub(crate) fn has_approval_peers(&self) -> bool {
+        std::env::var("TELEGRAM_APPROVAL_CHAT_IDS")
+            .is_ok_and(|raw| raw.split(',').any(|peer| !peer.trim().is_empty()))
+    }
+
     pub fn check(
         &self,
         tool: &str,

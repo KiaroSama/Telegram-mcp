@@ -208,6 +208,69 @@ fn approval_channel_marked_ids_and_bound_peer_ids_share_the_same_refusal() {
     }
 }
 #[test]
+fn approval_channels_reject_equivalent_numeric_spellings_before_reads() {
+    let facts = Facts {
+        approval_chats: ["7123456789".into()].into_iter().collect(),
+        ..Default::default()
+    };
+    for target in [
+        "7123456789",
+        "+7123456789",
+        "07123456789",
+        " +0007123456789 ",
+    ] {
+        assert_eq!(
+            decide(
+                "get_history",
+                true,
+                false,
+                &json!({"chat_id":target}),
+                &facts
+            )
+            .outcome,
+            "refuse",
+            "A spelling accepted as the same numeric Telegram peer must stay protected: {target}"
+        );
+    }
+    assert_eq!(
+        decide(
+            "get_history",
+            true,
+            false,
+            &json!({"chat_id":"7123456790"}),
+            &facts
+        )
+        .outcome,
+        "run"
+    );
+}
+
+#[test]
+fn approval_channel_configuration_normalizes_signed_and_padded_ids() {
+    for (configured, target) in [
+        ("+07123456789", "7123456789"),
+        ("-0001001234567890", "-1001234567890"),
+        ("-1001234567890", "-0001001234567890"),
+    ] {
+        let facts = Facts {
+            approval_chats: [configured.into()].into_iter().collect(),
+            ..Default::default()
+        };
+        assert_eq!(
+            decide(
+                "get_history",
+                true,
+                false,
+                &json!({"chat_id":target}),
+                &facts
+            )
+            .outcome,
+            "refuse"
+        );
+    }
+}
+
+#[test]
 fn pending_approval_codes_are_never_sent() {
     let facts = Facts {
         pending_codes: ["ABC123".into()].into_iter().collect(),
