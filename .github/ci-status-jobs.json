@@ -11,7 +11,7 @@
     "Native renderer tests (windows-aarch64)",
     "PowerShell launcher tests (windows-x86_64)",
     "PowerShell launcher tests (windows-aarch64)",
-    "Locked dependencies have no known advisory",
+    "Locked dependency advisory policy",
     "Every operating system matches reviewed case inventory",
     "Critical native behavior categories are verified",
     "Combined coverage gate"

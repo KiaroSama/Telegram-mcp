@@ -2,8 +2,8 @@
 
 > Rust migration note: this is a historical decision record. Its original source
 > paths describe the former implementation; current native behavior and any
-> remaining limits are documented in [MIGRATION.md](../MIGRATION.md). Secret-chat
-> integration is deferred until the owner supplies the separate Rust backend.
+> remaining limits are documented in [MIGRATION.md](../MIGRATION.md), including
+> the integrated native secret-chat backend and its custody migration contract.
 
 
 The eight media kinds live in `telegram_mcp/secret_media_content.py` as `KINDS`,

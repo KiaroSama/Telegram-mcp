@@ -127,7 +127,7 @@ Fetching content and marking it read are separate operations. The server returns
 
 [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat) provides native MTProto 2.0 secret chats over the same account connection as ordinary chats. The server commits incoming encrypted updates to durable storage before acknowledging them. All [34 secret-chat tools](docs/COMMANDS.md#secret-chat-tools) are available through MCP, subject to the same exposure filters and safeguards.
 
-On first open of an account with a supported legacy secret-chat store, the server automatically makes a read-only backup and migrates the store without data loss before connecting. See [secret-chat store migration](docs/MIGRATION.md#secret-chat-store-migration).
+On first open of an account with a supported legacy secret-chat store, the server verifies the authorization identity, makes a read-only backup and migrates the store before starting normal update consumption. An imported session without a cached self identity may first need a request that suppresses updates to verify its owner. See [secret-chat store migration](docs/MIGRATION.md#secret-chat-store-migration).
 
 ## Telegram Operator plugin
 

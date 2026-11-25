@@ -49,7 +49,8 @@ reviewing the assertions or for authorized live Telegram checks.
 native MTProto 2.0 secret chats over the existing account connection. The server
 commits incoming encrypted updates to durable storage before acknowledging them.
 On first open, it creates a read-only backup of a supported legacy secret-chat store
-and migrates it losslessly before connecting. See the [migration notes](MIGRATION.md#secret-chat-store-migration)
+and migrates it after verifying authorization identity and before normal update
+consumption. See the [migration notes](MIGRATION.md#secret-chat-store-migration)
 and the [34 tools in six groups](COMMANDS.md#secret-chat-tools).
 `export_secret_chat` does not support `peer_user` filtering. The runtime refuses a
 nonempty filter instead of exporting an unfiltered chat.

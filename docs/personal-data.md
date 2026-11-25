@@ -32,9 +32,11 @@ already running as the same OS user remains outside that guarantee.
 ## Backups, deletion and containers
 
 Preserve existing Telethon and secret-chat stores when installing the native version.
-Their formats are not interchangeable with grammers state, and secret-chat integration
-is deferred pending the owner's Rust backend. Lost encryption keys cannot be recreated
-by signing in again.
+Their formats are not interchangeable with grammers state. Supported legacy secret-chat
+stores are backed up and imported by the pinned native backend after authorization
+identity is verified; see [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
+Unsupported or conflicting custody is refused. Lost encryption keys cannot be recreated
+by signing in again, and a message-content export does not replace a private key-store backup.
 
 The Docker image stores all persistent state under `/data`, runs as a non-root user
 and creates the state directory with private permissions. Keep the named volume when
