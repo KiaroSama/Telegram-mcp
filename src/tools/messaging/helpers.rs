@@ -100,12 +100,16 @@ pub fn copy_optional(target: &mut Value, source: &Value, pairs: &[(&str, &str)])
         }
     }
 }
-pub fn reply(a: &Value, fallback: Option<i64>) -> Result<Option<Value>> {
-    let topic = a
-        .get("topic_id")
+pub fn topic_root(a: &Value) -> Result<Option<i64>> {
+    // General has no topic root; its sends and replies use the ordinary chat route.
+    Ok(a.get("topic_id")
         .filter(|v| !v.is_null())
         .map(|_| id(a, "topic_id"))
-        .transpose()?;
+        .transpose()?
+        .filter(|topic| *topic != 1))
+}
+pub fn reply(a: &Value, fallback: Option<i64>) -> Result<Option<Value>> {
+    let topic = topic_root(a)?;
     let reply = a
         .get("reply_to_message_id")
         .filter(|v| !v.is_null())

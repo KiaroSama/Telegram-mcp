@@ -131,6 +131,86 @@ async fn scheduled_date_only_edit_preserves_body_formatting_and_recurrence() {
     assert_eq!(req["schedule_repeat_period"], 604800);
     assert_eq!(calls[0].1["hash"], "0");
 }
+
+#[tokio::test]
+async fn scheduled_date_only_edit_preserves_decoded_unformatted_body() {
+    let schema = telegram_mcp::tl::Schema::global();
+    let raw = json!({"_":"message","id":8,"peer_id":{"_":"peerUser","user_id":"7"},"date":123,"message":"stored plain body"});
+    let queued = schema
+        .decode("Message", &schema.encode_object(&raw).unwrap())
+        .unwrap();
+    assert_eq!(queued.get("entities"), Some(&Value::Null));
+    let api = Api::new(vec![
+        ("messages.getScheduledHistory", messages(vec![queued])),
+        ("messages.editMessage", updates()),
+    ]);
+    let when = telegram_mcp::tools::messaging::helpers::unix_time() + 3600;
+    run(
+        &api,
+        "edit_scheduled_message",
+        json!({"chat_id":7,"message_id":8,"when":when}),
+    )
+    .await
+    .unwrap();
+    let calls = api.calls();
+    assert_eq!(calls[1].1["message"], "stored plain body");
+    assert_eq!(calls[1].1["entities"], json!([]));
+    assert_eq!(calls[1].1["schedule_date"], when);
+}
+
+#[tokio::test]
+async fn explicit_general_topic_sends_do_not_create_a_thread_reply() {
+    for reply_to in [None, Some(88)] {
+        let api = Api::new(vec![("messages.sendMessage", updates())]);
+        run(
+            &api,
+            "send_message",
+            json!({"chat_id":7,"message":"General topic","topic_id":1,"reply_to_message_id":reply_to}),
+        )
+        .await
+        .unwrap();
+        let calls = api.calls();
+        if let Some(reply_to) = reply_to {
+            assert_eq!(
+                calls[0].1["reply_to"],
+                json!({"_":"inputReplyToMessage","reply_to_msg_id":reply_to})
+            );
+        } else {
+            assert!(calls[0].1.get("reply_to").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn emoji_replacement_rebuilds_received_named_mentions_before_editing() {
+    let schema = telegram_mcp::tl::Schema::global();
+    let raw = json!({"_":"message","id":8,"peer_id":{"_":"peerUser","user_id":"7"},"date":123,"message":"Alice 🙂","entities":[{"_":"messageEntityMentionName","offset":0,"length":5,"user_id":"9"},{"_":"messageEntityCustomEmoji","offset":6,"length":2,"document_id":"11"}]});
+    let original = schema
+        .decode("Message", &schema.encode_object(&raw).unwrap())
+        .unwrap();
+    let api = Api::new(vec![
+        ("messages.getMessages", messages(vec![original])),
+        ("messages.editMessage", updates()),
+    ])
+    .identity(
+        json!("9"),
+        json!({"_":"inputPeerUser","user_id":"9","access_hash":"19"}),
+    );
+    let result = run(
+        &api,
+        "replace_custom_emoji",
+        json!({"chat_id":7,"message_id":8,"old_document_id":"11","new_document_id":"22"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["changed"], 1);
+    let calls = api.calls();
+    assert_eq!(calls[1].1["message"], "Alice 🙂");
+    assert_eq!(
+        calls[1].1["entities"],
+        json!([{"_":"inputMessageEntityMentionName","offset":0,"length":5,"user_id":{"_":"inputUser","user_id":"9","access_hash":"19"}},{"_":"messageEntityCustomEmoji","offset":6,"length":2,"document_id":"22"}])
+    );
+}
 #[tokio::test]
 async fn scheduled_text_edit_keeps_the_original_date_even_if_the_queue_is_overdue() {
     let queued = message(8, "old text");
@@ -452,6 +532,23 @@ async fn forwarding_and_draft_mutations_preserve_topics_schedule_and_source_boun
     assert_eq!(calls[0].1["reply_to"]["top_msg_id"], 55);
     assert_eq!(calls[1].1["message"], "");
     assert_eq!(calls[2].1["id"], json!([8]));
+}
+
+#[tokio::test]
+async fn forwarding_to_general_omits_the_topic_root() {
+    for name in ["forward_message", "forward_messages", "copy_message"] {
+        let api = Api::new(vec![("messages.forwardMessages", updates())]);
+        run(
+            &api,
+            name,
+            json!({"from_chat_id":7,"to_chat_id":7,"message_id":8,"message_ids":[8],"topic_id":1,"expand_album":false}),
+        )
+        .await
+        .unwrap();
+        let calls = api.calls();
+        assert!(calls[0].1.get("top_msg_id").is_none());
+        assert_eq!(calls[0].1["id"], json!([8]));
+    }
 }
 
 #[tokio::test]

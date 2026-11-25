@@ -11,6 +11,8 @@ use telegram_mcp::export::{self, settings::Settings};
 mod access;
 #[path = "rust_visual_export/media.rs"]
 mod media_edges;
+#[path = "rust_visual_export/migrated_replies.rs"]
+mod migrated_replies;
 #[path = "rust_visual_export/settings.rs"]
 mod settings_edges;
 #[path = "rust_visual_export/upstream.rs"]

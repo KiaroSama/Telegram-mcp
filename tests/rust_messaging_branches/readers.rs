@@ -1,6 +1,55 @@
 use super::support::*;
 use serde_json::{Value, json};
 
+#[tokio::test]
+async fn disappearing_listing_requires_a_positive_decoded_media_ttl() {
+    let schema = telegram_mcp::tl::Schema::global();
+    let mut rows = Vec::new();
+    for (id, media) in [
+        (
+            1,
+            json!({"_":"messageMediaPhoto","photo":{"_":"photoEmpty","id":"10"}}),
+        ),
+        (
+            2,
+            json!({"_":"messageMediaDocument","document":{"_":"documentEmpty","id":"20"}}),
+        ),
+        (
+            3,
+            json!({"_":"messageMediaPhoto","photo":{"_":"photoEmpty","id":"30"},"ttl_seconds":0}),
+        ),
+        (
+            4,
+            json!({"_":"messageMediaPhoto","photo":{"_":"photoEmpty","id":"40"},"ttl_seconds":30}),
+        ),
+        (
+            5,
+            json!({"_":"messageMediaDocument","document":{"_":"documentEmpty","id":"50"},"ttl_seconds":2147483647}),
+        ),
+    ] {
+        let mut row = message(id, "");
+        row["media"] = schema
+            .decode("MessageMedia", &schema.encode_object(&media).unwrap())
+            .unwrap();
+        rows.push(row);
+    }
+    assert_eq!(rows[0]["media"].get("ttl_seconds"), Some(&Value::Null));
+    let api = Api::new(vec![("messages.getHistory", messages(rows))]);
+    let result = run(&api, "list_disappearing_media", json!({"chat_id":7}))
+        .await
+        .unwrap();
+    assert_eq!(
+        result["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![4, 5]
+    );
+    assert_eq!(api.calls().len(), 1);
+}
+
 struct DelayedApi {
     api: Api,
     search_delay: u64,
