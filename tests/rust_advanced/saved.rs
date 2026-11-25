@@ -311,6 +311,27 @@ async fn gif_handle_preserves_colons_inside_result_id() {
     assert_eq!(p["query_id"], "123");
     assert_eq!(p["reply_to"]["reply_to_msg_id"], 3);
 }
+
+#[tokio::test]
+async fn sending_a_gif_to_general_does_not_create_a_thread_reply() {
+    let m = Mock::new();
+    let handle = format!(
+        "gif:default:{}:123:result",
+        chrono::Utc::now().timestamp() + 3600
+    );
+    run(
+        &m,
+        "send_gif",
+        json!({"chat_id":7,"gif_id":handle,"topic_id":1}),
+    )
+    .await
+    .unwrap();
+    let p = m.request("messages.sendInlineBotResult");
+    assert!(p.get("reply_to").is_none());
+    assert_eq!(p["id"], "result");
+    assert_eq!(p["query_id"], "123");
+}
+
 #[tokio::test]
 async fn adding_sticker_checks_expected_set_count() {
     let m = Mock::new().respond("messages.getStickerSet", json!({"set":{"count":4}}));

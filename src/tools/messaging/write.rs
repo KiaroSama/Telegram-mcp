@@ -368,8 +368,17 @@ async fn preserve_scheduled(
             "The queued body is unreadable as plain text/media; cancel it and queue a new copy instead of replacing opaque rich content"
         );
         request["message"] = json!(text);
-        request["entities"] =
-            json!(build_entities(api, text, current.get("entities").unwrap_or(&json!([]))).await?);
+        request["entities"] = json!(
+            build_entities(
+                api,
+                text,
+                current
+                    .get("entities")
+                    .filter(|value| !value.is_null())
+                    .unwrap_or(&json!([]))
+            )
+            .await?
+        );
     }
     let date = when.or_else(|| current["date"].as_i64()).ok_or_else(|| {
         anyhow::anyhow!("The scheduled message has no date to preserve; supply when")
@@ -529,8 +538,8 @@ async fn forward(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     let random_ids: Vec<Value> = message_ids.iter().map(|_| args::random_id()).collect();
     let mut req = json!({"from_peer":source,"to_peer":destination,"id":message_ids,"random_id":random_ids,"drop_author":drop_author,"drop_media_captions":drop_captions,"silent":args::boolean(a,"silent",false)?});
-    if let Some(topic) = a.get("topic_id").filter(|v| !v.is_null()) {
-        req["top_msg_id"] = json!(id(&json!({"topic_id":topic}), "topic_id")?);
+    if let Some(topic) = topic_root(a)? {
+        req["top_msg_id"] = json!(topic);
     }
     if let Some(identity) = a.get("send_as").filter(|v| !v.is_null()) {
         req["send_as"] = api.resolve_peer(identity).await?;

@@ -76,6 +76,7 @@ async fn emoji(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         changed > 0,
         "No matching custom emoji was found; nothing was changed"
     );
+    let entities = build_entities(api, text, &json!(entities)).await?;
     let result = api
         .invoke(
             "messages.editMessage",

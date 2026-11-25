@@ -332,7 +332,9 @@ async fn collect_and_write(
                     if *migrated {
                         message["id"] = (id - 1_000_000_000).into();
                         if message["reply_to"].is_object()
-                            && message["reply_to"].get("reply_to_peer_id").is_none()
+                            && message["reply_to"]
+                                .get("reply_to_peer_id")
+                                .is_none_or(Value::is_null)
                             && let Some(reply) = numeric_id(&message["reply_to"]["reply_to_msg_id"])
                         {
                             message["reply_to"]["reply_to_msg_id"] = (reply - 1_000_000_000).into();

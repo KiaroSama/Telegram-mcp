@@ -140,6 +140,43 @@ async fn changing_media_preserves_existing_caption_when_no_new_caption_was_suppl
     assert_eq!(calls[1].1["entities"][0]["_"], "messageEntityItalic");
     assert_eq!(calls[1].1["media"]["_"], "inputMediaUploadedPhoto");
 }
+
+#[tokio::test]
+async fn changing_media_preserves_decoded_unformatted_captions() {
+    let (_dir, state) = local_support::fixture();
+    let path = state.file_roots()[0].join("new.png");
+    std::fs::write(&path, png()).unwrap();
+    let schema = telegram_mcp::tl::Schema::global();
+    for caption in ["plain caption", ""] {
+        let raw = json!({"_":"message","id":8,"peer_id":{"_":"peerUser","user_id":"7"},"date":123,"message":caption,"media":{"_":"messageMediaPhoto","photo":photo(3)}});
+        let original = schema
+            .decode("Message", &schema.encode_object(&raw).unwrap())
+            .unwrap();
+        assert_eq!(original.get("entities"), Some(&Value::Null));
+        let w = MediaWire::new(
+            vec![
+                (
+                    "messages.getMessages",
+                    json!({"messages":[original],"topics":[],"users":[],"chats":[]}),
+                ),
+                ("messages.editMessage", json!({"_":"updates","updates":[]})),
+            ],
+            vec![],
+        );
+        send(
+            &w,
+            &state,
+            "edit_message_media",
+            json!({"chat_id":7,"message_id":8,"file_path":path}),
+        )
+        .await
+        .unwrap();
+        let calls = w.calls();
+        assert_eq!(calls[1].1["message"], caption);
+        assert_eq!(calls[1].1["entities"], json!([]));
+        assert_eq!(calls[1].1["media"]["_"], "inputMediaUploadedPhoto");
+    }
+}
 #[tokio::test]
 async fn explicit_media_edit_caption_skips_fetch_and_uses_native_html_entities() {
     let (_dir, state) = local_support::fixture();
