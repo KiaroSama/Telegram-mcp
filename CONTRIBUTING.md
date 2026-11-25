@@ -67,24 +67,28 @@ Every base/renderer leg must match its reviewed operating-system inventory. Rust
 cases may differ across platforms; those differences must remain explicit. OS records
 contain the tested commit, actual CPU architecture/native compiler host, lock digest,
 case identities and outcomes.
-`.github/expected-native-legs.json` declares the exact Linux/macOS/Windows base and
+`.github/expected-native-legs.json` declares the exact Linux/Windows base and
 renderer set for both architectures. `.github/expected-native-tests.json` maps each OS to its reviewed native
 case identities so deletion on all systems cannot silently pass. Update it when adding
 or deliberately renaming tests. Missing records and unreviewed changes fail.
 
-Four preserved PowerShell suites are discovered as `tests/test_*.ps1` on both Windows
-architectures. Each Unix architecture leg separately parses the retained scripts and
-runs the portable health/launcher behavior plus a real release-CLI handoff. Run
-all of them after launcher changes; they must exercise the compiled Rust executable.
-Do not remove a verification type merely because the application language changed.
+`tests/rust_launchers.rs` exercises the native account manager and the retained
+PowerShell launchers. Its portable cases run with the native suite; Windows-only
+cases in `tests/rust_launchers/windows.rs` run on both Windows architectures, including
+the separate launcher jobs. Run `cargo test --locked --test rust_launchers` after
+launcher changes. These tests invoke the actual compiled Rust executable where
+native behavior is required and use a synthetic child for protocol/exit forwarding.
+The four historical PowerShell suites remain recorded in the migration baseline;
+they are not files executed by the current workflow. Release jobs separately invoke
+all three actual release CLIs with `--help` on each supported architecture.
 
 ## CI and coverage
 
-Pushes and PRs always build release binaries for ARM64 and x86_64 on all three operating systems before
+Pushes and PRs build release binaries for ARM64 and x86_64 on Linux and Windows before
 behavioral parity is evaluated. Tests, formatting, Clippy, advisory audit, CodeQL,
 privacy, Gitleaks current-tree/introduction scans, container replacement and Compose checks remain separate evidence.
 The gated native coverage metric is executable application-core source lines: the
-union of base and real-renderer reports from all six OS/architecture combinations must reach
+union of base and real-renderer reports from all four OS/architecture combinations must reach
 85%. `.github/coverage-scope.json` records every source path and its original measurement
 basis, including deterministic helpers now located inside tool modules. CI separately
 publishes all-production coverage, including API adapters and development/skill helpers.
@@ -109,7 +113,12 @@ After changing `Cargo.toml`, resolve and review `Cargo.lock`; do not use an unlo
 build to hide drift. grammers' Codeberg source revision is explicit. Read current
 release notes and source before updating it or its Telegram layer; protocol-codec and
 adapter tests must follow schema changes together. Dependabot watches Cargo, Actions
-and Docker.
+and Docker. The advisory job applies `cargo audit --deny warnings` with one explicit
+exception: [RUSTSEC-2026-0543](https://rustsec.org/advisories/RUSTSEC-2026-0543.html),
+the informational notice that `chrono` is unmaintained, with no patched version.
+`chrono` is a direct dependency and is also required by locked transitive dependencies.
+A passing advisory job therefore means the checked policy passed, not that the lockfile
+has no known advisory. Review the exception when updating those dependencies.
 
 The always-run Gitleaks gate scans every regular tracked source file and the exact
 PR/push introduction range, including merge diffs. A separate manual historical audit

@@ -27,7 +27,7 @@ absolute `.so`, `.dylib` or `.dll` path for your installation. The loader also a
 choose it from the reviewed dependency build, not a chat-supplied path.
 
 CI builds official Samsung/rlottie revision
-`ea06d2f29ba01b8d06c00a838d107f5e484ae59b` externally on Linux, macOS and Windows.
+`ea06d2f29ba01b8d06c00a838d107f5e484ae59b` externally on Linux and Windows for x64 and arm64.
 Its renderer legs set `TELEGRAM_REQUIRE_LOTTIE=1`; the test must render distinct real
 frames and fail when the native library is unavailable. Base legs separately exercise
 behavior without the optional library. The repository does not vendor C++ source.
@@ -60,7 +60,8 @@ the server-only Docker image currently does not.
 Telegram Desktop window capture is Windows-specific and uses native APIs. The code
 validates process/window selection, method, format, region and allocation limits.
 Other platforms report that the capture operation requires Windows. This platform
-restriction does not prevent ordinary Telegram API tools or native builds on macOS/Linux.
+restriction does not prevent ordinary Telegram API tools on Linux. macOS is not part
+of the current native release or CI matrix.
 
 A successful synthetic capture test is not proof that a particular user's Telegram
 Desktop version, DPI setting, permissions or window state can be captured. Real rendered
