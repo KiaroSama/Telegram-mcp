@@ -264,7 +264,7 @@ async fn connect_record(
     let client = super::local_http_client(record["certificate_pem"].as_str())?;
     let transport = StreamableHttpClientTransport::with_client(
         client,
-        client_configuration(&parsed.to_string(), token),
+        client_configuration(parsed.as_ref(), token),
     );
     let remote = tokio::time::timeout(Duration::from_secs(10), ().serve(transport))
         .await

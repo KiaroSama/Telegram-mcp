@@ -168,12 +168,8 @@ fn backup_retention_is_per_selected_source_and_unrelated_backup_directories_are_
 async fn native_configuration_writer_respects_the_launchers_shared_byte_lock() {
     use std::{process::Stdio, time::Duration};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-    #[cfg(unix)]
-    if let Ok(path) = std::env::var("ACCOUNT_REVIEW_LOCK_CHILD") {
-        use std::{
-            io::{Read, Write},
-            os::fd::AsRawFd,
-        };
+    if let Some(path) = std::env::var_os("ACCOUNT_REVIEW_LOCK_CHILD") {
+        use std::io::{Read, Write};
         if std::env::var("ACCOUNT_REVIEW_HOLDER_PROBE").as_deref() == Ok("noisy") {
             std::io::stderr().write_all(&vec![b'n'; 131072]).unwrap();
             std::io::stderr().flush().unwrap();
@@ -191,16 +187,24 @@ async fn native_configuration_writer_respects_the_launchers_shared_byte_lock() {
             .truncate(false)
             .open(path)
             .unwrap();
-        // POSIX record locks are the FileStream.Lock protocol, unlike flock.
-        let mut region: libc::flock = unsafe { std::mem::zeroed() };
-        region.l_type = libc::F_WRLCK as _;
-        region.l_whence = libc::SEEK_SET as _;
-        region.l_start = 0;
-        region.l_len = 1;
-        assert_eq!(
-            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &region) },
-            0
-        );
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: fcntl reads this initialized record for a live descriptor.
+            let mut region: libc::flock = unsafe { std::mem::zeroed() };
+            region.l_type = libc::F_WRLCK as _;
+            region.l_whence = libc::SEEK_SET as _;
+            region.l_len = 1;
+            assert_eq!(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &region) }, 0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::LockFile;
+            // SAFETY: the open file remains live while its first byte is locked.
+            let locked = unsafe { LockFile(file.as_raw_handle(), 0, 0, 1, 0) };
+            assert_ne!(locked, 0, "{}", std::io::Error::last_os_error());
+        }
         println!("LOCKED");
         std::io::stdout().flush().unwrap();
         let mut byte = [0];
@@ -213,38 +217,15 @@ async fn native_configuration_writer_respects_the_launchers_shared_byte_lock() {
     let mut lock = path.as_os_str().to_owned();
     lock.push(".lock");
     let lock = std::path::PathBuf::from(lock);
-    #[cfg(unix)]
-    let mut command = {
-        let mut c = tokio::process::Command::new(std::env::current_exe().unwrap());
-        c.args([
+    // Use the same OS byte-range lock as FileStream.Lock, without starting PowerShell.
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
             "--exact",
             "native_configuration_writer_respects_the_launchers_shared_byte_lock",
             "--nocapture",
         ])
-        .env("ACCOUNT_REVIEW_LOCK_CHILD", &lock);
-        c
-    };
-    #[cfg(windows)]
-    let mut command = {
-        let script = dir.path().join("hold-lock.ps1");
-        std::fs::write(&script,r#"param([string] $Path, [string] $Probe)
-if ($Probe -eq 'noisy') { [Console]::Error.Write(('n' * 131072)); [Console]::Error.Flush() }
-[Console]::Out.WriteLine('READY'); [Console]::Out.Flush()
-if ($Probe -eq 'exit') { [Console]::Error.WriteLine('Synthetic holder exited before acquiring the lock.'); [Console]::Error.Flush(); exit 19 }
-$stream = [IO.File]::Open($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
-try { $stream.Lock(0, 1); [Console]::Out.WriteLine('LOCKED'); [Console]::Out.Flush(); [void] [Console]::ReadLine() }
-finally { $stream.Dispose() }
-"#).unwrap();
-        let mut c = tokio::process::Command::new("pwsh");
-        c.args(["-NoLogo", "-NoProfile", "-NonInteractive", "-File"])
-            .arg(script)
-            .arg("-Path")
-            .arg(&lock)
-            .arg("-Probe")
-            .arg(std::env::var("ACCOUNT_REVIEW_HOLDER_PROBE").unwrap_or_default());
-        c
-    };
-    command
+        .env("ACCOUNT_REVIEW_LOCK_CHILD", &lock)
         .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -269,8 +250,7 @@ finally { $stream.Dispose() }
     });
     let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
     let handshake = async {
-        // The latency under test is acquiring the shared byte, not starting a
-        // cold PowerShell/.NET runtime while instrumented cases share the CPU.
+        // Keep process startup separate from the byte-range lock handshake.
         for (phase, budget) in [("READY", 30), ("LOCKED", 10)] {
             tokio::time::timeout(Duration::from_secs(budget), async {
                 loop {
