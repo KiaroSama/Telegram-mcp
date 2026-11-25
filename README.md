@@ -4,15 +4,15 @@
 
 **Use your own Telegram account from an MCP client.**
 
-[![CI workflows on main](https://img.shields.io/badge/CI-Windows%20%7C%20Linux%2064--bit-16a34a)](.github/workflows/tests.yml)
-[![GPL-3.0-or-later license](https://img.shields.io/badge/license-GPL--3.0--or--later-2563eb)](LICENSE)
-[![Release v3.1.0](https://img.shields.io/badge/release-v3.1.0-ea580c)](Cargo.toml)
+[![CI status on main](https://img.shields.io/github/actions/workflow/status/KiaroSama/Telegram-mcp/tests.yml?branch=main&style=flat-square&color=16a34a&label=CI)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml)
+[![GPL-3.0-or-later license](https://img.shields.io/github/license/KiaroSama/Telegram-mcp?style=flat-square&color=2563eb)](#license)
+[![Latest release tag](https://img.shields.io/github/v/tag/KiaroSama/Telegram-mcp?style=flat-square&color=ea580c&label=tag)](#releases-and-tags)
 [![Core test coverage floor 85 percent](https://img.shields.io/badge/coverage-85%25%2B%20core-0d9488)](docs/api-coverage.md)
 [![Built with Rust 1.100.0](https://img.shields.io/badge/rust-1.100.0-8b5cf6)](Cargo.toml)
 [![Runs on Windows and Linux 64-bit](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%2064--bit-0891b2)](.github/workflows/release.yml)
 [![Install from GitHub releases or Cargo](https://img.shields.io/badge/install-release%20%7C%20cargo-4f46e5)](docs/INSTALL.md)
 [![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7)](docs/COMMANDS.md)
-[![Repository source size: 7.05 MB](https://img.shields.io/badge/repo%20size-7.05%20MB-ca8a04)](Cargo.toml)
+[![Repository size](https://img.shields.io/github/repo-size/KiaroSama/Telegram-mcp?style=flat-square&color=ca8a04)](#development)
 [![grammers 0.12 on Telegram layer 233](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20233-15803d)](docs/MIGRATION.md)
 [![386 native MCP tools](https://img.shields.io/badge/tools-386%20native-7c3aed)](docs/api-coverage.md)
 ![MCP Badge](https://badge.mcpx.dev)
@@ -24,6 +24,10 @@
 </div>
 
 Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. Version 3.1.0 uses [`grammers`](https://codeberg.org/Lonami/grammers) 0.12.0 (Telegram API layer 233), [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) 3.11, and `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats. The server does not need Python or a virtual environment.
+
+## Releases and tags
+
+The tag badge updates automatically from [GitHub tags](https://github.com/KiaroSama/Telegram-mcp/tags). [GitHub Releases](https://github.com/KiaroSama/Telegram-mcp/releases) hosts the signed archives, each with a `.sha256` checksum and a `.sig` signature. Each release also includes `SHA256SUMS`, `SHA256SUMS.sig`, `publisher-cert.pem`, and `publisher-key.pem`. GitHub records build provenance attestations for the archives and signed checksum files. See the [installation guide](docs/INSTALL.md#build-or-obtain-a-native-artifact) for verification instructions.
 
 ## Install
 
@@ -149,7 +153,7 @@ Both measurements come from five cold runs on the same Windows 11 x64 host. The 
 | Median time to serialize 50,000 JSON strings | 126.97 ms | 6.77 ms | -94.67% (18.8x faster) |
 | Runtime disk footprint | 206.01 MB | 34.73 MB | -83.14% (5.9x smaller) |
 
-The repository-size badge reports source tree size in decimal MB. The disk footprint above measures the installed runtime.
+The repository-size badge shows the size GitHub reports for the repository. The disk footprint above measures the installed runtime.
 
 ## Development
 
@@ -161,9 +165,13 @@ cargo test --locked --all-features -- --test-threads=1
 
 [CI](.github/workflows/tests.yml) checks the four release targets, enforces an 85% application-core line coverage floor, and runs the Windows launcher tests. CI also includes [CodeQL](.github/workflows/codeql.yml) and [Gitleaks](.github/workflows/gitleaks.yml) workflows. Offline tests do not establish live Telegram behavior. See [contributing](CONTRIBUTING.md) for the CI evidence and the reproduction bundle.
 
+## Author
+
+[KiaroSama](https://github.com/KiaroSama) ([Kiaro.Sama.Dev@gmail.com](mailto:Kiaro.Sama.Dev@gmail.com))
+
 ## License
 
-Telegram MCP is licensed under [GPL-3.0-or-later](LICENSE). See [NOTICE](NOTICE) for third-party attributions.
+Copyright KiaroSama. Telegram MCP is licensed under [GPL-3.0-or-later](LICENSE); see [NOTICE](NOTICE) for third-party attributions.
 
 ## Donate
 
