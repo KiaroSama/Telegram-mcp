@@ -81,10 +81,7 @@ async fn dispatch(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
         "get_file_roots_status"=>Ok(json!({"file_tools_enabled":!state.file_roots().is_empty(),"status":if state.file_roots().is_empty(){"no_allowed_roots"}else{"configured"},"roots":state.file_roots(),"configured_folders":state.file_roots(),"rule":"File operations stay within configured roots. The private state directory and installation outside files/ are protected."})),
         "get_ghost_mode"=>Ok(state.ghost_mode(account,args.get("chat_id"))),
         "set_ghost_mode"=>state.set_ghost_mode(crate::args::boolean(args,"enabled",true)?,account,args.get("chat_id")),
-        "safeguard_status"=>{
-            let grants=state.always_approvals();
-            Ok(json!({"installed":true,"bypass":false,"channels":{"owner_terminal":"available through telegram-mcp approve"},"approval_timeout_seconds":300,"approval_grant_seconds":60,"always_approved":grants["grants"],"always_allowed_folders":grants["folders"],"grant_error":grants["error"],"bulk_send":{"chats":5,"within_seconds":60},"untrusted_content":{"passage_characters":24},"secret_chat_integration":"deferred"}))
-        }
+        "safeguard_status"=>Ok(crate::safeguard::bot::status(&state, None)),
         "revoke_always_approval"=>{
             if let Some(folder)=args["folder"].as_str(){return Ok(json!({"revoked":state.revoke_folder(folder)?,"folder":folder}));}
             let tool=crate::args::text(args,"tool")?;

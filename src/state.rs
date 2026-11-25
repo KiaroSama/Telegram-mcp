@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub use aliases::{alias_key, alias_peer_id, identifier_like};
 pub use events::{EventJournal, IncomingEvent};
+pub(crate) use grants::insert_approval;
 pub use paths::FileAccess;
 pub(crate) use paths::canonical_existing;
 pub use stream::{EventLog, EventQuery};

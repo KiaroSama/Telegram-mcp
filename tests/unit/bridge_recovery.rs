@@ -99,7 +99,7 @@ async fn expired_idle_session_returns_404_and_bridge_reinitializes_once() {
     let (_temp, state) = state();
     let owner = ToolOwner::default();
     let calls = Arc::clone(&owner.calls);
-    let manager = Arc::new(http::session_manager(Duration::from_millis(100)));
+    let manager = Arc::new(http::session_manager(Duration::from_secs(3600)));
     let service = StreamableHttpService::new(
         move || Ok(owner.clone()),
         Arc::clone(&manager),
@@ -124,18 +124,26 @@ async fn expired_idle_session_returns_404_and_bridge_reinitializes_once() {
         ));
     let owner = HttpFixture::serve(router).await;
     let bridge = bridge_for(state, &owner, record(&owner.url)).await;
-    assert_eq!(manager.sessions.read().await.len(), 1);
-    tokio::time::timeout(LIMIT, async {
-        while !manager.sessions.read().await.is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("owner did not expire the actual MCP session");
+    use rmcp::transport::streamable_http_server::session::SessionManager;
+    let original = {
+        let sessions = manager.sessions.read().await;
+        assert_eq!(sessions.len(), 1);
+        sessions.keys().next().unwrap().clone()
+    };
+    // Expire only the original session. Its replacement must survive a slow CI handshake.
+    tokio::time::timeout(LIMIT, manager.close_session(&original))
+        .await
+        .expect("original MCP session did not close")
+        .unwrap();
+    assert!(manager.sessions.read().await.is_empty());
 
     let result = bridge.forward(call("test"), Instant::now() + LIMIT).await;
     assert!(result.is_ok(), "{result:?}");
     assert_eq!(expires.load(Ordering::Relaxed), 1);
+    let replacements = manager.sessions.read().await;
+    assert_eq!(replacements.len(), 1);
+    assert!(!replacements.contains_key(&original));
+    drop(replacements);
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     drop(bridge);
     drop(owner);

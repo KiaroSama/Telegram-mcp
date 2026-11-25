@@ -243,6 +243,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
         session_manager(Duration::from_secs(3600)).into(),
         config,
     );
+    let bot = server.runtime.guard.bot.clone();
     let router = Router::new()
         .nest_service("/mcp", service)
         .route("/health", axum::routing::get(health))
@@ -265,6 +266,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
         format!("{scheme}://{actual}/mcp")
     };
     state.write_json("http-service.json",&json!({"url":endpoint,"token":token,"certificate_pem":certificate_pem,"health_protocol":2,"pid":std::process::id(),"started":chrono::Utc::now().to_rfc3339()}))?;
+    let _approval_worker = bot.as_ref().map(crate::safeguard::bot::ApprovalBot::start);
     let outcome = if let Some(tls) = tls {
         async {
             let service = axum_server::from_tcp_rustls(listener.into_std()?, tls)?;

@@ -97,6 +97,22 @@ pub(super) fn chat_key(value: &Value) -> String {
     lower
 }
 
+pub(super) fn touches_approval_channel(
+    value: &Value,
+    chats: &HashSet<String>,
+    codes: &[String],
+) -> bool {
+    let mut values = Vec::new();
+    scalars(value, &mut values);
+    values.iter().any(|value| {
+        chats.contains(&chat_key(value))
+            || value.as_str().is_some_and(|text| {
+                text.split(|ch: char| !ch.is_ascii_alphanumeric())
+                    .any(|word| codes.iter().any(|code| word.eq_ignore_ascii_case(code)))
+            })
+    })
+}
+
 pub fn decide(
     name: &str,
     read_only: bool,

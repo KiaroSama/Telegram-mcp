@@ -20,7 +20,11 @@ async fn isolated(name: &str, configurations: &[Option<&str>]) -> bool {
         }
         command.env(CHILD, name);
         if let Some(configured) = configured {
-            command.env("TELEGRAM_APPROVAL_CHAT_IDS", configured);
+            if let Some(token) = configured.strip_prefix("bot-token:") {
+                command.env("TELEGRAM_APPROVAL_BOT_TOKEN", token);
+            } else {
+                command.env("TELEGRAM_APPROVAL_CHAT_IDS", configured);
+            }
         }
         let output = tokio::time::timeout(Duration::from_secs(30), command.output())
             .await
@@ -130,6 +134,28 @@ async fn read_service(replacement: Option<Value>) -> (Mcp, Arc<ReadProbe>, TempD
         }),
     );
     (mcp, api, temporary)
+}
+
+#[tokio::test]
+async fn bot_token_seals_its_numeric_identity_even_without_owners() {
+    if isolated(
+        "server::tests::approval_peers::bot_token_seals_its_numeric_identity_even_without_owners",
+        &[Some("bot-token:7:fixture-only")],
+    )
+    .await
+    {
+        return;
+    }
+    let (mcp, api, _temporary) = read_service(None).await;
+    let error = mcp
+        .execute(
+            "get_history",
+            json!({"account":"default","chat_id":"@protected_user"}),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("touches_approval_channel"));
+    assert!(api.calls.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -39,6 +39,8 @@
     "src/proxy/pools.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/proxy/tunnel.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/safeguard.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
+    "src/safeguard/bot.rs": "Native owner approval transport and request lifecycle; measured with the loopback Bot API fixture.",
+    "src/safeguard/bot_menu.rs": "Native owner grant menu; measured with the loopback Bot API fixture.",
     "src/safeguard/policy.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/safeguard/tables.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",
     "src/safeguard/taint.rs": "Native application core corresponding to the legacy explicit measured modules, including new deterministic supplement contracts; full file retained, including live-edge branches.",

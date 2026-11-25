@@ -123,7 +123,17 @@ The server has 390 native tools: 356 ordinary tools, including standalone `trans
 
 `view_video` returns sampled frames with an optional local Whisper transcript. The stdio bridge reconnects after owner restart or session expiry. If the owner may have executed a mutation but its reply was lost, inspect the result before retrying.
 
-Fetching content and marking it read are separate operations. The server returns integers that JavaScript cannot represent exactly as decimal strings. Message entity offsets use UTF-16. File tools stay within configured roots. Actions that require owner approval use a separate terminal prompt.
+Fetching content and marking it read are separate operations. The server returns integers that JavaScript cannot represent exactly as decimal strings. Message entity offsets use UTF-16. File tools stay within configured roots.
+
+### Owner approvals
+
+To approve from Telegram, create a dedicated bot with BotFather. Set `TELEGRAM_APPROVAL_BOT_TOKEN` and the comma-separated Telegram user IDs in `TELEGRAM_APPROVAL_OWNER_IDS` in your private `.env`. `TELEGRAM_APPROVAL_OWNER_ID` is the fallback for one owner. Each owner must open the bot's private chat and send `/start`. Restart the service after changing these settings. Use one running service per bot token so another poller or webhook cannot take its updates.
+
+The bot offers **Approve once**, **Deny**, and **Always approve** when the request names a specific chat. Permanent approvals apply to that account, tool, and chat. `/pending` lists waiting requests, `/always` and `/folders` let owners review and revoke grants, and `/reset_always` removes permanent chat approvals after confirmation. Folder grants cannot widen configured file roots.
+
+The default wait is 300 seconds. Set `TELEGRAM_APPROVAL_TIMEOUT_SECONDS` to a value from 5 to 3,600 seconds, and give your MCP client enough time to wait. `TELEGRAM_APPROVAL_BOT_USERNAME` optionally supplies the bot's username so the service can protect it before the first Bot API lookup. The bot chat is off-limits to MCP tools.
+
+If the bot is unset or the service cannot deliver a prompt to any owner, use `telegram-mcp approve <fingerprint>` in your terminal and retry the same operation. A denial or an expired prompt does not run the operation.
 
 ### Secret chats
 

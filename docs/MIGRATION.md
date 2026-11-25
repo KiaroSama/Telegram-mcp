@@ -20,6 +20,10 @@ The native secret-chat integration for `v3.1.0` has since merged into `main`.
   Python runtime. Version 3.2.0 exposes 390 native tools: 356 ordinary tools and all
   34 [secret-chat tools](COMMANDS.md#secret-chat-tools).
 
+## Approval channels in 3.2.0
+
+The native service can send approval prompts to a dedicated Telegram bot again. See [owner approvals](../README.md#owner-approvals) for setup. The bot uses the same private grant store as `telegram-mcp approve`; no grant migration is needed. The terminal workflow stays available when the bot is unset or cannot deliver a prompt. The bot's folder menu can revoke recorded grants and does not add new file roots.
+
 ## Source revisions reviewed
 
 The core upstream review took place on 2026-11-15 and 2026-11-16. The selected
