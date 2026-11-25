@@ -194,7 +194,7 @@ impl McpProcess {
             .await;
         self.response(id).await
     }
-    pub async fn initialize(&mut self, version: &str) {
+    pub async fn initialize(&mut self, version: &str) -> Value {
         let result=self.request(1,"initialize",json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"native-process-test","version":"1.0"}})).await;
         assert_eq!(
             result["result"]["protocolVersion"], version,
@@ -203,6 +203,7 @@ impl McpProcess {
         assert!(result["result"]["capabilities"]["tools"].is_object());
         self.send(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await;
+        result
     }
     pub async fn finish(mut self) -> String {
         drop(self.input.take());
