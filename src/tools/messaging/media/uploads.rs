@@ -418,7 +418,10 @@ pub async fn run_with_state(
                 build_entities(
                     api,
                     current["message"].as_str().unwrap_or(""),
-                    current.get("entities").unwrap_or(&json!([]))
+                    current
+                        .get("entities")
+                        .filter(|value| !value.is_null())
+                        .unwrap_or(&json!([]))
                 )
                 .await?
             );

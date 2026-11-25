@@ -232,7 +232,7 @@ pub async fn run_with_state(
             .context("This message contains no media")?;
         if name == "save_disappearing_media" {
             ensure!(
-                media.get("ttl_seconds").is_some(),
+                media["ttl_seconds"].as_i64().is_some_and(|ttl| ttl > 0),
                 "This message has no disappearing media"
             );
         }
