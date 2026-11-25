@@ -39,6 +39,71 @@ fn custody(f: &Fixture) -> std::path::PathBuf {
     std::fs::write(&path, b"opaque-secret-custody-canary").unwrap();
     path
 }
+
+fn native_custody(f: &Fixture, key: u8) -> std::path::PathBuf {
+    use kiaro_secret_chat::{
+        binding::AuthorizationBinding,
+        chat::{Chat, ChatState},
+        crypto::SharedKey,
+        ingress::EncryptedIngressStorage,
+        storage::Storage,
+    };
+    use sha1::{Digest, Sha1};
+
+    snapshot(f, "old", Some(key), "native");
+    let digest = Sha1::digest([key; 256]);
+    let binding = AuthorizationBinding::from_session_parts(
+        91,
+        i64::from_le_bytes(digest[12..].try_into().unwrap()),
+        2,
+        "telegram-mcp-secret-v1".into(),
+    )
+    .unwrap();
+    let path = f.directory().join("old.v1.enc");
+    let mut store = EncryptedIngressStorage::open(&path, [0x51; 32], binding, 65536).unwrap();
+    let mut state = store.load().unwrap().unwrap();
+    let mut chat = Chat::new(42, 123, 92, true, ChatState::Ready);
+    chat.key = Some(SharedKey::from_slice(&[0x52; 256]).unwrap());
+    state.chats.insert(42, chat);
+    store.commit(&state).unwrap();
+    path
+}
+
+#[test]
+fn native_encrypted_custody_blocks_the_same_authorization_under_another_label() {
+    let f = Fixture::new();
+    let path = native_custody(&f, 0x72);
+    let before = std::fs::read(&path).unwrap();
+    let config = config(&f, &[("TELEGRAM_SESSION_STRING_ALIAS", string(0x72))]);
+
+    assert!(check_deferred_custody_with_config(&f.state, "alias", &config).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(!f.state.root().join("alias.session.json").exists());
+    assert!(!f.state.root().join("alias.session.lock").exists());
+    assert!(!f.directory().join("alias.v1.enc").exists());
+
+    for origin in ["legacy", "native"] {
+        snapshot(&f, "alias", Some(0x72), origin);
+        assert!(check_deferred_custody_with_config(&f.state, "alias", &config).is_err());
+    }
+}
+
+#[test]
+fn native_encrypted_custody_allows_its_owner_and_distinct_authorizations() {
+    let f = Fixture::new();
+    let path = native_custody(&f, 0x72);
+    let before = std::fs::read(&path).unwrap();
+    let config = config(&f, &[("TELEGRAM_SESSION_STRING_ALIAS", string(0x73))]);
+
+    check_deferred_custody_with_config(&f.state, "old", &config).unwrap();
+    check_deferred_custody_with_config(&f.state, "alias", &config).unwrap();
+    for origin in ["legacy", "native"] {
+        snapshot(&f, "alias", Some(0x73), origin);
+        check_deferred_custody_with_config(&f.state, "alias", &config).unwrap();
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
 fn sqlite(f: &Fixture, name: &str, key: u8) -> std::path::PathBuf {
     let path = f._temporary.path().canonicalize().unwrap().join(name);
     let db = rusqlite::Connection::open(&path).unwrap();

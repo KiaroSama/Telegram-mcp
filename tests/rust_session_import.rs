@@ -10,6 +10,41 @@ use std::{
 };
 use telegram_mcp::{session::PersistentSession, state::State};
 
+fn string_session(port: u16, key: u8) -> String {
+    use base64::Engine;
+    let mut bytes = vec![2, 149, 154, 167, 50];
+    bytes.extend(port.to_be_bytes());
+    bytes.extend([key; 256]);
+    format!(
+        "1{}",
+        base64::engine::general_purpose::URL_SAFE.encode(bytes)
+    )
+}
+
+fn assert_invalid_string_session_preserves_empty_authorization(port: u16, key: u8) {
+    let f = Fixture::new(8);
+    let session = f.session();
+    assert!(session.import_telethon(&string_session(port, key)).is_err());
+    assert!(!has_key(&session));
+    assert!(!f.state.root().join("native.session.json").exists());
+    session.import_telethon(&string_session(443, 0x73)).unwrap();
+    assert_eq!(session.home_dc_id().unwrap(), 2);
+    assert_eq!(
+        session.dc_option(2).unwrap().unwrap().auth_key,
+        Some([0x73; 256])
+    );
+}
+
+#[test]
+fn string_import_refuses_zero_port_without_publishing_authorization() {
+    assert_invalid_string_session_preserves_empty_authorization(0, 0x72);
+}
+
+#[test]
+fn string_import_refuses_zero_key_without_publishing_authorization() {
+    assert_invalid_string_session_preserves_empty_authorization(443, 0);
+}
+
 struct Fixture {
     _temp: tempfile::TempDir,
     state: Arc<State>,

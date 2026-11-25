@@ -104,7 +104,7 @@ impl ExportFilter {
         match row["type"].as_str().unwrap_or("document") {
             "photo" => self.photos,
             "video" => self.videos,
-            "voice" => self.voice_messages,
+            "voice" | "voice_note" => self.voice_messages,
             "video_note" => self.video_messages,
             "sticker" => self.stickers,
             "gif" | "animation" => self.gifs,
@@ -250,7 +250,9 @@ fn display(row: &Value) -> String {
         },
         ["text", "caption", "action"]
             .iter()
-            .find_map(|key| row[key].as_str())
-            .unwrap_or_default()
+            .filter_map(|key| row[key].as_str())
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     )
 }

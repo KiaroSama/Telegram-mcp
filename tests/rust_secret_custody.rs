@@ -173,7 +173,7 @@ fn legacy_custody_directory_blocks_before_any_session_or_lock_is_created() {
     let error = check_deferred_custody(&f.state, "work")
         .unwrap_err()
         .to_string();
-    assert!(error.contains("separate Rust secret backend"));
+    assert!(error.contains("existing secret-chat custody"));
     assert!(!error.contains("opaque-private-state"));
     assert_eq!(std::fs::read(path).unwrap(), canary);
     assert!(!f.state.root().join("work.session.lock").exists());
