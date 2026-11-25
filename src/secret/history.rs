@@ -2,7 +2,7 @@ use super::{MAX_BYTES, metadata, read_private, write_atomic};
 use crate::state::{FileAccess, State};
 use anyhow::{Context, Result, ensure};
 use kiaro_secret_chat::{
-    enums::DecryptedMessageAction,
+    enums::{DecryptedMessageAction, DecryptedMessageMedia, DocumentAttribute},
     manager::{Event, MessageReceived},
     media::MediaReference,
 };
@@ -513,11 +513,11 @@ impl SecretHistory {
     }
 
     pub(crate) fn record_message(&self, message: &MessageReceived) -> Result<Value> {
-        let row = row(
+        let row = received_row(
             message.random_id,
-            false,
             &message.text,
             message.ttl,
+            message.media.as_ref(),
             message.media_reference.is_some(),
         );
         self.append(
@@ -551,6 +551,88 @@ impl SecretHistory {
         }
         self.append(chat_id, json!({"type":"service", "action":action_name, "applied":applied, "date":chrono::Utc::now().to_rfc3339()}), None)
     }
+}
+
+pub(super) fn received_row(
+    id: i64,
+    text: &str,
+    ttl: i32,
+    media: Option<&DecryptedMessageMedia>,
+    has_file: bool,
+) -> Value {
+    let media = media.and_then(media_summary);
+    let caption = media
+        .map(|(_, caption)| caption)
+        .filter(|caption| !caption.is_empty())
+        .unwrap_or(text);
+    let mut row = row(id, false, caption, ttl, media.is_some() || has_file);
+    if let Some((kind, _)) = media {
+        row["type"] = json!(kind);
+        if !text.is_empty() && text != caption {
+            row["text"] = json!(text);
+        }
+    }
+    row
+}
+
+fn media_summary(media: &DecryptedMessageMedia) -> Option<(&'static str, &str)> {
+    use DecryptedMessageMedia as Media;
+    Some(match media {
+        Media::Photo(photo) => ("photo", photo.caption.as_str()),
+        Media::PhotoLegacy32798a8c(_) => ("photo", ""),
+        Media::Video(video) => ("video", video.caption.as_str()),
+        Media::VideoLegacy524a415d(_) | Media::VideoLegacy4cee6ef3(_) => ("video", ""),
+        Media::Audio(_) | Media::AudioLegacy6080758f(_) => ("audio", ""),
+        Media::Document(document) => (document_kind(&document.attributes), &document.caption),
+        Media::DocumentLegacy7afe8ae2(document) => {
+            (document_kind(&document.attributes), &document.caption)
+        }
+        Media::DocumentLegacyb095434b(_) => ("document", ""),
+        _ => return None,
+    })
+}
+
+fn document_kind(attributes: &[DocumentAttribute]) -> &'static str {
+    use DocumentAttribute as Attribute;
+    if attributes.iter().any(|attribute| {
+        matches!(
+            attribute,
+            Attribute::Sticker(_) | Attribute::StickerLegacyfb0a5727
+        )
+    }) {
+        return "sticker";
+    }
+    if attributes
+        .iter()
+        .any(|attribute| matches!(attribute, Attribute::Animated))
+    {
+        return "animation";
+    }
+    if let Some(kind) = attributes.iter().find_map(|attribute| match attribute {
+        Attribute::Video(video) => Some(if video.round_message {
+            "video_note"
+        } else {
+            "video"
+        }),
+        Attribute::VideoLegacy5910cccb(_) => Some("video"),
+        _ => None,
+    }) {
+        return kind;
+    }
+    if let Some(kind) = attributes.iter().find_map(|attribute| match attribute {
+        Attribute::Audio(audio) => Some(if audio.voice { "voice_note" } else { "audio" }),
+        Attribute::AudioLegacy51448e5(_) | Attribute::AudioLegacyded218e0(_) => Some("audio"),
+        _ => None,
+    }) {
+        return kind;
+    }
+    if attributes
+        .iter()
+        .any(|attribute| matches!(attribute, Attribute::ImageSize(_)))
+    {
+        return "photo";
+    }
+    "document"
 }
 
 pub(super) fn row(id: i64, outgoing: bool, text: &str, ttl: i32, media: bool) -> Value {

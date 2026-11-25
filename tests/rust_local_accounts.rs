@@ -144,6 +144,21 @@ fn invalid_datacenter_or_zero_port_is_refused() {
 }
 
 #[test]
+fn zero_authorization_key_is_rejected_by_session_validation() {
+    for ip_len in [4, 16] {
+        let mut bytes = vec![2];
+        bytes.extend(vec![1; ip_len]);
+        bytes.extend(443u16.to_be_bytes());
+        bytes.extend([0; 256]);
+        let value = format!(
+            "1{}",
+            base64::engine::general_purpose::URL_SAFE.encode(bytes)
+        );
+        assert_eq!(session_validate(&value), "invalid");
+    }
+}
+
+#[test]
 fn env_transaction_preserves_bom_endings_comments_and_other_keys() {
     let (dir, _state) = fixture();
     let path = dir.path().join(".env");
