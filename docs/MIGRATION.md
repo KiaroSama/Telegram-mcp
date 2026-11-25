@@ -103,9 +103,12 @@ names, establish the practical limits of coverage.
 Release builds run before behavioral gates. Artifacts can exist for a commit whose
 other checks failed; read the full exact-head status set. Cancelled, skipped, missing,
 wrong-commit or stale-attempt evidence never produces a successful custom status.
-Each of the four Windows and Linux release packages includes `telegram-mcp`,
-`emoji-studio` and `operator-plugin`, plus verified executable machine headers, per-binary SHA-256 and
-commit/compiler/lock provenance. Case reports record the actual operating system,
+Each of the four Windows and Linux CI build artifacts includes `telegram-mcp`,
+`emoji-studio` and `operator-plugin`, plus `build.json` containing per-binary SHA-256 and
+commit/compiler/lock provenance after executable machine-header validation. The signed
+GitHub Release archives use the `bin/` layout documented in [INSTALL.md](INSTALL.md),
+with archive checksums, detached signatures and GitHub attestations; they do not contain
+the CI artifact's `build.json`. Case reports record the actual operating system,
 CPU architecture and native compiler host; all expected base/renderer legs are required.
 The Docker image provides the shared server; it does not currently distribute the two
 standalone helper CLIs.
@@ -185,8 +188,10 @@ sequence counters, settings, saved history and media metadata to the native v1 s
 without loss. It leaves the original files intact. A successful reopen uses the
 native store without rerunning migration or replacing the backup.
 
-If backup, migration or custody initialization fails, the server refuses to open
-the account before connecting. Keep the original files and backups private. Do not
+If an imported session lacks a cached self identity, startup first verifies its owner
+with a bounded `InvokeWithoutUpdates` request. Backup, migration and custody
+initialization must then succeed before the normal update consumer starts. A failure
+refuses that startup. Keep the original files and backups private. Do not
 delete them to bypass an error. The automatic importer covers supported legacy
 layouts only. Use [`check_secret_custody`](COMMANDS.md#custody-pause-delivery-and-backend-control-9)
 to check custody status.
