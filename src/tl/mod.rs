@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, sync::OnceLock};
 
-pub const LAYER: i32 = 233;
+pub const LAYER: i32 = 234;
 pub const MAX_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_VECTOR: usize = 100_000;
 pub const MAX_DEPTH: usize = 64;

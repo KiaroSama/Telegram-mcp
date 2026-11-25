@@ -129,12 +129,20 @@ async fn non_forum_refuses_topic_mutation() {
 async fn topic_list_caps_page_and_reports_continuation() {
     let m = Mock::new().forum().respond(
         "messages.getForumTopics",
-        json!({"topics":[{"id":3},{"id":4}]}),
+        json!({"topics":[{"id":3},{"id":4}],"top_icons":["9223372036854775807"]}),
     );
-    let r = run(&m, "list_topics", json!({"chat_id":7,"limit":2}))
-        .await
-        .unwrap();
+    let r = run(
+        &m,
+        "list_topics",
+        json!({"chat_id":7,"limit":2,"closed":false,"icon_emoji_id":"9223372036854775807"}),
+    )
+    .await
+    .unwrap();
     assert_eq!(r["pagination"]["next_offset_topic"], 4);
     assert_eq!(r["pagination"]["has_more"], true);
-    assert_eq!(m.request("messages.getForumTopics")["limit"], 2);
+    let request = m.request("messages.getForumTopics");
+    assert_eq!(request["limit"], 2);
+    assert_eq!(request["closed"], false);
+    assert_eq!(request["icon_emoji_id"], "9223372036854775807");
+    assert_eq!(r["top_icons"], json!(["9223372036854775807"]));
 }

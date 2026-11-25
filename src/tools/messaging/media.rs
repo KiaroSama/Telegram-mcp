@@ -3,6 +3,7 @@ mod emoji_previews;
 mod photos;
 pub mod previews;
 pub mod uploads;
+mod video;
 use crate::backend::Telegram;
 use anyhow::Result;
 pub use downloads::{download_bytes, download_location};
@@ -17,6 +18,9 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
     }
     if let Some(result) = photos::call(api, name, a).await {
         return Some(result);
+    }
+    if name == "view_video" {
+        return Some(video::view(api, a).await);
     }
     previews::call(api, name, a).await
 }

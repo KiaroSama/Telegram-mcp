@@ -1,6 +1,6 @@
 [package]
 name = "telegram-mcp"
-version = "3.1.0"
+version = "3.2.0"
 edition = "2024"
 rust-version = "1.100"
 description = "Native Rust Telegram MCP server powered by grammers"
@@ -22,12 +22,12 @@ clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 flate2 = "1"
 futures-util = "0.3"
-grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", features = ["markdown", "html", "proxy"] }
-grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", features = ["proxy"] }
-grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
-grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62", default-features = false, features = ["serde"] }
-grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "e61cf8585e1e9969ab81eda9fb4725a1500e2d86" }
-kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "c6b7673a7ba9150900621c9fc8b7a2094b86ef62" }
+grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d", features = ["markdown", "html", "proxy"] }
+grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d", features = ["proxy"] }
+grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "02367f9711ca3589a8bbb02e4128aca1631c77c4" }
+grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d", default-features = false, features = ["serde"] }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "02367f9711ca3589a8bbb02e4128aca1631c77c4" }
+kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d" }
 sha1 = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 hmac = "0.13"
@@ -69,6 +69,9 @@ tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_JobObjects", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Xps", "Win32_UI_HiDpi"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
 
 [profile.release]
 strip = true

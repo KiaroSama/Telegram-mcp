@@ -1,6 +1,6 @@
 # Native API coverage
 
-The native catalogue has 386 tools: 352 ordinary tools and 34 secret-chat tools.
+The native catalogue has 390 tools: 356 ordinary tools and 34 secret-chat tools.
 Before startup, the server checks that every advertised tool has a native dispatch
 route. The Rust tests exercise requests, responses and failures. The route check
 alone does not establish parity.
@@ -9,19 +9,25 @@ alone does not establish parity.
 | --- | --- |
 | `advanced` | 94 |
 | `documents and upload preparation` | 2 |
-| `identity` | 148 |
+| `identity` | 149 |
 | `local` | 24 |
-| `messaging` | 76 |
+| `messaging` | 79 |
 | `visual` | 8 |
 | [Secret chats](COMMANDS.md#secret-chat-tools) | 34 |
 
 See [COMMANDS.md](COMMANDS.md) for exact tool names and the runtime schema for current
-arguments/defaults. Telegram API layer 233 is pinned with grammers 0.12.0. Native local
+arguments/defaults. Telegram API layer 234 is pinned with grammers 0.12.0. Native local
 adapters bridge gaps in high-level grammers helpers through typed-schema-validated
 raw requests rather than retaining a Telethon process. The pinned grammers sender
 requests missed updates on the existing account pool after a home-DC disconnect.
 `transcribe_audio` uses an allowed local file and returns Whisper segment times in
 seconds. It has no hosted-engine or Telegram fallback.
+
+## General topic
+
+Telegram uses topic ID `1` to scope General, but General has no ordinary message to use as a send root. `send_message`, `reply_to_message`, `send_gif` and forwards use the ordinary chat route; a reply still names the message it replies to. Typing and mark-read operations keep the explicit topic scope.
+
+`get_messages`, `list_messages` and `search_messages` verify the forum, filter General locally and count only matching messages toward page offsets. `scan_limit_reached` means the scan could not finish; it does not prove that no further General messages exist. See the [Telegram forum reference](https://core.telegram.org/api/forum), [reader regressions](../tests/rust_messaging_branches/general_and_layer234.rs), and [send regressions](../tests/rust_messaging_branches/send.rs).
 
 ## Verification boundaries
 

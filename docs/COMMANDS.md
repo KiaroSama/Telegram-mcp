@@ -212,6 +212,7 @@ Check the installed binary's `--help` for CLI arguments. The `telegram-operator`
 | `import_chat_invite` | `hash` | No |
 | `import_contacts` | `contacts` | No |
 | `invite_to_group` | `group_id`, `user_ids` | No |
+| `invite_users_to_bot` | `bot`, `user_ids` | No |
 | `join_chat_by_link` | `link` | No |
 | `kick_user` | `chat_id`, `user_id` | No |
 | `leave_chat` | `chat_id` | No |
@@ -331,6 +332,8 @@ configured native `whisper-cli` and local model, then returns transcript text an
 segment start/end times in seconds. It does not open a Telegram session or send
 the file to a hosted engine. `transcribe_voice` handles Telegram voice and video notes.
 
+`view_video` returns sampled frames. Set `start` and `end` in seconds for a shorter clip. Its optional transcript runs through local Whisper and can fail independently of the frames. FFmpeg and FFprobe are required. The tool refuses protected and disappearing videos.
+
 Ordinary message readers return `formatting` when Telegram supplies entities. The
 list contains distinct entity kinds and leaves the original text and UTF-16 offsets intact.
 
@@ -380,6 +383,7 @@ list contains distinct entity kinds and leaves the original text and UTF-16 offs
 | `list_photos` | `chat_id` | Yes |
 | `list_scheduled_messages` | `chat_id` | Yes |
 | `list_send_as` | `chat_id` | Yes |
+| `list_transcription_models` | None | Yes |
 | `mark_as_read` | `chat_id` | No |
 | `open_photo` | `chat_id` | Yes |
 | `pin_message` | `chat_id`, `message_id` | No |
@@ -407,8 +411,10 @@ list contains distinct entity kinds and leaves the original text and UTF-16 offs
 | `send_typing` | `chat_id` | No |
 | `send_voice` | `chat_id`, `file_path` | No |
 | `set_default_send_as` | `chat_id`, `send_as` | No |
+| `set_chat_ai_style` | `chat_id` | No |
 | `transcribe_audio` | `file_path` | Yes |
 | `transcribe_voice` | `chat_id`, `message_id` | Yes |
+| `view_video` | `chat_id`, `message_id` | Yes |
 | `unpin_all_messages` | `chat_id` | No |
 | `unpin_message` | `chat_id`, `message_id` | No |
 | `upload_file` | `file_path` | No |

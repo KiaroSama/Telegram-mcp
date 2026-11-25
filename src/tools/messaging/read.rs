@@ -1,4 +1,5 @@
 use super::helpers::*;
+mod general;
 use crate::{args, backend::Telegram};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -214,6 +215,9 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             .as_str()
             .is_some_and(|kind| !kind.is_empty())
     {
+        if a.get("topic_id").is_some_and(|v| !v.is_null()) && id(a, "topic_id")? == 1 {
+            general::verify_forum(api, &p).await?;
+        }
         return bounded_sender_media(api, &p, a, bound, date_from, date_to).await;
     }
     let mut req = history_request(p.clone(), bound, 0, offset);
@@ -231,7 +235,9 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         || date_to > 0;
     if search {
         method = "messages.search";
-        req.as_object_mut().unwrap().remove("offset_date");
+        if let Some(object) = req.as_object_mut() {
+            object.remove("offset_date");
+        }
         req["q"] = a
             .get("query")
             .or_else(|| a.get("search_query"))
@@ -250,6 +256,15 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     if a.get("topic_id").is_some_and(|v| !v.is_null()) {
         let topic = id(a, "topic_id")?;
+        if topic == 1 && matches!(name, "get_messages" | "list_messages" | "search_messages") {
+            let result = general::read(api, method, req, offset, bound).await?;
+            if name == "get_messages" {
+                return Ok(
+                    json!({"page":page,"offset":offset,"requested_limit":a.get("page_size").cloned().unwrap_or(json!(20)),"effective_limit":bound,"returned":result["messages"].as_array().map_or(0, Vec::len),"has_more":result["has_more"],"scan_limit_reached":result["scan_limit_reached"],"messages":result["messages"]}),
+                );
+            }
+            return Ok(result);
+        }
         if method == "messages.search" {
             req["top_msg_id"] = json!(topic);
         } else {
@@ -515,19 +530,10 @@ async fn bounded_sender_media(
             if !same_peer(&message["peer_id"], &expected_chat) {
                 continue;
             }
-            let actual_topic = if message["reply_to"]["forum_topic"]
-                .as_bool()
-                .unwrap_or(false)
-            {
-                message["reply_to"]["reply_to_top_id"]
-                    .as_i64()
-                    .or_else(|| message["reply_to"]["reply_to_msg_id"].as_i64())
-                    .unwrap_or(1)
-            } else {
-                1
-            };
+            let actual_topic =
+                crate::tools::local::upstream_events::message_topic_id(&message, true);
             if topic.is_some_and(|topic| {
-                actual_topic != topic && !(topic > 1 && message["id"].as_i64() == Some(topic))
+                actual_topic != Some(topic) && !(topic > 1 && message["id"].as_i64() == Some(topic))
             }) {
                 continue;
             }

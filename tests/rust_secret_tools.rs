@@ -225,7 +225,7 @@ async fn catalogue_exposes_all_secret_tools_and_only_seven_in_read_only_mode() {
     assert_eq!(secret::TOOL_NAMES.len(), expected.len());
 
     let all = exposed("all").await;
-    assert_eq!(all.len(), 386);
+    assert_eq!(all.len(), 390);
     let all_names: BTreeSet<_> = all
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())

@@ -3,6 +3,11 @@ use grammers_tl_types::{self as tl, Serializable};
 use serde_json::json;
 use telegram_mcp::{args, backend::parse_text, tl::Schema};
 
+#[path = "rust_protocol/layer234.rs"]
+mod layer234;
+#[path = "support/tl_fixture.rs"]
+mod tl_fixture;
+
 #[test]
 fn native_schema_layer_matches_transport_layer() {
     assert_eq!(telegram_mcp::tl::LAYER, tl::LAYER);
@@ -37,7 +42,7 @@ fn telegram_booleans_match_grammers() {
     }
 }
 #[test]
-fn mandatory_bool_fields_match_layer233_grammers() {
+fn mandatory_bool_fields_match_layer234_grammers() {
     let typed = tl::functions::channels::ToggleForum {
         channel: tl::enums::InputChannel::Channel(tl::types::InputChannel {
             channel_id: 123,

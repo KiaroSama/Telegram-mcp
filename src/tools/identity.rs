@@ -168,6 +168,7 @@ pub const TOOL_NAMES: &[&str] = &[
     "set_boosts_to_unblock",
     "set_bot_commands",
     "set_bot_info",
+    "invite_users_to_bot",
     "set_channel_color",
     "set_channel_emoji_pack",
     "set_channel_emoji_status",
