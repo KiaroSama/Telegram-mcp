@@ -9,7 +9,7 @@ async fn recovered_difference_batch_never_checkpoints_a_partially_delivered_shar
     let mut second = raw_message();
     second["id"] = json!(8);
     let bytes=Schema::global().encode_object(&json!({"_":"updates.difference",
-        "new_messages":[raw_message(),second],"new_encrypted_messages":[],"other_updates":[],"chats":[],"users":[],
+        "new_messages":[raw_message(),second],"new_encrypted_messages":[],"other_updates":[],"chats":[],"users":[],"topics":null,
         "state":{"_":"updates.state","pts":12,"qts":71,"date":200,"seq":6,"unread_count":0}})).unwrap();
     let difference = tl::enums::updates::Difference::from_bytes(&bytes).unwrap();
     let mut boxes = grammers_session::updates::MessageBoxes::load(current());

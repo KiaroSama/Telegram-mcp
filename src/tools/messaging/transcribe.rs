@@ -35,9 +35,39 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
                 .await,
         ),
         "rate_voice_transcription" => Some(rate(api, a).await),
+        "list_transcription_models" => Some(list_models(api, a).await),
         _ => None,
     }
 }
+async fn list_models(api: &dyn Telegram, a: &Value) -> Result<Value> {
+    let version = args::integer(a, "version", 0)?;
+    ensure!(
+        (0..=i64::from(i32::MAX)).contains(&version),
+        "version must be a nonnegative 32-bit integer"
+    );
+    let response = api
+        .invoke(
+            "messages.getTranscriptionModels",
+            json!({"version":version}),
+        )
+        .await?;
+    let models = response
+        .as_array()
+        .context("Telegram returned no transcription model list")?;
+    Ok(Value::Array(
+        models
+            .iter()
+            .map(|model| {
+                json!({
+                    "document_id":model["document"]["id"],
+                    "languages":model["languages"],
+                    "version":model["version"],
+                })
+            })
+            .collect(),
+    ))
+}
+
 fn flight(key: String) -> Result<Flight> {
     static CACHE: OnceLock<Mutex<Flights>> = OnceLock::new();
     let mut cache = CACHE

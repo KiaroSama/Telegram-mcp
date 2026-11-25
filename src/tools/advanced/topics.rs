@@ -117,6 +117,14 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
             ensure!([offset,date,mid].iter().all(|v|(0..=i32::MAX as i64).contains(v)),"Topic cursor fields must fit nonnegative 32-bit integers");
             let mut params=json!({"peer":p,"offset_date":date,"offset_id":mid,"offset_topic":offset,"limit":n});
             if let Some(q)=args.get("search_query").filter(|v|!v.is_null()) {params["q"]=q.clone();}
+            if args.get("icon_emoji_id").is_some_and(|v| !v.is_null()) {
+                let icon = a::integer(args, "icon_emoji_id", 0)?;
+                ensure!(icon > 0, "icon_emoji_id must be a positive 64-bit identifier");
+                params["icon_emoji_id"] = json!(icon.to_string());
+            }
+            if args.get("closed").is_some_and(|v| !v.is_null()) {
+                params["closed"] = json!(a::boolean(args, "closed", false)?);
+            }
             let mut result=api.invoke("messages.getForumTopics",params).await?;
             let topics=result["topics"].as_array().cloned().unwrap_or_default();
             let last=topics.last();

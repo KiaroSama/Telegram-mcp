@@ -58,6 +58,8 @@ pub const GATED: &[&str] = &[
     "revoke_invite_link",
     "set_authorization_calls",
     "set_bot_info",
+    "invite_users_to_bot",
+    "set_chat_ai_style",
     "set_business_away_message",
     "set_business_greeting",
     "set_business_hours",

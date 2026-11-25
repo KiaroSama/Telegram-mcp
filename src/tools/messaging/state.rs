@@ -17,9 +17,70 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
         | "set_default_send_as"
         | "send_typing"
         | "list_calls" => Some(run(api, name, a).await),
+        "set_chat_ai_style" => Some(set_ai_style(api, a).await),
         _ => None,
     }
 }
+async fn set_ai_style(api: &dyn Telegram, a: &Value) -> Result<Value> {
+    use anyhow::{Context, bail};
+    let clear = args::boolean(a, "clear", false)?;
+    let present = |key| a.get(key).filter(|v| !v.is_null());
+    let has_settings = ["emojify", "proofread", "tone", "to_lang"]
+        .into_iter()
+        .any(|key| present(key).is_some());
+    ensure!(
+        clear != has_settings,
+        "Use clear=true or supply style settings, not both"
+    );
+    let mut style = json!({"_":"inputAiComposeStyle"});
+    for key in ["emojify", "proofread"] {
+        if present(key).is_some() {
+            style[key] = json!(args::boolean(a, key, false)?);
+        }
+    }
+    if let Some(language) = present("to_lang") {
+        let language = language
+            .as_str()
+            .filter(|value| !value.is_empty() && value.len() <= 64)
+            .context("to_lang must be a nonempty language code")?;
+        style["to_lang"] = json!(language);
+    }
+    if let Some(tone) = present("tone") {
+        let kind = tone["kind"].as_str().context("tone.kind is required")?;
+        let text = |key, limit| {
+            tone[key]
+                .as_str()
+                .filter(|value| !value.trim().is_empty() && value.len() <= limit)
+                .with_context(|| format!("tone.{key} must be nonempty and bounded"))
+        };
+        style["tone"] = match kind {
+            "default" => json!({"_":"inputAiComposeToneDefault","tone":text("value", 128)?}),
+            "slug" => json!({"_":"inputAiComposeToneSlug","slug":text("value", 128)?}),
+            "single_use" => {
+                json!({"_":"inputAiComposeToneSingleUse","custom_prompt":text("value", 4096)?})
+            }
+            "id" => {
+                let id = args::integer(tone, "id", 0)?;
+                let hash = args::integer(tone, "access_hash", 0)?;
+                ensure!(id > 0 && hash != 0, "tone ID and access hash are required");
+                json!({"_":"inputAiComposeToneID","id":id.to_string(),"access_hash":hash.to_string()})
+            }
+            _ => bail!("Unknown tone kind"),
+        };
+    }
+    let peer = args::peer(api, a, "chat_id").await?;
+    let mut request = json!({"peer":peer});
+    if !clear {
+        request["style"] = style;
+    }
+    let ok = api
+        .invoke("aicompose.setChatStyle", request)
+        .await?
+        .as_bool()
+        .context("Telegram returned no style result")?;
+    Ok(json!({"ok":ok,"chat_id":a["chat_id"],"cleared":clear && ok}))
+}
+
 async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     if name == "list_calls" {
         return calls(api, a).await;

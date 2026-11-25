@@ -2,7 +2,7 @@ use super::*;
 use axum::{
     Router,
     extract::{Query, Request, State as AxumState},
-    http::StatusCode,
+    http::{StatusCode, header::WWW_AUTHENTICATE},
     middleware::{self, Next},
     response::{IntoResponse, Response},
 };
@@ -14,6 +14,14 @@ use rmcp::transport::streamable_http_server::{
 };
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
+
+pub(super) const OWNER_BEARER_CHALLENGE: &str = "Bearer realm=\"telegram-mcp\"";
+
+pub(super) fn session_manager(keep_alive: Duration) -> LocalSessionManager {
+    let mut manager = LocalSessionManager::default();
+    manager.session_config.keep_alive = Some(keep_alive);
+    manager
+}
 
 #[derive(Clone)]
 struct ServiceAuthentication {
@@ -230,20 +238,17 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
         config =
             config.with_allowed_hosts(hosts.split(',').map(str::trim).filter(|s| !s.is_empty()));
     }
-    let service: StreamableHttpService<Mcp, LocalSessionManager> =
-        StreamableHttpService::new(move || Ok(factory.clone()), Default::default(), config);
+    let service: StreamableHttpService<Mcp, LocalSessionManager> = StreamableHttpService::new(
+        move || Ok(factory.clone()),
+        session_manager(Duration::from_secs(3600)).into(),
+        config,
+    );
     let router = Router::new()
         .nest_service("/mcp", service)
         .route("/health", axum::routing::get(health))
         .with_state(server)
-        .merge(crate::transfer::http::router(crate::transfer::global()?))
-        .layer(middleware::from_fn_with_state(
-            ServiceAuthentication {
-                local: token.clone(),
-                external: configured,
-            },
-            authorize,
-        ));
+        .merge(crate::transfer::http::router(crate::transfer::global()?));
+    let router = authenticated_router(router, token.clone(), configured);
     let listener = tokio::net::TcpListener::bind(address).await?;
     let actual = listener.local_addr()?;
     let endpoint = if actual.ip().is_unspecified() {
@@ -300,6 +305,17 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
     outcome?;
     Ok(())
 }
+pub(super) fn authenticated_router(
+    router: Router,
+    local: String,
+    external: Option<String>,
+) -> Router {
+    router.layer(middleware::from_fn_with_state(
+        ServiceAuthentication { local, external },
+        authorize,
+    ))
+}
+
 async fn authorize(
     AxumState(authentication): AxumState<ServiceAuthentication>,
     request: Request,
@@ -385,7 +401,11 @@ async fn authorize(
         .as_ref()
         .is_some_and(|expected| bool::from(provided.as_bytes().ct_eq(expected.as_bytes())));
     if !local && !external {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(WWW_AUTHENTICATE, OWNER_BEARER_CHALLENGE)],
+        )
+            .into_response();
     }
     if request.headers().contains_key(axum::http::header::ORIGIN) {
         return StatusCode::FORBIDDEN.into_response();

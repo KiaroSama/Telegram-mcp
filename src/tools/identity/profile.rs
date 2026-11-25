@@ -20,6 +20,7 @@ pub const NAMES: &[&str] = &[
     "get_privacy_settings",
     "set_privacy_settings",
     "set_bot_info",
+    "invite_users_to_bot",
     "set_my_username",
     "list_authorizations",
     "terminate_authorization",
@@ -115,6 +116,34 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             let clean = username(text(a, "username")?, true)?;
             api.invoke("account.updateUsername", json!({"username":clean}))
                 .await
+        }
+        "invite_users_to_bot" => {
+            let selectors = a["user_ids"]
+                .as_array()
+                .context("user_ids must be an array")?;
+            ensure!(
+                (1..=100).contains(&selectors.len()),
+                "Provide 1 to 100 user IDs"
+            );
+            let bot = user(&api.resolve_peer(&a["bot"]).await?)?;
+            ensure!(bot["_"] == "inputUser", "Provide an explicit bot account");
+            let mut users = Vec::with_capacity(selectors.len());
+            for selector in selectors {
+                let target = user(&api.resolve_peer(selector).await?)?;
+                if !users.contains(&target) {
+                    users.push(target);
+                }
+            }
+            let requested_count = users.len();
+            let ok = api
+                .invoke(
+                    "messages.inviteUsersToBot",
+                    json!({"bot":bot,"users":users}),
+                )
+                .await?
+                .as_bool()
+                .context("Telegram returned no invitation result")?;
+            Ok(json!({"ok":ok,"bot":bot["user_id"],"requested_count":requested_count}))
         }
         "set_bot_info" => {
             let mut p = json!({"bot":target_user(api,a,"bot").await?,"lang_code":string(a,"lang_code","")?});

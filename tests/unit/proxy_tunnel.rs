@@ -126,10 +126,9 @@ async fn managed_stream_preserves_writes_flush_and_shutdown_semantics() {
 
 #[tokio::test]
 async fn remote_plaintext_credentials_are_refused_before_any_protocol_bytes() {
-    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-    route.connect("192.0.2.1:9").unwrap(); // Select a local interface; no datagram is sent.
-    let ip = route.local_addr().unwrap().ip();
-    assert!(!ip.is_loopback());
+    #[path = "../support/nonloopback.rs"]
+    mod interface;
+    let ip = interface::nonloopback_address();
     for kind in ["http", "socks5", "socks4"] {
         let listener = TcpListener::bind((ip, 0)).await.unwrap();
         let address = listener.local_addr().unwrap();

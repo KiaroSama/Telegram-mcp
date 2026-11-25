@@ -17,7 +17,7 @@ The native secret-chat integration for `v3.1.0` has since merged into `main`.
   exact commit. Build success alone does not establish runtime behavior.
 - Review upstream changes and dependency documentation.
 - Use `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats, without the legacy
-  Python runtime. Version 3.1.0 exposes 386 native tools: 352 ordinary tools and all
+  Python runtime. Version 3.2.0 exposes 390 native tools: 356 ordinary tools and all
   34 [secret-chat tools](COMMANDS.md#secret-chat-tools).
 
 ## Source revisions reviewed
@@ -29,7 +29,7 @@ commits or releases. Historical byte-oracle versions remain distinct from curren
 | Source | Reviewed revision | Source date | Review and adaptation scope |
 | --- | --- | --- | --- |
 | This fork | `bd4b454c5392ef084ab265b92ca89ebc04d596df` | Migration base | Existing tools, account state, approvals and fidelity contracts |
-| [grammers](https://codeberg.org/Lonami/grammers/commit/e61cf8585e1e9969ab81eda9fb4725a1500e2d86) | `e61cf8585e1e9969ab81eda9fb4725a1500e2d86`, 0.12.0 | 2026-11-08 | Native Telegram transport, layer 233 TL schema, update and authorization custody |
+| [grammers](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4) | `02367f9711ca3589a8bbb02e4128aca1631c77c4`, 0.12.0 | 2026-11-25 | Native Telegram transport, layer 234 TL schema, update and authorization custody |
 | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/b1263b564c834b9eb91daae1667790a4247b2b8f) | `b1263b564c834b9eb91daae1667790a4247b2b8f` | 2026-11-23 | Selected changes through #419: formatting kinds, reconnect catch-up, private-chat leave, exact photo IDs, local Whisper serialization and timestamps, and bounded login retries |
 | [Official MCP Rust SDK](https://github.com/modelcontextprotocol/rust-sdk/commit/0e2396f73a88617141b31f645de6f1171ed5f993) | `0e2396f73a88617141b31f645de6f1171ed5f993`; rmcp 3.10 API (migration review) | 2026-11-15 | Stdio, authenticated streamable HTTP, shared-session bridge and cancellation. The current dependency is [rmcp 3.11.0](https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.11.0). |
 | [Telegram Desktop](https://github.com/telegramdesktop/tdesktop/releases/tag/v7.4.4) | v7.4.4, `bf4f714036f21c750d535dab199c811b3f9bfdd4` | 2026-11-13 | Current export changes: date cursors, migrated groups and JSON/HTML escaping |
@@ -41,8 +41,9 @@ commits or releases. Historical byte-oracle versions remain distinct from curren
 
 The grammers GitHub mirror is stale relative to Codeberg; the live Codeberg source was
 read directly. Search excerpts that still named 0.10.0 were not used as version proof.
-The pinned grammers schema is layer 233; the former Telethon source pin announced layer
-232. Matching or newer schema coverage does not imply equal high-level behavior.
+The grammers and [native secret-chat](https://github.com/KiaroSama/Telethon-Secret-Chat/commit/84f2b8e57f30af10218effb7cb58688a57431e0d) pins now share Layer 234. The former Telethon source pin used layer 232.
+
+Version 3.2.0 implements General topic reads and video review as native tools. The public contracts were checked against [Chigwell #420](https://github.com/chigwell/telegram-mcp/pull/420) and [#412](https://github.com/chigwell/telegram-mcp/pull/412).
 
 Upstream changes are adapted to this fork's validation, account isolation, approvals,
 filesystem and exact-text contracts. A blind merge of upstream Python code would not
@@ -176,7 +177,7 @@ establish that instrumentation works on a new target.
 
 ## Secret-chat store migration
 
-Version 3.1.0 uses [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat)
+Version 3.2.0 uses [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat)
 for native MTProto 2.0 secret chats. Ordinary and secret chats share one connection
 per authorization key. The server commits incoming encrypted updates to durable
 storage before acknowledging them.
@@ -266,7 +267,7 @@ features, permissions, network routing and server responses remain untested.
 ## Official references
 
 - [grammers source and README](https://codeberg.org/Lonami/grammers)
-- [grammers 0.12.0 source revision](https://codeberg.org/Lonami/grammers/commit/e61cf8585e1e9969ab81eda9fb4725a1500e2d86)
+- [grammers 0.12.0 source revision](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4)
 - [kiaro-secret-chat source](https://github.com/KiaroSama/Telethon-Secret-Chat)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
 - [Current upstream Telegram MCP](https://github.com/chigwell/telegram-mcp)

@@ -77,7 +77,21 @@ fn encode(image: &image::DynamicImage, dimension: i64) -> Result<(Vec<u8>, Value
     Ok((bytes, meta))
 }
 
-async fn probe(path: &std::path::Path) -> Result<(Option<f64>, Option<f64>)> {
+pub(super) struct VideoProbe {
+    pub duration: Option<f64>,
+    rate: Option<f64>,
+    pub width: u64,
+    pub height: u64,
+    pub audio: bool,
+}
+
+impl VideoProbe {
+    pub(super) fn last_frame(&self, end: f64) -> f64 {
+        (end - self.rate.map_or(0.05, |rate| 1.0 / rate)).max(0.0)
+    }
+}
+
+pub(super) async fn probe(path: &std::path::Path) -> Result<VideoProbe> {
     let mut child = super::child("ffprobe")
         .args([
             "-v",
@@ -88,10 +102,8 @@ async fn probe(path: &std::path::Path) -> Result<(Option<f64>, Option<f64>)> {
             "file,pipe",
             "-format_whitelist",
             "mov,matroska,webm,ogg,avi",
-            "-select_streams",
-            "v:0",
             "-show_entries",
-            "format=duration:stream=duration,avg_frame_rate",
+            "format=duration:stream=codec_type,duration,avg_frame_rate,width,height:stream_disposition=attached_pic",
             "-of",
             "json",
         ])
@@ -115,10 +127,15 @@ async fn probe(path: &std::path::Path) -> Result<(Option<f64>, Option<f64>)> {
         );
         ensure!(child.wait().await?.success(), "Video metadata probe failed");
         let value: Value = serde_json::from_slice(&bytes)?;
-        let stream = value["streams"]
+        let streams = value["streams"]
             .as_array()
-            .and_then(|items| items.first())
-            .unwrap_or(&Value::Null);
+            .context("Video probe returned no streams")?;
+        let stream = streams
+            .iter()
+            .find(|stream| {
+                stream["codec_type"] == "video" && stream["disposition"]["attached_pic"] != 1
+            })
+            .context("The media has no video stream")?;
         let duration = value["format"]["duration"]
             .as_str()
             .or_else(|| stream["duration"].as_str())
@@ -131,7 +148,15 @@ async fn probe(path: &std::path::Path) -> Result<(Option<f64>, Option<f64>)> {
                 let (a, b) = (a.parse::<f64>().ok()?, b.parse::<f64>().ok()?);
                 (a > 0.0 && b > 0.0).then_some(a / b)
             });
-        Ok((duration, rate))
+        Ok(VideoProbe {
+            duration,
+            rate,
+            width: stream["width"].as_u64().context("Video width is missing")?,
+            height: stream["height"]
+                .as_u64()
+                .context("Video height is missing")?,
+            audio: streams.iter().any(|stream| stream["codec_type"] == "audio"),
+        })
     };
     match tokio::time::timeout(std::time::Duration::from_secs(10), operation).await {
         Ok(result) => {
@@ -163,27 +188,39 @@ pub(super) async fn video(
         .tempdir_in(root)?;
     let input = temp.path().join("source-media");
     std::fs::write(&input, data)?;
-    let (duration, rate) = probe(&input).await?;
+    let metadata = probe(&input).await?;
     let count = count.clamp(1, 10);
-    let end = duration
-        .map(|duration| {
-            (duration
-                - rate
-                    .filter(|rate| rate.is_finite() && *rate > 0.0)
-                    .map(|rate| 1.0 / rate)
-                    .unwrap_or(0.05))
-            .max(0.0)
-        })
-        .unwrap_or(0.0);
+    let end = metadata
+        .duration
+        .map_or(0.0, |duration| metadata.last_frame(duration));
+    let times = frame_times(0.0, end, count);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    let mut frames = Vec::new();
-    for index in 0..count {
-        let at = if count == 1 {
-            0.0
-        } else {
-            end * index as f64 / (count - 1) as f64
-        };
-        let output = temp.path().join(format!("frame-{index}.png"));
+    frames(&input, temp.path(), &times, dimension, mime, deadline).await
+}
+
+pub(super) fn frame_times(start: f64, end: f64, count: i64) -> Vec<f64> {
+    (0..count)
+        .map(|index| {
+            if count == 1 {
+                start
+            } else {
+                start + (end - start) * index as f64 / (count - 1) as f64
+            }
+        })
+        .collect()
+}
+
+pub(super) async fn frames(
+    input: &std::path::Path,
+    work: &std::path::Path,
+    times: &[f64],
+    dimension: i64,
+    mime: &str,
+    deadline: tokio::time::Instant,
+) -> Result<Vec<(Vec<u8>, Value)>> {
+    let mut frames = Vec::with_capacity(times.len());
+    for (index, &at) in times.iter().enumerate() {
+        let output = work.join(format!("frame-{index}.png"));
         let mut command = super::decoder();
         command.args([
             "-nostdin",
@@ -203,8 +240,10 @@ pub(super) async fn video(
         }
         command
             .args(["-ss", &format!("{at:.6}"), "-i"])
-            .arg(&input)
+            .arg(input)
             .args([
+                "-map",
+                "0:V:0",
                 "-frames:v",
                 "1",
                 "-threads",

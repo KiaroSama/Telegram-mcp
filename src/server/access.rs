@@ -230,6 +230,7 @@ impl AccessPolicy {
                         | "get_messages_after"
                         | "inspect_document"
                         | "transcribe_voice"
+                        | "view_video"
                         | "mark_topic_as_read"
                 ) {
                     bail!("This operation cannot enforce a topic restriction safely");

@@ -2,6 +2,8 @@
 #[allow(dead_code)]
 #[path = "rust_mcp_transport/common.rs"]
 mod common;
+#[path = "rust_bridge/recovery.rs"]
+mod recovery;
 use common::*;
 use fs2::FileExt;
 use serde_json::{Value, json};

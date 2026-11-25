@@ -13,8 +13,8 @@
 [![Install from GitHub releases or Cargo](https://img.shields.io/badge/install-release%20%7C%20cargo-4f46e5)](docs/INSTALL.md)
 [![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7)](docs/COMMANDS.md)
 [![Repository size](https://img.shields.io/github/repo-size/KiaroSama/Telegram-mcp?style=flat-square&color=ca8a04)](#development)
-[![grammers 0.12 on Telegram layer 233](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20233-15803d)](docs/MIGRATION.md)
-[![386 native MCP tools](https://img.shields.io/badge/tools-386%20native-7c3aed)](docs/api-coverage.md)
+[![grammers 0.12 on Telegram layer 234](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20234-15803d)](docs/MIGRATION.md)
+[![390 native MCP tools](https://img.shields.io/badge/tools-390%20native-7c3aed)](docs/api-coverage.md)
 ![MCP Badge](https://badge.mcpx.dev)
 [![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
 [![M8ven Agent Verified](https://m8ven.ai/api/agent-verify/badge?score=75)](https://m8ven.ai/verified/verify?id=6bf8a0d29e8c8bae)
@@ -23,7 +23,7 @@
 
 </div>
 
-Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. Version 3.1.0 uses [`grammers`](https://codeberg.org/Lonami/grammers) 0.12.0 (Telegram API layer 233), [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) 3.11, and `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats. The server does not need Python or a virtual environment.
+Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. Version 3.2.0 uses [`grammers`](https://codeberg.org/Lonami/grammers) 0.12.0 (Telegram API layer 234), [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) 3.11, and `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats. The server does not need Python or a virtual environment.
 
 ## Releases and tags
 
@@ -119,7 +119,9 @@ On Windows, the launchers write `logs/start-mcp_YYYY-MM-DD_HH-mm-ss_UTC.log` and
 
 ## Tools and access
 
-The server has 386 native tools: 352 ordinary tools, including standalone `transcribe_audio`, and 34 secret-chat tools. See the [command catalogue](docs/COMMANDS.md) and [API coverage](docs/api-coverage.md). Use [exposure filters](docs/exposed-tools-groups.md) to choose which tools a client can call. Telegram permissions, Premium requirements and server limits still apply.
+The server has 390 native tools: 356 ordinary tools, including standalone `transcribe_audio`, and 34 secret-chat tools. See the [command catalogue](docs/COMMANDS.md) and [API coverage](docs/api-coverage.md). Use [exposure filters](docs/exposed-tools-groups.md) to choose which tools a client can call. Telegram permissions, Premium requirements and server limits still apply.
+
+`view_video` returns sampled frames with an optional local Whisper transcript. The stdio bridge reconnects after owner restart or session expiry. If the owner may have executed a mutation but its reply was lost, inspect the result before retrying.
 
 Fetching content and marking it read are separate operations. The server returns integers that JavaScript cannot represent exactly as decimal strings. Message entity offsets use UTF-16. File tools stay within configured roots. Actions that require owner approval use a separate terminal prompt.
 

@@ -143,13 +143,9 @@ async fn run_proxy_probe(name: &str, mode: &str, endpoint: &str, proxy: &str) {
     );
 }
 
-fn nonloopback_address() -> std::net::IpAddr {
-    let route = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
-    route.connect("192.0.2.1:9").unwrap(); // Select an interface; no datagram is sent.
-    let address = route.local_addr().unwrap().ip();
-    assert!(!address.is_loopback());
-    address
-}
+#[path = "../support/nonloopback.rs"]
+mod interface;
+use interface::nonloopback_address;
 
 #[tokio::test]
 async fn loopback_hosted_transcription_bypasses_ambient_remote_proxy() {

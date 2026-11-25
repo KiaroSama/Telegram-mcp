@@ -448,19 +448,25 @@ async fn general_topic_sender_media_scans_history_without_cross_topic_matches() 
         item["reply_to"] = reply;
         item
     };
-    let api = Api::new(vec![(
-        "messages.getHistory",
-        messages(vec![
-            make(10, Value::Null),
-            make(9, json!({"forum_topic":false,"reply_to_msg_id":77})),
-            make(
-                8,
-                json!({"forum_topic":true,"reply_to_top_id":55,"reply_to_msg_id":77}),
-            ),
-            make(7, json!({"forum_topic":true,"reply_to_msg_id":55})),
-            make(1, json!({"forum_topic":true,"reply_to_top_id":55})),
-        ]),
-    )])
+    let api = Api::new(vec![
+        (
+            "channels.getChannels",
+            json!({"chats":[{"_":"channel","id":"7","forum":true}]}),
+        ),
+        (
+            "messages.getHistory",
+            messages(vec![
+                make(10, Value::Null),
+                make(9, json!({"forum_topic":false,"reply_to_msg_id":77})),
+                make(
+                    8,
+                    json!({"forum_topic":true,"reply_to_top_id":55,"reply_to_msg_id":77}),
+                ),
+                make(7, json!({"forum_topic":true,"reply_to_msg_id":55})),
+                make(1, json!({"forum_topic":true,"reply_to_top_id":55})),
+            ]),
+        ),
+    ])
     .identity(
         json!(7),
         json!({"_":"inputPeerChannel","channel_id":"7","access_hash":"13"}),
@@ -487,8 +493,10 @@ async fn general_topic_sender_media_scans_history_without_cross_topic_matches() 
     );
     assert_eq!(result["scanned"], 5);
     assert_eq!(result["exhausted"], true);
-    assert!(api.calls()[0].1.get("msg_id").is_none());
-    assert_eq!(api.calls().len(), 1);
+    let calls = api.calls();
+    assert_eq!(calls[0].0, "channels.getChannels");
+    assert!(calls[1].1.get("msg_id").is_none());
+    assert_eq!(calls.len(), 2);
 }
 
 #[tokio::test]
