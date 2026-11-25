@@ -294,12 +294,43 @@ async fn bridge_refuses_an_unknown_listener_without_sending_credentials_or_repla
 #[tokio::test]
 async fn bridge_failed_start_releases_owned_leases_and_never_opens_telegram_authorization() {
     let fixture = Fixture::new();
-    fixture.env_file(&format!("MCP_PORT={}\nTELEGRAM_HTTP_TOKEN=short\n", port()));
-    let output = refused(&fixture).await;
+    let occupied = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut candidate = occupied.local_addr().unwrap().port();
+    let mut attempts = 0;
+    let output = loop {
+        attempts += 1;
+        fixture.env_file(&format!(
+            "MCP_PORT={candidate}\nTELEGRAM_HTTP_TOKEN=short\n"
+        ));
+        let output = refused(&fixture).await;
+        let port_conflict = String::from_utf8_lossy(&output.stderr).trim()
+            == "Error: An unverified listener occupies the configured bridge port; it was not replaced";
+        if attempts == 1 {
+            assert!(port_conflict, "The held fixture listener was not refused");
+        }
+        assert!(!fixture.state.join("http-service.json").exists());
+        fixture.assert_no_telegram_sessions();
+        if !port_conflict {
+            break output;
+        }
+        // Reserving and releasing an ephemeral port cannot reserve it for the
+        // child. Retry only this proven pre-start collision, never another error.
+        assert!(
+            attempts < 5,
+            "Fixture ports remained occupied before startup"
+        );
+        candidate = port();
+    };
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("startup failed"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), occupied.accept())
+            .await
+            .is_err(),
+        "Fixture retries must not contact the occupied listener"
     );
     for name in ["bridge-start.lock", "http-service.lock"] {
         let path = fixture.state.join(name);

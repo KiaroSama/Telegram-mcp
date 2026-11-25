@@ -275,7 +275,9 @@ impl Mcp {
         // execution and bookkeeping. The operation retains these exact private
         // InputPeer references even if a username or saved alias is replaced.
         let (api, approval_args) = if slot.is_some()
-            && (!read_only || self.runtime.policy.enabled())
+            && (!read_only
+                || self.runtime.policy.enabled()
+                || self.runtime.guard.has_approval_peers())
         {
             let (api, approval_args) =
                 tokio::time::timeout_at(deadline, recipient::bind(name, api, &args))
