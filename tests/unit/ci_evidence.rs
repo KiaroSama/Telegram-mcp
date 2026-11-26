@@ -492,3 +492,48 @@ fn parity_rows_detects_nondeterministic_replays() {
     r2.verdict = Verdict::Unresolved;
     assert!(compare_replays(&[r1], &[r2]).is_err());
 }
+
+#[test]
+fn parity_rows_reconcile_files_and_verify_replay_files_round_trip() {
+    use crate::parity_rows::{reconcile_files, verify_replay_files};
+
+    let temp = tempfile::tempdir().unwrap();
+    let sha = "e".repeat(40);
+    let inv_path = temp.path().join("inv.json");
+    let ev1_path = temp.path().join("ev1.jsonl");
+    let ev2_path = temp.path().join("ev2.jsonl");
+    let out1 = temp.path().join("out/candidate.jsonl");
+    let out2 = temp.path().join("out/replay.jsonl");
+    let bad_jsonl = temp.path().join("bad.jsonl");
+
+    std::fs::write(
+        &inv_path,
+        serde_json::to_vec(&serde_json::json!({
+            "items": [
+                {"file": "a.py", "qual": "fn_a", "kind": "function", "line": 1, "area": "A1", "status": "MATCHED"},
+                {"file": "b.py", "qual": "fn_b", "kind": "function", "line": 2, "area": "B1", "status": "PARTIAL"}
+            ]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let row_a = serde_json::json!({
+        "path": "a.py", "qualified_symbol": "fn_a", "kind": "function", "line": 1,
+        "area": "A1", "candidate_sha": sha, "owning_track": "T1",
+        "mapping": "src/a.rs::fn_a", "method": "unit_fixture", "evidence": "tests/a.rs", "verdict": "matched"
+    });
+    let row_b = serde_json::json!({
+        "path": "b.py", "qualified_symbol": "fn_b", "kind": "function", "line": 2,
+        "area": "B1", "candidate_sha": sha, "owning_track": "T2",
+        "mapping": "src/b.rs::fn_b", "method": "native_equiv", "evidence": "tests/b.rs", "verdict": "verified_native_equivalent"
+    });
+    std::fs::write(&ev1_path, format!("{row_a}\n\n{row_b}\n")).unwrap();
+    std::fs::write(&ev2_path, format!("{row_b}\n{row_a}\n")).unwrap();
+    std::fs::write(&bad_jsonl, "{not json}\n").unwrap();
+
+    let s1 = reconcile_files(&inv_path, &ev1_path, &out1, &sha).unwrap();
+    let s2 = reconcile_files(&inv_path, &ev2_path, &out2, &sha).unwrap();
+    assert_eq!(s1, s2);
+    assert_eq!(verify_replay_files(&out1, &out2).unwrap(), 2);
+    assert!(reconcile_files(&inv_path, &bad_jsonl, &out1, &sha).is_err());
+}

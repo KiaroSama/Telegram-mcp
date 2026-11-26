@@ -68,3 +68,65 @@ pub(super) fn ids(value: &Value) -> Result<Vec<i64>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn secret_runtime_arguments_validate_parse_modes_ids_and_paths() {
+        let (plain, ents) = format_message("hello", None).unwrap();
+        assert_eq!(plain, "hello");
+        assert!(ents.unwrap().is_empty());
+        let (md, md_ents) = format_message("**bold**", Some("markdown")).unwrap();
+        assert_eq!(md, "bold");
+        assert_eq!(md_ents.unwrap().len(), 1);
+        let (html, html_ents) = format_message("<i>it</i>", Some("html")).unwrap();
+        assert_eq!(html, "it");
+        assert_eq!(html_ents.unwrap().len(), 1);
+        assert!(format_message("x", Some("rst")).is_err());
+
+        assert_eq!(integer(&json!({"n": "42"}), "n"), Some(42));
+        assert!(required_int(&json!({}), "n").is_err());
+        let lifted_id = lifted(77);
+        assert_eq!(
+            chat_id(&json!({"chat_id": lifted_id}), "chat_id").unwrap(),
+            77
+        );
+        assert_eq!(
+            alias_chat(
+                &json!({"secret_chat_id": lifted_id}),
+                "chat_id",
+                "secret_chat_id"
+            )
+            .unwrap(),
+            77
+        );
+        assert_eq!(
+            alias_chat(
+                &json!({"chat_id": lifted_id, "secret_chat_id": lifted_id}),
+                "chat_id",
+                "secret_chat_id"
+            )
+            .unwrap(),
+            77
+        );
+        assert!(
+            alias_chat(
+                &json!({"chat_id": lifted(77), "secret_chat_id": lifted(78)}),
+                "chat_id",
+                "secret_chat_id"
+            )
+            .is_err()
+        );
+        assert_eq!(string(&json!({"k": "v"}), "k").unwrap(), "v");
+        assert!(string(&json!({"k": 1}), "k").is_err());
+        assert_eq!(path(&json!({"p": "a.bin"}), "p"), Some(Path::new("a.bin")));
+        assert_eq!(path(&json!({"p": ""}), "p"), None);
+        assert_eq!(ids(&json!([1, "2"])).unwrap(), vec![1, 2]);
+        assert!(ids(&json!("not-array")).is_err());
+        assert!(ids(&json!(vec![1; 1001])).is_err());
+        assert!(ids(&json!(["bad"])).is_err());
+    }
+}
