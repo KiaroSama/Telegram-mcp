@@ -15,6 +15,9 @@ verifies an imported authorization's Telegram self identity when it is missing f
 the local session, using a bounded request that suppresses updates. Normal update
 consumption must not start until custody is ready. Disabling exposed secret-chat
 tools alone cannot protect encrypted updates from an ordinary difference request.
+The `ChatRequested` handler and the owner-gated `accept_secret_chat` tool share
+one handshake path. Keep the check for confirmed readiness and test that the
+automatic and explicit routes do not start duplicate handshakes.
 
 `src/secret/migration.rs` handles supported legacy stores, private backup copies and
 migration receipts. `src/secret/history.rs` owns local history and media references;

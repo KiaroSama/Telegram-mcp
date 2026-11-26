@@ -16,8 +16,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub use aliases::{alias_key, alias_peer_id, identifier_like};
 pub use events::{EventJournal, IncomingEvent};
 pub(crate) use grants::insert_approval;
-pub use paths::FileAccess;
-pub(crate) use paths::canonical_existing;
+pub use paths::{
+    DANGEROUS_SUFFIXES, FileAccess, safe_suffix, sanitize_download_filename,
+    sanitize_download_path, validate_path_syntax,
+};
+pub(crate) use paths::{ScopedPathGrant, canonical_existing, with_temporary_grants};
 pub use stream::{EventLog, EventQuery};
 
 pub struct State {
@@ -26,7 +29,10 @@ pub struct State {
     root: PathBuf,
     roots: Vec<PathBuf>,
     installation: PathBuf,
+    env_roots_enabled: bool,
     legacy_alias_source: Option<PathBuf>,
+    live_alias_file: Option<PathBuf>,
+    feed_file: Option<PathBuf>,
     feed_autostart: AtomicBool,
     pub(crate) events: Mutex<EventJournal>,
     pub(crate) changed: tokio::sync::Notify,
@@ -50,25 +56,24 @@ impl State {
         let installation =
             std::env::current_dir().context("Cannot resolve installation directory")?;
         let roots = match std::env::var("TELEGRAM_FILE_ROOTS") {
-            Ok(text) if !text.trim().is_empty() => {
-                if text.trim_start().starts_with('[') {
-                    serde_json::from_str::<Vec<String>>(&text)
-                        .context("TELEGRAM_FILE_ROOTS must contain an array of paths")?
-                        .into_iter()
-                        .map(PathBuf::from)
-                        .collect()
-                } else {
-                    std::env::split_paths(&text).collect()
-                }
-            }
+            Ok(text) if !text.trim().is_empty() => paths::parse_roots_setting(&text)?,
             _ => {
                 let files = installation.join("files");
                 storage::private_directory(&files)?;
+                storage::private_directory(&files.join("outbox"))?;
                 vec![files]
             }
         };
         let mut state = Self::at_with_installation(root, roots, installation)?;
-        state.legacy_alias_source = std::env::var_os("TELEGRAM_ALIASES_FILE").map(PathBuf::from);
+        state.env_roots_enabled = true;
+        let alias_env = std::env::var_os("TELEGRAM_ALIASES_FILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
+        state.legacy_alias_source = alias_env.clone();
+        state.live_alias_file = alias_env;
+        state.feed_file = std::env::var_os("TELEGRAM_EVENT_FEED_FILE")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from);
         state.feed_autostart.store(
             std::env::var("TELEGRAM_EVENT_FEED")
                 .ok()
@@ -118,7 +123,10 @@ impl State {
             root,
             roots: normalized,
             installation,
+            env_roots_enabled: false,
             legacy_alias_source: None,
+            live_alias_file: None,
+            feed_file: None,
             feed_autostart: AtomicBool::new(false),
             events: Mutex::new(EventJournal::default()),
             changed: tokio::sync::Notify::new(),
@@ -163,6 +171,11 @@ impl State {
     }
 
     pub fn ghost_mode(&self, account: Option<&str>, chat: Option<&Value>) -> Value {
+        let keys: Vec<String> = chat.into_iter().map(normalize_key).collect();
+        self.ghost_mode_for_keys(account, &keys)
+    }
+
+    pub fn ghost_mode_for_keys(&self, account: Option<&str>, chat_keys: &[String]) -> Value {
         let defaults = json!({"default":true,"accounts":{},"chats":{}});
         let (data, error) = match self.read_json("ghost.json", defaults.clone()) {
             Ok(data) if data.is_object() => (data, None),
@@ -172,9 +185,13 @@ impl State {
             ),
         };
         let account_value = account.and_then(|a| data["accounts"].get(a.to_lowercase()));
-        let chat_value = account
-            .zip(chat)
-            .and_then(|(a, c)| data["chats"][a.to_lowercase()].get(normalize_key(c)));
+        let chat_value = account.and_then(|a| {
+            let scoped = data["chats"].get(a.to_lowercase())?;
+            chat_keys
+                .iter()
+                .filter(|k| !k.is_empty())
+                .find_map(|key| scoped.get(key))
+        });
         let effective = if error.is_some() {
             true
         } else {
@@ -194,7 +211,22 @@ impl State {
         account: Option<&str>,
         chat: Option<&Value>,
     ) -> Result<Value> {
-        if chat.is_some() && account.is_none() {
+        let keys: Vec<String> = chat.into_iter().map(normalize_key).collect();
+        self.set_ghost_mode_for_keys(enabled, account, &keys)
+    }
+
+    pub fn set_ghost_mode_for_keys(
+        &self,
+        enabled: bool,
+        account: Option<&str>,
+        chat_keys: &[String],
+    ) -> Result<Value> {
+        let normalized_keys: Vec<String> = chat_keys
+            .iter()
+            .map(|k| k.trim().trim_start_matches('@').to_lowercase())
+            .filter(|k| !k.is_empty())
+            .collect();
+        if !normalized_keys.is_empty() && account.is_none() {
             bail!("A chat setting requires its account");
         }
         self.update_json(
@@ -215,14 +247,18 @@ impl State {
                 {
                     bail!("ghost.json nested settings are invalid; nothing was overwritten");
                 }
-                if let (Some(a), Some(c)) = (account, chat) {
+                if let Some(a) = account
+                    && !normalized_keys.is_empty()
+                {
                     if data["chats"].is_null() {
                         data["chats"] = json!({});
                     }
                     if data["chats"][a.to_lowercase()].is_null() {
                         data["chats"][a.to_lowercase()] = json!({});
                     }
-                    data["chats"][a.to_lowercase()][normalize_key(c)] = json!(enabled);
+                    for key in &normalized_keys {
+                        data["chats"][a.to_lowercase()][key] = json!(enabled);
+                    }
                 } else if let Some(a) = account {
                     if data["accounts"].is_null() {
                         data["accounts"] = json!({});
@@ -234,7 +270,17 @@ impl State {
                 Ok(())
             },
         )?;
-        Ok(self.ghost_mode(account, chat))
+        Ok(self.ghost_mode_for_keys(account, &normalized_keys))
+    }
+
+    pub fn with_feed_file(mut self, path: Option<PathBuf>) -> Self {
+        self.feed_file = path;
+        self
+    }
+
+    pub fn with_live_alias_file(mut self, path: Option<PathBuf>) -> Self {
+        self.live_alias_file = path;
+        self
     }
 }
 

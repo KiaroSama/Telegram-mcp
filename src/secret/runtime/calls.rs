@@ -1,6 +1,6 @@
-use super::*;
+use super::{accept::snapshot, arguments::*, *};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use grammers_tl_types::{Deserializable, Serializable};
+
 use kiaro_secret_chat::{
     enums::SendMessageAction,
     media::{MediaKind, Metadata},
@@ -11,6 +11,19 @@ impl SecretRuntime {
     /// Dispatch a public secret-chat method using its tool parameter names.
     pub async fn call(&self, api: &dyn Telegram, method: &str, args: Value) -> Result<Value> {
         ensure!(args.is_object(), "Secret-chat arguments must be an object");
+        if method == "accept_secret_chat" {
+            let id = args["chat_id"]
+                .as_i64()
+                .and_then(crate::secret::wire_chat_id)
+                .context("Invalid secret-chat ID")?;
+            if args["account"]
+                .as_str()
+                .is_some_and(|account| account != self.label)
+            {
+                return Ok(json!({"status":"refused","code":"not_found"}));
+            }
+            return Ok(self.accept_incoming(id, None).await);
+        }
         let mutations = Arc::clone(&self.mutations).lock_owned().await;
         let id = || alias_chat(&args, "chat_id", "secret_chat_id");
         let close_id = || alias_chat(&args, "secret_chat_id", "chat_id");
@@ -605,75 +618,4 @@ impl SecretRuntime {
             json!({"account":self.label,"mode":"ingress","ready":true,"durable_ingress":true,"auto_save_folder":self.history.auto_save_folder()?}),
         )
     }
-}
-
-fn format_message(
-    text: &str,
-    mode: Option<&str>,
-) -> Result<(String, Option<Vec<tl::enums::MessageEntity>>)> {
-    let (text, entities) = match mode.unwrap_or("plain").to_ascii_lowercase().as_str() {
-        "plain" | "none" | "" => return Ok((text.into(), Some(Vec::new()))),
-        "markdown" | "md" => grammers_client::parsers::parse_markdown_message(text),
-        "html" => grammers_client::parsers::parse_html_message(text),
-        _ => bail!("Unsupported secret-chat parse mode"),
-    };
-    for entity in &entities {
-        ensure!(
-            kiaro_secret_chat::enums::MessageEntity::from_bytes(&entity.to_bytes()).is_ok(),
-            "The secret-chat layer does not support one of the message entities"
-        );
-    }
-    Ok((text, Some(entities)))
-}
-
-fn integer(args: &Value, key: &str) -> Option<i64> {
-    args[key]
-        .as_i64()
-        .or_else(|| args[key].as_str()?.parse().ok())
-}
-fn required_int(args: &Value, key: &str) -> Result<i64> {
-    integer(args, key).with_context(|| format!("A valid {key} is required"))
-}
-fn chat_id(args: &Value, key: &str) -> Result<i32> {
-    crate::secret::wire_chat_id(required_int(args, key)?).context("Invalid secret-chat ID")
-}
-fn lifted(id: i32) -> i64 {
-    i64::from(id) - crate::secret::CHAT_OFFSET
-}
-fn alias_chat(args: &Value, field: &str, alias: &str) -> Result<i32> {
-    if args[field].is_null() {
-        return chat_id(args, alias);
-    }
-    let id = chat_id(args, field)?;
-    ensure!(
-        args[alias].is_null() || chat_id(args, alias)? == id,
-        "Secret-chat identifiers disagree"
-    );
-    Ok(id)
-}
-fn string<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
-    args[key]
-        .as_str()
-        .with_context(|| format!("{key} must be text"))
-}
-fn path<'a>(args: &'a Value, key: &str) -> Option<&'a Path> {
-    args[key]
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .map(Path::new)
-}
-fn ids(value: &Value) -> Result<Vec<i64>> {
-    let items = value.as_array().context("Message IDs must be an array")?;
-    ensure!(items.len() <= 1000, "Too many secret message IDs");
-    items
-        .iter()
-        .map(|v| {
-            v.as_i64()
-                .or_else(|| v.as_str()?.parse().ok())
-                .context("Invalid secret message ID")
-        })
-        .collect()
-}
-fn snapshot(chat: ChatSnapshot) -> Value {
-    json!({"chat_id":lifted(chat.id),"secret_chat_id":chat.id,"peer_user_id":chat.peer_user_id,"is_outbound":chat.is_outbound,"state":chat.state,"ttl":chat.ttl,"layer":chat.capability_layer,"key_fingerprint":chat.key_fingerprint,"has_previous_key":chat.has_previous_key,"exchange_in_progress":chat.exchange_in_progress,"paused":chat.paused})
 }

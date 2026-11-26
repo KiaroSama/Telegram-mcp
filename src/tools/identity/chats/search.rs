@@ -2,10 +2,7 @@ use super::*;
 
 pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
     let folder = folder_selector(a)?;
-    let query = text(a, "query")?
-        .trim()
-        .trim_start_matches('@')
-        .to_lowercase();
+    let query = crate::permalinks::strip_username_prefix(text(a, "query")?, None).to_lowercase();
     ensure!(!query.is_empty(), "Give part of a chat name or username");
     let maximum = limit(a, "limit", 50, 100)? as usize;
     let folders = filters(api).await?;
@@ -13,7 +10,60 @@ pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
     let found = api
         .invoke("contacts.search", json!({"q":query,"limit":100}))
         .await?;
-    let local = dialogs(api, 100, None).await?;
+    let mut local = json!({"users":[],"chats":[]});
+    let mut matches = vec![];
+    let mut seen = std::collections::HashSet::new();
+    let mut page = dialogs(api, 100, None).await?;
+    let mut observed = 0;
+    let mut scan = json!({"limit":100,"hash":0});
+    loop {
+        let ds = page["dialogs"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        observed += ds.len();
+        for d in ds {
+            if let Some(e) = matching_entity(&page, &d["peer"]) {
+                let hay = format!(
+                    "{} {}",
+                    display_name(e),
+                    e["username"].as_str().unwrap_or_default()
+                )
+                .to_lowercase();
+                if query.split_whitespace().all(|w| {
+                    hay.split(|c: char| !c.is_alphanumeric())
+                        .any(|part| part.starts_with(w))
+                }) && inside.is_none_or(|f| in_folder(f, e, d, &d["peer"]))
+                {
+                    matches.push(d["peer"].clone());
+                    let table = if d["peer"]["_"] == "peerUser" {
+                        "users"
+                    } else {
+                        "chats"
+                    };
+                    if let Some(xs) = local[table].as_array_mut() {
+                        xs.push(e.clone());
+                    }
+                }
+            }
+        }
+        if ds.is_empty()
+            || (ds.len() < 100
+                && (page["_"] != "messages.dialogsSlice"
+                    || observed >= page["count"].as_u64().unwrap_or(0) as usize))
+        {
+            break;
+        }
+        advance_dialogs(&mut scan, &page, ds)?;
+        ensure!(
+            seen.insert((
+                scan["offset_peer"].to_string(),
+                scan["offset_id"].to_string()
+            )),
+            "Telegram repeated the dialog cursor"
+        );
+        page = api.invoke("messages.getDialogs", scan.clone()).await?;
+    }
     let contacts = api
         .invoke("contacts.getContacts", json!({"hash":0}))
         .await?;
@@ -22,27 +72,7 @@ pub(super) async fn mine(api: &dyn Telegram, a: &Value) -> Result<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    for d in local
-        .get("dialogs")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(e) = matching_entity(&local, &d["peer"]) {
-            let hay = format!(
-                "{} {}",
-                display_name(e),
-                e["username"].as_str().unwrap_or("")
-            )
-            .to_lowercase();
-            if query.split_whitespace().all(|word| {
-                hay.split(|c: char| !c.is_alphanumeric())
-                    .any(|part| part.starts_with(word))
-            }) {
-                peers.push(d["peer"].clone());
-            }
-        }
-    }
+    peers.extend(matches);
     for contact in contacts
         .get("users")
         .and_then(Value::as_array)
@@ -154,8 +184,38 @@ pub(super) async fn lookup(api: &dyn Telegram, a: &Value) -> Result<Value> {
         .iter()
         .find(|u| u["active"] == true)
         .and_then(|u| u["username"].as_str())
-        .map(|name| format!("https://t.me/{name}"));
+        .map(|name| crate::permalinks::public_link(name, None))
+        .transpose()?;
     Ok(
         json!({"results":[{"id":marked(&p)?,"bare_id":entity_id(&p)?,"type":chat_kind(e),"name":display_name(e),"usernames":usernames,"link":link}],"metadata":{"query":query},"untrusted_content":true}),
     )
+}
+
+pub(super) async fn public(api: &dyn Telegram, req: Value) -> Result<Value> {
+    let limit = req["limit"].as_u64().unwrap_or(20) as usize;
+    let r = api.invoke("contacts.search", req).await?;
+    let joined = r["my_results"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|p| marked(p).ok())
+        .collect::<std::collections::HashSet<_>>();
+    let mut rows = Vec::new();
+    for e in ["chats", "users"]
+        .iter()
+        .flat_map(|k| r[k].as_array().into_iter().flatten())
+    {
+        let key = match kind(e) {
+            "channel" | "channelForbidden" => "channel_id",
+            "chat" | "chatForbidden" => "chat_id",
+            "user" => "user_id",
+            _ => continue,
+        };
+        let p = json!({"_":match key{"channel_id"=>"peerChannel","chat_id"=>"peerChat",_=>"peerUser"},key:e["id"]});
+        let mut row = summary(e, &Value::Null, &p)?;
+        row["joined"] = json!(joined.contains(&marked(&p)?));
+        rows.push(row);
+    }
+    let more = rows.len() >= limit;
+    Ok(json!({"results":rows,"has_more":more,"metadata":{"returned":rows.len(),"has_more":more}}))
 }

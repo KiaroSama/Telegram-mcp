@@ -18,6 +18,49 @@ struct Fixture {
     _temporary: tempfile::TempDir,
     state: Arc<State>,
 }
+#[test]
+fn history_keeps_the_newest_500_distinct_eligible_rows_per_chat() {
+    use telegram_mcp::secret::SecretHistory;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("work.history.v1.json");
+    let mut rows: Vec<_> = (1..=501)
+        .map(|id| json!({"message_id":id,"date":id}))
+        .collect();
+    rows.push(json!({"message_id":501,"date":502}));
+    rows.push(json!({"message_id":502,"can_be_saved":false,"date":503}));
+    rows.push(json!({"message_id":503,"self_destructs_after_seconds":3,"date":504}));
+    std::fs::write(
+        &path,
+        json!({"10":rows,"11":[{"message_id":1}]}).to_string(),
+    )
+    .unwrap();
+    let history = SecretHistory::open(dir.path(), "work", &Default::default()).unwrap();
+    assert_eq!(
+        history
+            .read(10, 3)
+            .unwrap()
+            .iter()
+            .map(|r| r["message_id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        [499, 500, 501]
+    );
+    assert_eq!(history.read(10, 1000).unwrap().len(), 500);
+    assert_eq!(history.read(11, 30).unwrap().len(), 1);
+    history
+        .append(10, json!({"message_id":504,"date":505}), None)
+        .unwrap();
+    let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(stored["10"].as_array().unwrap().len(), 500);
+    assert_eq!(stored["10"][0]["message_id"], 3);
+    assert!(
+        SecretHistory::open(dir.path(), "other", &Default::default())
+            .unwrap()
+            .read(10, 500)
+            .unwrap()
+            .is_empty()
+    );
+}
+
 impl Fixture {
     fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap();

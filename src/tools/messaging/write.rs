@@ -11,12 +11,18 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
         | "reply_to_message"
         | "send_scheduled_message"
         | "schedule_message"
-        | "edit_scheduled_message" => Some(send(api, name, a).await),
+        | "edit_scheduled_message" => Some(send(api, name, a).await.map(|r| {
+            if matches!(name, "edit_message" | "edit_scheduled_message") {
+                r
+            } else {
+                sent_ids(r)
+            }
+        })),
         "delete_message" | "delete_messages_bulk" | "delete_chat_history" => {
             Some(delete(api, name, a).await)
         }
         "forward_message" | "forward_messages" | "copy_message" => {
-            Some(forward(api, name, a).await)
+            Some(forward(api, name, a).await.map(sent_ids))
         }
         "save_draft"
         | "clear_draft"
@@ -95,7 +101,7 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 "rich_files must map attachment ids to paths"
             );
             ensure!(
-                files.as_object().unwrap().len() <= 20,
+                files.as_object().is_some_and(|objects| objects.len() <= 20),
                 "rich_files cannot contain more than 20 attachments"
             );
         }
@@ -130,7 +136,7 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         preserve_scheduled(
             api,
             &p,
-            mid.unwrap(),
+            mid.ok_or_else(|| anyhow::anyhow!("message_id is required"))?,
             a,
             &mut request,
             when,
@@ -180,7 +186,7 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         request["rich_message"]["files"] = json!(references);
     }
     if edit {
-        request["id"] = json!(mid.unwrap());
+        request["id"] = json!(mid.ok_or_else(|| anyhow::anyhow!("message_id is required"))?);
     } else {
         request["random_id"] = args::random_id();
         if let Some(mut reply) = reply(
@@ -227,8 +233,7 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                         !rich_requested,
                         "Quote block/row/column coordinates require a rich source"
                     );
-                    let original =
-                        fetch(api, &p, reply["reply_to_msg_id"].as_i64().unwrap()).await?;
+                    let original = fetch(api, &p, id(&reply, "reply_to_msg_id")?).await?;
                     let source = original["message"].as_str().unwrap_or("");
                     let offset = if a.get("quote_offset").is_some_and(|v| !v.is_null()) {
                         args::integer(a, "quote_offset", -1)?
@@ -295,7 +300,12 @@ async fn send(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         let expected_entities = source_entities(text, &expected["entities"])?;
         // The server invokes this handler after approval. Keep this peer-bound
         // read immediately before the edit; Telegram offers no atomic edit CAS.
-        let current = fetch(api, &p, mid.unwrap()).await?;
+        let current = fetch(
+            api,
+            &p,
+            mid.ok_or_else(|| anyhow::anyhow!("message_id is required"))?,
+        )
+        .await?;
         let current_text = current["message"].as_str().unwrap_or("");
         ensure!(
             current_text == text
@@ -568,4 +578,32 @@ async fn queue(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             api.invoke("messages.saveDraft",req).await
         }
     }
+}
+
+fn sent_ids(mut r: Value) -> Value {
+    if !r.is_object() {
+        return r;
+    }
+    let mut ids = Vec::new();
+    let mut push = |v: &Value| {
+        if let Some(id) = v.as_i64().filter(|id| *id > 0)
+            && !ids.contains(&id)
+        {
+            ids.push(id);
+        }
+    };
+    if r["_"] == "updateShortSentMessage" {
+        push(&r["id"]);
+    }
+    for u in r["updates"].as_array().into_iter().flatten() {
+        match u["_"].as_str() {
+            Some("updateNewMessage" | "updateNewChannelMessage" | "updateNewScheduledMessage") => {
+                push(&u["message"]["id"])
+            }
+            Some("updateMessageID") => push(&u["id"]),
+            _ => (),
+        }
+    }
+    r["sent_message_ids"] = json!(ids);
+    r
 }

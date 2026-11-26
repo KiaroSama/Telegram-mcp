@@ -52,7 +52,7 @@ pub(super) async fn read(
         let Ok(page) = timeout_at(deadline, api.invoke(method, request.clone())).await else {
             break;
         };
-        answer = page?;
+        answer = super::projection::link_page(page?);
         let page = answer["messages"]
             .as_array()
             .context("Telegram returned no message page")?;

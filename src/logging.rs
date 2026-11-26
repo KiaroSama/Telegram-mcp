@@ -120,6 +120,7 @@ fn private_open(path: &std::path::Path) -> io::Result<File> {
         .map_err(|_| io::Error::other("Cannot restrict runtime log permissions"))?;
     Ok(file)
 }
+
 pub fn initialize() -> Result<()> {
     if std::env::var_os("TELEGRAM_MCP_LOG_FILE").is_some_and(|value| {
         value.is_empty()

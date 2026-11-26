@@ -94,6 +94,13 @@ pub fn reaction(args: &Value, allow_empty: bool) -> Result<Value> {
     Ok(json!({"_":"reactionEmpty"}))
 }
 pub async fn message(api: &dyn Telegram, p: &Value, msg: i64) -> Result<Value> {
+    Ok(message_and_entities(api, p, msg).await?.0)
+}
+pub(super) async fn message_and_entities(
+    api: &dyn Telegram,
+    p: &Value,
+    msg: i64,
+) -> Result<(Value, Value)> {
     ensure!(
         msg > 0 && msg <= i32::MAX as i64,
         "message_id must be a positive 32-bit integer"
@@ -127,7 +134,7 @@ pub async fn message(api: &dyn Telegram, p: &Value, msg: i64) -> Result<Value> {
         "messages.getMessages"
     };
     let result = api.invoke(method, params).await?;
-    result["messages"]
+    let found = result["messages"]
         .as_array()
         .and_then(|m| {
             m.iter().find(|m| {
@@ -141,7 +148,8 @@ pub async fn message(api: &dyn Telegram, p: &Value, msg: i64) -> Result<Value> {
             })
         })
         .cloned()
-        .ok_or_else(|| anyhow::anyhow!("Message not found or inaccessible"))
+        .ok_or_else(|| anyhow::anyhow!("Message not found or inaccessible"))?;
+    Ok((found, result))
 }
 pub fn document(d: &Value) -> Result<Value> {
     ensure!(
@@ -177,7 +185,17 @@ pub fn slug(raw: &str, kind: &str) -> Result<String> {
     if valid(raw) {
         return Ok(raw.into());
     }
-    let full = if raw.starts_with("t.me/") || raw.starts_with("telegram.me/") {
+    let domain = crate::permalinks::link_domain();
+    // Business and folder links also accept Telegram's historical alias.
+    let accepts_host = |host: &str| {
+        [crate::permalinks::DEFAULT_DOMAIN, &domain, "telegram.me"]
+            .iter()
+            .any(|known| host.eq_ignore_ascii_case(known))
+    };
+    let full = if raw
+        .split_once('/')
+        .is_some_and(|(host, _)| accepts_host(host))
+    {
         format!("https://{raw}")
     } else {
         raw.into()
@@ -200,8 +218,7 @@ pub fn slug(raw: &str, kind: &str) -> Result<String> {
         v[0].clone()
     } else {
         ensure!(
-            matches!(u.scheme(), "http" | "https")
-                && matches!(u.host_str(), Some("t.me" | "telegram.me")),
+            matches!(u.scheme(), "http" | "https") && u.host_str().is_some_and(accepts_host),
             "Invalid Telegram link host"
         );
         let prefix = if kind == "addlist" {

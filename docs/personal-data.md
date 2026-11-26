@@ -20,9 +20,9 @@ directory under its working directory.
 
 Native path validation resolves existing files and destination ancestors, rejects
 traversal and symlink escapes, and protects private state, dotenv files and repository
-metadata even under a broad allowed root. A path outside those roots is refused before
-upload/download or export work. A caller cannot bypass that boundary merely by supplying
-an absolute path or a different filename suffix.
+metadata even under a broad allowed root. A tool that supports folder grants can use
+an outside path only after the server grants access for that request or path. Protected
+paths stay blocked even while the owner has `/bypass` enabled.
 
 Aliases and event feeds are account-scoped. Updates must preserve unrelated fields,
 write valid UTF-8 and fail on unreadable/corrupt state instead of resetting it silently.

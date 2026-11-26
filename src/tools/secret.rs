@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 
 pub const TOOL_NAMES: &[&str] = &[
+    "accept_secret_chat",
     "acknowledge_secret_delivery",
     "check_secret_custody",
     "clear_secret_history",

@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 use tokio::sync::watch;
 
 #[derive(Debug)]
@@ -17,12 +18,34 @@ impl std::error::Error for Cancelled {}
 struct Job {
     record: Value,
     cancel: watch::Sender<bool>,
+    started: Instant,
+    last_elapsed_ms: u64,
+    finished: bool,
 }
 
 static JOBS: OnceLock<Mutex<BTreeMap<String, Job>>> = OnceLock::new();
 
 fn jobs() -> &'static Mutex<BTreeMap<String, Job>> {
     JOBS.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn update_elapsed(job: &mut Job) -> Value {
+    if !job.finished {
+        let now_ms = u64::try_from(job.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        job.last_elapsed_ms = job.last_elapsed_ms.max(now_ms);
+    }
+    job.record["elapsed_seconds"] = json!((job.last_elapsed_ms as f64) / 1000.0);
+    job.record.clone()
+}
+
+fn sanitize_error_text(error: &anyhow::Error) -> String {
+    let raw = error.to_string();
+    let cleaned: String = raw
+        .chars()
+        .filter(|&c| !c.is_control() && !crate::text_fidelity::is_unsafe_char(c))
+        .take(400)
+        .collect();
+    cleaned
 }
 
 pub fn start(
@@ -39,8 +62,18 @@ pub fn start(
     );
     let (cancel, receiver) = watch::channel(false);
     let reservation = settings.reserve()?;
-    let record = json!({"job_id":id,"kind":kind,"chat_id":args["chat_id"],"folder":settings.path,
-        "status":"running","messages_so_far":0,"files_so_far":0,"started_at":chrono::Utc::now().to_rfc3339()});
+    let started = Instant::now();
+    let record = json!({
+        "job_id": id,
+        "kind": kind,
+        "chat_id": args["chat_id"],
+        "folder": settings.path,
+        "status": "running",
+        "messages_so_far": 0,
+        "files_so_far": 0,
+        "elapsed_seconds": 0.0,
+        "started_at": chrono::Utc::now().to_rfc3339(),
+    });
     {
         let mut all = jobs()
             .lock()
@@ -56,6 +89,9 @@ pub fn start(
             Job {
                 record: record.clone(),
                 cancel,
+                started,
+                last_elapsed_ms: 0,
+                finished: false,
             },
         );
     }
@@ -67,26 +103,30 @@ pub fn start(
         if let Ok(mut all) = jobs().lock()
             && let Some(job) = all.get_mut(&id)
         {
-            job.record["status"] = if result.is_ok() {
-                "done"
-            } else if result.as_ref().is_err_and(|error| error.is::<Cancelled>()) {
-                "cancelled"
-            } else {
-                "failed"
-            }
-            .into();
+            let now_ms = u64::try_from(job.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            job.last_elapsed_ms = job.last_elapsed_ms.max(now_ms);
+            job.finished = true;
+            job.record["elapsed_seconds"] = json!((job.last_elapsed_ms as f64) / 1000.0);
             job.record["finished_at"] = chrono::Utc::now().to_rfc3339().into();
             match result {
-                Ok(value) => job.record["result"] = value,
+                Ok(value) => {
+                    if value["partial"] == true {
+                        job.record["status"] = "partial".into();
+                        job.record["partial"] = true.into();
+                        job.record["failed_files"] = value["failed_files"].clone();
+                        job.record["failed_items"] = value["failed_items"].clone();
+                    } else {
+                        job.record["status"] = "done".into();
+                        job.record["partial"] = false.into();
+                    }
+                    job.record["result"] = value;
+                }
+                Err(error) if error.is::<Cancelled>() => {
+                    job.record["status"] = "cancelled".into();
+                }
                 Err(error) => {
-                    // Detailed transport errors can contain peer data. The
-                    // private job record exposes only our bounded context.
-                    job.record["error"] = error
-                        .to_string()
-                        .chars()
-                        .take(400)
-                        .collect::<String>()
-                        .into();
+                    job.record["status"] = "failed".into();
+                    job.record["error"] = sanitize_error_text(&error).into();
                 }
             }
         }
@@ -100,19 +140,20 @@ pub fn progress(id: &str, messages: usize, files: usize) {
     {
         job.record["messages_so_far"] = messages.into();
         job.record["files_so_far"] = files.into();
+        let _ = update_elapsed(job);
     }
 }
 
 pub fn status(args: &Value) -> Result<Value> {
-    let all = jobs()
+    let mut all = jobs()
         .lock()
         .map_err(|_| anyhow::anyhow!("Export job registry is unavailable"))?;
     match args["job_id"].as_str().filter(|id| !id.is_empty()) {
         Some(id) => all
-            .get(id)
-            .map(|job| job.record.clone())
+            .get_mut(id)
+            .map(update_elapsed)
             .with_context(|| format!("No export {id}; export_status without job_id lists them")),
-        None => Ok(all.values().map(|job| job.record.clone()).collect()),
+        None => Ok(Value::Array(all.values_mut().map(update_elapsed).collect())),
     }
 }
 
@@ -139,6 +180,7 @@ where
             .context("Random identifier was not a string")?
     );
     let (cancel, receiver) = watch::channel(false);
+    let started = Instant::now();
     let record = json!({
         "job_id": id,
         "kind": "secret_chat",
@@ -147,6 +189,7 @@ where
         "status": "running",
         "messages_so_far": 0,
         "files_so_far": 0,
+        "elapsed_seconds": 0.0,
         "started_at": chrono::Utc::now().to_rfc3339(),
     });
     {
@@ -169,6 +212,9 @@ where
             Job {
                 record: record.clone(),
                 cancel,
+                started,
+                last_elapsed_ms: 0,
+                finished: false,
             },
         );
     }
@@ -178,6 +224,10 @@ where
         if let Ok(mut all) = jobs().lock()
             && let Some(job) = all.get_mut(&job_id)
         {
+            let now_ms = u64::try_from(job.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            job.last_elapsed_ms = job.last_elapsed_ms.max(now_ms);
+            job.finished = true;
+            job.record["elapsed_seconds"] = json!((job.last_elapsed_ms as f64) / 1000.0);
             job.record["finished_at"] = json!(chrono::Utc::now().to_rfc3339());
             match result {
                 Ok((paths, messages)) => {
@@ -194,7 +244,7 @@ where
                 }
                 Err(error) => {
                     job.record["status"] = json!("failed");
-                    job.record["error"] = json!(error.to_string());
+                    job.record["error"] = json!(sanitize_error_text(&error));
                 }
             }
         }

@@ -59,6 +59,7 @@ async fn generated_callback_wire_preserves_nested_payload_password_flags_and_sty
     message["reply_markup"] = markup;
     let api = Wire::new(vec![
         messages(vec![message.clone()]),
+        json!([{"_":"document","id":"123","mime_type":"image/webp","attributes":[{"_":"documentAttributeCustomEmoji","alt":"icon"}]}]),
         messages(vec![message]),
         json!({"message":"native callback accepted"}),
     ]);
@@ -76,11 +77,12 @@ async fn generated_callback_wire_preserves_nested_payload_password_flags_and_sty
     );
     assert_eq!(inspected["buttons"][0]["style"]["bg_primary"], true);
     assert_eq!(inspected["buttons"][0]["style"]["icon"], "123");
+    assert_eq!(inspected["buttons"][0]["icon"]["alt"], "icon");
     assert_eq!(inspected["buttons"][1]["type"]["requires_password"], true);
     assert!(inspected["buttons"][1].get("press_token").is_none());
     let result=run(&api,"click_button",json!({"chat_id":7,"message_id":10,"button_index":0,"expect_text":"press","press_token":inspected["buttons"][0]["press_token"]})).await.unwrap();
     assert_eq!(result["message"], "native callback accepted");
-    assert_eq!(api.calls()[2].1["data"], json!([0, 128, 255]));
+    assert_eq!(api.calls()[3].1["data"], json!([0, 128, 255]));
 }
 #[tokio::test]
 async fn generated_url_and_copy_buttons_keep_their_native_fields_without_callback_tokens() {

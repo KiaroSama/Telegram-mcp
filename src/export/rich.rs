@@ -1,23 +1,30 @@
 //! Rich-message blocks are rendered as safe static HTML, never embedded scripts.
 
 use super::render::{html_escape, relative_href, safe_href};
+use crate::text_fidelity::{DEFAULT_MAX_NAME_CHARS, display_name};
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-fn children(value: &Value, key: &str, files: &Value, depth: usize) -> Result<String> {
+struct RichCtx<'a> {
+    files: &'a Value,
+    thumbs: &'a Value,
+}
+
+fn children(value: &Value, key: &str, ctx: &RichCtx<'_>, depth: usize) -> Result<String> {
     let mut result = String::new();
     for item in value[key].as_array().into_iter().flatten() {
-        result.push_str(&block(item, files, depth + 1)?);
+        result.push_str(&block_inner(item, ctx, depth + 1)?);
     }
     Ok(result)
 }
 
-fn media_link(value: &Value, key: &str, files: &Value, image: bool) -> String {
+fn media_link(value: &Value, key: &str, ctx: &RichCtx<'_>, image: bool) -> String {
     let id = value[key]
         .as_str()
         .map(str::to_owned)
         .unwrap_or_else(|| value[key].to_string());
-    if let Some(path) = files
+    if let Some(path) = ctx
+        .files
         .get(&id)
         .and_then(Value::as_str)
         .and_then(relative_href)
@@ -29,11 +36,25 @@ fn media_link(value: &Value, key: &str, files: &Value, image: bool) -> String {
                 html_escape(&path)
             );
         }
-        return format!(
+        let mut out = String::new();
+        if let Some(thumb) = ctx
+            .thumbs
+            .get(&id)
+            .and_then(Value::as_str)
+            .and_then(relative_href)
+        {
+            out.push_str(&format!(
+                "<img class=\"thumb\" alt=\"Thumbnail {}\" loading=\"lazy\" src=\"{}\">",
+                html_escape(&id),
+                html_escape(&thumb)
+            ));
+        }
+        out.push_str(&format!(
             "<a href=\"{}\">Media {}</a>",
             html_escape(&path),
             html_escape(&id)
-        );
+        ));
+        return out;
     }
     format!("<span>Media {} (not downloaded)</span>", html_escape(&id))
 }
@@ -48,6 +69,10 @@ pub fn text(value: &Value, files: &Value, depth: usize) -> Result<String> {
     if let Some(value) = value.as_str() {
         return Ok(html_escape(value));
     }
+    let ctx = RichCtx {
+        files,
+        thumbs: &Value::Null,
+    };
     let nested = || text(&value["text"], files, depth + 1);
     Ok(match value["_"].as_str().unwrap_or_default() {
         "textEmpty" => String::new(),
@@ -83,9 +108,9 @@ pub fn text(value: &Value, files: &Value, depth: usize) -> Result<String> {
                 None => nested()?,
             }
         }
-        "textImage" => media_link(value, "document_id", files, true),
+        "textImage" => media_link(value, "document_id", &ctx, true),
         "textCustomEmoji" => {
-            let link = media_link(value, "document_id", files, true);
+            let link = media_link(value, "document_id", &ctx, true);
             if link.starts_with("<img") {
                 link
             } else {
@@ -120,9 +145,21 @@ pub fn text(value: &Value, files: &Value, depth: usize) -> Result<String> {
 }
 
 pub fn block(value: &Value, files: &Value, depth: usize) -> Result<String> {
+    block_inner(
+        value,
+        &RichCtx {
+            files,
+            thumbs: &Value::Null,
+        },
+        depth,
+    )
+}
+
+fn block_inner(value: &Value, ctx: &RichCtx<'_>, depth: usize) -> Result<String> {
     if depth > 64 {
         bail!("Rich-message nesting exceeds 64 levels");
     }
+    let files = ctx.files;
     let body = || text(&value["text"], files, depth + 1);
     Ok(match value["_"].as_str().unwrap_or_default() {
         "pageBlockTitle" | "pageBlockHeading1" => format!("<h1>{}</h1>", body()?),
@@ -147,13 +184,13 @@ pub fn block(value: &Value, files: &Value, depth: usize) -> Result<String> {
         ),
         "pageBlockBlockquoteBlocks" => format!(
             "<blockquote>{}{}</blockquote>",
-            children(value, "blocks", files, depth)?,
+            children(value, "blocks", ctx, depth)?,
             text(&value["caption"], files, depth + 1)?
         ),
-        "pageBlockCover" => block(&value["cover"], files, depth + 1)?,
+        "pageBlockCover" => block_inner(&value["cover"], ctx, depth + 1)?,
         "pageBlockCollage" | "pageBlockSlideshow" => format!(
             "<section>{}{}</section>",
-            children(value, "items", files, depth)?,
+            children(value, "items", ctx, depth)?,
             caption(&value["caption"], files, depth)?
         ),
         "pageBlockList" | "pageBlockOrderedList" => {
@@ -180,7 +217,7 @@ pub fn block(value: &Value, files: &Value, depth: usize) -> Result<String> {
                     });
                 }
                 result.push_str(&if item.get("blocks").is_some() {
-                    children(item, "blocks", files, depth + 1)?
+                    children(item, "blocks", ctx, depth + 1)?
                 } else {
                     text(&item["text"], files, depth + 1)?
                 });
@@ -214,11 +251,11 @@ pub fn block(value: &Value, files: &Value, depth: usize) -> Result<String> {
             "<details{}><summary>{}</summary>{}</details>",
             if value["open"] == true { " open" } else { "" },
             text(&value["title"], files, depth + 1)?,
-            children(value, "blocks", files, depth)?
+            children(value, "blocks", ctx, depth)?
         ),
         "pageBlockPhoto" => format!(
             "<figure>{}{}</figure>",
-            media_link(value, "photo_id", files, true),
+            media_link(value, "photo_id", ctx, true),
             caption(&value["caption"], files, depth)?
         ),
         "pageBlockVideo" | "pageBlockAudio" | "pageBlockDocument" => {
@@ -229,7 +266,49 @@ pub fn block(value: &Value, files: &Value, depth: usize) -> Result<String> {
             };
             format!(
                 "<figure>{}{}</figure>",
-                media_link(value, key, files, false),
+                media_link(value, key, ctx, false),
+                caption(&value["caption"], files, depth)?
+            )
+        }
+        "pageBlockRelatedArticles" => {
+            let mut result = format!(
+                "<section class=\"related-articles\"><h3>{}</h3><ul>",
+                text(&value["title"], files, depth + 1)?
+            );
+            for art in value["articles"].as_array().into_iter().flatten() {
+                let title = html_escape(art["title"].as_str().unwrap_or("Article"));
+                let desc = html_escape(art["description"].as_str().unwrap_or(""));
+                match art["url"].as_str().and_then(safe_href) {
+                    Some(href) => result.push_str(&format!(
+                        "<li><a rel=\"noreferrer noopener\" href=\"{}\">{title}</a> {desc}</li>",
+                        html_escape(&href)
+                    )),
+                    None => result.push_str(&format!("<li>{title} {desc}</li>")),
+                }
+            }
+            result.push_str("</ul></section>");
+            result
+        }
+        "pageBlockChannel" => {
+            let ch = &value["channel"];
+            let name = html_escape(&display_name(ch["title"].as_str(), DEFAULT_MAX_NAME_CHARS));
+            match ch["username"]
+                .as_str()
+                .and_then(|u| crate::permalinks::public_link(u, None).ok())
+                .and_then(|u| safe_href(&u))
+            {
+                Some(href) => format!(
+                    "<p class=\"rich-channel\"><a rel=\"noreferrer noopener\" href=\"{}\">{name}</a></p>",
+                    html_escape(&href)
+                ),
+                None => format!("<p class=\"rich-channel\">{name}</p>"),
+            }
+        }
+        "pageBlockMap" => {
+            let lat = value["geo"]["lat"].as_f64().unwrap_or(0.0);
+            let lon = value["geo"]["long"].as_f64().unwrap_or(0.0);
+            format!(
+                "<figure class=\"rich-map\"><span>Location: {lat:.6}, {lon:.6}</span>{}</figure>",
                 caption(&value["caption"], files, depth)?
             )
         }
@@ -245,7 +324,7 @@ pub fn block(value: &Value, files: &Value, depth: usize) -> Result<String> {
             if let Some(html) = value["html"].as_str() {
                 result.push_str(&format!("<pre>{}</pre>", html_escape(html)));
             }
-            result.push_str(&children(value, "blocks", files, depth)?);
+            result.push_str(&children(value, "blocks", ctx, depth)?);
             result
         }
         "pageBlockMath" => format!(
@@ -270,5 +349,9 @@ fn caption(value: &Value, files: &Value, depth: usize) -> Result<String> {
 }
 
 pub fn message(value: &Value, files: &Value) -> Result<String> {
-    children(value, "blocks", files, 0)
+    message_with_thumbs(value, files, &Value::Null)
+}
+
+pub fn message_with_thumbs(value: &Value, files: &Value, thumbs: &Value) -> Result<String> {
+    children(value, "blocks", &RichCtx { files, thumbs }, 0)
 }

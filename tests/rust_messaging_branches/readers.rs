@@ -147,13 +147,15 @@ async fn global_cursor_round_trip_preserves_query_account_filter_and_server_offs
     .await
     .unwrap();
     let cursor = result["next_cursor"].as_str().unwrap();
-    let parsed: Value = serde_json::from_str(cursor).unwrap();
-    assert_eq!(parsed["offset_id"], 8);
-    assert_eq!(parsed["offset_rate"], 33);
+    assert!(
+        cursor
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    );
     run(
         &api,
         "search_global",
-        json!({"query":"needle","account":"work","page_size":3,"page":2,"cursor":cursor}),
+        json!({"query":"needle","account":"work","page_size":3,"page":1,"cursor":cursor}),
     )
     .await
     .unwrap();
@@ -174,8 +176,16 @@ async fn global_search_marks_user_group_and_channel_peers_before_resolving_curso
         ),
     ] {
         let mut item = message(8, "match");
+        let mut input = peer.clone();
+        input["_"] = json!(match peer["_"].as_str().unwrap() {
+            "peerUser" => "inputPeerUser",
+            "peerChat" => "inputPeerChat",
+            _ => "inputPeerChannel",
+        });
+        input["access_hash"] = json!("13");
         item["peer_id"] = peer;
-        let api = Api::new(vec![("messages.searchGlobal", messages(vec![item]))]);
+        let api = Api::new(vec![("messages.searchGlobal", messages(vec![item]))])
+            .identity(json!(wanted), input);
         let result = run(&api, "search_global", json!({"query":"needle"}))
             .await
             .unwrap();

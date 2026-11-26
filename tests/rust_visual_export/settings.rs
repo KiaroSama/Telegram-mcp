@@ -13,6 +13,18 @@ fn valid_export_settings_keep_media_choices_local_dates_fractional_budget_and_un
         return;
     }
     let destination = std::path::PathBuf::from(std::env::var("TEST_EXPORT_ROOT").unwrap());
+    let empty_target = destination.join("empty-selected");
+    let empty_parsed = Settings::parse(&arguments(&empty_target)).unwrap();
+    assert_eq!(
+        empty_parsed.path,
+        destination.canonicalize().unwrap().join("empty-selected")
+    );
+    assert!(
+        !empty_parsed.path.exists(),
+        "Planning an empty explicit destination must not touch disk"
+    );
+
+    std::fs::write(destination.join("existing.txt"), b"occupied").unwrap();
     let args = arguments(&destination);
     let parsed = Settings::parse(&args).unwrap();
     assert_eq!(parsed.media, [true, false, true, false, true, false, true]);
@@ -30,6 +42,7 @@ fn valid_export_settings_keep_media_choices_local_dates_fractional_budget_and_un
     assert!(parsed.includes_date(parsed.until - 1));
     assert!(!parsed.includes_date(parsed.until));
     assert!(parsed.path.starts_with(destination.canonicalize().unwrap()));
+    assert_ne!(parsed.path, destination.canonicalize().unwrap());
     assert!(!parsed.path.exists());
     std::fs::create_dir(&parsed.path).unwrap();
     let occupied = parsed.path.with_file_name(format!(
@@ -142,6 +155,7 @@ fn concurrent_job_admission_reserves_distinct_folders_and_rolls_back_cancelled_e
     }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         let destination = std::path::PathBuf::from(std::env::var("TEST_EXPORT_ROOT").unwrap());
+        std::fs::write(destination.join("existing-root.txt"), b"keep").unwrap();
         let args = arguments(&destination);
         let first = Settings::parse(&args).unwrap();
         let second = Settings::parse(&args).unwrap();

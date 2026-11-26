@@ -253,3 +253,37 @@ fn video_frames_sample_the_full_clip_instead_of_only_its_opening_seconds() {
         "The actual contact sheet must include blue pixels from the latter half"
     );
 }
+
+#[tokio::test]
+async fn custom_emoji_from_same_set_share_one_metadata_request() {
+    let mut d = document(71, "icon.webp", 4);
+    d["mime_type"] = json!("image/webp");
+    d["attributes"] = json!([{"_":"documentAttributeCustomEmoji","alt":"x","stickerset":{"_":"inputStickerSetID","id":"17","access_hash":"1"}}]);
+    let mut e = d.clone();
+    e["id"] = json!("72");
+    let w = MediaWire::new(
+        vec![
+            ("messages.getCustomEmojiDocuments", json!([d, e])),
+            (
+                "messages.getStickerSet",
+                json!({"set":{"short_name":"ExampleSet","title":"Example set"}}),
+            ),
+        ],
+        png(),
+    );
+    let result = run(&w, "get_custom_emoji", json!({"document_ids":[71,72]}))
+        .await
+        .unwrap();
+    assert_eq!(
+        result["metadata"]["emoji"][0]["set_short_name"],
+        "ExampleSet"
+    );
+    assert_eq!(result["metadata"]["emoji"][1]["set_title"], "Example set");
+    assert_eq!(
+        w.calls()
+            .iter()
+            .filter(|(name, _)| name == "messages.getStickerSet")
+            .count(),
+        1
+    );
+}

@@ -122,6 +122,7 @@ impl Telegram for Mock {
                 json!({"dialogs":[{"_":"dialog","peer":{"_":"peerChannel","channel_id":"7"},"unread_count":3}],"users":[],"chats":[]})
             }
             "users.getUsers" => json!([{"_":"user","id":"8","bot":true}]),
+            "account.getAuthorizations" => json!({"authorizations":[{"hash":"8","api_id":6}]}),
             "contacts.getContacts" => json!({"users":[]}),
             "communities.getJoinedCommunities" => {
                 json!({"chats":[{"_":"community","id":"7","access_hash":"70","title":"Community"}]})

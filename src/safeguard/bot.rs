@@ -1,11 +1,13 @@
 //! Telegram Bot API transport and owner approval requests.
+mod request;
+
 use super::{bot_menu::prompt_text, chat_target, request_fingerprint};
 use crate::state::State;
 use anyhow::{Context, Result, ensure};
 use futures_util::future::join_all;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -20,10 +22,21 @@ const API: &str = "https://api.telegram.org";
 const POLL_SECONDS: u64 = 20;
 const DELIVERY_SECONDS: u64 = 4;
 
+#[derive(Debug)]
+struct RejectedRequest;
+
+impl std::fmt::Display for RejectedRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Telegram rejected the approval bot request")
+    }
+}
+
+impl std::error::Error for RejectedRequest {}
+
 pub(super) struct Config {
     token: Zeroizing<String>,
     owners: BTreeSet<i64>,
-    timeout: Duration,
+    pub(super) timeout: Duration,
 }
 
 impl Config {
@@ -91,17 +104,16 @@ pub(crate) fn configured_timeout() -> Option<Duration> {
     Config::from_environment().map(|config| config.timeout)
 }
 
-pub(crate) fn status(state: &State, bot: Option<&ApprovalBot>) -> Value {
-    let grants = state.always_approvals();
+pub(crate) fn status(
+    state: &State,
+    bot: Option<&ApprovalBot>,
+    account: Option<&str>,
+    remembered: BTreeMap<String, usize>,
+    observed: BTreeMap<String, super::channels::ChannelAvailability>,
+) -> Value {
     let config = bot.is_none().then(Config::from_environment).flatten();
     let config = bot.map(|bot| &bot.config).or(config.as_ref());
-    json!({"installed":true,"bypass":false,"channels":{
-        "owner_terminal":"available through telegram-mcp approve",
-        "telegram_bot":config.map(Config::status).unwrap_or_else(|| json!("not configured"))
-    }, "approval_timeout_seconds":config.map_or(DEFAULT_TIMEOUT, |config| config.timeout.as_secs()),
-        "approval_grant_seconds":60,"always_approved":grants["grants"],"always_allowed_folders":grants["folders"],
-        "grant_error":grants["error"],"bulk_send":{"chats":5,"within_seconds":60},
-        "untrusted_content":{"passage_characters":24},"secret_chat_integration":"deferred"})
+    super::status_value(state, account, remembered, observed, config)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,11 +124,23 @@ pub(crate) enum Outcome {
     Unavailable,
 }
 
+impl From<Outcome> for super::channels::ChannelOutcome {
+    fn from(outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Approved => Self::ApprovedOnce,
+            Outcome::Denied => Self::Denied,
+            Outcome::TimedOut => Self::TimedOut,
+            Outcome::Unavailable => Self::Unsupported,
+        }
+    }
+}
+
 struct Pending {
     fingerprint: String,
     deadline: Instant,
     always: bool,
     reply: Option<oneshot::Sender<Outcome>>,
+    messages: HashMap<i64, i64>,
 }
 
 pub(crate) struct ApprovalBot {
@@ -126,6 +150,8 @@ pub(crate) struct ApprovalBot {
     endpoint: String,
     identity: OnceCell<(i64, String)>,
     pending: Mutex<HashMap<String, Pending>>,
+    menus: Mutex<super::bot_bypass::OwnerMenus>,
+    accounts: Mutex<BTreeMap<String, super::channels::ChannelAvailability>>,
 }
 
 impl ApprovalBot {
@@ -154,6 +180,8 @@ impl ApprovalBot {
             endpoint: endpoint.to_owned(),
             identity: OnceCell::new(),
             pending: Mutex::new(HashMap::new()),
+            menus: Mutex::default(),
+            accounts: Mutex::default(),
         }))
     }
 
@@ -229,6 +257,9 @@ impl ApprovalBot {
             .map_err(|_| failure())?;
         ensure!(response.status().is_success(), failure());
         let value: Value = response.json().await.map_err(|_| failure())?;
+        if value["ok"] == false {
+            return Err(RejectedRequest.into());
+        }
         ensure!(value["ok"] == true, failure());
         Ok(value["result"].clone())
     }
@@ -313,17 +344,46 @@ impl ApprovalBot {
             else {
                 return;
             };
+            let Some(message_id) = message["message_id"].as_i64().filter(|id| *id > 0) else {
+                return;
+            };
+            if !super::bot_bypass::valid_callback(data) {
+                return;
+            }
             let notice = if let Some((code, action)) = data
                 .strip_prefix("ap:")
                 .and_then(|body| body.split_once(':'))
             {
-                match self.decide(code, action) {
-                    Ok(true) => "Decision recorded",
-                    Ok(false) => "This request is no longer pending",
-                    Err(_) => "Could not save decision; no approval was issued",
+                match self.decide(code, action, owner, message_id) {
+                    Ok(true) => "Decision recorded".to_owned(),
+                    Ok(false) => "This request is no longer pending".to_owned(),
+                    Err(_) => "Could not save decision; no approval was issued".to_owned(),
                 }
             } else if data.starts_with("mn:") {
-                super::bot_menu::callback(&self.state, data).unwrap_or("Could not update approvals")
+                let current = self
+                    .menus
+                    .lock()
+                    .is_ok_and(|mut menus| menus.consume(owner, message_id, data));
+                if !current {
+                    return;
+                }
+                if let Some(key) = data.strip_prefix("mn:bp:") {
+                    let Some((_, preset)) = super::bypass::BypassPreset::MENU
+                        .iter()
+                        .find(|(selector, _)| *selector == key)
+                    else {
+                        return;
+                    };
+                    super::bot_bypass::change(&self.state, *preset, owner)
+                } else if data == "mn:ac" {
+                    let body = self.account_menu();
+                    self.send_menu(owner, body).await;
+                    "Account list refreshed".to_owned()
+                } else {
+                    super::bot_menu::callback(&self.state, data)
+                        .unwrap_or("Could not update approvals")
+                        .to_owned()
+                }
             } else {
                 return;
             };
@@ -350,24 +410,63 @@ impl ApprovalBot {
                 .get()
                 .map(|(_, name)| name.as_str())
                 .unwrap_or("");
-            if let Some(mut body) =
-                super::bot_menu::message(&self.state, command, username, &self.config.token)
-            {
-                body["chat_id"] = json!(owner);
-                let _ = self.api("sendMessage", body).await;
+            let observed = self.observed_accounts();
+            if let Some(body) = super::bot_menu::message(
+                &self.state,
+                command,
+                username,
+                &self.config.token,
+                owner,
+                &observed,
+            ) {
+                self.send_menu(owner, body).await;
             }
         }
     }
 
-    fn decide(&self, code: &str, action: &str) -> Result<bool> {
+    pub(super) fn observed_accounts(
+        &self,
+    ) -> BTreeMap<String, super::channels::ChannelAvailability> {
+        self.accounts
+            .lock()
+            .map(|rows| rows.clone())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn observe_account(
+        &self,
+        account: &str,
+        availability: super::channels::ChannelAvailability,
+    ) {
+        if let Ok(mut rows) = self.accounts.lock() {
+            rows.insert(account.to_owned(), availability);
+        }
+    }
+
+    fn account_menu(&self) -> Value {
+        super::bot_bypass::accounts(&self.observed_accounts())
+    }
+
+    async fn send_menu(&self, owner: i64, mut body: Value) {
+        body["chat_id"] = json!(owner);
+        if let Ok(result) = self.api("sendMessage", body.clone()).await
+            && let Some(id) = result["message_id"].as_i64().filter(|id| *id > 0)
+            && let Ok(mut menus) = self.menus.lock()
+        {
+            menus.record(owner, id, &body);
+        }
+    }
+
+    fn decide(&self, code: &str, action: &str, owner: i64, message_id: i64) -> Result<bool> {
         let mut pending = self
             .pending
             .lock()
             .map_err(|_| anyhow::anyhow!("Approval bot request lock is unavailable"))?;
-        let Some(request) = pending
-            .get_mut(code)
-            .filter(|request| request.reply.is_some() && request.deadline > Instant::now())
-        else {
+        let Some(request) = pending.get_mut(code).filter(|request| {
+            request.reply.is_some()
+                && request.deadline > Instant::now()
+                && request.messages.get(&owner) == Some(&message_id)
+        }) else {
             return Ok(false);
         };
         let outcome = match action {
@@ -436,6 +535,7 @@ impl ApprovalBot {
                 deadline,
                 always: chat_target(args).is_some(),
                 reply: Some(reply),
+                messages: HashMap::new(),
             },
         );
         Ok(Some(Request {
@@ -452,88 +552,6 @@ pub(crate) struct Request {
     code: String,
     deadline: Instant,
     outcome: oneshot::Receiver<Outcome>,
-}
-
-impl Request {
-    pub(crate) async fn wait(
-        &mut self,
-        tool: &str,
-        args: &Value,
-        fingerprint: &str,
-        reasons: &[String],
-    ) -> Result<Outcome> {
-        let bot = &self.bot;
-        let delivery_deadline = self
-            .deadline
-            .min(Instant::now() + Duration::from_secs(DELIVERY_SECONDS));
-        let buttons = prompt_buttons(&self.code, chat_target(args).is_some());
-        let text = prompt_text(&self.code, tool, args, reasons, &bot.config.token);
-        let send_all = async {
-            if !matches!(
-                tokio::time::timeout_at(delivery_deadline, bot.identify()).await,
-                Ok(Ok(()))
-            ) {
-                return vec![];
-            }
-            join_all(bot.config.owners.iter().map(|&owner| {
-                let body = json!({"chat_id":owner,"text":text,"parse_mode":"HTML","reply_markup":{"inline_keyboard":[buttons]},"link_preview_options":{"is_disabled":true}});
-                async move {
-                    let result = tokio::time::timeout_at(delivery_deadline, bot.api("sendMessage", body)).await.ok()?.ok()?;
-                    Some((owner, result["message_id"].as_i64()?))
-                }
-            })).await.into_iter().flatten().collect()
-        };
-        let sent = send_all.await;
-        let mut ticket = tokio::time::interval(Duration::from_millis(250));
-        let outcome = loop {
-            if let Ok(outcome) = self.outcome.try_recv() {
-                break outcome;
-            }
-            if sent.is_empty() {
-                break Outcome::Unavailable;
-            }
-            tokio::select! {
-                biased;
-                result = &mut self.outcome => break result.unwrap_or(Outcome::Unavailable),
-                () = tokio::time::sleep_until(self.deadline) => break Outcome::TimedOut,
-                _ = ticket.tick() => {
-                    if super::terminal::has_grant(&bot.state, fingerprint, tool, args)? { break Outcome::Approved; }
-                }
-            }
-        };
-        let outcome = {
-            let mut map = bot
-                .pending
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Approval bot request lock is unavailable"))?;
-            if let Some(request) = map.get_mut(&self.code) {
-                request.reply.take();
-            }
-            self.outcome.try_recv().unwrap_or(outcome)
-        };
-        if outcome == Outcome::TimedOut {
-            bot.remove_pending(fingerprint)?;
-        }
-        let text = match outcome {
-            Outcome::Approved => {
-                "Approved. The server will recheck the operation before running it."
-            }
-            Outcome::Denied => "Denied. The operation did not run.",
-            Outcome::TimedOut => "Timed out. The operation did not run.",
-            Outcome::Unavailable => return Ok(outcome),
-        };
-        let completed = join_all(sent.into_iter().map(|(owner, message)| bot.api("editMessageText", json!({"chat_id":owner,"message_id":message,"text":text,"reply_markup":{"inline_keyboard":[]}}))));
-        let _ = tokio::time::timeout(Duration::from_secs(2), completed).await;
-        Ok(outcome)
-    }
-}
-
-impl Drop for Request {
-    fn drop(&mut self) {
-        if let Ok(mut pending) = self.bot.pending.lock() {
-            pending.remove(&self.code);
-        }
-    }
 }
 
 fn prompt_buttons(code: &str, always: bool) -> Vec<Value> {

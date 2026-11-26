@@ -1,6 +1,7 @@
 // Owner-selected safeguard classification ported from the Python implementation.
 // Keep unknown destructive operations gated.
 pub const GATED: &[&str] = &[
+    "accept_secret_chat",
     "export_unread_messages",
     "answer_reply_button",
     "ban_community_member",
@@ -100,6 +101,7 @@ pub const SEEN_SIGNAL: &[&str] = &[
     "mark_topic_as_read",
     "resolve_business_chat_link",
     "send_secret_typing",
+    "send_typing",
 ];
 
 pub const SEND: &[&str] = &[
@@ -250,3 +252,47 @@ pub const FREE_WRITES: &[&str] = &[
     "save_secret_media",
     "set_secret_chat_timer",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::safeguard::policy::{Category, Facts, categorize, decide};
+    use serde_json::json;
+
+    #[test]
+    fn incoming_secret_accept_requires_approval_even_if_marked_read_only() {
+        assert!(GATED.contains(&"accept_secret_chat"));
+        assert!(!FREE_WRITES.contains(&"accept_secret_chat"));
+        assert_eq!(
+            categorize("accept_secret_chat", true, false),
+            Category::Gated
+        );
+    }
+
+    #[test]
+    fn ordinary_and_secret_typing_are_seen_signals() {
+        for tool in ["send_typing", "send_secret_typing"] {
+            assert!(SEEN_SIGNAL.contains(&tool));
+            assert_eq!(categorize(tool, false, false), Category::SeenSignal);
+            let facts = Facts {
+                ghost_on: true,
+                ..Default::default()
+            };
+            assert_eq!(
+                decide(tool, false, false, &json!({}), &facts).outcome,
+                "ask"
+            );
+        }
+    }
+
+    #[test]
+    fn hard_refusals_take_precedence_over_gated_classification() {
+        let facts = Facts {
+            approval_message: true,
+            ..Default::default()
+        };
+        let decision = decide("accept_secret_chat", true, false, &json!({}), &facts);
+        assert_eq!(decision.outcome, "refuse");
+        assert_eq!(decision.reasons, ["touches_approval_channel"]);
+    }
+}

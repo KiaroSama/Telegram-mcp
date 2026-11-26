@@ -4,7 +4,71 @@ use std::{
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
+    time::Duration,
 };
+
+pub const DEFAULT_LOCK_GRACE_SECONDS: f64 = 20.0;
+pub const MAX_LOCK_GRACE_SECONDS: f64 = 300.0;
+
+/// Parse `TELEGRAM_LOCK_GRACE_SECONDS`: default 20s, inclusive `0..=300` finite bound.
+/// Zero performs a single immediate lock attempt; nonempty invalid values fail closed.
+pub fn parse_lock_grace_seconds(raw: Option<&str>) -> Result<Duration> {
+    let Some(text) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(Duration::from_secs_f64(DEFAULT_LOCK_GRACE_SECONDS));
+    };
+    let parsed = text
+        .parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite() && (0.0..=MAX_LOCK_GRACE_SECONDS).contains(v))
+        .context("TELEGRAM_LOCK_GRACE_SECONDS must be a finite number between 0 and 300")?;
+    Ok(Duration::from_secs_f64(parsed))
+}
+
+pub fn lock_grace_seconds(snapshot: Option<&super::ConfigSnapshot>) -> Result<Duration> {
+    let raw = snapshot
+        .and_then(|s| s.values.get("TELEGRAM_LOCK_GRACE_SECONDS").cloned())
+        .or_else(|| std::env::var("TELEGRAM_LOCK_GRACE_SECONDS").ok());
+    parse_lock_grace_seconds(raw.as_deref())
+}
+
+/// Wait monotonically and cancellably for an exclusive OS lease up to `grace`.
+/// Zero grace executes exactly one immediate attempt without sleeping.
+pub async fn acquire_with_grace<F, T>(
+    grace: Duration,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    mut try_acquire: F,
+) -> Result<T>
+where
+    F: FnMut() -> Result<T>,
+{
+    let deadline = tokio::time::Instant::now() + grace;
+    let poll_interval = Duration::from_millis(50);
+    loop {
+        if cancel.is_some_and(tokio_util::sync::CancellationToken::is_cancelled) {
+            bail!("Lock acquisition cancelled before acquiring lease");
+        }
+        match try_acquire() {
+            Ok(guard) => return Ok(guard),
+            Err(error) => {
+                if grace.is_zero() || tokio::time::Instant::now() >= deadline {
+                    return Err(error);
+                }
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let step = remaining.min(poll_interval);
+                if let Some(token) = cancel {
+                    tokio::select! {
+                        biased;
+                        () = token.cancelled() => bail!("Lock acquisition cancelled before acquiring lease"),
+                        () = tokio::time::sleep(step) => {}
+                    }
+                } else {
+                    tokio::time::sleep(step).await;
+                }
+            }
+        }
+    }
+}
+
 static LOCAL: Mutex<()> = Mutex::new(());
 pub(in crate::account_manager) struct ConfigWriteGuard {
     pub path: PathBuf,

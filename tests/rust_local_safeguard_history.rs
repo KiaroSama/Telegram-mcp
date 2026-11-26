@@ -4,6 +4,53 @@ use serde_json::json;
 use telegram_mcp::safeguard::{Decision, Safeguard};
 
 #[test]
+fn historical_approval_messages_and_requoted_codes_stay_sealed_with_bypass() {
+    let (_dir, state) = fixture();
+    state
+        .write_json(
+            "sealed.json",
+            &json!({"codes":["A1BC"],"accounts":{"work":{"selves":["7","Owner"],"messages":[42]}}}),
+        )
+        .unwrap();
+    state
+        .write_json("bypass.json", &json!({"on":true,"until":null,"by":7}))
+        .unwrap();
+    let guard = Safeguard::new(state.clone());
+    for args in [
+        json!({"account":"Work","chat_id":"@Owner","message_id":42}),
+        json!({"account":"home","chat_id":8,"quote":"copy A1BC!"}),
+    ] {
+        assert!(matches!(
+            guard.check("delete_message", &args, false, true).unwrap(),
+            Decision::Refuse { .. }
+        ));
+    }
+    assert_eq!(
+        guard
+            .check(
+                "delete_message",
+                &json!({"account":"home","chat_id":"me","message_id":42}),
+                false,
+                true
+            )
+            .unwrap(),
+        Decision::Allow
+    );
+    std::fs::write(state.root().join("sealed.json"), b"{").unwrap();
+    assert!(matches!(
+        guard
+            .check(
+                "delete_message",
+                &json!({"account":"work","chat_id":30,"message_id":2}),
+                false,
+                true
+            )
+            .unwrap(),
+        Decision::Refuse { .. }
+    ));
+}
+
+#[test]
 fn successful_send_history_survives_guard_restart_and_stays_account_scoped() {
     let (_dir, state) = fixture();
     let guard = Safeguard::new(state.clone());

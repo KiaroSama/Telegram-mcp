@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use telegram_mcp::export::render;
+use telegram_mcp::export::{files, render, rich};
 
 fn entity(kind: &str, text: &str) -> String {
     render::render_entities(
@@ -118,7 +118,11 @@ fn unknown_senders_and_unavailable_media_are_readable_without_literal_nulls() {
         "known_name"
     );
     assert_eq!(render::person_name(&json!({})), "Unknown user");
-    let html=render::html_message(&json!({"_":"message","id":1,"date":1700000000,"message":"text","media":{"_":"messageMediaDocument"},"export_file_skipped":"not selected"}),&BTreeMap::new()).unwrap();
+    let html = render::html_message(
+        &json!({"_":"message","id":1,"date":1700000000,"message":"text","media":{"_":"messageMediaDocument"},"export_file_skipped":"not selected"}),
+        &BTreeMap::new(),
+    )
+    .unwrap();
     assert!(html.contains("text"));
     assert!(!html.contains("href="));
     assert!(!html.contains("null"));
@@ -134,4 +138,110 @@ fn unknown_senders_and_unavailable_media_are_readable_without_literal_nulls() {
     )
     .unwrap();
     assert_eq!(value["reply_to"]["reply_to_msg_id"], 5);
+}
+
+#[test]
+fn archive_references_reject_absolute_paths_host_backslashes_and_bidi_controls() {
+    for bad in [
+        "/etc/passwd",
+        "C:\\Users\\private\\file.jpg",
+        "photos\\nested.jpg",
+        "photos/../secret.jpg",
+        "./photos/a.jpg",
+        "photos/a\u{202E}gpj.exe",
+        "file:///tmp/a.jpg",
+    ] {
+        assert!(
+            files::clean_relative_path(bad).is_none(),
+            "Must reject {bad}"
+        );
+        assert!(render::relative_href(bad).is_none(), "Must reject {bad}");
+    }
+    assert_eq!(
+        files::clean_relative_path("contacts/contact_1.vcard"),
+        Some("contacts/contact_1.vcard".into())
+    );
+
+    let msg = json!({
+        "_": "message",
+        "id": 9,
+        "date": 1700000000,
+        "message": "spoof \u{202E}txt.exe <script>alert(1)</script>",
+        "export_file": "C:\\Users\\owner\\secret.pdf",
+        "export_thumb": "../outside_thumb.jpg",
+        "contact_vcard": "\\\\server\\share\\card.vcard",
+        "media": {
+            "_": "messageMediaContact",
+            "first_name": "Evil\u{202E}<img src=x onerror=alert(1)>",
+            "last_name": "Contact",
+            "phone_number": "+12025550100"
+        }
+    });
+    let json_rec = render::json_message(&msg, &BTreeMap::new()).unwrap();
+    assert!(json_rec.get("file").is_none());
+    assert!(json_rec.get("thumbnail").is_none());
+    assert!(json_rec.get("contact_vcard").is_none());
+    assert!(
+        !json_rec["contact_information"]["first_name"]
+            .as_str()
+            .unwrap()
+            .contains('\u{202E}')
+    );
+    let html = render::html_message(&msg, &BTreeMap::new()).unwrap();
+    assert!(!html.contains("<script>"));
+    assert!(!html.contains("<img src=x"));
+    assert!(!html.contains('\u{202E}'));
+    assert!(!html.contains("secret.pdf"));
+    assert!(!html.contains("outside_thumb"));
+}
+
+#[test]
+fn safe_text_projection_rebases_utf16_entities_after_stripping_unsafe_controls() {
+    let raw_text = "\u{202E}\u{0007}سلام 😀 bold";
+    let entities = vec![json!({
+        "_": "messageEntityBold",
+        "offset": 10,
+        "length": 4
+    })];
+    let projected = render::project_safe_text(raw_text, &entities);
+    assert_eq!(projected.text, "سلام 😀 bold");
+    assert_eq!(projected.entities.len(), 1);
+    assert_eq!(projected.entities[0].offset, 8);
+    assert_eq!(projected.entities[0].length, 4);
+}
+
+#[test]
+fn rich_channel_related_articles_and_document_thumbnails_render_without_scripts() {
+    let rich_doc = json!({
+        "blocks": [
+            {
+                "_": "pageBlockChannel",
+                "channel": {"title": "News <Feed>", "username": "telegram"}
+            },
+            {
+                "_": "pageBlockRelatedArticles",
+                "title": "Further reading",
+                "articles": [
+                    {"title": "Safe", "description": "Summary", "url": "https://example.org/a"},
+                    {"title": "Blocked", "description": "XSS", "url": "javascript:alert(1)"}
+                ]
+            },
+            {
+                "_": "pageBlockVideo",
+                "video_id": "77",
+                "caption": {"text": "Clip"}
+            }
+        ]
+    });
+    let html = rich::message_with_thumbs(
+        &rich_doc,
+        &json!({"77": "video_files/77.mp4"}),
+        &json!({"77": "video_files/77_thumb.jpg"}),
+    )
+    .unwrap();
+    assert!(html.contains("href=\"https://t.me/telegram\">News &lt;Feed&gt;</a>"));
+    assert!(html.contains("href=\"https://example.org/a\">Safe</a>"));
+    assert!(!html.contains("javascript:"));
+    assert!(html.contains("src=\"video_files/77_thumb.jpg\""));
+    assert!(html.contains("href=\"video_files/77.mp4\""));
 }

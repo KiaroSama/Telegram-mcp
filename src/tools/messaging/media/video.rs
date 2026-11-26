@@ -138,41 +138,42 @@ async fn scene_times(
     if length > 90.0 {
         return Ok(Vec::new());
     }
-    let mut child = decoder()
-        .args([
-            "-nostdin",
-            "-v",
-            "info",
-            "-max_alloc",
-            "67108864",
-            "-max_pixels",
-            "35389440",
-            "-protocol_whitelist",
-            "file,pipe",
-            "-format_whitelist",
-            "mov,matroska,webm,ogg,avi",
-            "-ss",
-            &format!("{start:.6}"),
-            "-i",
-        ])
-        .arg(input)
-        .args([
-            "-t",
-            &format!("{length:.6}"),
-            "-map",
-            "0:V:0",
-            "-an",
-            "-vf",
-            "fps=4,scale=320:-2,select=gt(scene\\,0.3),showinfo",
-            "-f",
-            "null",
-            "-",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()?;
+    let (mut child, _tree) = crate::tools::visual::capture::containment::spawn(
+        decoder()
+            .args([
+                "-nostdin",
+                "-v",
+                "info",
+                "-max_alloc",
+                "67108864",
+                "-max_pixels",
+                "35389440",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-format_whitelist",
+                "mov,matroska,webm,ogg,avi",
+                "-ss",
+                &format!("{start:.6}"),
+                "-i",
+            ])
+            .arg(input)
+            .args([
+                "-t",
+                &format!("{length:.6}"),
+                "-map",
+                "0:V:0",
+                "-an",
+                "-vf",
+                "fps=4,scale=320:-2,select=gt(scene\\,0.3),showinfo",
+                "-f",
+                "null",
+                "-",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true),
+    )?;
     let stderr = child
         .stderr
         .take()
@@ -290,40 +291,41 @@ async fn transcript_clip(
     start: f64,
     end: f64,
 ) -> Result<Value> {
-    let status = decoder()
-        .args([
-            "-nostdin",
-            "-v",
-            "error",
-            "-max_alloc",
-            "67108864",
-            "-protocol_whitelist",
-            "file,pipe",
-            "-format_whitelist",
-            "mov,matroska,webm,ogg,avi",
-            "-ss",
-            &format!("{start:.6}"),
-            "-i",
-        ])
-        .arg(input)
-        .args([
-            "-t",
-            &format!("{:.6}", end - start),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-fs",
-            "104857601",
-        ])
-        .arg(audio)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .status()
-        .await?;
+    let (mut child, _tree) = crate::tools::visual::capture::containment::spawn(
+        decoder()
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-max_alloc",
+                "67108864",
+                "-protocol_whitelist",
+                "file,pipe",
+                "-format_whitelist",
+                "mov,matroska,webm,ogg,avi",
+                "-ss",
+                &format!("{start:.6}"),
+                "-i",
+            ])
+            .arg(input)
+            .args([
+                "-t",
+                &format!("{:.6}", end - start),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-fs",
+                "104857601",
+            ])
+            .arg(audio)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true),
+    )?;
+    let status = child.wait().await?;
     ensure!(status.success(), "Video audio extraction failed");
     let path = audio.to_str().context("Video work path is not UTF-8")?;
     let mut result =

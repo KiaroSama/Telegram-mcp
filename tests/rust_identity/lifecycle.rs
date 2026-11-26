@@ -306,7 +306,7 @@ async fn basic_group_invitation_reports_missing_invitees_as_failures_per_user() 
         json!({"_":"inputPeerUser","user_id":"10","access_hash":"100"}),
     );
     m.reply("messages.addChatUser",json!({"_":"messages.invitedUsers","missing_invitees":[{"_":"missingInvitee","user_id":"8","premium_would_allow_invite":true}]}));
-    m.reply("messages.addChatUser",json!({"_":"messages.invitedUsers","missing_invitees":[{"_":"missingInvitee","user_id":"8"}]}));
+    m.reply("messages.addChatUser",json!({"_":"messages.invitedUsers","updates":{"updates":[{"message":{"peer_id":{"_":"peerChat","chat_id":"9"},"action":{"_":"messageActionChatAddUser","users":["10"]}}}]},"missing_invitees":[{"_":"missingInvitee","user_id":"8"}]}));
     let result = run(
         &m,
         "invite_to_group",
@@ -427,4 +427,29 @@ async fn notification_tone_refuses_invalid_file_type_before_upload() {
             .is_err()
     );
     assert!(m.methods().is_empty());
+}
+
+#[tokio::test]
+async fn channel_invite_reports_observed_members_and_privacy_refusals() {
+    let m = Mock::new();
+    m.set_peer(
+        "10",
+        json!({"_":"inputPeerUser","user_id":"10","access_hash":"100"}),
+    );
+    m.reply("channels.inviteToChannel",json!({"_":"messages.invitedUsers","missing_invitees":[{"user_id":"8","premium_required_for_pm":true}],"updates":{"updates":[{"message":{"peer_id":{"channel_id":"7"},"action":{"_":"messageActionChatAddUser","users":["10","8","23"]}}}]}}));
+    let r = run(
+        &m,
+        "invite_to_group",
+        json!({"group_id":7,"user_ids":[8,10]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["confirmed_added"], json!(["10"]));
+    assert_eq!(r["missing_invitees"][0]["user_id"], "8");
+    assert!(
+        r["missing_invitees"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Premium")
+    );
 }

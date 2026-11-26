@@ -1,6 +1,6 @@
 # Native API coverage
 
-The native catalogue has 390 tools: 356 ordinary tools and 34 secret-chat tools.
+The native catalogue has 391 tools: 356 cloud tools and 35 secret-chat tools.
 Before startup, the server checks that every advertised tool has a native dispatch
 route. The Rust tests exercise requests, responses and failures. The route check
 alone does not establish parity.
@@ -13,7 +13,7 @@ alone does not establish parity.
 | `local` | 24 |
 | `messaging` | 79 |
 | `visual` | 8 |
-| [Secret chats](COMMANDS.md#secret-chat-tools) | 34 |
+| [Secret chats](COMMANDS.md#secret-chat-tools) | 35 |
 
 See [COMMANDS.md](COMMANDS.md) for exact tool names and the runtime schema for current
 arguments/defaults. Telegram API layer 234 is pinned with grammers 0.12.0. Native local
@@ -57,7 +57,11 @@ commits incoming encrypted updates to durable storage before acknowledging them.
 On first open, it creates a read-only backup of a supported legacy secret-chat store
 and migrates it after verifying authorization identity and before normal update
 consumption. See the [migration notes](MIGRATION.md#secret-chat-store-migration)
-and the [34 tools in six groups](COMMANDS.md#secret-chat-tools).
+and the [35 tools in six groups](COMMANDS.md#secret-chat-tools). The connected
+backend automatically attempts the incoming handshake on `ChatRequested`.
+`accept_secret_chat` is the owner-gated MCP tool for accepting a known pending
+incoming chat by ID. Both routes use the same handshake and confirm readiness
+before reporting success.
 `export_secret_chat` does not support `peer_user` filtering. The runtime refuses a
 nonempty filter instead of exporting an unfiltered chat.
 
@@ -68,11 +72,18 @@ rlottie shared library. Native export output is not necessarily byte-identical t
 Telegram Desktop, Qt or mozjpeg output. See the [migration notes](MIGRATION.md) for
 lifecycle and export limits.
 
-Useful upstream changes are reviewed at exact revisions listed in MIGRATION.md. Chat
-and forum-topic allowlists preserve source/destination checking and refusal of operations
+Chat and forum-topic allowlists check source and destination and refuse operations
 that cannot enforce the restricted scope. A newer Telegram layer does not make all
-upstream Python behavior automatically available.
+upstream Python behavior available.
 
 Live Telegram sign-in, Premium-only features, administrator permissions, proxy routing
 and server-side acceptance need real authorized credentials/inputs. Offline CI does not
 claim those checks ran.
+
+## Upstream sync (2026-11-26)
+
+| Upstream | Revision | Decision |
+| --- | --- | --- |
+| [Lonami/grammers](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4) | `02367f9711ca` | Retain Telegram layer 234. |
+| [KiaroSama/Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat/commit/bf0fc26906f1) | `bf0fc26906f1` | Adopt the layer 234 revision with refreshed export integrity hashes and the corrected synthetic layer 234 fixture. |
+| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/519899cca9) | `519899cca9` (`v3.3.31`) | [#412](https://github.com/chigwell/telegram-mcp/pull/412) (`view_video`) and [#420](https://github.com/chigwell/telegram-mcp/pull/420) (explicit forum `topic_id`) are already ported. [#421](https://github.com/chigwell/telegram-mcp/pull/421) is an open webhook draft and was not ported. [#411](https://github.com/chigwell/telegram-mcp/pull/411) tunes the Python test suite and does not apply to native CI. |

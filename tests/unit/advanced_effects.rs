@@ -158,6 +158,7 @@ async fn expired_effect_references_refresh_once_with_hash_zero_and_use_the_new_r
     ] {
         let mut fresh = data();
         fresh["documents"][0]["file_reference"] = json!([99]);
+        fresh["documents"][0]["size"] = json!(12345);
         let api = Api::new(vec![data(), fresh], vec![Err(error), Ok(png())]);
         let output = run(
             &api,
@@ -171,10 +172,10 @@ async fn expired_effect_references_refresh_once_with_hash_zero_and_use_the_new_r
         assert_eq!(reads[1].0["file_reference"], json!([99]));
         assert_eq!(api.requests.lock().unwrap()[1]["hash"], 0);
         assert_eq!(output["asset"], "sticker");
-        assert_eq!(
-            output["effect"]["preview_sticker"]["file_reference"],
-            json!([99])
-        );
+        let preview = &output["effect"]["preview_sticker"];
+        assert_eq!(preview["size_bytes"], 12345);
+        assert!(preview.get("file_reference").is_none());
+        assert!(preview.get("access_hash").is_none());
     }
 }
 

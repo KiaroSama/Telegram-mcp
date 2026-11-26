@@ -59,6 +59,7 @@ pub(crate) struct Directory {
     file: File,
     path: PathBuf,
     identity: Identity,
+    target: Option<(PathBuf, FileAccess)>,
 }
 fn directory_options() -> std::fs::OpenOptions {
     let mut options = File::options();
@@ -85,10 +86,13 @@ fn directory_options() -> std::fs::OpenOptions {
 }
 impl Directory {
     pub(crate) fn open(state: &State, path: &Path) -> Result<Self> {
-        ensure!(
-            state.resolve_file(path, FileAccess::Write)? == path,
-            "Transfer directory changed"
-        );
+        Self::open_inner(state, path, None)
+    }
+    pub(crate) fn open_for(state: &State, parent: &Path, destination: &Path) -> Result<Self> {
+        Self::open_inner(state, parent, Some((destination, FileAccess::Write)))
+    }
+    fn open_inner(state: &State, path: &Path, target: Option<(&Path, FileAccess)>) -> Result<Self> {
+        Self::check_authorized_path(state, path, target, "Transfer directory changed")?;
         let file = directory_options()
             .open(path)
             .context("Cannot hold transfer directory")?;
@@ -101,19 +105,40 @@ impl Directory {
             identity: identity(&file)?,
             file,
             path: path.to_owned(),
+            target: target.map(|(dest, access)| (dest.to_owned(), access)),
         };
         directory.verify(state)?;
         Ok(directory)
+    }
+    fn check_authorized_path(
+        state: &State,
+        path: &Path,
+        target: Option<(&Path, FileAccess)>,
+        message: &str,
+    ) -> Result<()> {
+        let resolved = match target {
+            Some((destination, FileAccess::Write)) => {
+                state.resolve_transfer_parent(path, destination)?
+            }
+            Some((source, access)) => state.resolve_transfer_parent_for(path, source, access)?,
+            None => state.resolve_file(path, FileAccess::Write)?,
+        };
+        ensure!(resolved == path, "{message}");
+        Ok(())
     }
     pub(crate) fn verify(&self, state: &State) -> Result<()> {
         ensure!(
             identity(&self.file)? == self.identity,
             "Held transfer directory identity changed"
         );
-        ensure!(
-            state.resolve_file(&self.path, FileAccess::Write)? == self.path,
-            "Transfer directory moved outside its allowed root"
-        );
+        Self::check_authorized_path(
+            state,
+            &self.path,
+            self.target
+                .as_ref()
+                .map(|(target, access)| (target.as_path(), *access)),
+            "Transfer directory moved outside its allowed root",
+        )?;
         let current = directory_options().open(&self.path)?;
         ensure!(
             identity(&current)? == self.identity,
@@ -151,14 +176,14 @@ pub(super) struct Upload {
 }
 impl Upload {
     pub fn new(state: &State, destination: &Path) -> Result<Self> {
-        ensure!(
-            state.resolve_file(destination, FileAccess::Write)? == destination,
-            "Transfer destination changed"
-        );
+        let sanitized = crate::state::sanitize_download_path(destination)?;
+        let resolved = state.resolve_file(&sanitized, FileAccess::Write)?;
+        ensure!(resolved == sanitized, "Transfer destination changed");
+        let destination = &resolved;
         let parent = destination
             .parent()
             .context("Upload destination has no parent")?;
-        let directory = Directory::open(state, parent)?;
+        let directory = Directory::open_for(state, parent, destination)?;
         #[cfg(unix)]
         {
             use std::os::{
@@ -303,7 +328,7 @@ pub(crate) fn open_download(state: &State, path: &Path) -> Result<File> {
         "Download source changed"
     );
     let parent = path.parent().context("Download source has no parent")?;
-    let directory = Directory::open(state, parent)?;
+    let directory = Directory::open_inner(state, parent, Some((path, FileAccess::Read)))?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;

@@ -72,7 +72,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
     }
     let p = a::peer(api, args, "chat_id").await?;
     let mid = positive(a::required(args, "message_id")?)?;
-    let msg = message(api, &p, mid).await?;
+    let (msg, peers) = message_and_entities(api, &p, mid).await?;
     let media = &msg["media"];
     ensure!(
         media["_"] == "messageMediaToDo",
@@ -84,7 +84,7 @@ async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value> {
     match name {
         "get_checklist" => {
             let completed = media["completions"].as_array().cloned().unwrap_or_default();
-            let rows:Vec<_>=list.iter().map(|v|{let c=completed.iter().find(|c|c["id"]==v["id"]);json!({"id":v["id"],"text":v["title"]["text"],"done":c.is_some(),"completed_by":c.map(|c|c["completed_by"].clone()),"completed_at":c.map(|c|c["date"].clone())})}).collect();
+            let rows:Vec<_>=list.iter().map(|v|{let c=completed.iter().find(|c|c["id"]==v["id"]);let who=c.map(|c|&c["completed_by"]);let resolved=who.and_then(|p|{let (key,table)=if p.get("user_id").is_some(){("user_id","users")}else if p.get("channel_id").is_some(){("channel_id","chats")}else{("chat_id","chats")};let target=id(&p[key]).ok()?;let e=peers[table].as_array()?.iter().find(|e|id(&e["id"]).ok()==Some(target))?;if let Some(title)=e["title"].as_str(){Some(title.to_owned())}else{let name=[e["first_name"].as_str(),e["last_name"].as_str()].into_iter().flatten().collect::<Vec<_>>().join(" ");(!name.is_empty()).then_some(name)}});json!({"id":v["id"],"text":v["title"]["text"],"done":c.is_some(),"completed_by":resolved,"completed_by_peer":who,"completed_at":c.map(|c|c["date"].clone())})}).collect();
             Ok(
                 json!({"records":rows,"title":todo["title"]["text"],"message_id":mid,"others_can_add":todo["others_can_append"].as_bool().unwrap_or(false),"others_can_complete":todo["others_can_complete"].as_bool().unwrap_or(false),"done_count":completed.len(),"task_count":rows.len()}),
             )

@@ -132,11 +132,18 @@ pub fn destination_in(
     media: &Value,
     mid: i64,
 ) -> Result<PathBuf> {
+    let mut automatic = true;
     let path = if let Some(raw) = raw.filter(|s| !s.is_empty()) {
+        crate::state::validate_path_syntax(Path::new(raw))?;
+        ensure!(
+            !raw.contains('~'),
+            "Tilde is not permitted in download paths"
+        );
         let path = state.resolve_file(Path::new(raw), FileAccess::Write)?;
         if path.is_dir() {
             path.join(filename(media, mid))
         } else {
+            automatic = false;
             path
         }
     } else {
@@ -144,7 +151,21 @@ pub fn destination_in(
         std::fs::create_dir_all(&root)?;
         root.join(filename(media, mid))
     };
-    let path = state.resolve_file(&path, FileAccess::Write)?;
+    let path = state.resolve_download_file(&path)?;
+    if automatic && path.exists() {
+        let stem = path
+            .file_stem()
+            .and_then(|v| v.to_str())
+            .context("Invalid filename")?;
+        let ext = path.extension().and_then(|v| v.to_str()).unwrap_or("bin");
+        for i in 1..=10000 {
+            let p =
+                state.resolve_download_file(&path.with_file_name(format!("{stem}_{i}.{ext}")))?;
+            if !p.exists() {
+                return Ok(p);
+            }
+        }
+    }
     ensure!(
         !path.exists(),
         "The download destination already exists; choose another path"

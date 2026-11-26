@@ -135,7 +135,7 @@ impl Native {
                 "Peer access reference was not found in the bounded dialog search; use its username"
             );
         }
-        let username = text.trim_start_matches('@');
+        let username = crate::permalinks::strip_username_prefix(text, None);
         if !(1..=64).contains(&username.len())
             || !username
                 .bytes()
@@ -146,7 +146,7 @@ impl Native {
         let peer = self
             .0
             .client
-            .resolve_username(username)
+            .resolve_username(&username)
             .await?
             .context("Telegram username was not found")?;
         let reference = peer

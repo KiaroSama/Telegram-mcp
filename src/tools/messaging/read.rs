@@ -1,5 +1,8 @@
 use super::helpers::*;
 mod general;
+#[path = "global.rs"]
+mod global;
+mod projection;
 use crate::{args, backend::Telegram};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -20,12 +23,42 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
         | "read_rich_message"
         | "get_media_info"
         | "get_media_details"
-        | "list_disappearing_media" => Some(run(api, name, a).await.map(with_formatting)),
+        | "list_disappearing_media" => Some(run(api, name, a).await.map(|result| {
+            let mut r = with_formatting(result);
+            if let Some(returned) = r["messages"].as_array().map(Vec::len) {
+                let (key, default, max) = match name {
+                    "search_global" => ("page_size", 20, 100),
+                    "get_messages" => ("page_size", 20, 200),
+                    "get_history" => ("limit", 100, 200),
+                    "inspect_messages" => ("limit", 10, 100),
+                    _ => ("limit", 20, 200),
+                };
+                let requested = args::integer(a, key, default).unwrap_or(default);
+                let effective = requested.min(max);
+                if !r["metadata"].is_object() {
+                    r["metadata"] = json!({});
+                }
+                r["metadata"]["requested_limit"] = json!(requested);
+                r["metadata"]["effective_limit"] = json!(effective);
+                r["metadata"]["limit_note"] = if effective < requested {
+                    json!(format!("Requested {requested}; capped at {effective}"))
+                } else {
+                    Value::Null
+                };
+                r["metadata"]["has_more"] = json!(
+                    r["has_more"]
+                        .as_bool()
+                        .unwrap_or(returned as i64 >= effective)
+                );
+            }
+            r
+        })),
         _ => None,
     }
 }
 
 fn with_formatting(mut result: Value) -> Value {
+    projection::text(&mut result);
     describe_formatting(&mut result);
     if let Some(message) = result.get_mut("message").filter(|value| value.is_object()) {
         describe_formatting(message);
@@ -87,7 +120,7 @@ fn describe_formatting(message: &mut Value) {
 
 async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     if name == "search_global" {
-        return global(api, a).await;
+        return global::global(api, a).await.map(projection::link_page);
     }
     if name == "search_posts" {
         let n = args::limit(a, "limit", 20, 100)?;
@@ -99,7 +132,10 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 || req["hashtag"].as_str().is_some_and(|s| !s.is_empty()),
             "Provide query or hashtag"
         );
-        return api.invoke("channels.searchPosts", req).await;
+        return api
+            .invoke("channels.searchPosts", req)
+            .await
+            .map(projection::link_page);
     }
     let bound = match name {
         "get_history" => args::limit(a, "limit", 100, 200)?,
@@ -167,15 +203,22 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     if let Some(mid) = message_id {
         if name == "read_rich_message" {
-            return api
+            let expected = requested_peer(api, &p).await?;
+            let response = api
                 .invoke("messages.getRichMessage", json!({"peer":p,"id":mid}))
-                .await;
+                .await?;
+            return super::rich_quote::view(&projection::link_page(response), &expected, mid);
         }
-        let msg = fetch(api, &p, mid).await?;
+        let (mut msg, chat_names, username) = fetch_context(api, &p, mid).await?;
+        projection::link(&mut msg, username.as_deref());
         if matches!(name, "get_media_info" | "get_media_details") {
-            return Ok(
-                json!({"message_id":mid,"media":msg["media"],"grouped_id":msg["grouped_id"],"entities":msg["entities"]}),
+            let mut details = json!({"message_id":mid,"media":msg["media"],"grouped_id":msg["grouped_id"],"entities":msg["entities"]});
+            copy_optional(
+                &mut details,
+                &msg,
+                &[("message", "message"), ("permalink", "permalink")],
             );
+            return Ok(details);
         }
         if name == "inspect_message" {
             let mut result = json!({"message":msg});
@@ -196,7 +239,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 }
             }
             if args::boolean(a, "include_screen", false)? {
-                match crate::tools::visual::call(api,"get_telegram_screen",&json!({"max_dimension":a.get("max_dimension").cloned().unwrap_or(json!(1568))})).await.context("Screen route is unavailable")? {
+                match crate::tools::visual::call(api,"get_telegram_screen",&json!({"verified_chat_names":chat_names,"max_dimension":a.get("max_dimension").cloned().unwrap_or(json!(1568))})).await.context("Screen route is unavailable")? {
                     Ok(screen)=>{content.extend(screen["content"].as_array().cloned().unwrap_or_default());result["screen"]=screen.get("metadata").cloned().unwrap_or(screen);},
                     Err(_)=>result["screen_error"]=json!("A Telegram Desktop screen could not be captured"),
                 }
@@ -272,7 +315,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             req["msg_id"] = json!(topic);
         }
     }
-    let mut response = api.invoke(method, req.clone()).await?;
+    let mut response = projection::link_page(api.invoke(method, req.clone()).await?);
     if name == "list_messages" && (date_from > 0 || date_to > 0) {
         let mut collected = Vec::new();
         let mut previous_offset = 0;
@@ -310,7 +353,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 response["scan_limit_reached"] = json!(true);
                 break;
             }
-            response = api.invoke(method, req.clone()).await?;
+            response = projection::link_page(api.invoke(method, req.clone()).await?);
         }
         collected.truncate(bound as usize);
         response["messages"] = json!(collected);
@@ -328,161 +371,6 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     Ok(response)
 }
-async fn global(api: &dyn Telegram, a: &Value) -> Result<Value> {
-    let n = args::limit(a, "page_size", 20, 100)?;
-    let page = args::integer(a, "page", 1)?;
-    ensure!(page >= 1, "page must be at least 1");
-    let cursor = a
-        .get("cursor")
-        .filter(|v| !v.is_null())
-        .and_then(Value::as_str);
-    let depth = (page - 1)
-        .checked_mul(n)
-        .ok_or_else(|| anyhow::anyhow!("Global page offset is too large"))?;
-    ensure!(
-        depth < 2500,
-        "Legacy global pages are bounded to2500 matches; use a cursor for deeper searches"
-    );
-    let mut req = json!({"q":a.get("query").cloned().unwrap_or(json!("")),"filter":media_filter(a)?,"min_date":0,"max_date":0,"offset_rate":0,"offset_peer":{"_":"inputPeerEmpty"},"offset_id":0,"limit":n});
-    if let Some(cursor) = cursor {
-        apply_global_cursor(&mut req, a, cursor)?;
-    }
-    let mut remaining = if cursor.is_some() { 0 } else { depth };
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    for _ in 0..=50 {
-        req["limit"] = json!(if remaining > 0 {
-            remaining.min(100)
-        } else {
-            n.min(2500 - depth)
-        });
-        let mut response = match tokio::time::timeout_at(
-            deadline,
-            api.invoke("messages.searchGlobal", req.clone()),
-        )
-        .await
-        {
-            Ok(response) => response?,
-            Err(_) => {
-                return Ok(
-                    json!({"messages":[],"exhausted":false,"partial":true,"next_cursor":saved_global_cursor(a,&req),"legacy_page_advance_remaining":remaining}),
-                );
-            }
-        };
-        let batch = result_messages(&response);
-        let next =
-            match tokio::time::timeout_at(deadline, global_cursor(api, a, &req, &response)).await {
-                Ok(next) => next?,
-                Err(_) => {
-                    response["partial"] = json!(true);
-                    response["exhausted"] = json!(false);
-                    response["next_cursor"] = Value::Null;
-                    response["cursor_warning"] =
-                        json!("Cursor resolution exceeded the search deadline");
-                    if remaining > 0 {
-                        // These matches precede the requested legacy page. Retain
-                        // them without presenting them as that page's results.
-                        response["fetched_messages"] = response["messages"].take();
-                        response["messages"] = json!([]);
-                        response["legacy_page_reached"] = json!(false);
-                        response["legacy_page_advance_remaining"] = json!(remaining);
-                    }
-                    return Ok(response);
-                }
-            };
-        if remaining == 0 || batch.is_empty() {
-            response["exhausted"] = json!(batch.is_empty());
-            response["partial"] = json!(false);
-            if let Some(next) = next {
-                response["next_cursor"] = json!(next);
-            }
-            return Ok(response);
-        }
-        remaining = remaining.saturating_sub(batch.len() as i64);
-        let Some(next) = next else {
-            return Ok(json!({"messages":[],"exhausted":true,"partial":false}));
-        };
-        let previous = (
-            req["offset_rate"].clone(),
-            req["offset_peer"].clone(),
-            req["offset_id"].clone(),
-        );
-        apply_global_cursor(&mut req, a, &next)?;
-        if previous
-            == (
-                req["offset_rate"].clone(),
-                req["offset_peer"].clone(),
-                req["offset_id"].clone(),
-            )
-        {
-            return Ok(
-                json!({"messages":[],"exhausted":false,"partial":true,"next_cursor":next,"legacy_page_advance_remaining":remaining}),
-            );
-        }
-    }
-    let next = saved_global_cursor(a, &req);
-    Ok(
-        json!({"messages":[],"exhausted":false,"partial":true,"next_cursor":next,"legacy_page_advance_remaining":remaining}),
-    )
-}
-fn saved_global_cursor(a: &Value, req: &Value) -> String {
-    json!({"query":req["q"],"filter":req["filter"],"account":a.get("account").cloned().unwrap_or(Value::Null),"offset_rate":req["offset_rate"],"offset_peer":req["offset_peer"],"offset_id":req["offset_id"]}).to_string()
-}
-fn apply_global_cursor(req: &mut Value, a: &Value, cursor: &str) -> Result<()> {
-    let c: Value = serde_json::from_str(cursor)
-        .map_err(|_| anyhow::anyhow!("Malformed global-search cursor"))?;
-    ensure!(
-        c["query"] == req["q"]
-            && c["filter"] == req["filter"]
-            && c["account"] == a.get("account").cloned().unwrap_or(Value::Null),
-        "Search cursor belongs to another query, filter or account"
-    );
-    copy_optional(
-        req,
-        &c,
-        &[
-            ("offset_rate", "offset_rate"),
-            ("offset_peer", "offset_peer"),
-            ("offset_id", "offset_id"),
-        ],
-    );
-    Ok(())
-}
-async fn global_cursor(
-    api: &dyn Telegram,
-    a: &Value,
-    req: &Value,
-    response: &Value,
-) -> Result<Option<String>> {
-    if let Some(last) = result_messages(response).last() {
-        let p = last
-            .get("peer_id")
-            .ok_or_else(|| anyhow::anyhow!("Telegram omitted a cursor peer"))?;
-        let identity = p
-            .get("channel_id")
-            .or_else(|| p.get("chat_id"))
-            .or_else(|| p.get("user_id"))
-            .ok_or_else(|| anyhow::anyhow!("Telegram returned an invalid cursor peer"))?;
-        let bare = identity
-            .as_str()
-            .and_then(|s| s.parse::<i64>().ok())
-            .or_else(|| identity.as_i64())
-            .ok_or_else(|| anyhow::anyhow!("Cursor peer id is not a decimal integer"))?;
-        ensure!(bare > 0, "Cursor peer id must be positive");
-        let marked = if p.get("channel_id").is_some() {
-            (-1_000_000_000_000i64)
-                .checked_sub(bare)
-                .context("Cursor channel id exceeds its bound")?
-        } else if p.get("chat_id").is_some() {
-            -bare
-        } else {
-            bare
-        };
-        let peer = api.resolve_peer(&json!(marked.to_string())).await?;
-        return Ok(Some(json!({"query":req["q"],"filter":req["filter"],"account":a.get("account").cloned().unwrap_or(Value::Null),"offset_rate":response.get("next_rate").cloned().unwrap_or(json!(0)),"offset_peer":peer,"offset_id":last["id"]}).to_string()));
-    }
-    Ok(None)
-}
-
 async fn bounded_sender_media(
     api: &dyn Telegram,
     peer: &Value,
@@ -517,7 +405,7 @@ async fn bounded_sender_media(
             "messages.getHistory"
         };
         let response = match tokio::time::timeout_at(deadline, api.invoke(method, request)).await {
-            Ok(value) => value?,
+            Ok(value) => projection::link_page(value?),
             Err(_) => break,
         };
         let messages = result_messages(&response);

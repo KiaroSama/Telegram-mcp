@@ -115,6 +115,88 @@ fn options(read: bool, write: bool) -> OpenOptions {
 }
 
 impl State {
+    pub(crate) fn touch_event_feed(&self) -> Result<std::path::PathBuf> {
+        let _lock = self.state_lock()?;
+        let path = self.resolved_event_feed_path()?;
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+        {
+            private_directory(parent)?;
+        }
+        if let Ok(meta) = path.symlink_metadata()
+            && (!meta.is_file() || meta.file_type().is_symlink())
+        {
+            bail!("Event feed path is not a regular file");
+        }
+        let file = options(true, true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .context("Cannot create event feed file")?;
+        if !file.metadata()?.is_file() {
+            bail!("Event feed path is not a regular file");
+        }
+        restrict(&path, false)?;
+        Ok(path)
+    }
+
+    pub(crate) fn read_json_path_unlocked(&self, path: &Path, default: Value) -> Result<Value> {
+        let mut file = match options(true, false).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(default),
+            Err(_) => bail!("Cannot read private state record; existing data was preserved"),
+        };
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > MAX_STATE_BYTES {
+            bail!("Private state record is invalid or exceeds its byte budget");
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::take(&mut file, MAX_STATE_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            bail!("Private state record exceeds its byte budget");
+        }
+        let text = std::str::from_utf8(&bytes)
+            .context("Private state record must be UTF-8; existing bytes were preserved")?;
+        serde_json::from_str(text)
+            .context("Private state record is corrupt; existing bytes were preserved")
+    }
+
+    pub(crate) fn write_json_path_unlocked(&self, path: &Path, value: &Value) -> Result<()> {
+        let parent = path
+            .parent()
+            .context("Private state record has no parent directory")?;
+        if !parent.exists() {
+            private_directory(parent)?;
+        }
+        if let Ok(meta) = path.symlink_metadata()
+            && (!meta.is_file() || meta.file_type().is_symlink())
+        {
+            bail!("Private state target is not a regular file");
+        }
+        let bytes = serde_json::to_vec_pretty(value)?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            bail!("Private state record exceeds its byte budget");
+        }
+        let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+        restrict(temp.path(), false)?;
+        temp.write_all(&bytes)?;
+        temp.as_file().sync_all()?;
+        let temp_path = temp.into_temp_path();
+        let outcome = replace_and_sync(&temp_path, path, || {
+            #[cfg(all(test, unix))]
+            if self.take_directory_sync_failure_for_test() {
+                return Err(std::io::Error::other(
+                    "Simulated parent directory sync failure",
+                ));
+            }
+            sync_directory(parent)
+        });
+        if outcome.is_ok() {
+            std::mem::forget(temp_path);
+        }
+        outcome
+    }
+
     pub(crate) fn append_event_line(&self, value: &Value) -> Result<()> {
         let _lock = self.state_lock()?;
         let mut value = value.clone();
@@ -135,8 +217,8 @@ impl State {
         if bytes.len() as u64 + 1 > max_bytes {
             bail!("Event summary exceeds the configured feed byte budget");
         }
-        let path = self.root.join("incoming_feed.jsonl");
-        let rotated = self.root.join("incoming_feed.jsonl.1");
+        let path = self.resolved_event_feed_path()?;
+        let rotated = rotated_feed_path(&path);
         if let Ok(meta) = rotated.symlink_metadata() {
             if !meta.is_file() || meta.file_type().is_symlink() {
                 bail!("Rotated event feed is not a regular file");
@@ -178,12 +260,13 @@ impl State {
     pub(crate) fn maintain_event_feed(&self) -> Result<()> {
         let _lock = self.state_lock()?;
         let max_age = super::events::positive_limit("TELEGRAM_EVENT_FEED_MAX_AGE_SECONDS", 604_800);
-        for name in ["incoming_feed.jsonl", "incoming_feed.jsonl.1"] {
-            let path = self.root.join(name);
-            if path.exists() {
-                repair_feed_tail(&path)?;
-                if feed_expired(&path, max_age)? {
-                    std::fs::remove_file(path)?;
+        let path = self.resolved_event_feed_path()?;
+        let rotated = rotated_feed_path(&path);
+        for target in [path, rotated] {
+            if target.exists() {
+                repair_feed_tail(&target)?;
+                if feed_expired(&target, max_age)? {
+                    std::fs::remove_file(target)?;
                 }
             }
         }
@@ -435,6 +518,12 @@ pub(super) fn append_transaction(
 /// Recover only the uncommitted, bounded tail left by an interrupted append.
 /// Newline-terminated records are never rewritten, even if corrupt. A complete
 /// final JSON object is preserved by adding its missing separator.
+fn rotated_feed_path(path: &Path) -> std::path::PathBuf {
+    let mut os = path.as_os_str().to_os_string();
+    os.push(".1");
+    std::path::PathBuf::from(os)
+}
+
 fn repair_feed_tail(path: &Path) -> Result<u64> {
     let metadata = path.symlink_metadata()?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {

@@ -1,6 +1,6 @@
 # Native tool catalogue
 
-The catalogue lists 386 native tools: 352 ordinary tools and 34 [secret-chat tools](#secret-chat-tools).
+The catalogue lists 391 native tools: 356 cloud tools and 35 [secret-chat tools](#secret-chat-tools).
 MCP `tools/list` returns the schema for tools available to the client after exposure filters.
 Use that schema for optional fields and defaults. Account access, owner approvals,
 Telegram permissions and file-root restrictions apply regardless of tool annotations.
@@ -439,18 +439,22 @@ native MTProto 2.0 secret chats on the existing account connection. On first ope
 the server makes a read-only backup and migrates supported legacy stores losslessly
 before connecting. See [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
 
-All 34 tools take an optional `account`. `read_secret_messages` reads local history
+All 35 tools take an optional `account`. The backend automatically attempts the
+handshake when it receives an incoming `ChatRequested` update. To accept a known
+pending incoming request explicitly, call `accept_secret_chat` with its `chat_id`.
+That call is subject to owner approval. `read_secret_messages` reads local history
 without sending a read receipt. `mark_secret_read` sends one and requires approval.
 Sending, relaying, and destructive actions also require approval. File operations
 stay within configured roots.
 
-#### Lifecycle and status (6)
+#### Lifecycle and status (7)
 
 | Tool | Required arguments | Read only |
 | --- | --- | --- |
 | `secret_chat_status` | None | Yes |
 | `list_secret_chats` | None | Yes |
 | `create_secret_chat` | `user_id` | No |
+| `accept_secret_chat` | `chat_id` | No |
 | `set_secret_chat_timer` | `chat_id`, `seconds` | No |
 | `close_secret_chat` | `secret_chat_id` | No |
 | `forget_secret_chat` | `secret_chat_id` | No |

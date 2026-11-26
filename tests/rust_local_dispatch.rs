@@ -28,6 +28,19 @@ async fn account_alias_settings_and_grant_status_are_durable_through_local_dispa
         .unwrap();
     assert_eq!(roots["file_tools_enabled"], true);
     assert_eq!(roots["roots"].as_array().unwrap().len(), 1);
+    assert_eq!(roots["free_folders"], roots["roots"]);
+    assert_eq!(roots["client_roots_status"], "unavailable");
+    assert!(
+        call(
+            &api,
+            "set_contact_alias",
+            json!({"account":"work","alias":"unconfirmed","chat_id":"A display name"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("bare display names")
+    );
     assert!(
         call(
             &api,
@@ -116,6 +129,25 @@ async fn account_alias_settings_and_grant_status_are_durable_through_local_dispa
     let status = call(&api, "safeguard_status", json!({})).await.unwrap();
     assert_eq!(status["always_approved"].as_array().unwrap().len(), 2);
     assert_eq!(status["bypass"], false);
+    assert_eq!(status["bypass_description"], "off");
+    assert_eq!(status["secret_chat_integration"], "native");
+    state
+        .write_json("bypass.json", &json!({"on":true,"until":null,"by":42}))
+        .unwrap();
+    let status = call(&api, "safeguard_status", json!({"account":"work"}))
+        .await
+        .unwrap();
+    assert_eq!(status["bypass"], true);
+    assert_eq!(
+        status["bypass_state"],
+        json!({"mode":"indefinite","expires_at_unix":null})
+    );
+    assert_eq!(status["untrusted_content"]["remembered"], json!({"work":0}));
+    assert_eq!(status["always_approved"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        status["channels"]["saved_messages"],
+        json!({"work":"unknown"})
+    );
     assert_eq!(
         call(&api, "revoke_always_approval", json!({"folder":folder}))
             .await
@@ -144,6 +176,166 @@ async fn account_alias_settings_and_grant_status_are_durable_through_local_dispa
             .await
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn server_status_observes_live_bypass_and_request_channels() {
+    if !isolated("server_status_observes_live_bypass_and_request_channels") {
+        return;
+    }
+    let state = State::global().unwrap();
+    let server = telegram_mcp::server::Mcp::new().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let expiry = now + 30 * 24 * 60 * 60;
+    state
+        .write_json("bypass.json", &json!({"on":true,"until":expiry,"by":42}))
+        .unwrap();
+    let status = server
+        .execute("safeguard_status", json!({"account":"default"}))
+        .await
+        .unwrap();
+    assert_eq!(status["bypass"], true);
+    assert_eq!(status["bypass_state"]["mode"], "timed");
+    assert_eq!(
+        status["bypass_state"]["expires_at_unix"].as_f64(),
+        Some(expiry as f64)
+    );
+    assert_eq!(status["secret_chat_integration"], "native");
+    assert_eq!(status["folders"]["configured_root_count"], 1);
+    assert!(status["folders"]["client_root_count"].is_null());
+    assert_eq!(
+        status["untrusted_content"]["remembered"],
+        json!({"default":0})
+    );
+    assert_eq!(status["channels"]["dialog"], "unavailable");
+    assert_eq!(status["channels"]["saved_messages"]["default"], "unknown");
+}
+
+struct OwnerDialog {
+    protocol: rmcp::model::ProtocolVersion,
+    response: rmcp::model::ElicitationAction,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl rmcp::ClientHandler for OwnerDialog {
+    fn get_info(&self) -> rmcp::model::ClientConfig {
+        use rmcp::model::*;
+        ClientConfig::new(
+            ClientCapabilities::builder().enable_elicitation().build(),
+            Implementation::from_build_env(),
+        )
+        .with_protocol_version(self.protocol.clone())
+    }
+
+    async fn create_elicitation(
+        &self,
+        _: rmcp::model::ElicitRequestParams,
+        _: rmcp::service::RequestContext<rmcp::RoleClient>,
+    ) -> Result<rmcp::model::ElicitResult, rmcp::ErrorData> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(rmcp::model::ElicitResult::new(self.response.clone())
+            .with_content(json!({"decision":"once"})))
+    }
+}
+
+#[tokio::test]
+async fn mcp_folder_dialog_is_one_call_and_never_uses_legacy_on_new_protocol() {
+    use rmcp::{
+        ServiceExt,
+        model::*,
+        service::{ClientLifecycleMode, ClientServiceExt},
+    };
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
+    const NAME: &str = "mcp_folder_dialog_is_one_call_and_never_uses_legacy_on_new_protocol";
+    if !local_dispatch_support::isolated_with(
+        NAME,
+        &[
+            ("TELEGRAM_APPROVAL_TRUSTED_DIALOG_OWNER_ID", "42"),
+            ("TELEGRAM_TRANSCRIBE", "off"),
+        ],
+    ) {
+        return;
+    }
+    let state = State::global().unwrap();
+    let outside = state.root().parent().unwrap().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    let path = outside.join("owner choice.wav");
+    std::fs::write(&path, b"owned audio fixture").unwrap();
+    let server = telegram_mcp::server::Mcp::new().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    for (protocol, action, expected, prompts) in [
+        (
+            ProtocolVersion::V_2025_11_25,
+            ElicitationAction::Decline,
+            "Approval denied",
+            1,
+        ),
+        (
+            ProtocolVersion::V_2025_11_25,
+            ElicitationAction::Accept,
+            "transcription_disabled",
+            2,
+        ),
+        (
+            ProtocolVersion::V_2025_11_25,
+            ElicitationAction::Decline,
+            "Approval denied",
+            3,
+        ),
+        (
+            ProtocolVersion::V_2026_07_28,
+            ElicitationAction::Accept,
+            "approval_required",
+            3,
+        ),
+    ] {
+        let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+        let lifecycle = if protocol >= ProtocolVersion::V_2026_07_28 {
+            ClientLifecycleMode::Discover {
+                preferred_versions: vec![protocol.clone()],
+            }
+        } else {
+            ClientLifecycleMode::Initialize
+        };
+        let owner = OwnerDialog {
+            protocol,
+            response: action,
+            calls: Arc::clone(&calls),
+        };
+        let service = tokio::spawn(server.clone().serve(server_io));
+        let client = tokio::time::timeout(
+            Duration::from_secs(5),
+            owner.serve_with_lifecycle(client_io, lifecycle),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.call_tool(
+                CallToolRequestParams::new("transcribe_audio")
+                    .with_arguments(json!({"file_path":path}).as_object().unwrap().clone()),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let payload = serde_json::to_string(&result).unwrap();
+        assert!(payload.contains(expected), "{payload}");
+        assert_eq!(calls.load(Ordering::SeqCst), prompts);
+        client.cancel().await.unwrap();
+        service.await.unwrap().unwrap().cancel().await.unwrap();
+    }
+    assert_eq!(std::fs::read(path).unwrap(), b"owned audio fixture");
 }
 
 #[tokio::test]

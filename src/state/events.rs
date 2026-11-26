@@ -331,14 +331,20 @@ impl State {
     }
 
     pub fn incoming_feed_status(&self) -> Result<Value> {
+        let path_result = self.resolved_event_feed_path();
         let journal = self
             .events
             .lock()
             .map_err(|_| anyhow::anyhow!("Event journal lock is unavailable"))?;
+        let (path_value, watch_command, path_error) = match path_result {
+            Ok(path) => (json!(path), json!(watch_command_for(&path)), None::<String>),
+            Err(error) => (Value::Null, Value::Null, Some(error.to_string())),
+        };
+        let error = journal.error.clone().or(path_error);
         Ok(
             json!({"enabled":journal.feed_enabled,"running":journal.feed_enabled,"settle_ms":journal.settle_ms,
-            "pending_chats":journal.bursts.len(),"dropped_total":journal.dropped,"dropped_reason_counts":journal.drop_reasons,"recent_dropped":journal.recent_dropped,"error":journal.error,
-            "path":self.root.join("incoming_feed.jsonl"),"autostart_pending":self.feed_autostart.load(std::sync::atomic::Ordering::Relaxed),"max_bytes":positive_limit("TELEGRAM_EVENT_FEED_MAX_BYTES",8_388_608),"max_age_seconds":positive_limit("TELEGRAM_EVENT_FEED_MAX_AGE_SECONDS",604_800)}),
+            "pending_chats":journal.bursts.len(),"dropped_total":journal.dropped,"dropped_reason_counts":journal.drop_reasons,"recent_dropped":journal.recent_dropped,"error":error,
+            "path":path_value,"watch_command":watch_command,"autostart_pending":self.feed_autostart.load(std::sync::atomic::Ordering::Relaxed),"max_bytes":positive_limit("TELEGRAM_EVENT_FEED_MAX_BYTES",8_388_608),"max_age_seconds":positive_limit("TELEGRAM_EVENT_FEED_MAX_AGE_SECONDS",604_800)}),
         )
     }
 
@@ -370,29 +376,43 @@ impl State {
         }
         let runtime = tokio::runtime::Handle::try_current()
             .context("Incoming feed requires an async runtime")?;
+        {
+            let journal = self
+                .events
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Event journal lock is unavailable"))?;
+            // A disable or manual enable after this event's autostart claim wins
+            // before any file creation or worker mutation occurs.
+            if expected_generation.is_some_and(|expected| journal.generation != expected) {
+                drop(journal);
+                return self.incoming_feed_status();
+            }
+        }
+        // Validate and pre-touch the authorized feed file before mutating any worker state
+        // so failed changes preserve an already-running worker and pending events.
+        self.touch_event_feed()?;
         let mut journal = self
             .events
             .lock()
             .map_err(|_| anyhow::anyhow!("Event journal lock is unavailable"))?;
-        // A disable or manual enable after this event's autostart claim wins.
         if expected_generation.is_some_and(|expected| journal.generation != expected) {
             drop(journal);
             return self.incoming_feed_status();
         }
         self.feed_autostart
             .store(false, std::sync::atomic::Ordering::Relaxed);
-        if journal.feed_enabled {
-            if journal.settle_ms != settle_ms {
-                bail!("Disable the running feed before changing its settle period");
-            }
+        if journal.feed_enabled && journal.settle_ms == settle_ms {
             drop(journal);
             return self.incoming_feed_status();
         }
         journal.feed_enabled = true;
         journal.settle_ms = settle_ms;
+        journal.error = None;
         journal.generation = journal.generation.wrapping_add(1);
         let generation = journal.generation;
         drop(journal);
+        // Wake any previous-generation worker so it exits immediately on live settle_ms update.
+        self.changed.notify_waiters();
         let state = Arc::clone(self);
         runtime.spawn(async move {
             state
@@ -446,6 +466,18 @@ impl State {
             }
             tokio::select! {_=&mut notified=>{},_=tokio::time::sleep(settle.min(Duration::from_secs(1)))=>{}}
         }
+    }
+}
+
+pub fn watch_command_for(path: &std::path::Path) -> String {
+    let raw = path.to_string_lossy();
+    let clean: String = raw.chars().filter(|c| !c.is_control()).collect();
+    if cfg!(windows) {
+        let escaped = clean.replace('\'', "''");
+        format!("Get-Content -LiteralPath '{escaped}' -Wait -Tail 20")
+    } else {
+        let escaped = clean.replace('\'', "'\\''");
+        format!("tail -f '{escaped}'")
     }
 }
 

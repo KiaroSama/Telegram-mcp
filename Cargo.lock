@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=84f2b8e57f30af10218effb7cb58688a57431e0d#84f2b8e57f30af10218effb7cb58688a57431e0d"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "futures-util",
  "grammers-crypto",
@@ -1226,7 +1226,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtsender"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=84f2b8e57f30af10218effb7cb58688a57431e0d#84f2b8e57f30af10218effb7cb58688a57431e0d"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "bytes",
  "grammers-mtproto",
@@ -1244,7 +1244,7 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=84f2b8e57f30af10218effb7cb58688a57431e0d#84f2b8e57f30af10218effb7cb58688a57431e0d"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "grammers-tl-types",
  "serde",
@@ -1948,7 +1948,7 @@ dependencies = [
 [[package]]
 name = "kiaro-secret-chat"
 version = "0.3.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=84f2b8e57f30af10218effb7cb58688a57431e0d#84f2b8e57f30af10218effb7cb58688a57431e0d"
+source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3048,6 +3048,7 @@ dependencies = [
  "tracing",
  "unicode-general-category",
  "unicode-normalization",
+ "url",
  "uuid",
 ]
 
@@ -3741,6 +3742,7 @@ dependencies = [
  "libloading",
  "lopdf",
  "md5",
+ "moxcms",
  "num-bigint 0.5.1",
  "qrcode",
  "rand",

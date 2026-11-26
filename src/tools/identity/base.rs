@@ -163,20 +163,7 @@ pub fn input_document(doc: &Value) -> Result<Value> {
     )
 }
 pub fn username(value: &str, allow_empty: bool) -> Result<String> {
-    let raw = value.trim();
-    let value = [
-        "https://t.me/",
-        "http://t.me/",
-        "t.me/",
-        "https://telegram.me/",
-        "http://telegram.me/",
-        "telegram.me/",
-        "@",
-    ]
-    .iter()
-    .find_map(|p| raw.strip_prefix(p))
-    .unwrap_or(raw)
-    .trim();
+    let value = crate::permalinks::strip_username_prefix(value, None);
     ensure!(
         (allow_empty && value.is_empty())
             || (value.len() >= 5
@@ -187,5 +174,5 @@ pub fn username(value: &str, allow_empty: bool) -> Result<String> {
                 && !value.as_bytes()[0].is_ascii_digit()),
         "Username must contain 5-32 ASCII letters, digits or underscores and cannot start with a digit"
     );
-    Ok(value.to_owned())
+    Ok(value)
 }

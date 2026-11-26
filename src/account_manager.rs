@@ -7,8 +7,10 @@ mod recovery;
 mod rename;
 use base64::Engine;
 pub use config::{
-    ConfigSnapshot, bind_address, capture_process_config, config_digest, current_config, label_for,
-    parse_config, read_config, select_source, write_env_value,
+    ConfigSnapshot, DEFAULT_LOCK_GRACE_SECONDS, MAX_LOCK_GRACE_SECONDS, acquire_with_grace,
+    bind_address, capture_process_config, config_digest, current_config, label_for,
+    lock_grace_seconds, parse_config, parse_lock_grace_seconds, read_config, select_source,
+    write_env_value,
 };
 #[cfg(test)]
 pub(crate) use config::{fail_configuration_sync_after_for_test, fail_configuration_sync_for_test};

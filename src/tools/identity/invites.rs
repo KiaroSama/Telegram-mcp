@@ -65,8 +65,19 @@ fn expiry(a: &Value) -> Result<Option<i64>> {
     Ok(Some(stamp))
 }
 pub(super) fn qr_in(state: &crate::state::State, a: &Value) -> Result<Value> {
-    let link = text(a, "link")?;
-    ensure!(!link.trim().is_empty(), "link must not be empty");
+    let link = text(a, "link")?.trim();
+    let lower = link.to_ascii_lowercase();
+    let configured = crate::permalinks::link_domain();
+    let rest = lower.strip_prefix("https://").unwrap_or(&lower);
+    let web = rest.split_once('/').is_some_and(|(host, path)| {
+        !path.is_empty() && (host == crate::permalinks::DEFAULT_DOMAIN || host == configured)
+    });
+    ensure!(
+        !link.contains('\\')
+            && !link.chars().any(|c| c.is_whitespace() || c.is_control())
+            && (web || lower.strip_prefix("tg://").is_some_and(|s| !s.is_empty())),
+        "Only Telegram links can be encoded"
+    );
     let code = qrcode::QrCode::new(link.as_bytes())?;
     let modules = code.width();
     let scale = 8;
@@ -124,14 +135,15 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             && !raw.contains("/joinchat/")
             && !raw.starts_with("tg://join")
         {
-            let username = raw
-                .trim()
-                .trim_end_matches('/')
-                .rsplit('/')
-                .next()
-                .unwrap_or("")
-                .trim_start_matches('@');
-            ensure!(!username.is_empty(), "link must identify a Telegram chat");
+            let username =
+                crate::permalinks::strip_username_prefix(raw.trim().trim_end_matches('/'), None);
+            ensure!(
+                !username.is_empty()
+                    && username
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+                "link must identify a Telegram chat"
+            );
             let p = api.resolve_peer(&json!(username)).await?;
             return api
                 .invoke("channels.joinChannel", json!({"channel":channel(&p)?}))

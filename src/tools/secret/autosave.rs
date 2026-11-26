@@ -15,10 +15,60 @@ pub async fn call(api: &dyn Telegram, name: &str, args: &Value) -> Option<Result
     if !TOOL_NAMES.contains(&name) {
         return None;
     }
-    Some(match payload(name, args) {
-        Ok(payload) => api.secret_call(name, payload).await,
-        Err(error) => Err(error),
-    })
+    Some(
+        async {
+            let mut payload = payload(name, args)?;
+            if name == "export_secret_chat" {
+                let missing = missing_export_choices(args);
+                if !missing.is_empty() {
+                    return Ok(json!({"status":"choices_required","required":missing}));
+                }
+                if !args["peer_user"].is_null() {
+                    let input = &args["peer_user"];
+                    ensure!(
+                        input.as_i64().is_some_and(|v| v > 0)
+                            || input.as_str().is_some_and(|v| !v.trim().is_empty()),
+                        "peer_user must be a user ID or username"
+                    );
+                    let peer = api.resolve_peer(input).await?;
+                    ensure!(
+                        peer["_"] == "inputPeerUser",
+                        "peer_user must identify a user"
+                    );
+                    payload["peer_user"] = json!(
+                        peer["user_id"]
+                            .as_i64()
+                            .or_else(|| peer["user_id"].as_str()?.parse().ok())
+                            .filter(|v| *v > 0)
+                            .context("Invalid export peer ID")?
+                    );
+                }
+            }
+            api.secret_call(name, payload).await
+        }
+        .await,
+    )
+}
+
+/// Call before schema defaults are applied; an explicit empty date or folder is a choice.
+pub fn missing_export_choices(args: &Value) -> Vec<&'static str> {
+    [
+        "format",
+        "photos",
+        "videos",
+        "voice_messages",
+        "video_messages",
+        "stickers",
+        "gifs",
+        "files",
+        "size_limit_mb",
+        "date_from",
+        "date_to",
+        "destination",
+    ]
+    .into_iter()
+    .filter(|field| args[*field].is_null())
+    .collect()
 }
 
 fn payload(name: &str, args: &Value) -> Result<Value> {
@@ -59,9 +109,6 @@ fn payload(name: &str, args: &Value) -> Result<Value> {
                     .is_some_and(|size| (1.0..=4000.0).contains(&size)),
                 "size_limit_mb must be from 1 to 4000"
             );
-        }
-        if args["destination"].as_str() == Some("") {
-            payload.remove("destination");
         }
     }
     Ok(Value::Object(payload))

@@ -1,4 +1,6 @@
 use super::helpers::*;
+#[path = "typing.rs"]
+mod typing;
 use crate::{args, backend::Telegram};
 use anyhow::{Result, ensure};
 use serde_json::{Value, json};
@@ -15,8 +17,8 @@ pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Va
         | "get_message_read_by"
         | "list_send_as"
         | "set_default_send_as"
-        | "send_typing"
         | "list_calls" => Some(run(api, name, a).await),
+        "send_typing" => Some(typing::run(api, a).await),
         "set_chat_ai_style" => Some(set_ai_style(api, a).await),
         _ => None,
     }
@@ -147,15 +149,6 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         },
         "list_send_as"=>api.invoke("channels.getSendAs",json!({"peer":p})).await,
         "set_default_send_as"=>{let identity=args::peer(api,a,"send_as").await?;api.invoke("messages.saveDefaultSendAs",json!({"peer":p,"send_as":identity})).await},
-        "send_typing"=>{
-            let seconds=a.get("seconds").filter(|v|!v.is_null()).map(|v|v.as_f64().ok_or_else(||anyhow::anyhow!("seconds must be a number"))).transpose()?.unwrap_or(5.0);
-            ensure!(seconds.is_finite()&&(0.0..=30.0).contains(&seconds),"seconds must be within 0..30");
-            let mut req=json!({"peer":p,"action":{"_":"sendMessageTypingAction"}});
-            if a.get("topic_id").is_some_and(|v|!v.is_null()){req["top_msg_id"]=json!(id(a,"topic_id")?);}
-            let start=tokio::time::Instant::now();
-            loop {api.invoke("messages.setTyping",req.clone()).await?;let remaining=std::time::Duration::from_secs_f64(seconds).saturating_sub(start.elapsed());if remaining.is_zero(){break}tokio::time::sleep(remaining.min(std::time::Duration::from_secs(4))).await;if start.elapsed().as_secs_f64()>=seconds{break}}
-            req["action"]=json!({"_":"sendMessageCancelAction"});api.invoke("messages.setTyping",req).await
-        },
         _=>unreachable!(),
     }
 }
@@ -184,7 +177,9 @@ async fn calls(api: &dyn Telegram, a: &Value) -> Result<Value> {
             break;
         }
         let mut req = history_request(peer.clone(), wanted, offset, 0);
-        req.as_object_mut().unwrap().remove("offset_date");
+        if let Some(object) = req.as_object_mut() {
+            object.remove("offset_date");
+        }
         req["q"] = json!("");
         req["filter"] = json!({"_":"inputMessagesFilterPhoneCalls"});
         req["min_date"] = json!(from);

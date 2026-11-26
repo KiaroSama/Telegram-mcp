@@ -51,7 +51,7 @@ async fn message_photo_listing_reads_media_without_labeling_them_current_avatars
     let w = MediaWire::new(
         vec![(
             "messages.search",
-            json!({"messages":[{"media":{"photo":photo(4)}},{"action":{"photo":photo(5)}}]}),
+            json!({"messages":[{"id":12,"message":"note","media":{"photo":photo(4)}},{"id":13,"action":{"photo":photo(5)}}]}),
         )],
         vec![],
     );
@@ -64,6 +64,8 @@ async fn message_photo_listing_reads_media_without_labeling_them_current_avatars
     .unwrap();
     assert_eq!(result["photos"].as_array().unwrap().len(), 2);
     assert_eq!(result["photos"][0]["is_current"], false);
+    assert_eq!(result["photos"][0]["photo_id"], 12);
+    assert_eq!(result["photos"][0]["caption"], "note");
     assert_eq!(w.calls()[0].1["filter"]["_"], "inputMessagesFilterPhotos");
 }
 #[tokio::test]
@@ -164,4 +166,27 @@ async fn photo_sheets_bound_retained_cells_even_when_the_server_exceeds_the_limi
     );
     assert_eq!(result["metadata"]["photo_ids"][23], "24");
     assert_eq!(result["content"][0]["mimeType"], "image/png");
+}
+
+#[tokio::test]
+async fn message_photo_fetches_exact_message_id_and_uses_a_bounded_thumbnail() {
+    let mut doc = photo(9);
+    doc["sizes"] = json!([{"_":"photoSize","type":"s","w":100,"h":80},{"_":"photoSize","type":"x","w":800,"h":600}]);
+    let w = MediaWire::new(
+        vec![(
+            "messages.getMessages",
+            json!({"messages":[{"_":"message","id":83,"peer_id":{"_":"peerUser","user_id":"7"},"message":"caption","media":{"photo":doc}}]}),
+        )],
+        png(),
+    );
+    let r = run(
+        &w,
+        "open_photo",
+        json!({"chat_id":7,"source":"messages","photo_id":83,"thumbnail":true}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(r["metadata"]["photo_id"], 83);
+    assert_eq!(r["metadata"]["caption"], "caption");
+    assert_eq!(w.downloads.lock().unwrap()[0].0["thumb_size"], "s");
 }

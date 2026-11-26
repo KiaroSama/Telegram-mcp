@@ -7,9 +7,11 @@ mod updates;
 use crate::{session::PersistentSession, state::State, tl::Schema};
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-pub use config::public_configuration_json;
-pub use config::{account_labels, generation as account_generation};
-pub use config::{accounts_snapshot, health};
+pub use config::{
+    ClientIdentity, PooledSession, account_labels, accounts_snapshot,
+    generation as account_generation, health, live_accounts_snapshot, pooled_sessions,
+    public_configuration_json, session_auth_key_identity,
+};
 use grammers_client::{Client, SignInError};
 use grammers_mtsender::{
     ConnectionParams, InvocationError, NoRetries, SenderPool, SenderPoolFatHandle,
@@ -69,6 +71,10 @@ pub trait Telegram: Send + Sync {
             bail!("Media exceeded its in-memory byte budget");
         }
         Ok(data)
+    }
+    /// Only a backend tied to an acting account can deliver owner prompts in Saved Messages.
+    fn supports_saved_messages_approval(&self) -> bool {
+        false
     }
     fn clone_handle(&self) -> Option<Arc<dyn Telegram>> {
         None
@@ -145,56 +151,17 @@ impl Native {
     ) -> Result<Self> {
         crate::session::validate_label(label)?;
         crate::session::validate_label(policy_label)?;
-        let source = config::source_from(snapshot, label);
-        if !staged && source.is_none() {
-            bail!("Account is no longer configured; no authorization was opened");
-        }
         let api_id = config::api_id(snapshot)?;
-        PersistentSession::check_custody_identity(&state, label, snapshot)?;
-        let session = Arc::new(PersistentSession::open(Arc::clone(&state), label)?);
-        if !state.root().join(format!("{label}.session.json")).exists()
-            && let Some((key, value)) = &source
-        {
-            if key.starts_with("TELEGRAM_SESSION_STRING") {
-                session.import_telethon(value)?;
-            } else {
-                let base = snapshot
-                    .path
-                    .parent()
-                    .context("Configuration file has no parent")?;
-                let raw = std::path::PathBuf::from(value);
-                let mut candidates = vec![base.join(&raw), state.root().join(&raw)];
-                candidates.extend(
-                    candidates.clone().into_iter().map(|path| {
-                        std::path::PathBuf::from(format!("{}.session", path.display()))
-                    }),
-                );
-                let mut found = candidates
-                    .into_iter()
-                    .filter(|path| path.is_file())
-                    .map(|path| path.canonicalize())
-                    .collect::<std::io::Result<Vec<_>>>()?;
-                found.sort();
-                found.dedup();
-                match found.as_slice() {
-                    [path] => session.import_telethon_sqlite(path)?,
-                    [] => bail!(
-                        "No native or legacy session exists for this account; use the account manager to log in"
-                    ),
-                    _ => bail!(
-                        "Several legacy session files match this account; configure one absolute path"
-                    ),
-                }
-            }
-        }
-        // Recheck the exact imported authorization before creating any sender;
-        // the selected legacy source could have changed after the first probe.
-        PersistentSession::check_custody_identity(&state, label, snapshot)?;
+        let identity = config::ClientIdentity::from_snapshot(snapshot)?;
+        let (session, source, leased_label) =
+            startup::open_leased_session(&state, label, snapshot, staged).await?;
         let route = crate::proxy::route(Arc::clone(&state), snapshot, policy_label).await?;
         if !staged {
-            startup::ensure_self_peer(&session, api_id, &route).await?;
+            startup::ensure_self_peer(&session, api_id, &route, &identity).await?;
         }
-        crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
+        if leased_label == label {
+            crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
+        }
         let source =
             source.map(|(key, value)| (key, crate::account_manager::config_digest(&value)));
         session.bind_source(
@@ -207,6 +174,7 @@ impl Native {
             retry_policy: Box::new(NoRetries),
             ..Default::default()
         };
+        identity.apply_to(&mut connection);
         session.check_health()?;
         let mut prepared = if staged {
             None
@@ -412,6 +380,9 @@ impl Native {
 }
 #[async_trait]
 impl Telegram for Native {
+    fn supports_saved_messages_approval(&self) -> bool {
+        true
+    }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
         let result = match method {
             "local.accounts" => accounts_snapshot(),
@@ -649,50 +620,5 @@ fn prompt(message: &str) -> Result<String> {
 }
 
 #[cfg(test)]
-mod login_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn rejected_login_input_retries_only_up_to_three_attempts() {
-        let mut attempts = 0;
-        let result = retry_auth(
-            async || {
-                attempts += 1;
-                Ok((attempts == 2).then_some(7))
-            },
-            "exhausted",
-        )
-        .await
-        .unwrap();
-        assert_eq!((result, attempts), (7, 2));
-
-        let mut attempts = 0;
-        let failure = retry_auth::<()>(
-            async || {
-                attempts += 1;
-                Ok(None)
-            },
-            "exhausted",
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(failure.to_string(), "exhausted");
-        assert_eq!(attempts, 3);
-    }
-
-    #[tokio::test]
-    async fn failed_login_transport_is_not_retried_as_rejected_input() {
-        let mut attempts = 0;
-        let failure = retry_auth::<()>(
-            async || {
-                attempts += 1;
-                bail!("transport failure");
-            },
-            "exhausted",
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(failure.to_string(), "transport failure");
-        assert_eq!(attempts, 1);
-    }
-}
+#[path = "../tests/unit/backend_login.rs"]
+mod login_tests;

@@ -66,6 +66,46 @@ async fn message_read_reports_distinct_kinds_without_changing_text_or_utf16_enti
         json!(["bold", "custom_emoji", "strikethrough", "text_url"])
     );
     assert_eq!(rows[1], plain);
+    let public = telegram_mcp::sanitize::sanitize_value(result);
+    assert_eq!(public["messages"][0]["message"], text.trim());
+    assert_eq!(public["messages"][0]["entities"][1]["offset"], 5);
+    assert_eq!(public["messages"][0]["entities"][1]["length"], 2);
+}
+
+#[tokio::test]
+async fn message_read_rebases_utf16_and_links_the_message_peer() {
+    let row = |peer: Value| {
+        json!({"_":"message","id":9,"peer_id":peer,"message":"A\u{202e}🙂B","entities":[
+        {"_":"messageEntityCustomEmoji","offset":2,"length":2,"document_id":"9007199254740993"},
+        {"_":"messageEntityBold","offset":1,"length":1}],
+        "reply_to":{"quote_text":"A\u{202e}B","quote_entities":[{"_":"messageEntityItalic","offset":2,"length":1}]}})
+    };
+    let api = Fixture::with([(
+        "messages.getHistory",
+        json!({"messages":[
+        row(json!({"_":"peerChannel","channel_id":"7"})),
+        row(json!({"_":"peerChannel","channel_id":"-10012345678901"})),
+        row(json!({"_":"peerChat","chat_id":"7"}))],
+        "chats":[{"_":"channel","id":7,"username":"publicchat"}]}),
+    )]);
+    let result = tools::call(&api, "get_messages", &json!({"chat_id":7}))
+        .await
+        .unwrap();
+    let rows = result["messages"].as_array().unwrap();
+    assert_eq!(rows[0]["message"], "A🙂B");
+    assert_eq!(
+        rows[0]["entities"],
+        json!([{"_":"messageEntityCustomEmoji","offset":1,"length":2,"document_id":"9007199254740993"}])
+    );
+    assert_eq!(rows[0]["reply_to"]["quote_text"], "AB");
+    assert_eq!(rows[0]["reply_to"]["quote_entities"][0]["offset"], 1);
+    let host = telegram_mcp::permalinks::link_domain();
+    assert_eq!(rows[0]["permalink"], format!("https://{host}/publicchat/9"));
+    assert_eq!(
+        rows[1]["permalink"],
+        format!("https://{host}/c/12345678901/9")
+    );
+    assert!(rows[2].get("permalink").is_none());
 }
 
 #[test]

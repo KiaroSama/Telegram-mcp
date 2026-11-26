@@ -32,6 +32,7 @@ struct Window {
     handle: isize,
     title: String,
     class: String,
+    process: String,
     rect: [i32; 4],
     foreground: bool,
     minimized: bool,
@@ -41,7 +42,7 @@ struct Window {
 impl Window {
     fn json(&self, main: bool) -> Value {
         json!({"hwnd":self.handle.to_string(),"title":self.title,"class_name":self.class,
-            "rect":self.rect,"width":i64::from(self.rect[2])-i64::from(self.rect[0]),"height":i64::from(self.rect[3])-i64::from(self.rect[1]),
+            "rect":{"left":self.rect[0],"top":self.rect[1],"right":self.rect[2],"bottom":self.rect[3]},"process":self.process,"scale_percent":if self.dpi==0{None}else{Some((self.dpi*100+48)/96)},"width":i64::from(self.rect[2])-i64::from(self.rect[0]),"height":i64::from(self.rect[3])-i64::from(self.rect[1]),
             "is_foreground":self.foreground,"is_minimized":self.minimized,"dpi":self.dpi,"is_main":main})
     }
 }
@@ -94,6 +95,11 @@ unsafe extern "system" fn enumerate(handle: HWND, parameter: LPARAM) -> i32 {
         handle: handle as isize,
         title: String::from_utf16_lossy(&title[..title_len]),
         class: String::from_utf16_lossy(&class[..class_len]),
+        process: path
+            .rsplit(['\\', '/'])
+            .next()
+            .unwrap_or_default()
+            .to_owned(),
         rect: [rect.left, rect.top, rect.right, rect.bottom],
         foreground: unsafe { GetForegroundWindow() } == handle,
         minimized: unsafe { IsIconic(handle) } != 0,
@@ -160,6 +166,34 @@ pub fn run(args: &Value) -> Result<Value> {
     if window.minimized {
         bail!("Telegram window is minimized; restore it before capturing");
     }
+    let verify = || -> Result<()> {
+        if let Some(names) = args.get("verified_chat_names") {
+            let mut buf = [0u16; 4096];
+            // SAFETY: the enumeration supplied this window handle, and buf has the advertised capacity.
+            let len = unsafe {
+                GetWindowTextW(window.handle as HWND, buf.as_mut_ptr(), buf.len() as i32)
+            }
+            .max(0) as usize;
+            let title = String::from_utf16_lossy(&buf[..len]);
+            let folded = title.to_lowercase();
+            let clean = folded
+                .trim()
+                .strip_suffix(" - telegram")
+                .unwrap_or(folded.trim());
+            anyhow::ensure!(
+                title == window.title
+                    && names
+                        .as_array()
+                        .is_some_and(|xs| xs.iter().filter_map(Value::as_str).any(|name| {
+                            let n = name.trim().to_lowercase();
+                            n.chars().count() >= 3 && clean == n
+                        })),
+                "Desktop window title does not match the requested chat"
+            );
+        }
+        Ok(())
+    };
+    verify()?;
     let count = args["count"].as_u64().unwrap_or(1).clamp(1, 8);
     let interval = args["interval_ms"].as_u64().unwrap_or(400).clamp(50, 3000);
     let started = std::time::Instant::now();
@@ -170,7 +204,9 @@ pub fn run(args: &Value) -> Result<Value> {
         if index > 0 {
             std::thread::sleep(std::time::Duration::from_millis(interval));
         }
+        verify()?;
         let (image, mut metadata) = capture(window, args)?;
+        verify()?;
         let (data, image_meta) = super::images::encode_image(
             &image,
             args["image_format"].as_str().unwrap_or("png"),
@@ -191,6 +227,7 @@ pub fn run(args: &Value) -> Result<Value> {
         frames.push(metadata);
         content.push(json!({"type":"image","mimeType":image_meta["mime_type"],"data":base64::engine::general_purpose::STANDARD.encode(data)}));
     }
+    verify()?;
     let main = enumeration
         .windows
         .first()
@@ -347,6 +384,9 @@ fn capture(window: &Window, args: &Value) -> Result<(image::DynamicImage, Value)
     let mut image = image::DynamicImage::ImageRgba8(image);
     let mut metadata = json!({"method":if screen{"screen"}else{"window"},"full_size":[width,height],"client_only":client});
     if !screen && is_flat(&image) {
+        if args.get("verified_chat_names").is_some() {
+            bail!("Window capture returned no usable pixels for the verified chat");
+        }
         let mut fallback = args.clone();
         fallback["method"] = "screen".into();
         let (captured, mut meta) = capture(window, &fallback)?;

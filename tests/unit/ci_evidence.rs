@@ -337,3 +337,158 @@ fn architecture_manifest_and_record_fields_cannot_silently_omit_a_target() {
         assert!(serde_json::from_value::<Record>(absent).is_err());
     }
 }
+
+#[test]
+fn parity_rows_rejects_missing_duplicate_extra_wrong_sha_and_wrong_area() {
+    use crate::parity_rows::{InventoryFile, InventoryItem, ParityRow, Verdict, reconcile_rows};
+
+    let sha = "a".repeat(40);
+    let areas: BTreeSet<String> = ["A1_area".into(), "B1_area".into()].into_iter().collect();
+    let inv = InventoryFile {
+        items: vec![
+            InventoryItem {
+                file: "pkg/a.py".into(),
+                qual: "alpha".into(),
+                kind: "function".into(),
+                line: 10,
+                area: "A1_area".into(),
+                status: "PARTIAL".into(),
+            },
+            InventoryItem {
+                file: "pkg/b.py".into(),
+                qual: "beta".into(),
+                kind: "function".into(),
+                line: 20,
+                area: "B1_area".into(),
+                status: "MISSING".into(),
+            },
+        ],
+    };
+    let make_row = |file: &str, qual: &str, line: u64, area: &str| ParityRow {
+        path: file.into(),
+        qualified_symbol: qual.into(),
+        kind: "function".into(),
+        line,
+        area: area.into(),
+        candidate_sha: sha.clone(),
+        owning_track: "T1".into(),
+        mapping: "src/a.rs::alpha".into(),
+        method: "unit_fixture".into(),
+        evidence: "tests/unit/a.rs::alpha_ok".into(),
+        verdict: Verdict::Matched,
+        authorization_ref: None,
+    };
+
+    let valid = vec![
+        make_row("pkg/a.py", "alpha", 10, "A1_area"),
+        make_row("pkg/b.py", "beta", 20, "B1_area"),
+    ];
+    let (sorted, summary) = reconcile_rows(&inv, &valid, &sha, &areas).unwrap();
+    assert_eq!(sorted.len(), 2);
+    assert_eq!(summary.verdicts.matched, 2);
+
+    // Missing key
+    assert!(reconcile_rows(&inv, &valid[..1], &sha, &areas).is_err());
+
+    // Duplicate key
+    let mut dup = valid.clone();
+    dup.push(valid[0].clone());
+    assert!(reconcile_rows(&inv, &dup, &sha, &areas).is_err());
+
+    // Extra key
+    let mut extra = valid.clone();
+    extra.push(make_row("pkg/c.py", "gamma", 30, "A1_area"));
+    assert!(reconcile_rows(&inv, &extra, &sha, &areas).is_err());
+
+    // Wrong SHA
+    let mut bad_sha = valid.clone();
+    bad_sha[0].candidate_sha = "b".repeat(40);
+    assert!(reconcile_rows(&inv, &bad_sha, &sha, &areas).is_err());
+
+    // Wrong area
+    let mut bad_area = valid.clone();
+    bad_area[0].area = "B1_area".into();
+    assert!(reconcile_rows(&inv, &bad_area, &sha, &areas).is_err());
+}
+
+#[test]
+fn parity_rows_rejects_unsupported_bridge_absent_evidence_and_miscounted_authorized_diffs() {
+    use crate::parity_rows::{InventoryFile, InventoryItem, ParityRow, Verdict, reconcile_rows};
+
+    let sha = "c".repeat(40);
+    let areas: BTreeSet<String> = ["C1_area".into()].into_iter().collect();
+    let inv = InventoryFile {
+        items: vec![InventoryItem {
+            file: "pkg/c.py".into(),
+            qual: "check".into(),
+            kind: "function".into(),
+            line: 5,
+            area: "C1_area".into(),
+            status: "PARTIAL".into(),
+        }],
+    };
+    let base = ParityRow {
+        path: "pkg/c.py".into(),
+        qualified_symbol: "check".into(),
+        kind: "function".into(),
+        line: 5,
+        area: "C1_area".into(),
+        candidate_sha: sha.clone(),
+        owning_track: "T3".into(),
+        mapping: "src/c.rs::check".into(),
+        method: "rust_anything_gate".into(),
+        evidence: "gate:ok".into(),
+        verdict: Verdict::Matched,
+        authorization_ref: None,
+    };
+
+    // Unsupported bridge claimed as matched -> error
+    let mut unsupported = base.clone();
+    unsupported.method = "unsupported_bridge".into();
+    assert!(reconcile_rows(&inv, &[unsupported], &sha, &areas).is_err());
+
+    // Complete set of names with absent behavioral evidence -> error
+    let mut no_evidence = base.clone();
+    no_evidence.evidence.clear();
+    assert!(reconcile_rows(&inv, &[no_evidence], &sha, &areas).is_err());
+
+    // Authorized difference counted as match -> error
+    let mut miscounted_auth = base.clone();
+    miscounted_auth.authorization_ref = Some("spec.md#FR-010".into());
+    assert!(reconcile_rows(&inv, &[miscounted_auth], &sha, &areas).is_err());
+
+    // Properly classified explicitly_authorized_difference does NOT count as matched
+    let mut auth = base;
+    auth.verdict = Verdict::ExplicitlyAuthorizedDifference;
+    auth.authorization_ref = Some("spec.md#FR-010".into());
+    let (_, summary) = reconcile_rows(&inv, &[auth], &sha, &areas).unwrap();
+    assert_eq!(summary.verdicts.matched, 0);
+    assert_eq!(summary.verdicts.verified_native_equivalent, 0);
+    assert_eq!(summary.verdicts.explicitly_authorized_difference, 1);
+}
+
+#[test]
+fn parity_rows_detects_nondeterministic_replays() {
+    use crate::parity_rows::{ParityRow, Verdict, compare_replays};
+
+    let sha = "d".repeat(40);
+    let r1 = ParityRow {
+        path: "pkg/d.py".into(),
+        qualified_symbol: "delta".into(),
+        kind: "function".into(),
+        line: 1,
+        area: "D_core".into(),
+        candidate_sha: sha,
+        owning_track: "T3".into(),
+        mapping: "src/d.rs::delta".into(),
+        method: "unit_fixture".into(),
+        evidence: "tests/unit/d.rs::ok".into(),
+        verdict: Verdict::Matched,
+        authorization_ref: None,
+    };
+    let mut r2 = r1.clone();
+    assert!(compare_replays(std::slice::from_ref(&r1), std::slice::from_ref(&r2)).is_ok());
+
+    r2.verdict = Verdict::Unresolved;
+    assert!(compare_replays(&[r1], &[r2]).is_err());
+}

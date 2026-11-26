@@ -95,7 +95,7 @@ pub fn encode_image(
     Ok((data, meta))
 }
 
-/// A cell index is painted using a tiny built-in digit font; full Unicode labels
+/// Photo IDs and timestamps use a tiny built-in digit font; full Unicode labels
 /// stay in metadata, without depending on an OS-specific font installation.
 pub fn compose_contact_sheet(
     tiles: &[(Vec<u8>, String)],
@@ -140,7 +140,7 @@ pub fn compose_contact_sheet(
                 sheet.put_pixel(x, y, image::Rgb([0, 0, 0]));
             }
         }
-        paint_number(&mut sheet, index + 1, left + 8, top + 261);
+        paint_number(&mut sheet, label, left + 8, top + 261);
         cells.push(json!({"index":index+1,"label":label,"column":index%cols,"row":index/cols,"decoded":decoded}));
     }
     let (data, mut meta) = encode_image(
@@ -155,11 +155,11 @@ pub fn compose_contact_sheet(
     meta["rows"] = rows.into();
     meta["cells"] = cells.into();
     meta["cell_pixels"] = 256.into();
-    meta["label_rendering"] = "numeric index; full labels in cells metadata".into();
+    meta["label_rendering"] = "numeric photo ID or timestamp; full labels in cells metadata".into();
     Ok((data, meta))
 }
 
-fn paint_number(image: &mut image::RgbImage, number: usize, left: u32, top: u32) {
+fn paint_number(image: &mut image::RgbImage, label: &str, left: u32, top: u32) {
     const DIGITS: [[u8; 5]; 10] = [
         [7, 5, 5, 5, 7],
         [2, 6, 2, 2, 7],
@@ -172,8 +172,14 @@ fn paint_number(image: &mut image::RgbImage, number: usize, left: u32, top: u32)
         [7, 5, 7, 5, 7],
         [7, 5, 7, 1, 7],
     ];
-    for (offset, digit) in number.to_string().bytes().enumerate() {
-        for (row, bits) in DIGITS[(digit - b'0') as usize].iter().enumerate() {
+    for (offset, digit) in label.bytes().take(20).enumerate() {
+        let pattern = match digit {
+            b'0'..=b'9' => DIGITS[(digit - b'0') as usize],
+            b'-' => [0, 0, 7, 0, 0],
+            b':' => [0, 2, 0, 2, 0],
+            _ => continue,
+        };
+        for (row, bits) in pattern.iter().enumerate() {
             for col in 0..3 {
                 if bits & (1 << (2 - col)) != 0 {
                     for dy in 0..3 {

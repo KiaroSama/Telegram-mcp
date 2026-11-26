@@ -1,3 +1,6 @@
+mod receipts;
+use receipts::validate_backup;
+
 use super::{MAX_BYTES, metadata, plain_file, private_directory, read_private, write_atomic};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -21,8 +24,13 @@ use std::{
 };
 use zeroize::Zeroizing;
 
-const SOURCES: [&str; 4] = ["", "-history.json", "-media.json", ".owner.json"];
-const SIDECARS: [&str; 4] = ["", ".history.v1.json", ".media.v1.json", ""];
+const SOURCES: [&str; 5] = [
+    "",
+    "-history.json",
+    "-media.json",
+    ".owner.json",
+    "-consumer.json",
+];
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,11 +152,12 @@ pub(crate) fn open_store(
             !legacy || saved_receipt.is_some(),
             "Existing encrypted secret-chat store has no migration receipt for the legacy data"
         );
-        if let Some(saved) = &saved_receipt {
-            validate_backup(&directory.join("legacy-backups"), saved)?;
-        }
+
         let bytes = key_bytes(&key, false)?;
         let store = EncryptedIngressStorage::open(encrypted, *bytes, binding.clone(), MAX_BYTES)?;
+        if let Some(mut saved) = saved_receipt {
+            receipts::upgrade(&directory, label, &receipt, &mut saved)?;
+        }
         crate::state::storage::sync_directory(&directory)?;
         return Ok(Some(store));
     }
@@ -189,23 +198,15 @@ pub(crate) fn open_store(
             &json!({"version":1,"checkpoint":null,"next_id":1,"batches":[],"paused":false}),
         )?),
     );
-    for (index, suffix) in SOURCES.into_iter().enumerate().take(3).skip(1) {
-        if let Some(bytes) = files.get(suffix) {
+    let outputs = receipts::sidecars(&files, &state.settings)?;
+    for (suffix, bytes) in &outputs {
+        if let Some(existing) =
+            read_private(&directory.join(format!("{label}{suffix}")), MAX_BYTES)?
+        {
             ensure!(
-                parse(
-                    bytes,
-                    "Legacy secret-chat history or media index contains invalid JSON"
-                )?
-                .is_object(),
-                "Legacy secret-chat history or media index is not an object"
+                saved_receipt.is_some() && existing == **bytes,
+                "Secret-chat migration would overwrite an existing sidecar"
             );
-            let output = directory.join(format!("{label}{}", SIDECARS[index]));
-            if let Some(existing) = read_private(&output, MAX_BYTES)? {
-                ensure!(
-                    saved_receipt.is_some() && existing == **bytes,
-                    "Secret-chat migration would overwrite an existing sidecar"
-                );
-            }
         }
     }
     state
@@ -249,16 +250,7 @@ pub(crate) fn open_store(
             crate::state::storage::restrict(&destination, true)?;
             for (suffix, bytes) in &files {
                 let path = destination.join(format!("{label}{suffix}"));
-                write_atomic(&path, bytes, false)?;
-                #[cfg(windows)]
-                let handle = OpenOptions::new().read(true).write(true).open(&path)?;
-                let mut permissions = fs::metadata(&path)?.permissions();
-                permissions.set_readonly(true);
-                fs::set_permissions(&path, permissions)?;
-                #[cfg(windows)]
-                handle.sync_all()?;
-                #[cfg(unix)]
-                File::open(&path)?.sync_all()?;
+                receipts::backup_file(&path, bytes)?;
             }
             crate::state::storage::sync_directory(&destination)?;
             crate::state::storage::sync_directory(&base)?;
@@ -286,12 +278,10 @@ pub(crate) fn open_store(
         .context("Cannot commit migrated secret-chat state")?;
     drop(store);
     crate::state::storage::restrict(&staged_store, false)?;
-    for (index, suffix) in SOURCES.into_iter().enumerate().take(3).skip(1) {
-        if let Some(bytes) = files.get(suffix) {
-            let output = directory.join(format!("{label}{}", SIDECARS[index]));
-            if !plain_file(&output)? {
-                write_atomic(&output, bytes, false)?;
-            }
+    for (suffix, bytes) in &outputs {
+        let output = directory.join(format!("{label}{suffix}"));
+        if !plain_file(&output)? {
+            write_atomic(&output, bytes, false)?;
         }
     }
     // Publish the complete store last; the receipt permits an interrupted migration to resume.
@@ -348,56 +338,6 @@ fn key_bytes(path: &Path, create: bool) -> Result<Zeroizing<[u8; 32]>> {
     let key = Zeroizing::new(rand::random::<[u8; 32]>());
     write_atomic(path, &*key, false)?;
     Ok(key)
-}
-
-fn validate_backup<'a>(base: &Path, receipt: &'a Receipt) -> Result<&'a str> {
-    // Account renames leave the original label in the receipt and backup.
-    let (label, timestamp) = receipt
-        .backup
-        .rsplit_once('-')
-        .context("Invalid migration backup name")?;
-    crate::session::validate_label(label).context("Invalid migration backup label")?;
-    let format = "%Y%m%dT%H%M%SZ";
-    let time = chrono::NaiveDateTime::parse_from_str(timestamp, format)
-        .context("Invalid migration backup timestamp")?;
-    ensure!(
-        time.format(format).to_string() == timestamp,
-        "Invalid migration backup timestamp"
-    );
-    ensure!(
-        metadata(base)?.is_some_and(|m| m.is_dir()),
-        "Secret-chat backup directory is unavailable"
-    );
-    ensure!(
-        receipt.sha256.contains_key(label),
-        "Secret-chat backup has no legacy store checksum"
-    );
-    let directory = base.join(&receipt.backup);
-    ensure!(
-        metadata(&directory)?.is_some_and(|m| m.is_dir()),
-        "Secret-chat backup is not a regular directory"
-    );
-    for (name, expected) in &receipt.sha256 {
-        ensure!(
-            SOURCES
-                .iter()
-                .any(|suffix| *name == format!("{label}{suffix}")),
-            "Invalid migration backup filename"
-        );
-        let path = directory.join(name);
-        let bytes = Zeroizing::new(
-            read_private(&path, MAX_BYTES)?.context("Secret-chat backup is incomplete")?,
-        );
-        ensure!(
-            hash(&bytes) == *expected,
-            "Secret-chat backup SHA-256 verification failed"
-        );
-        ensure!(
-            fs::metadata(path)?.permissions().readonly(),
-            "Secret-chat backup is writable"
-        );
-    }
-    Ok(label)
 }
 
 fn hash(bytes: &[u8]) -> String {

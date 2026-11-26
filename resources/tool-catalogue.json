@@ -1,5 +1,111 @@
 [
   {
+    "name": "accept_secret_chat",
+    "description": "Accept a pending incoming Secret Chat on the selected account. Reports ready only after native handshake confirmation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "chat_id": {
+          "type": "integer",
+          "description": "Incoming Secret Chat ID. The existing native Secret Chat ID normalizer accepts a wire or marked ID and must resolve it to a nonzero signed 32-bit ID."
+        },
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1,
+          "default": null,
+          "description": "Existing account label. Omission uses normal account selection; it does not search or switch accounts."
+        }
+      },
+      "required": [
+        "chat_id"
+      ],
+      "additionalProperties": false
+    },
+    "outputSchema": {
+      "type": "object",
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "ready"
+            },
+            "chat_id": {
+              "type": "string",
+              "pattern": "^-?[1-9][0-9]*$"
+            },
+            "peer_user_id": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "account": {
+              "type": "string",
+              "minLength": 1
+            },
+            "already_ready": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "status",
+            "chat_id",
+            "peer_user_id",
+            "account",
+            "already_ready"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "refused"
+            },
+            "code": {
+              "enum": [
+                "not_pending_incoming",
+                "not_found",
+                "closed",
+                "backend_unavailable",
+                "handshake_rejected"
+              ]
+            }
+          },
+          "required": [
+            "status",
+            "code"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "unconfirmed"
+            },
+            "code": {
+              "const": "awaiting_confirmation"
+            }
+          },
+          "required": [
+            "status",
+            "code"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "annotations": {
+      "title": "Accept Secret Chat",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    },
+    "module": "secret_chats",
+    "deferred": false
+  },
+  {
     "name": "acknowledge_secret_delivery",
     "description": "Commit a durable consumer snapshot, then settle exactly this wire sequence.\n\nThe private snapshot retains the sanitized message and necessary file\nreference before the independent library acknowledgment. Failed commit\nreleases nothing. Interrupted ack reconciles the same identity on retry;\nno exactly-once guarantee, Telegram RPC or user read receipt is implied.",
     "inputSchema": {
@@ -1686,7 +1792,15 @@
       "type": "object",
       "properties": {
         "from_chat_id": {
-          "type": "integer"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
         },
         "message_id": {
           "type": "integer"
@@ -12879,6 +12993,10 @@
         "search_depth": {
           "type": "integer",
           "default": 50
+        },
+        "thumbnail": {
+          "type": "boolean",
+          "default": false
         },
         "account": {
           "anyOf": [

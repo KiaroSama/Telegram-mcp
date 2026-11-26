@@ -232,11 +232,31 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             let p = peer(api, a, "group_id").await?;
             let us = users(api, ids).await?;
             if is_channel(&p) {
-                api.invoke(
-                    "channels.inviteToChannel",
-                    json!({"channel":channel(&p)?,"users":us}),
+                let result = api
+                    .invoke(
+                        "channels.inviteToChannel",
+                        json!({"channel":channel(&p)?,"users":us}),
+                    )
+                    .await?;
+                let missing = result["missing_invitees"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|m| json!({"user_id":m["user_id"],"reason":invite_reason(m)}))
+                    .collect::<Vec<_>>();
+                let group_id = int_value(&entity_id(&p)?, "group_id")?;
+                let mut added = observed_additions(&result, "channel_id", group_id);
+                added.retain(|id| {
+                    us.iter()
+                        .any(|u| int_value(&u["user_id"], "user_id").ok() == Some(*id))
+                        && !missing
+                            .iter()
+                            .any(|m| int_value(&m["user_id"], "user_id").ok() == Some(*id))
+                });
+                let added = added.into_iter().map(|i| i.to_string()).collect::<Vec<_>>();
+                Ok(
+                    json!({"requested":us.len(),"added":added.len(),"confirmed_added":added,"missing_invitees":missing}),
                 )
-                .await
             } else {
                 ensure!(kind(&p) == "inputPeerChat", "Target must be a group");
                 let mut results = Vec::new();
@@ -246,15 +266,15 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                             let id = int_value(&entity_id(&u)?, "invited user id")?;
                             let missing = r.get("missing_invitees").and_then(Value::as_array)
                                 .into_iter().flatten().find(|entry| int_value(&entry["user_id"], "missing invitee id").ok() == Some(id));
-                            let mut result = json!({"user":u,"success":missing.is_none(),"result":r});
+                            let proof=observed_additions(&r,"chat_id",int_value(&entity_id(&p)?,"group_id")?);let success=if missing.is_some(){Some(false)}else if proof.contains(&id){Some(true)}else{None};let mut result=json!({"user_id":id.to_string(),"success":success});
                             if let Some(missing) = missing {
-                                result["reason"] = "Telegram could not invite this user because of privacy or premium requirements".into();
-                                result["missing_invitee"] = missing.clone();
+                                result["reason"] = invite_reason(missing).into();
+                                result["missing_invitee"] = json!({"user_id":missing["user_id"],"premium_would_allow_invite":missing["premium_would_allow_invite"]==true,"premium_required_for_pm":missing["premium_required_for_pm"]==true});
                             }
                             results.push(result);
                         }
-                        Err(error) if known_rpc_refusal(&error) => results.push(json!({"user":u,"success":false,"reason":"Telegram refused this invitation"})),
-                        Err(_) => results.push(json!({"user":u,"success":null,"reason":"Invitation outcome is unknown; check membership before retrying"})),
+                        Err(error) if known_rpc_refusal(&error) => results.push(json!({"user_id":u["user_id"],"success":false,"reason":"Telegram refused this invitation"})),
+                        Err(_) => results.push(json!({"user_id":u["user_id"],"success":null,"reason":"Invitation outcome is unknown; check membership before retrying"})),
                     }
                 }
                 Ok(json!({"results":results}))
@@ -478,7 +498,7 @@ async fn create_channel(api: &dyn Telegram, a: &Value) -> Result<Value> {
             Ok(changed) if changed == true => {
                 record["public"] = true.into();
                 record["username"] = wanted.clone().into();
-                record["link"] = format!("https://t.me/{wanted}").into();
+                record["link"] = crate::permalinks::public_link(&wanted, None)?.into();
             }
             _ => {
                 record["warning"]="The chat WAS created but the username was not assigned. Do not create another one. Use set_channel_username with this chat_id.".into();
@@ -486,4 +506,29 @@ async fn create_channel(api: &dyn Telegram, a: &Value) -> Result<Value> {
         }
     }
     Ok(record)
+}
+
+fn invite_reason(m: &Value) -> &'static str {
+    if m["premium_would_allow_invite"] == true {
+        "This user's privacy settings allow invitations from Premium users only"
+    } else if m["premium_required_for_pm"] == true {
+        "Premium is required to send this user an invite link"
+    } else {
+        "This user's privacy settings prevent the invitation"
+    }
+}
+
+fn observed_additions(response: &Value, key: &str, id: i64) -> std::collections::BTreeSet<i64> {
+    response["updates"]["updates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|u| &u["message"])
+        .filter(|m| {
+            int_value(&m["peer_id"][key], key).ok() == Some(id)
+                && m["action"]["_"] == "messageActionChatAddUser"
+        })
+        .flat_map(|m| m["action"]["users"].as_array().into_iter().flatten())
+        .filter_map(|v| int_value(v, "user_id").ok())
+        .collect()
 }

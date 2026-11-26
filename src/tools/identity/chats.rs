@@ -135,6 +135,9 @@ fn in_folder(f: &Value, e: &Value, d: &Value, p: &Value) -> bool {
     if kind(f) == "dialogFilterChatlist" || named("exclude_peers") {
         return false;
     }
+    if e.is_null() {
+        return false;
+    }
     let rule = match chat_kind(e) {
         "bot" => "bots",
         "user" if e["contact"] == true => "contacts",
@@ -148,6 +151,31 @@ fn in_folder(f: &Value, e: &Value, d: &Value, p: &Value) -> bool {
         && !(f["exclude_read"] == true
             && int(d, "unread_count", 0).unwrap_or(0) == 0
             && d["unread_mark"] != true)
+}
+
+fn advance_dialogs(request: &mut Value, result: &Value, ds: &[Value]) -> Result<()> {
+    let previous = (request["offset_peer"].clone(), request["offset_id"].clone());
+    let last = ds.last().context("Missing dialog cursor")?;
+    let e = matching_entity(result, &last["peer"]).context("Missing dialog cursor entity")?;
+    request["offset_peer"] = input_from_entity(e)?;
+    request["offset_id"] = last["top_message"].clone();
+    request["offset_date"] = result
+        .get("messages")
+        .and_then(Value::as_array)
+        .and_then(|xs| {
+            xs.iter().find(|m| {
+                m["id"] == last["top_message"] && peer_key(&m["peer_id"]) == peer_key(&last["peer"])
+            })
+        })
+        .and_then(|m| m.get("date"))
+        .cloned()
+        .unwrap_or(json!(0));
+    request["exclude_pinned"] = true.into();
+    ensure!(
+        previous != (request["offset_peer"].clone(), request["offset_id"].clone()),
+        "Telegram repeated the dialog cursor"
+    );
+    Ok(())
 }
 
 pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
@@ -199,6 +227,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                     .unwrap_or_default();
                 has_more = ds.len() as i64 >= int(&request, "limit", 100)?;
                 for d in &ds {
+                    let before = rows.len();
                     if consumed >= offset
                         && let Some(e) = matching_entity(&result, &d["peer"])
                     {
@@ -231,7 +260,9 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                             rows.push(row);
                         }
                     }
-                    consumed += 1;
+                    if name == "get_chats" || rows.len() > before {
+                        consumed += 1;
+                    }
                     if consumed >= offset + size {
                         break;
                     }
@@ -239,24 +270,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 if consumed >= offset + size || ds.is_empty() || !has_more {
                     break;
                 }
-                let last = ds.last().context("Missing dialog cursor")?;
-                let e = matching_entity(&result, &last["peer"])
-                    .context("Missing dialog cursor entity")?;
-                request["offset_peer"] = input_from_entity(e)?;
-                request["offset_id"] = last["top_message"].clone();
-                request["offset_date"] = result
-                    .get("messages")
-                    .and_then(Value::as_array)
-                    .and_then(|xs| {
-                        xs.iter().find(|m| {
-                            m["id"] == last["top_message"]
-                                && peer_key(&m["peer_id"]) == peer_key(&last["peer"])
-                        })
-                    })
-                    .and_then(|m| m.get("date"))
-                    .cloned()
-                    .unwrap_or(json!(0));
-                request["exclude_pinned"] = true.into();
+                advance_dialogs(&mut request, &result, &ds)?;
             }
             Ok(
                 json!({"results":rows,"metadata":{"page":page,"page_size":size,"fetched":(consumed-offset).max(0),"has_more":has_more},"untrusted_content":true}),
@@ -276,7 +290,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         }
         "lookup_peer" => search::lookup(api, a).await,
         "resolve_username" => {
-            let raw = text(a, "username")?.trim().trim_start_matches('@');
+            let raw = crate::permalinks::strip_username_prefix(text(a, "username")?, None);
             ensure!(!raw.is_empty(), "username must not be empty");
             let p = api.resolve_peer(req(a, "username")?).await?;
             let expected = crate::server::access::marked_peer(&p)
@@ -305,7 +319,7 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             if k == "bots" {
                 p["bots"] = true.into();
             }
-            api.invoke("contacts.search", p).await
+            search::public(api, p).await
         }
         "get_common_chats" => {
             let p = peer(api, a, "user_id").await?;
@@ -337,11 +351,24 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             if let Some(folder) = folder {
                 let fs = filters(api).await?;
                 let mut f = find_filter(&fs, folder)?.clone();
+                ensure!(
+                    kind(&f) != "dialogFilterChatlist",
+                    "Shared chat folders do not support editing pins"
+                );
+                let d = one["dialogs"]
+                    .as_array()
+                    .and_then(|ds| ds.iter().find(|d| peer_key(&d["peer"]) == peer_key(&p)))
+                    .context("Target dialog missing")?;
+                let e = matching_entity(&one, &p).unwrap_or(&Value::Null);
+                ensure!(in_folder(&f, e, d, &p), "That chat is not in this folder");
                 let mut pins = f
                     .get("pinned_peers")
                     .and_then(Value::as_array)
                     .cloned()
                     .unwrap_or_default();
+                if !pinned && !pins.iter().any(|v| peer_key(v) == peer_key(&p)) {
+                    return Ok(json!({"changed":false,"pinned":false}));
+                }
                 pins.retain(|v| peer_key(v) != peer_key(&p));
                 if pinned {
                     pins.insert(0, p.clone());

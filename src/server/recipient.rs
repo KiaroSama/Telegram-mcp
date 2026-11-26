@@ -36,7 +36,8 @@ pub(super) fn secret_chat_fields(name: &str) -> &'static [&'static str] {
         "clear_secret_history" => &["chat_id", "confirm_chat_id"],
         "copy_into_secret_chat" => &["to_chat_id"],
         "forward_secret_media" => &["from_chat_id", "to_chat_id"],
-        "delete_secret_message"
+        "accept_secret_chat"
+        | "delete_secret_message"
         | "mark_secret_read"
         | "read_secret_messages"
         | "save_secret_media"
@@ -264,6 +265,9 @@ impl Telegram for BoundApi {
     }
     async fn download_memory(&self, location: Value, max_bytes: u64) -> Result<Vec<u8>> {
         self.inner.download_memory(location, max_bytes).await
+    }
+    fn supports_saved_messages_approval(&self) -> bool {
+        self.inner.supports_saved_messages_approval()
     }
     fn clone_handle(&self) -> Option<Arc<dyn Telegram>> {
         self.inner.clone_handle().map(|inner| {

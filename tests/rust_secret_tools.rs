@@ -24,9 +24,16 @@ const READ_ONLY: &[&str] = &[
     "secret_chat_status",
 ];
 
+fn export_args() -> Value {
+    json!({"secret_chat_id":42,"format":"json","photos":false,"videos":false,"voice_messages":false,
+        "video_messages":false,"stickers":false,"gifs":false,"files":false,"size_limit_mb":5,
+        "date_from":"2026-01-01","date_to":"","destination":""})
+}
+
 fn cases() -> Vec<(&'static str, Category, Value)> {
     use Category::{Free, Gated, SeenSignal, Send};
     vec![
+        ("accept_secret_chat", Gated, json!({"chat_id": 42})),
         ("secret_chat_status", Free, json!({"chat_id": 42})),
         ("list_secret_chats", Free, json!({})),
         (
@@ -123,11 +130,7 @@ fn cases() -> Vec<(&'static str, Category, Value)> {
             Gated,
             json!({"secret_chat_id": 42}),
         ),
-        (
-            "export_secret_chat",
-            Gated,
-            json!({"secret_chat_id": 42, "format": "json", "photos": false, "date_from": "2026-01-01"}),
-        ),
+        ("export_secret_chat", Gated, export_args()),
         (
             "configure_secret_backend",
             Gated,
@@ -217,7 +220,7 @@ async fn exposed(mode: &str) -> Vec<Value> {
 #[tokio::test]
 async fn catalogue_exposes_all_secret_tools_and_only_seven_in_read_only_mode() {
     let expected: BTreeSet<_> = cases().into_iter().map(|(name, _, _)| name).collect();
-    assert_eq!(expected.len(), 34);
+    assert_eq!(expected.len(), 35);
     assert_eq!(
         secret::TOOL_NAMES.iter().copied().collect::<BTreeSet<_>>(),
         expected
@@ -225,7 +228,7 @@ async fn catalogue_exposes_all_secret_tools_and_only_seven_in_read_only_mode() {
     assert_eq!(secret::TOOL_NAMES.len(), expected.len());
 
     let all = exposed("all").await;
-    assert_eq!(all.len(), 390);
+    assert_eq!(all.len(), 391);
     let all_names: BTreeSet<_> = all
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
@@ -302,7 +305,9 @@ impl Telegram for Echo {
     async fn resolve_peer(&self, value: &Value) -> Result<Value> {
         match value {
             value if value == "fixture_peer" => Ok(json!({"_":"inputPeerUser","user_id":123})),
-            value if value == 123 => Ok(json!({"_":"inputPeerChat","chat_id":123})),
+            value if value == 123 || value == "123" || value == "@fixture" => {
+                Ok(json!({"_":"inputPeerChat","chat_id":123}))
+            }
             _ => bail!("Unexpected cloud peer resolution in a secret-chat adapter"),
         }
     }
@@ -364,7 +369,9 @@ async fn autosave_and_custody_forward_validated_options_and_normalized_ids() {
     .unwrap();
     assert_eq!(result["params"]["mode"], "bounded");
     assert_eq!(result["params"]["age_seconds"], 1.5);
-    let result = tools::call(&Echo, "export_secret_chat", &json!({"secret_chat_id": 42, "format": "json", "photos": false, "date_from": "2026-01-01"})).await.unwrap();
+    let result = tools::call(&Echo, "export_secret_chat", &export_args())
+        .await
+        .unwrap();
     assert_eq!(result["params"]["chat_id"], 42);
     assert_eq!(result["params"]["format"], "json");
     assert_eq!(result["params"]["photos"], false);
@@ -459,4 +466,57 @@ async fn rejects_invalid_secret_arguments_before_invoking_backend() {
         let error = tools::call(&Echo, name, &args).await.expect_err(name);
         assert!(error.to_string().contains(field), "{name}: {error:#}");
     }
+}
+
+#[tokio::test]
+async fn accept_rejects_invalid_wire_ids_and_copy_resolves_each_source_form() {
+    for bad in [json!(0), json!("12"), json!(false), json!(2147483648_i64)] {
+        assert!(
+            tools::call(&Echo, "accept_secret_chat", &json!({"chat_id":bad}))
+                .await
+                .is_err()
+        );
+    }
+    let schema = descriptors()
+        .into_iter()
+        .find(|t| t["name"] == "copy_into_secret_chat")
+        .unwrap();
+    for source in [
+        json!(123),
+        json!("123"),
+        json!("@fixture"),
+        json!("fixture_peer"),
+    ] {
+        let mut args = json!({"from_chat_id":source,"to_chat_id":12,"message_id":2});
+        validate_arguments(&mut args, schema["inputSchema"].as_object().unwrap()).unwrap();
+        let result = tools::call(&Echo, "copy_into_secret_chat", &args)
+            .await
+            .unwrap();
+        assert!(result["params"]["from_chat_id"]["_"].is_string());
+    }
+}
+
+#[tokio::test]
+async fn accept_contains_backend_failures_without_leaking_raw_errors() {
+    struct Unavailable;
+    #[async_trait]
+    impl Telegram for Unavailable {
+        async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+            bail!("private fixture error")
+        }
+        async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+            panic!("accept must not resolve a cloud peer")
+        }
+    }
+    let result = tools::call(
+        &Unavailable,
+        "accept_secret_chat",
+        &json!({"chat_id":-2000000000001_i64}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result,
+        json!({"status":"refused","code":"backend_unavailable"})
+    );
 }

@@ -208,3 +208,16 @@ fn invalid_stripped_thumbnail_is_refused() {
         .is_err()
     );
 }
+
+#[test]
+fn formatted_dates_and_entity_errors_cover_the_whole_request() {
+    let parsed=helpers::entities("x",&json!([{"type":"formatted_date","offset":0,"length":1,"date":"1970-01-01T02:00:01+02:00"}])).unwrap();
+    assert_eq!(parsed[0]["date"], 1);
+    let err = helpers::entities(
+        "x",
+        &json!([bold(2,1),{"type":"invalid","offset":0,"length":1}]),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("entities[0]") && err.contains("entities[1]"));
+}

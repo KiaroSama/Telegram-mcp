@@ -92,7 +92,7 @@ impl VideoProbe {
 }
 
 pub(super) async fn probe(path: &std::path::Path) -> Result<VideoProbe> {
-    let mut child = super::child("ffprobe")
+    let (mut child, _tree) = crate::tools::visual::capture::containment::spawn(super::child("ffprobe")
         .args([
             "-v",
             "error",
@@ -111,8 +111,7 @@ pub(super) async fn probe(path: &std::path::Path) -> Result<VideoProbe> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true))
         .context("FFprobe is required for video emoji previews")?;
     let stdout = child
         .stdout
@@ -258,13 +257,14 @@ pub(super) async fn frames(
                 "rgba",
             ])
             .arg(&output);
-        let mut child = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .context("FFmpeg is required for video emoji previews")?;
+        let (mut child, _tree) = crate::tools::visual::capture::containment::spawn(
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .kill_on_drop(true),
+        )
+        .context("FFmpeg is required for video emoji previews")?;
         match tokio::time::timeout_at(deadline, child.wait()).await {
             Ok(status) => ensure!(
                 status?.success(),
