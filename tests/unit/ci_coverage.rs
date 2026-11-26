@@ -168,3 +168,14 @@ fn coverage_normalizes_owned_source_across_operating_systems() {
         None
     );
 }
+
+#[test]
+fn repository_coverage_scope_matches_source_tree() {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let scope: CoverageScope = serde_json::from_slice(
+        &fs::read(manifest_dir.join(".github/coverage-scope.json")).unwrap(),
+    )
+    .unwrap();
+    scope.validate().unwrap();
+    scope.validate_source_tree(manifest_dir).unwrap();
+}

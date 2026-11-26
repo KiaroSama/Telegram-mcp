@@ -221,3 +221,45 @@ fn formatted_dates_and_entity_errors_cover_the_whole_request() {
     .to_string();
     assert!(err.contains("entities[0]") && err.contains("entities[1]"));
 }
+
+#[test]
+fn download_destination_rejects_tilde_expansion_but_allows_windows_short_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let short_dir = temp.path().join("RUNNER~1").join("out");
+    std::fs::create_dir_all(&short_dir).unwrap();
+    let state =
+        telegram_mcp::state::State::at(temp.path().join("state"), vec![short_dir.clone()]).unwrap();
+
+    let tilde_err = telegram_mcp::tools::messaging::media::downloads::destination_in(
+        &state,
+        Some("~/secret.bin"),
+        &json!({}),
+        1,
+    )
+    .unwrap_err();
+    assert!(tilde_err.to_string().to_lowercase().contains("tilde"));
+
+    let nested_tilde = short_dir.join("~secret.bin");
+    let nested_err = telegram_mcp::tools::messaging::media::downloads::destination_in(
+        &state,
+        Some(&nested_tilde.to_string_lossy()),
+        &json!({}),
+        1,
+    )
+    .unwrap_err();
+    assert!(
+        nested_err
+            .to_string()
+            .contains("Tilde is not permitted in download paths")
+    );
+
+    let short_dest = short_dir.join("fixture.bin");
+    let resolved = telegram_mcp::tools::messaging::media::downloads::destination_in(
+        &state,
+        Some(&short_dest.to_string_lossy()),
+        &json!({}),
+        1,
+    )
+    .unwrap();
+    assert_eq!(resolved.file_name().unwrap(), "fixture.bin");
+}

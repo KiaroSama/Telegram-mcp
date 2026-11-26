@@ -136,7 +136,10 @@ pub fn destination_in(
     let path = if let Some(raw) = raw.filter(|s| !s.is_empty()) {
         crate::state::validate_path_syntax(Path::new(raw))?;
         ensure!(
-            !raw.contains('~'),
+            !raw.trim_start().starts_with('~')
+                && !Path::new(raw)
+                    .components()
+                    .any(|component| component.as_os_str().to_string_lossy().starts_with('~')),
             "Tilde is not permitted in download paths"
         );
         let path = state.resolve_file(Path::new(raw), FileAccess::Write)?;
