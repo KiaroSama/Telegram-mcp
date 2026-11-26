@@ -229,6 +229,31 @@ impl Writer {
         Ok(emitted)
     }
 
+    pub fn main_file_path(&self) -> PathBuf {
+        if self.html.is_some() {
+            self.path.join("messages.html")
+        } else {
+            self.path.join("result.json")
+        }
+    }
+
+    pub fn write_dialog_slice(
+        &mut self,
+        messages: &[Value],
+        peers: &BTreeMap<String, Value>,
+    ) -> Result<()> {
+        let mut last_error: Option<anyhow::Error> = None;
+        for msg in messages {
+            if let Err(err) = self.message(msg, peers) {
+                last_error = Some(err);
+            }
+        }
+        if let Some(err) = last_error {
+            return Err(err);
+        }
+        Ok(())
+    }
+
     pub fn finish(mut self) -> Result<()> {
         let html_result: Result<()> = (|| {
             if let Some(mut writer) = self.html.take() {
@@ -256,8 +281,11 @@ impl Writer {
             }
             Ok(())
         })();
-        json_result?;
-        html_result
+        match (html_result, json_result) {
+            (_, Err(err)) => Err(err),
+            (Err(err), Ok(())) => Err(err),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 }
 

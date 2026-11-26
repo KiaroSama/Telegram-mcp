@@ -18,7 +18,7 @@ pub use events::{EventJournal, IncomingEvent};
 pub(crate) use grants::insert_approval;
 pub use paths::{
     DANGEROUS_SUFFIXES, FileAccess, safe_suffix, sanitize_download_filename,
-    sanitize_download_path, validate_path_syntax,
+    sanitize_download_path, target_path, validate_path_syntax,
 };
 pub(crate) use paths::{ScopedPathGrant, canonical_existing, with_temporary_grants};
 pub use stream::{EventLog, EventQuery};

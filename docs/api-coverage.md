@@ -80,10 +80,10 @@ Live Telegram sign-in, Premium-only features, administrator permissions, proxy r
 and server-side acceptance need real authorized credentials/inputs. Offline CI does not
 claim those checks ran.
 
-## Upstream sync (2026-11-26)
+## Upstream sync (2026-11-27)
 
 | Upstream | Revision | Decision |
 | --- | --- | --- |
-| [Lonami/grammers](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4) | `02367f9711ca` | Retain Telegram layer 234. |
+| [Lonami/grammers](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4) | `02367f9711ca` (HEAD `11e13a989a75` checked) | Retain pinned layer 234 revision `02367f9711ca` for v3.3.1. |
 | [KiaroSama/Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat/commit/bf0fc26906f1) | `bf0fc26906f1` | Adopt the layer 234 revision with refreshed export integrity hashes and the corrected synthetic layer 234 fixture. |
-| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/519899cca9) | `519899cca9` (`v3.3.31`) | [#412](https://github.com/chigwell/telegram-mcp/pull/412) (`view_video`) and [#420](https://github.com/chigwell/telegram-mcp/pull/420) (explicit forum `topic_id`) are already ported. [#421](https://github.com/chigwell/telegram-mcp/pull/421) is an open webhook draft and was not ported. [#411](https://github.com/chigwell/telegram-mcp/pull/411) tunes the Python test suite and does not apply to native CI. |
+| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/519899cca9) | `519899cca9` (`v3.3.31`) | [#412](https://github.com/chigwell/telegram-mcp/pull/412) (`view_video`) and [#420](https://github.com/chigwell/telegram-mcp/pull/420) (explicit forum `topic_id`) are ported. Open PRs [#421](https://github.com/chigwell/telegram-mcp/pull/421) (webhook draft), [#422](https://github.com/chigwell/telegram-mcp/pull/422) (draft forum topic), and [#411](https://github.com/chigwell/telegram-mcp/pull/411) (Python test speed) are deferred or not applicable. |

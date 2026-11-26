@@ -1,6 +1,6 @@
 [package]
 name = "telegram-mcp"
-version = "3.3.0"
+version = "3.3.1"
 edition = "2024"
 rust-version = "1.100"
 description = "Native Rust Telegram MCP server powered by grammers"
@@ -34,7 +34,7 @@ hmac = "0.13"
 libc = "0.2"
 libloading = "0.9"
 md5 = "0.8"
-moxcms = "0.8"
+moxcms = "0.9"
 qrcode = { version = "0.15", default-features = false, features = ["std", "svg"] }
 lopdf = { version = "0.47", default-features = false }
 rand = "0.10"
