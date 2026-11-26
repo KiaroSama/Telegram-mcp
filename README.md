@@ -23,7 +23,7 @@
 
 </div>
 
-Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. Version 3.2.0 uses [`grammers`](https://codeberg.org/Lonami/grammers) 0.12.0 (Telegram API layer 234), [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) 3.11, and `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats. The server does not need Python or a virtual environment.
+Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. Version 3.3.0 uses [`grammers`](https://codeberg.org/Lonami/grammers) 0.12.0 (Telegram API layer 234), [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) 3.11, and `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats. The server does not need Python or a virtual environment.
 
 ## Releases and tags
 
