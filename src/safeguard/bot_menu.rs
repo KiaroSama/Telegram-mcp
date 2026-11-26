@@ -11,6 +11,8 @@ const MENU: &[(&str, &str)] = &[
     ("reset_always", "Remove all permanent chat approvals"),
     ("folders", "List or revoke recorded folder grants"),
     ("status", "Show approval counts"),
+    ("bypass", "View or change temporary automatic approval"),
+    ("accounts", "Show configured Telegram accounts"),
     ("help", "Show approval bot commands"),
 ];
 const PAGE_SIZE: usize = 8;
@@ -40,6 +42,7 @@ pub(super) fn prompt_text(
     args: &Value,
     reasons: &[String],
     token: &str,
+    details: &str,
 ) -> String {
     let field = |text: &str, limit| html(&text.replace(token, "[REDACTED]"), limit);
     let account = field(args["account"].as_str().unwrap_or("default"), 64);
@@ -49,15 +52,20 @@ pub(super) fn prompt_text(
             .unwrap_or_else(|| "No specific chat".to_owned()),
         120,
     );
-    let arguments = args.to_string();
+    let arguments = super::approval_details::prompt_summary(args);
     let summary = field(&arguments, 1400);
     let truncation = if arguments.chars().nth(1400).is_some() {
         "\n(Arguments abbreviated. Use the owner terminal to review the full request.)"
     } else {
         ""
     };
+    let details = if details.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n<pre>{}</pre>", field(details, 600))
+    };
     format!(
-        "<b>Telegram MCP approval</b>\nAccount: <code>{account}</code>\nTool: <code>{}</code>\nTarget: <code>{target}</code>\nReasons: {}\nRequest: <code>{}</code>\n\n<pre>{summary}</pre>{truncation}",
+        "<b>Telegram MCP approval</b>\nAccount: <code>{account}</code>\nTool: <code>{}</code>\nTarget: <code>{target}</code>\nReasons: {}\nRequest: <code>{}</code>\n\n<pre>{summary}</pre>{truncation}{details}",
         field(tool, 100),
         field(&reasons.join(", "), 280),
         field(code, 16)
@@ -84,7 +92,14 @@ fn pending(state: &State) -> Result<Vec<Value>> {
         .collect())
 }
 
-pub(super) fn message(state: &State, input: &str, username: &str, token: &str) -> Option<Value> {
+pub(super) fn message(
+    state: &State,
+    input: &str,
+    username: &str,
+    token: &str,
+    owner: i64,
+    observed: &std::collections::BTreeMap<String, super::channels::ChannelAvailability>,
+) -> Option<Value> {
     let field = |value: &str, limit| html(&value.replace(token, "[REDACTED]"), limit);
     let mut words = input.split_whitespace();
     let command = words.next()?.strip_prefix('/')?;
@@ -96,6 +111,15 @@ pub(super) fn message(state: &State, input: &str, username: &str, token: &str) -
     } else {
         command
     };
+    if command == "bypass" {
+        let arg = words
+            .next()
+            .map(|first| if words.next().is_none() { first } else { "" });
+        return Some(super::bot_bypass::command(state, arg, owner));
+    }
+    if command == "accounts" && words.next().is_none() {
+        return Some(super::bot_bypass::accounts(observed));
+    }
     let page = words
         .next()
         .and_then(|input| input.parse::<usize>().ok())

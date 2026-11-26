@@ -1,3 +1,5 @@
+mod accept;
+mod arguments;
 mod calls;
 
 use super::{
@@ -44,6 +46,7 @@ pub struct SecretRuntime {
     state: Arc<State>,
     client: Client,
     label: String,
+    acceptance: Arc<accept::Acceptance>,
     mutations: Arc<tokio::sync::Mutex<()>>,
 }
 
@@ -141,6 +144,7 @@ impl SecretRuntime {
     }
 
     pub(crate) async fn stop(&self) -> Result<()> {
+        self.acceptance.retire();
         Ok(self.manager.stop().await?)
     }
 
@@ -213,15 +217,17 @@ impl SecretRuntime {
     pub async fn export(
         &self,
         chat_id: i32,
+        peer_user_id: i64,
         format: ExportFormat,
         destination: Option<&Path>,
         filter: &export::ExportFilter,
         cancel: Option<&tokio::sync::watch::Receiver<bool>>,
     ) -> Result<(Vec<PathBuf>, usize)> {
         let archive = self.history.archive_rows(&self.state, chat_id)?;
-        if archive.is_empty() {
-            self.status(chat_id)?;
-        }
+        ensure!(
+            !archive.is_empty(),
+            "No auto-saved messages for this secret chat"
+        );
         let filtered: Vec<_> = archive
             .into_iter()
             .filter(|(row, _)| filter.matches_row(row))
@@ -234,7 +240,7 @@ impl SecretRuntime {
         let paths = export::write_history(
             &self.state,
             &self.label,
-            chat_id,
+            (chat_id, Some(peer_user_id)),
             &rows,
             format,
             destination,
@@ -273,17 +279,37 @@ impl SecretRuntime {
     }
 
     fn start_export(&self, id: i32, args: &Value) -> Result<Value> {
+        let missing = crate::tools::secret::autosave::missing_export_choices(args);
+        if !missing.is_empty() {
+            return Ok(serde_json::json!({"status":"choices_required","required":missing}));
+        }
+        let supplied = args["peer_user"].as_i64().filter(|id| *id > 0);
+        let peer_user_id = if self.history.is_forgotten(id)? {
+            supplied
+        } else {
+            match self.manager.status(id) {
+                Ok(chat) => {
+                    ensure!(
+                        supplied.is_none_or(|id| id == chat.peer_user_id),
+                        "peer_user does not match the secret chat"
+                    );
+                    Some(chat.peer_user_id)
+                }
+                Err(SecretError::UnknownChat { .. } | SecretError::ChatClosed { .. }) => supplied,
+                Err(_) => bail!("Secret-chat export status is unavailable"),
+            }
+        }
+        .context("Pass peer_user (ID or username) for a deleted secret chat")?;
         let filter = export::ExportFilter::from_args(args)?;
         let dest = args["destination"]
             .as_str()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from);
-        let format = args["format"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .or_else(|| dest.as_deref().and_then(|p| p.extension()?.to_str()))
-            .unwrap_or("json");
-        let format = ExportFormat::parse(format)?;
+        let format = ExportFormat::parse(
+            args["format"]
+                .as_str()
+                .context("Missing secret-chat export format")?,
+        )?;
         let folder = dest
             .as_ref()
             .map(|p| p.display().to_string())
@@ -300,7 +326,14 @@ impl SecretRuntime {
             folder,
             move |cancel| async move {
                 runtime
-                    .export(id, format, dest.as_deref(), &filter, Some(&cancel))
+                    .export(
+                        id,
+                        peer_user_id,
+                        format,
+                        dest.as_deref(),
+                        &filter,
+                        Some(&cancel),
+                    )
                     .await
             },
         )
@@ -390,8 +423,36 @@ impl Prepared {
             state: self.state,
             client,
             label: self.label,
+            acceptance: Arc::default(),
             mutations: Arc::new(tokio::sync::Mutex::new(())),
         });
+        let weak = Arc::downgrade(&runtime);
+        runtime
+            .manager
+            .on_async(
+                "ChatRequested",
+                super::HISTORY_HANDLER_LABEL,
+                move |event| {
+                    let weak = weak.clone();
+                    async move {
+                        if let Event::ChatRequested {
+                            chat_id,
+                            peer_user_id,
+                        } = event
+                            && let Some(runtime) = weak.upgrade()
+                        {
+                            let result = runtime.accept_incoming(chat_id, Some(peer_user_id)).await;
+                            if result["status"] == "ready" {
+                                tracing::info!("Accepted incoming secret chat");
+                            } else {
+                                tracing::warn!("Incoming secret chat was not confirmed");
+                            }
+                        }
+                        Ok(())
+                    }
+                },
+            )
+            .map_err(register)?;
         let weak = Arc::downgrade(&runtime);
         runtime
             .manager

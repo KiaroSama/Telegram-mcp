@@ -82,8 +82,13 @@ fn payload(name: &str, args: &Value) -> Result<Value> {
                 (1..=i64::from(i32::MAX)).contains(&message_id),
                 "message_id must be a positive 32-bit cloud message ID"
             );
+            let source = &args["from_chat_id"];
+            ensure!(
+                source.as_i64().is_some() || source.as_str().is_some_and(|s| !s.trim().is_empty()),
+                "from_chat_id must be an integer or a nonempty username or alias"
+            );
             json!({
-                "from_chat_id": required_integer(args, "from_chat_id")?,
+                "from_chat_id":source,
                 "message_id": message_id,
                 "to_chat_id": chat_id(args, "to_chat_id")?,
             })

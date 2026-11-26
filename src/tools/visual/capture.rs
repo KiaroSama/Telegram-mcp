@@ -10,6 +10,9 @@ pub const MAX_CAPTURE_PIXELS: i64 = 32_000_000;
 pub const MAX_CAPTURE_RESPONSE_BYTES: u64 = 48 * 1024 * 1024;
 static WORKERS: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 
+#[path = "containment.rs"]
+pub(crate) mod containment;
+
 pub fn check_allocation(width: i64, height: i64) -> Result<()> {
     if width <= 0 || height <= 0 {
         bail!("Telegram window has no drawable area");
@@ -183,13 +186,14 @@ pub(crate) async fn run_child(request: Value) -> Result<Value> {
     {
         command.env("TELEGRAM_RLOTTIE_LIBRARY", value);
     }
-    let mut child = command
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .context("Capture worker could not be started")?;
+    let (mut child, _tree) = containment::spawn(
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true),
+    )
+    .context("Capture worker could not be started")?;
     let input = serde_json::to_vec(&request)?;
     let mut stdin = child
         .stdin
@@ -221,7 +225,10 @@ pub(crate) async fn run_child(request: Value) -> Result<Value> {
         }
         Ok(response["result"].clone())
     };
-    match tokio::time::timeout(std::time::Duration::from_secs(50), read).await {
+    let count = request["count"].as_u64().unwrap_or(1).clamp(1, 8);
+    let spacing = request["interval_ms"].as_u64().unwrap_or(400).min(3000);
+    let deadline = std::time::Duration::from_millis(15_000 + 5_000 * count + (count - 1) * spacing);
+    match tokio::time::timeout(deadline, read).await {
         Ok(result) => {
             if result.is_err() {
                 let _ = child.kill().await;

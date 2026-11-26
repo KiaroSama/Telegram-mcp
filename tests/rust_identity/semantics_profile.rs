@@ -201,7 +201,7 @@ async fn device_exclusivity_reports_partial_failures_and_preserves_unrelated_cal
     let m = Mock::new();
     m.reply(
         "account.getAuthorizations",
-        json!({"authorizations":[{"hash":"1"},{"hash":2},{"hash":"3"}]}),
+        json!({"authorizations":[{"hash":"1"},{"hash":2,"api_id":6},{"hash":"3"}]}),
     );
     m.reply("account.changeAuthorizationSettings", json!(true));
     m.fail("account.changeAuthorizationSettings");
@@ -210,12 +210,12 @@ async fn device_exclusivity_reports_partial_failures_and_preserves_unrelated_cal
         .await
         .unwrap();
     assert_eq!(result["complete"], false);
-    assert_eq!(result["results"][1]["accept_secret_chats"], true);
+    assert_eq!(result["results"][0]["accept_secret_chats"], true);
     assert_eq!(result["results"][1]["accepted"], false);
     let changes = m.sent("account.changeAuthorizationSettings");
     assert_eq!(changes.len(), 3);
-    assert_eq!(changes[0]["encrypted_requests_disabled"], true);
-    assert_eq!(changes[1]["encrypted_requests_disabled"], false);
+    assert_eq!(changes[0]["encrypted_requests_disabled"], false);
+    assert_eq!(changes[1]["encrypted_requests_disabled"], true);
     assert!(
         changes
             .iter()
@@ -248,4 +248,24 @@ async fn missing_or_current_authorizations_are_not_terminated_without_the_requir
     .await
     .unwrap();
     assert_eq!(m.sent("account.resetAuthorization")[0]["hash"], "1");
+}
+
+#[tokio::test]
+async fn unverified_device_or_failed_enable_never_disables_others() {
+    for id in [0, 2040, 6] {
+        let m = Mock::new();
+        m.reply(
+            "account.getAuthorizations",
+            json!({"authorizations":[{"hash":"1","api_id":6},{"hash":"2","api_id":id}]}),
+        );
+        m.reply("account.changeAuthorizationSettings", json!(false));
+        let result = run(&m, "set_secret_chats_only_device", json!({"hash":"2"})).await;
+        if id == 6 {
+            assert_eq!(result.unwrap()["complete"], false);
+            assert_eq!(m.sent("account.changeAuthorizationSettings").len(), 1);
+        } else {
+            assert!(result.is_err());
+            assert!(m.sent("account.changeAuthorizationSettings").is_empty());
+        }
+    }
 }

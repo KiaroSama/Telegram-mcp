@@ -3,6 +3,7 @@
 mod export;
 mod history;
 mod migration;
+mod receipts;
 mod runtime;
 
 pub use export::ExportFormat;
@@ -131,14 +132,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn test_state(tmp: &tempfile::TempDir) -> (crate::state::State, std::path::PathBuf) {
-        let state_dir = tmp.path().join("state");
         let files_dir = tmp.path().join("files");
-        fs::create_dir_all(&state_dir).unwrap();
         fs::create_dir_all(&files_dir).unwrap();
-        let state = crate::state::State::at(state_dir, vec![files_dir.clone()]).unwrap();
+        let state =
+            crate::state::State::at(tmp.path().join("state"), vec![files_dir.clone()]).unwrap();
         (state, files_dir)
     }
-
     fn sample_media_ref(chat_id: i32, file_id: i64) -> MediaReference {
         let key = FileKey::generate().unwrap();
         let media = document_media(DocumentMediaInput {
@@ -161,7 +160,6 @@ mod tests {
         };
         MediaReference::new(chat_id, &file, &media).unwrap()
     }
-
     fn received_media(
         id: i64,
         media: kiaro_secret_chat::enums::DecryptedMessageMedia,
@@ -380,7 +378,8 @@ mod tests {
         ];
 
         let json_out =
-            export::write_history(&state, "acc", 77, &rows, ExportFormat::Json, None).unwrap();
+            export::write_history(&state, "acc", (77, None), &rows, ExportFormat::Json, None)
+                .unwrap();
         assert_eq!(json_out.len(), 1);
         let parsed: serde_json::Value =
             serde_json::from_slice(&fs::read(&json_out[0]).unwrap()).unwrap();
@@ -391,7 +390,7 @@ mod tests {
         let txt_out = export::write_history(
             &state,
             "acc",
-            77,
+            (77, None),
             &rows,
             ExportFormat::Text,
             Some(&txt_dest),
@@ -407,7 +406,7 @@ mod tests {
         let both_dir = export::write_history(
             &state,
             "acc",
-            77,
+            (77, None),
             &rows,
             ExportFormat::HtmlAndJson,
             Some(&html_dir),
@@ -421,7 +420,7 @@ mod tests {
         let both_file = export::write_history(
             &state,
             "acc",
-            77,
+            (77, None),
             &rows,
             ExportFormat::HtmlAndJson,
             Some(&explicit_html),
@@ -454,7 +453,8 @@ mod tests {
                 "Sunset &amp; lake",
             ),
         ] {
-            let paths = export::write_history(&state, "acc", 10, &rows, format, None).unwrap();
+            let paths =
+                export::write_history(&state, "acc", (10, None), &rows, format, None).unwrap();
             let output = fs::read_to_string(&paths[0]).unwrap();
             assert!(output.contains(body));
             assert!(output.contains(caption));

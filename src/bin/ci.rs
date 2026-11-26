@@ -7,6 +7,8 @@ mod evidence;
 mod gitleaks;
 #[path = "ci/history.rs"]
 mod history;
+#[path = "ci/parity_rows.rs"]
+mod parity_rows;
 #[path = "ci/privacy.rs"]
 mod privacy;
 #[path = "ci/process.rs"]
@@ -42,6 +44,21 @@ fn run() -> Result<()> {
         Some("compare") if args.len() == 2 => evidence::compare(Path::new(&args[1])),
         Some("coverage") if args.len() == 2 => coverage::run(Path::new(&args[1])),
         Some("parity") if args.len() == 2 => evidence::parity(Path::new(&args[1])),
+        Some("parity-rows") if args.len() == 5 => {
+            let summary = parity_rows::reconcile_files(
+                Path::new(&args[1]),
+                Path::new(&args[2]),
+                Path::new(&args[3]),
+                &args[4],
+            )?;
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+            Ok(())
+        }
+        Some("parity-replay") if args.len() == 3 => {
+            let count = parity_rows::verify_replay_files(Path::new(&args[1]), Path::new(&args[2]))?;
+            println!("Verified {count} deterministic parity rows across both replays.");
+            Ok(())
+        }
         Some("privacy") if args.len() == 1 => privacy::scan(),
         Some("privacy-history") if args.len() == 1 => history::scan(),
         Some("gitleaks") if args.len() == 1 => gitleaks::scan(),
@@ -50,7 +67,7 @@ fn run() -> Result<()> {
         Some("package") if args.len() == 2 => evidence::package(&args[1]),
         Some("--help") | Some("help") | None => {
             println!(
-                "ci record LABEL JUNIT OUTPUT\nci compare RECORDS_DIR\nci coverage LCOV_DIR\nci parity RECORDS_DIR\nci privacy\nci gitleaks\nci status begin|finish WORKFLOW\nci package TARGET"
+                "ci record LABEL JUNIT OUTPUT\nci compare RECORDS_DIR\nci coverage LCOV_DIR\nci parity RECORDS_DIR\nci parity-rows INVENTORY EVIDENCE OUTPUT SHA\nci parity-replay FIRST SECOND\nci privacy\nci gitleaks\nci status begin|finish WORKFLOW\nci package TARGET"
             );
             Ok(())
         }

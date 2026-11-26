@@ -1,3 +1,5 @@
+mod receipts;
+
 use super::{MAX_BYTES, metadata, read_private, write_atomic};
 use crate::state::{FileAccess, State};
 use anyhow::{Context, Result, ensure};
@@ -13,6 +15,8 @@ use std::{
     sync::Mutex,
 };
 
+use super::receipts::{eligible, retain_history};
+
 pub struct SecretHistory {
     history: PathBuf,
     media: PathBuf,
@@ -21,20 +25,20 @@ pub struct SecretHistory {
 }
 
 impl SecretHistory {
-    pub(crate) fn open(
+    pub fn open(
         directory: &Path,
         label: &str,
         legacy_settings: &std::collections::BTreeMap<String, Value>,
     ) -> Result<Self> {
+        crate::session::validate_label(label)?;
         let history = Self {
             history: directory.join(format!("{label}.history.v1.json")),
             media: directory.join(format!("{label}.media.v1.json")),
             settings: directory.join(format!("{label}.archive.v1.json")),
             lock: Mutex::new(()),
         };
-        for file in [&history.history, &history.media] {
-            load(file)?;
-        }
+        history.trim_existing_history()?;
+        load(&history.media)?;
         if !super::plain_file(&history.settings)?
             && let Some(value) = legacy_settings
                 .get("auto_save_secret_chats")
@@ -101,7 +105,7 @@ impl SecretHistory {
                 save(&self.media, &media)?;
             }
         }
-        if ttl > 0 {
+        if !eligible(&row) {
             return Ok(());
         }
         let mut history = load(&self.history)?;
@@ -120,63 +124,23 @@ impl SecretHistory {
             return Ok(());
         }
         rows.push(row);
+        retain_history(rows);
         save(&self.history, &history)
-    }
-
-    pub(super) fn commit_delivery(
-        &self,
-        chat_id: i32,
-        seq: i32,
-        row: Value,
-        reference: Option<&MediaReference>,
-    ) -> Result<()> {
-        let id = message_id(&row).context("Secret-chat delivery has no message ID")?;
-        ensure!(
-            row["self_destructs_after_seconds"].as_u64().unwrap_or(0) == 0,
-            "Timed secret-chat deliveries cannot be persisted into ordinary consumer snapshots; delivery left pending"
-        );
-        let _guard = self.guard()?;
-        let mut settings = load(&self.settings)?;
-        let chat = chat_id.to_string();
-        ensure!(
-            !forgotten(&settings, &chat),
-            "Secret chat was forgotten locally"
-        );
-        let receipts = settings
-            .entry("delivery_receipts")
-            .or_insert_with(|| json!({}));
-        let key = format!("{chat_id}:{seq}");
-        if let Some(saved) = receipts.get(&key) {
-            ensure!(
-                saved.as_i64() == Some(id),
-                "Secret-chat delivery identity changed"
-            );
-        }
-        self.append_locked(chat, row, reference)?;
-        receipts
-            .as_object_mut()
-            .context("Invalid secret-chat delivery receipts")?
-            .insert(key, json!(id));
-        save(&self.settings, &settings)
-    }
-
-    pub(super) fn delivery_committed(&self, chat_id: i32, seq: i32) -> Result<bool> {
-        let _guard = self.guard()?;
-        Ok(load(&self.settings)?
-            .get("delivery_receipts")
-            .and_then(|receipts| receipts.get(format!("{chat_id}:{seq}")))
-            .and_then(Value::as_i64)
-            .is_some())
     }
 
     pub fn read(&self, chat_id: i32, limit: usize) -> Result<Vec<Value>> {
         let _guard = self.guard()?;
         let history = load(&self.history)?;
-        Ok(history
-            .get(&chat_id.to_string())
-            .and_then(Value::as_array)
-            .map(|rows| rows.iter().rev().take(limit).cloned().collect())
-            .unwrap_or_default())
+        let mut rows = match history.get(&chat_id.to_string()) {
+            Some(rows) => rows
+                .as_array()
+                .context("Invalid secret-chat history rows")?
+                .clone(),
+            None => return Ok(Vec::new()),
+        };
+        retain_history(&mut rows);
+        rows.drain(..rows.len().saturating_sub(limit));
+        Ok(rows)
     }
 
     pub fn search(&self, chat_id: Option<i32>, query: &str, limit: usize) -> Result<Vec<Value>> {
@@ -188,19 +152,18 @@ impl SecretHistory {
         let query = query.to_lowercase();
         let history = load(&self.history)?;
         let mut hits = Vec::new();
-        for (id, rows) in history {
+        for (id, mut rows) in history {
             let id: i32 = id
                 .parse()
                 .context("Invalid secret-chat history identifier")?;
             if chat_id.is_some_and(|chat| chat != id) {
                 continue;
             }
-            for row in rows
-                .as_array()
-                .context("Invalid secret-chat history rows")?
-                .iter()
-                .rev()
-            {
+            let rows = rows
+                .as_array_mut()
+                .context("Invalid secret-chat history rows")?;
+            retain_history(rows);
+            for row in rows.iter().rev() {
                 if ["text", "caption"].iter().any(|name| {
                     row[name]
                         .as_str()
@@ -407,7 +370,7 @@ impl SecretHistory {
                     message_id(&row) == Some(id),
                     "Secret-chat archive row ID does not match its filename"
                 );
-                if row["self_destructs_after_seconds"].as_u64().unwrap_or(0) == 0 {
+                if eligible(&row) {
                     rows.insert(id, (row, directory.clone()));
                 }
             }
@@ -487,11 +450,7 @@ impl SecretHistory {
         chat_id: i32,
         row: &Value,
     ) -> Result<Option<PathBuf>> {
-        if row["self_destructs_after_seconds"]
-            .as_u64()
-            .unwrap_or_default()
-            > 0
-        {
+        if !eligible(row) {
             return Ok(None);
         }
         let _guard = self.guard()?;

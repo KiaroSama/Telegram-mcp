@@ -2,22 +2,40 @@ use super::*;
 use anyhow::{bail, ensure};
 use std::collections::BTreeMap;
 
-fn setting<'a>(snapshot: &'a ConfigSnapshot, field: &str, label: &str) -> Option<&'a str> {
+fn account_setting<'a>(snapshot: &'a ConfigSnapshot, field: &str, label: &str) -> Option<&'a str> {
     snapshot
         .values
         .get(&format!(
             "TELEGRAM_PROXY_{field}_{}",
             label.to_ascii_uppercase()
         ))
-        .filter(|v| !v.is_empty())
-        .or_else(|| {
-            snapshot
-                .values
-                .get(&format!("TELEGRAM_PROXY_{field}"))
-                .filter(|v| !v.is_empty())
-        })
-        .map(String::as_str)
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim())
 }
+
+fn global_setting<'a>(snapshot: &'a ConfigSnapshot, field: &str) -> Option<&'a str> {
+    snapshot
+        .values
+        .get(&format!("TELEGRAM_PROXY_{field}"))
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim())
+}
+
+fn setting<'a>(snapshot: &'a ConfigSnapshot, field: &str, label: &str) -> Option<&'a str> {
+    account_setting(snapshot, field, label).or_else(|| global_setting(snapshot, field))
+}
+
+fn parse_rdns(raw: Option<&str>) -> Result<bool> {
+    let Some(value) = raw else {
+        return Ok(true);
+    };
+    match value.to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Ok(true),
+        "0" | "false" | "no" | "off" => Ok(false),
+        _ => bail!("TELEGRAM_PROXY_RDNS must be a boolean value"),
+    }
+}
+
 pub(super) fn validate(proxy: &Proxy) -> Result<()> {
     ensure!(
         !proxy.host.is_empty()
@@ -49,6 +67,11 @@ pub(super) fn validate(proxy: &Proxy) -> Result<()> {
         );
     }
     if proxy.kind == "mtproto" {
+        ensure!(
+            proxy.username.as_ref().is_none_or(|u| u.is_empty())
+                && proxy.password.as_ref().is_none_or(|p| p.is_empty()),
+            "MTProto proxy does not support username or password authentication"
+        );
         mtproxy::Secret::parse(
             proxy
                 .secret
@@ -58,23 +81,12 @@ pub(super) fn validate(proxy: &Proxy) -> Result<()> {
     }
     Ok(())
 }
-fn configured(snapshot: &ConfigSnapshot, label: &str) -> Result<Option<Proxy>> {
-    if let Some(url) = setting(snapshot, "URL", label) {
-        let proxy = crate::tools::local::proxies::parse_proxy(url)
-            .context("Configured proxy URL is invalid")?;
-        validate(&proxy)?;
-        return Ok(Some(proxy));
-    }
-    let Some(kind) = setting(snapshot, "TYPE", label) else {
-        ensure!(
-            ["HOST", "PORT", "SECRET", "USERNAME", "PASSWORD"]
-                .iter()
-                .all(|key| setting(snapshot, key, label).is_none()),
-            "Proxy settings need TELEGRAM_PROXY_TYPE or TELEGRAM_PROXY_URL"
-        );
-        return Ok(None);
-    };
-    let kind = match kind.to_ascii_lowercase().as_str() {
+
+fn parse_typed(snapshot: &ConfigSnapshot, label: &str) -> Result<Proxy> {
+    let kind = setting(snapshot, "TYPE", label)
+        .context("Proxy settings need TELEGRAM_PROXY_TYPE or TELEGRAM_PROXY_URL")?;
+    let kind_lower = kind.to_ascii_lowercase();
+    let kind = match kind_lower.as_str() {
         "socks5" | "socks5h" => "socks5",
         "socks4" | "socks4a" => "socks4",
         "http" => "http",
@@ -82,22 +94,71 @@ fn configured(snapshot: &ConfigSnapshot, label: &str) -> Result<Option<Proxy>> {
         "mtproto" | "mtproxy" => "mtproto",
         _ => bail!("Configured proxy protocol is unsupported"),
     };
+    let rdns = parse_rdns(setting(snapshot, "RDNS", label))?;
+    if !rdns && matches!(kind_lower.as_str(), "socks5h" | "socks4a") {
+        bail!("TELEGRAM_PROXY_RDNS=false conflicts with remote-DNS proxy scheme");
+    }
+    let port: u16 = setting(snapshot, "PORT", label)
+        .context("Configured proxy port is missing")?
+        .parse()
+        .context("Configured proxy port is invalid")?;
+    ensure!(port >= 1, "Configured proxy port must be in 1..=65535");
     let proxy = Proxy {
         kind: kind.into(),
         host: setting(snapshot, "HOST", label)
             .context("Configured proxy host is missing")?
             .trim_matches(['[', ']'])
             .into(),
-        port: setting(snapshot, "PORT", label)
-            .context("Configured proxy port is missing")?
-            .parse()
-            .context("Configured proxy port is invalid")?,
+        port,
         secret: setting(snapshot, "SECRET", label).map(str::to_owned),
         username: setting(snapshot, "USERNAME", label).map(str::to_owned),
         password: setting(snapshot, "PASSWORD", label).map(str::to_owned),
     };
     validate(&proxy)?;
-    Ok(Some(proxy))
+    Ok(proxy)
+}
+
+fn configured(snapshot: &ConfigSnapshot, label: &str) -> Result<Option<Proxy>> {
+    const TYPED_FIELDS: &[&str] = &[
+        "TYPE", "HOST", "PORT", "SECRET", "RDNS", "USERNAME", "PASSWORD",
+    ];
+    let account_url = account_setting(snapshot, "URL", label);
+    let account_typed = TYPED_FIELDS
+        .iter()
+        .any(|field| account_setting(snapshot, field, label).is_some());
+    if account_url.is_some() && account_typed {
+        bail!(
+            "Conflicting account proxy settings: specify either TELEGRAM_PROXY_URL or typed fields"
+        );
+    }
+    if let Some(url) = account_url {
+        let proxy = crate::tools::local::proxies::parse_proxy(url)
+            .context("Configured proxy URL is invalid")?;
+        validate(&proxy)?;
+        return Ok(Some(proxy));
+    }
+    if account_typed {
+        return Ok(Some(parse_typed(snapshot, label)?));
+    }
+    let global_url = global_setting(snapshot, "URL");
+    let global_typed = TYPED_FIELDS
+        .iter()
+        .any(|field| global_setting(snapshot, field).is_some());
+    if global_url.is_some() && global_typed {
+        bail!(
+            "Conflicting global proxy settings: specify either TELEGRAM_PROXY_URL or typed fields"
+        );
+    }
+    if let Some(url) = global_url {
+        let proxy = crate::tools::local::proxies::parse_proxy(url)
+            .context("Configured proxy URL is invalid")?;
+        validate(&proxy)?;
+        return Ok(Some(proxy));
+    }
+    if global_typed {
+        return Ok(Some(parse_typed(snapshot, label)?));
+    }
+    Ok(None)
 }
 
 pub(super) fn candidates(

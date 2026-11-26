@@ -109,7 +109,7 @@ impl Native {
         if max_bytes == 0 || max_bytes > 4 * 1024 * 1024 * 1024 {
             bail!("Download byte budget must be within 1 byte and 4 GiB");
         }
-        let path = self.0.state.resolve_file(destination, FileAccess::Write)?;
+        let path = self.0.state.resolve_download_file(destination)?;
         if path.exists() {
             bail!("Download destination already exists; it was not overwritten");
         }

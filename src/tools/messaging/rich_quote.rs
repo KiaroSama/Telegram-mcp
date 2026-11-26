@@ -201,3 +201,88 @@ pub fn select(rich: &Value, a: &Value) -> Result<(Vec<Value>, usize)> {
     let (fragment, offset) = matches.remove(0);
     Ok((vec![fragment], offset))
 }
+
+pub(super) fn view(response: &Value, peer: &Value, mid: i64) -> Result<Value> {
+    let m = response["messages"]
+        .as_array()
+        .and_then(|ms| {
+            ms.iter()
+                .find(|m| m["id"] == mid && super::helpers::same_peer(&m["peer_id"], peer))
+        })
+        .context("Rich message was not found in the requested chat")?;
+    let rich = &m["rich_message"];
+    let blocks = rich["blocks"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let mut links = std::collections::BTreeSet::new();
+    let mut media = vec![];
+    fn walk(
+        node: &Value,
+        rich: &Value,
+        links: &mut std::collections::BTreeSet<String>,
+        media: &mut Vec<Value>,
+    ) {
+        match node {
+            Value::Object(obj) => {
+                let link = match node["_"].as_str() {
+                    Some("textUrl") => node["url"].as_str().map(str::to_owned),
+                    Some("textEmail") => node["email"].as_str().map(|s| format!("mailto:{s}")),
+                    Some("textPhone") => node["phone"].as_str().map(|s| format!("tel:{s}")),
+                    _ => None,
+                };
+                if let Some(link) = link.filter(|s| {
+                    !s.chars().any(char::is_control)
+                        && url::Url::parse(s).is_ok_and(|u| {
+                            matches!(u.scheme(), "http" | "https" | "mailto" | "tel")
+                        })
+                }) {
+                    links.insert(link);
+                }
+                for (key, kind, table) in [
+                    ("photo_id", "photo", "photos"),
+                    ("document_id", "document", "documents"),
+                    ("video_id", "document", "documents"),
+                    ("audio_id", "document", "documents"),
+                ] {
+                    if let Some(id) = obj.get(key).filter(|v| !v.is_null()) {
+                        let available = rich[table]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .any(|d| d["id"] == *id);
+                        media.push(json!({"kind":kind,"id":id,"available":available}));
+                    }
+                }
+                for v in obj.values() {
+                    walk(v, rich, links, media)
+                }
+            }
+            Value::Array(xs) => {
+                for v in xs {
+                    walk(v, rich, links, media)
+                }
+            }
+            _ => (),
+        }
+    }
+    for block in blocks {
+        walk(block, rich, &mut links, &mut media);
+    }
+    let quotes=sources(blocks).into_iter().map(|s|json!({"block_index":s.block,"row":s.row,"column":s.column,"offset":s.base,"text":s.text,"length":s.text.encode_utf16().count()})).collect::<Vec<_>>();
+    let records=blocks.iter().map(|b|{let mut row=b.clone();let kind=b["_"].as_str().unwrap_or("").trim_start_matches("pageBlock").to_lowercase();row["type"]=json!(kind);if kind=="table"{let cells=b["rows"].as_array().into_iter().flatten().map(|r|r["cells"].as_array().into_iter().flatten().map(|c|json!({"text":plain(&c["text"]).unwrap_or_default(),"header":c["header"]==true,"colspan":c["colspan"],"rowspan":c["rowspan"]})).collect::<Vec<_>>()).collect::<Vec<_>>();let md=cells.iter().map(|r|format!("| {} |",r.iter().map(|c|c["text"].as_str().unwrap_or_default().replace('|',"\\|")).collect::<Vec<_>>().join(" | "))).collect::<Vec<_>>().join("\n");row["row_count"]=json!(cells.len());row["column_count"]=json!(cells.iter().map(Vec::len).max().unwrap_or(0));row["rows"]=json!(cells);row["markdown"]=json!(md);}else if b["text"].is_object(){row["rich_text"]=b["text"].clone();row["text"]=json!(plain(&b["text"]).unwrap_or_default());}row}).collect::<Vec<_>>();
+    let reply = &m["reply_to"];
+    let fragments = reply["quote_rich"].as_array();
+    let quote = if let Some(parts) = fragments.filter(|xs| !xs.is_empty()) {
+        Some(
+            json!({"rich":true,"text":parts.iter().map(plain).collect::<Result<Vec<_>>>()?.join("\n"),"fragments":parts,"offset":reply["quote_offset"],"message_id":reply["reply_to_msg_id"]}),
+        )
+    } else {
+        reply.get("quote_text").filter(|v|!v.is_null()).map(|v|json!({"text":v,"offset":reply["quote_offset"],"entities":reply["quote_entities"],"message_id":reply["reply_to_msg_id"]}))
+    };
+    let mut view = json!({"message_id":mid,"content_type":rich.get("_"),"block_count":blocks.len(),"blocks":records,"links":links,"media":media,"quote_sources":quotes,"reply_quote":quote});
+    if let Some(link) = m.get("permalink") {
+        view["permalink"] = link.clone();
+    }
+    Ok(view)
+}

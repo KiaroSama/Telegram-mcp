@@ -52,15 +52,14 @@ async fn catalogue(
     };
     let mut cache = entry.lock().await;
     let old = cache.as_ref();
-    let cold = old.is_none();
     let due = old.is_none_or(|c| c.checked.elapsed() >= Duration::from_secs(3600));
     let missing =
         old.is_some_and(|c| wanted.is_some_and(|i| !has(&c.data, i) && !c.unknown.contains(&i)));
     if hard || due || missing {
-        let hash = if hard || cold {
+        let hash = if hard {
             json!(0)
         } else {
-            old.unwrap().data["hash"].clone()
+            old.map_or_else(|| json!(0), |entry| entry.data["hash"].clone())
         };
         let data = api
             .invoke("messages.getAvailableEffects", json!({"hash":hash}))
@@ -113,13 +112,20 @@ fn metadata(data: &Value, e: &Value) -> Value {
         if let Some(d) = e.get(key).filter(|v| !v.is_null()) {
             match find_doc(data, d) {
                 Ok(doc) => {
-                    result[out] = doc;
+                    let mime = doc["mime_type"].as_str().unwrap_or("");
+                    let dims = doc["attributes"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|v| v.get("w").is_some() && v.get("h").is_some())
+                        .unwrap_or(&Value::Null);
+                    result[out] = json!({"asset":out,"document_id":doc["id"],"mime_type":doc["mime_type"],"size_bytes":doc["size"],"format":match mime{"application/x-tgsticker"=>"lottie_tgs","video/webm"|"video/mp4"=>"video","image/webp"|"image/png"|"image/jpeg"=>"static_image",_=>"unknown"},"width":dims["w"],"height":dims["h"]});
                     if key == "static_icon_id" {
                         icon = json!("static_icon");
                     }
                 }
                 Err(_) => {
-                    result[out] = json!({"document_id":d,"unresolved":true});
+                    result[out] = json!({"asset":out,"document_id":d,"unresolved":true,"mime_type":null,"size_bytes":null,"format":"unknown","width":null,"height":null});
                     if key == "static_icon_id" {
                         icon = json!("unresolved_reference");
                     }
@@ -141,7 +147,7 @@ fn metadata(data: &Value, e: &Value) -> Value {
             .and_then(|v| v.iter().find(|v| v["type"] == "f"))
         {
             result["animation_source"] = json!("premium_effect_of_preview_sticker");
-            result["effect_animation"] = json!({"asset":"premium_effect_of_preview_sticker","document_id":sticker["id"],"thumb_type":"f","size_bytes":thumb["size"],"width":thumb["w"],"height":thumb["h"]});
+            result["effect_animation"] = json!({"asset":"premium_effect_of_preview_sticker","document_id":sticker["id"],"thumb_type":"f","mime_type":null,"format":"unknown","size_bytes":thumb["size"],"width":thumb["w"],"height":thumb["h"]});
         } else {
             result["animation_source"] = json!("none");
         }
@@ -212,8 +218,7 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<
     let data = catalogue(api, args, wanted, false).await?;
     let mut list = data["effects"].as_array().cloned().unwrap_or_default();
     list.sort_by_key(|e| id(&e["id"]).unwrap_or(0));
-    if name == "list_message_effects" {
-        let (n, offset) = pagination.unwrap();
+    if let Some((n, offset)) = pagination {
         let emoji = args.get("emoticon").and_then(Value::as_str);
         let premium = a::boolean(args, "premium_only", false)?;
         let filtered: Vec<_> = list
@@ -233,7 +238,7 @@ pub(super) async fn run(api: &dyn Telegram, name: &str, args: &Value) -> Result<
             json!({"records":rows,"total":filtered.len(),"offset":offset,"limit":n,"next_offset":if offset as usize+rows.len()<filtered.len(){json!(offset+rows.len()as i64)}else{Value::Null}}),
         );
     }
-    let effect = wanted.unwrap();
+    let effect = wanted.ok_or_else(|| anyhow::anyhow!("effect_id is required"))?;
     let info = list
         .iter()
         .find(|e| id(&e["id"]).ok() == Some(effect))

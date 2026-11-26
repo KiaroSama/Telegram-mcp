@@ -97,7 +97,8 @@ async fn checklist_reads_completion_actor_and_time() {
         .await
         .unwrap();
     assert_eq!(r["records"][0]["done"], true);
-    assert_eq!(r["records"][0]["completed_by"]["user_id"], "42");
+    assert_eq!(r["records"][0]["completed_by_peer"]["user_id"], "42");
+    assert!(r["records"][0]["completed_by"].is_null());
     assert_eq!(r["records"][0]["completed_at"], 123);
     assert_eq!(r["records"][1]["done"], false);
 }
@@ -145,4 +146,15 @@ async fn empty_checklist_task_is_refused_before_network() {
         .is_err()
     );
     assert!(m.all().is_empty());
+}
+
+#[tokio::test]
+async fn completion_uses_peer_display_name() {
+    let mut response = checklist();
+    response["users"] = json!([{"_":"user","id":"42","first_name":"Example","last_name":"Reader"}]);
+    let m = Mock::new().respond("channels.getMessages", response);
+    let result = run(&m, "get_checklist", json!({"chat_id":7,"message_id":20}))
+        .await
+        .unwrap();
+    assert_eq!(result["records"][0]["completed_by"], "Example Reader");
 }

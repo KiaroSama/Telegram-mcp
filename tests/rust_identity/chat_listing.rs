@@ -306,7 +306,7 @@ async fn search_my_chats_honors_rule_based_folder_and_excludes_public_results() 
 #[tokio::test]
 async fn pin_in_folder_preserves_unrelated_filter_fields() {
     let m = Mock::new();
-    m.reply("messages.getDialogFilters",json!({"filters":[{"_":"dialogFilter","id":2,"title":{"_":"textWithEntities","text":"Work","entities":[]},"bots":true,"pinned_peers":[],"include_peers":[],"exclude_peers":[{"_":"inputPeerUser","user_id":"8","access_hash":"80"}],"exclude_muted":true}]}));
+    m.reply("messages.getDialogFilters",json!({"filters":[{"_":"dialogFilter","id":2,"title":{"_":"textWithEntities","text":"Work","entities":[]},"bots":true,"pinned_peers":[],"include_peers":[{"_":"inputPeerChannel","channel_id":"7","access_hash":"70"}],"exclude_peers":[{"_":"inputPeerUser","user_id":"8","access_hash":"80"}],"exclude_muted":true}]}));
     run(&m, "pin_chat", json!({"chat":7,"folder":"Work"}))
         .await
         .unwrap();
@@ -316,4 +316,61 @@ async fn pin_in_folder_preserves_unrelated_filter_fields() {
     assert_eq!(filter["exclude_peers"][0]["user_id"], "8");
     assert_eq!(filter["pinned_peers"][0]["channel_id"], "7");
     assert!(m.sent("messages.toggleDialogPin").is_empty());
+}
+
+#[tokio::test]
+async fn folder_pin_refuses_shared_and_nonmember_folders() {
+    for f in ["dialogFilterChatlist", "dialogFilter"] {
+        let m = Mock::new();
+        m.reply("messages.getDialogFilters",json!({"filters":[{"_":f,"id":2,"title":{"text":"Work"},"include_peers":[],"pinned_peers":[]}]}));
+        assert!(
+            run(&m, "pin_chat", json!({"chat":7,"folder":"Work"}))
+                .await
+                .is_err()
+        );
+        assert!(m.sent("messages.updateDialogFilter").is_empty());
+    }
+}
+
+#[tokio::test]
+async fn list_chats_skips_unmatched_dialog_before_counting() {
+    let m = Mock::new();
+    for (uid, unread) in [(7, 0), (8, 1)] {
+        let uid = uid.to_string();
+        m.reply("messages.getDialogs",json!({"dialogs":[{"peer":{"_":"peerUser","user_id":uid},"top_message":4,"unread_count":unread}],"users":[{"_":"user","id":uid,"first_name":"Reader","access_hash":"71"}]}));
+    }
+    let result = run(&m, "list_chats", json!({"limit":1,"unread_only":true}))
+        .await
+        .unwrap();
+    assert_eq!(result["results"][0]["id"], "8");
+    assert_eq!(m.sent("messages.getDialogs").len(), 2);
+}
+
+#[tokio::test]
+async fn public_search_distinguishes_local_membership_from_global_results() {
+    let m = Mock::new();
+    m.reply("contacts.search",json!({"my_results":[{"_":"peerChat","chat_id":"7"}],"chats":[{"_":"chat","id":"7","title":"One"},{"_":"chat","id":"8","title":"Two"}]}));
+    let r = run(&m, "search_public_chats", json!({"query":"o","limit":2}))
+        .await
+        .unwrap();
+    assert_eq!(r["results"][0]["joined"], true);
+    assert_eq!(r["results"][1]["joined"], false);
+    assert_eq!(r["metadata"]["has_more"], true);
+}
+
+#[tokio::test]
+async fn my_chat_search_reaches_a_name_only_on_page_two() {
+    let m = Mock::new();
+    m.reply("messages.getDialogFilters", json!({"filters":[]}));
+    m.reply("contacts.search", json!({"my_results":[]}));
+    let page = json!({"_":"messages.dialogsSlice","count":2,"dialogs":[{"peer":{"_":"peerUser","user_id":"7"},"top_message":10}],"users":[{"_":"user","id":"7","access_hash":"17","first_name":"First"}]});
+    m.reply("messages.getDialogs", page);
+    let dialog = json!({"peer":{"_":"peerUser","user_id":"8"},"top_message":9});
+    m.reply("messages.getDialogs",json!({"_":"messages.dialogs","dialogs":[dialog],"users":[{"_":"user","id":"8","access_hash":"18","first_name":"Older"}]}));
+    m.reply("messages.getPeerDialogs", json!({"dialogs":[dialog]}));
+    let r = run(&m, "search_my_chats", json!({"query":"Older"}))
+        .await
+        .unwrap();
+    assert_eq!(r["results"][0]["id"], "8");
+    assert_eq!(m.sent("messages.getDialogs")[1]["offset_id"], 10);
 }

@@ -24,7 +24,9 @@ async fn list(api: &dyn Telegram, p: &Value, source: &str, limit: i64) -> Result
             .unwrap_or_default());
     }
     let mut req = history_request(p.clone(), limit, 0, 0);
-    req.as_object_mut().unwrap().remove("offset_date");
+    if let Some(fields) = req.as_object_mut() {
+        fields.remove("offset_date");
+    }
     req["q"] = json!("");
     req["min_date"] = json!(0);
     req["max_date"] = json!(0);
@@ -34,10 +36,15 @@ async fn list(api: &dyn Telegram, p: &Value, source: &str, limit: i64) -> Result
         .into_iter()
         .take(limit as usize)
         .filter_map(|message| {
-            message["media"]
+            let mut photo = message["media"]
                 .get("photo")
-                .or_else(|| message["action"].get("photo"))
-                .cloned()
+                .or_else(|| message["action"].get("photo"))?
+                .clone();
+            if source == "messages" {
+                photo["message_id"] = message["id"].clone();
+                photo["caption"] = message["message"].clone();
+            }
+            Some(photo)
         })
         .collect();
     if source == "avatars" && photos.is_empty() {
@@ -58,6 +65,26 @@ async fn list(api: &dyn Telegram, p: &Value, source: &str, limit: i64) -> Result
         }
     }
     Ok(photos)
+}
+fn photo_key(photo: &Value) -> &Value {
+    photo.get("message_id").unwrap_or(&photo["id"])
+}
+fn location(photo: &Value, thumbnail: bool) -> Result<Value> {
+    let mut location = downloads::download_location(photo)?;
+    if thumbnail {
+        let size = photo["sizes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|s| {
+                matches!(s["_"].as_str(), Some("photoSize" | "photoSizeProgressive"))
+                    && s["w"].as_u64().is_some_and(|w| (1..=320).contains(&w))
+            })
+            .max_by_key(|s| s["w"].as_u64())
+            .context("No bounded photo thumbnail is available")?;
+        location["thumb_size"] = size["type"].clone();
+    }
+    Ok(location)
 }
 async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     let source = a["source"]
@@ -86,10 +113,27 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         if name == "get_photo_sheet" { 24 } else { 100 },
     )?;
     let p = args::peer(api, a, "chat_id").await?;
-    let photos = list(api, &p, &source, bound).await?;
+    let thumbnail = args::boolean(a, "thumbnail", name == "get_photo_sheet")?;
+    let photos = if source == "messages"
+        && name == "open_photo"
+        && a.get("photo_id").is_some_and(|v| !v.is_null())
+    {
+        let mid = id(a, "photo_id")?;
+        let message = fetch(api, &p, mid).await?;
+        let mut photo = message["media"]
+            .get("photo")
+            .filter(|p| p["_"] == "photo")
+            .cloned()
+            .context("No photo in the requested message")?;
+        photo["message_id"] = json!(mid);
+        photo["caption"] = message["message"].clone();
+        vec![photo]
+    } else {
+        list(api, &p, &source, bound).await?
+    };
     if name == "list_photos" {
         return Ok(
-            json!({"source":source,"photos":photos.iter().enumerate().map(|(index,photo)|json!({"id":photo["id"],"date":photo["date"],"is_current":source=="avatars"&&index==0})).collect::<Vec<_>>()}),
+            json!({"source":source,"photos":photos.iter().enumerate().map(|(index,photo)|json!({"id":photo_key(photo),"photo_id":photo_key(photo),"caption":photo["caption"],"date":photo["date"],"is_current":source=="avatars"&&index==0})).collect::<Vec<_>>()}),
         );
     }
     let cap = args::integer(a, "max_bytes", 20 * 1024 * 1024)?;
@@ -108,31 +152,33 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             .iter()
             .find(|photo| {
                 wanted.as_ref().is_none_or(|id| {
-                    photo["id"]
+                    photo_key(photo)
                         .as_str()
                         .map(str::to_owned)
-                        .unwrap_or_else(|| photo["id"].to_string())
+                        .unwrap_or_else(|| photo_key(photo).to_string())
                         == *id
                 })
             })
             .context("The requested photo was not found within search_depth")?;
-        let data = downloads::download_bytes(api, downloads::download_location(photo)?, cap as u64)
-            .await?;
+        let data = downloads::download_bytes(api, location(photo, thumbnail)?, cap as u64).await?;
         return previews::image_content(
             &data,
             dimension,
-            json!({"photo_id":photo["id"],"source":source}),
+            json!({"photo_id":photo_key(photo),"caption":photo["caption"],"source":source}),
         );
     }
     ensure!(!photos.is_empty(), "No photos were found");
     let mut images = vec![];
     let mut retained = 0usize;
     for photo in &photos {
-        let data = downloads::download_bytes(api, downloads::download_location(photo)?, cap as u64)
-            .await?;
-        // Retain only sheet-sized cells, rather than every full-resolution original.
-        let image = crate::tools::visual::images::decode_image(&data)?;
-        let (cell, _) = crate::tools::visual::images::encode_image(&image, "png", 256, 85, false)?;
+        let cell: Result<Vec<u8>> = async {
+            let bytes =
+                downloads::download_bytes(api, location(photo, thumbnail)?, cap as u64).await?;
+            let image = crate::tools::visual::images::decode_image(&bytes)?;
+            Ok(crate::tools::visual::images::encode_image(&image, "png", 256, 85, false)?.0)
+        }
+        .await;
+        let cell = cell.unwrap_or_default();
         retained = retained
             .checked_add(cell.len())
             .context("Photo sheet byte budget overflow")?;
@@ -142,10 +188,10 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         );
         images.push((
             cell,
-            photo["id"]
+            photo_key(photo)
                 .as_str()
                 .map(str::to_owned)
-                .unwrap_or_else(|| photo["id"].to_string()),
+                .unwrap_or_else(|| photo_key(photo).to_string()),
         ));
     }
     let columns = if a.get("columns").is_some_and(|v| !v.is_null()) {
@@ -155,10 +201,16 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     } else {
         None
     };
-    let (bytes, meta) = crate::tools::visual::images::compose_contact_sheet(&images, columns)?;
+    let (bytes, mut meta) = crate::tools::visual::images::compose_contact_sheet(&images, columns)?;
+    if let Some(cells) = meta["cells"].as_array_mut() {
+        for (i, c) in cells.iter_mut().enumerate() {
+            c["is_current"] = json!(source == "avatars" && i == 0);
+            c["failed"] = json!(c["decoded"] != true);
+        }
+    }
     previews::image_content(
         &bytes,
         1568,
-        json!({"source":source,"sheet":meta,"photo_ids":photos.iter().map(|p|p["id"].clone()).collect::<Vec<_>>()}),
+        json!({"source":source,"sheet":meta,"photo_ids":photos.iter().map(photo_key).collect::<Vec<_>>()}),
     )
 }

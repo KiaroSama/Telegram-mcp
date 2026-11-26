@@ -188,7 +188,7 @@ mod unix {
         let args = json!({"account":"work","chat_id":42,"message_id":7});
         let pending = fingerprint(guard.check("delete_message", &args, false, true).unwrap());
         let transcript = review(&state, &installation, &pending, "APPROVE", true);
-        assert!(transcript.contains("Review this exact operation"));
+        assert!(transcript.contains("Review this operation"));
         assert!(transcript.contains("delete_message"));
         assert!(transcript.contains("Approved once"));
         assert_eq!(

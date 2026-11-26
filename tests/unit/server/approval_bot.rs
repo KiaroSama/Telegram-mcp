@@ -139,7 +139,37 @@ impl Fixture {
     }
 
     fn callback(&self, id: i64, owner: i64, data: &str) {
-        self.wire.push(json!({"update_id":id,"callback_query":{"id":id.to_string(),"from":{"id":owner},"data":data,"message":{"chat":{"id":owner,"type":"private"}}}}));
+        let sent = self.wire.sent.lock().unwrap();
+        let message_id = sent
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, (method, body))| {
+                method == "sendMessage"
+                    && body["chat_id"] == owner
+                    && body["reply_markup"]["inline_keyboard"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_array)
+                        .flatten()
+                        .any(|b| b["callback_data"] == data)
+            })
+            .map_or(9999, |(i, _)| i + 1);
+        drop(sent);
+        self.callback_from(id, owner, owner, "private", message_id, data);
+    }
+
+    fn callback_from(
+        &self,
+        id: i64,
+        owner: i64,
+        chat: i64,
+        kind: &str,
+        message_id: usize,
+        data: &str,
+    ) {
+        self.wire.push(json!({"update_id":id,"callback_query":{"id":id.to_string(),"from":{"id":owner},"data":data,"message":{"message_id":message_id,"chat":{"id":chat,"type":kind}}}}));
     }
 
     fn command(&self, id: i64, owner: i64, text: &str) {
@@ -172,6 +202,111 @@ fn button(prompt: &Value, suffix: &str) -> String {
         .find(|data| data.ends_with(suffix))
         .unwrap()
         .to_owned()
+}
+
+#[tokio::test]
+async fn bypass_menu_is_bound_to_its_owner_chat_and_message() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    let state = &f.server.runtime.state;
+    f.command(1, 101, "/bypass");
+    let menu = f
+        .wire
+        .message("sendMessage", |body| {
+            body["text"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("Approval bypass: off"))
+        })
+        .await;
+    let buttons: Vec<_> = menu["reply_markup"]["inline_keyboard"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|row| row.as_array().unwrap())
+        .collect();
+    assert_eq!(buttons.len(), 8);
+    for (name, key) in [
+        ("1 hour", "1h"),
+        ("6 hours", "6h"),
+        ("1 day", "1d"),
+        ("7 days", "7d"),
+        ("30 days", "30d"),
+        ("Custom time", "custom"),
+        ("Until I turn it off", "inf"),
+        ("Turn bypass off", "off"),
+    ] {
+        assert!(
+            buttons
+                .iter()
+                .any(|b| b["text"] == name && b["callback_data"] == format!("mn:bp:{key}"))
+        );
+    }
+    assert!(
+        buttons
+            .iter()
+            .all(|b| (1..=64).contains(&b["callback_data"].as_str().unwrap().len()))
+    );
+    let message = f
+        .wire
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .position(|(_, body)| body == &menu)
+        .unwrap()
+        + 1;
+    f.callback_from(2, 303, 101, "private", message, "mn:bp:inf");
+    f.callback_from(3, 101, 101, "group", message, "mn:bp:inf");
+    f.callback_from(4, 101, 101, "private", message + 10, "mn:bp:inf");
+    f.callback_from(5, 101, 101, "private", message, &"é".repeat(33));
+    f.command(6, 101, "/status");
+    f.wire
+        .message("sendMessage", |body| {
+            body["text"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("Pending requests:"))
+        })
+        .await;
+    assert_eq!(
+        state.read_json("bypass.json", json!({"on":false})).unwrap()["on"],
+        false
+    );
+    f.callback_from(7, 101, 101, "private", message, "mn:bp:inf");
+    f.wire
+        .message("answerCallbackQuery", |body| {
+            body["callback_query_id"] == "7"
+        })
+        .await;
+    assert_eq!(
+        state.read_json("bypass.json", json!({})).unwrap(),
+        json!({"on":true,"until":null,"by":101})
+    );
+    f.command(8, 101, "/bypass 1d12h");
+    f.wire
+        .message("sendMessage", |body| {
+            body["text"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("Approval bypass: ON for 36 h"))
+        })
+        .await;
+    assert!(state.read_json("bypass.json", json!({})).unwrap()["until"].is_number());
+    f.command(9, 101, "/bypass off");
+    f.wire
+        .message("sendMessage", |body| {
+            body["text"] == "Approval bypass: off."
+        })
+        .await;
+    assert_eq!(
+        state.read_json("bypass.json", json!({})).unwrap(),
+        json!({"on":false})
+    );
+    f.command(10, 101, "/accounts");
+    let accounts = f
+        .wire
+        .message("sendMessage", |body| {
+            body["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "mn:ac"
+        })
+        .await;
+    assert!(accounts["text"].is_string());
 }
 
 fn delete_args() -> Value {

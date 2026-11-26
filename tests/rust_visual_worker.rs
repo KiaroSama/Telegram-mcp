@@ -5,6 +5,11 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
 
 fn run_worker(request: &Value) -> Value {
+    let value = worker_response(request);
+    assert_eq!(value["ok"], true, "{value}");
+    value["result"].clone()
+}
+fn worker_response(request: &Value) -> Value {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -52,8 +57,7 @@ fn run_worker(request: &Value) -> Value {
                 String::from_utf8_lossy(&output.stderr)
             );
             let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(value["ok"], true, "{value}");
-            value["result"].clone()
+            value
         })
 }
 
@@ -122,6 +126,23 @@ fn native_visual_worker_returns_actual_fixture_pixels_without_stdout_noise() {
                 .unwrap()
                 .contains("fixture")
         );
+        assert!(result["metadata"]["window"]["rect"]["left"].is_number());
+        assert!(
+            result["metadata"]["window"]["scale_percent"]
+                .as_u64()
+                .is_some_and(|v| v > 0)
+        );
+        assert!(
+            result["metadata"]["window"]["process"]
+                .as_str()
+                .unwrap()
+                .eq_ignore_ascii_case(&process)
+        );
+        let rejected = worker_response(
+            &json!({"tool":"get_telegram_screen","process_name":process,"hwnd":fixture.handle.to_string(),"verified_chat_names":["Another chat"]}),
+        );
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected.get("result").is_none());
         let windows = run_worker(&json!({"tool":"list_telegram_windows","process_name":process}));
         let hwnd = fixture.handle.to_string();
         assert!(

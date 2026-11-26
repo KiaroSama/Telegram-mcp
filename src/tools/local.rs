@@ -1,6 +1,11 @@
 //! Local configuration, event waits and owner-controlled safety settings.
+mod accounts;
+mod aliases;
 mod commands;
+mod feed;
+mod ghost;
 pub mod proxies;
+pub(crate) mod roots;
 mod unread;
 pub mod upstream_events;
 pub use unread::export_unread_with_state;
@@ -76,48 +81,75 @@ async fn dispatch(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
     let state = State::global()?;
     let account = args["account"].as_str();
     match name {
-        "list_accounts"=>api.invoke("local.accounts",json!({})).await,
-        "check_account_session"=>api.invoke("local.session_health",json!({"config_key":crate::args::text(args,"config_key")?,"config_digest":crate::args::text(args,"config_digest")?})).await,
-        "get_file_roots_status"=>Ok(json!({"file_tools_enabled":!state.file_roots().is_empty(),"status":if state.file_roots().is_empty(){"no_allowed_roots"}else{"configured"},"roots":state.file_roots(),"configured_folders":state.file_roots(),"rule":"File operations stay within configured roots. The private state directory and installation outside files/ are protected."})),
-        "get_ghost_mode"=>Ok(state.ghost_mode(account,args.get("chat_id"))),
-        "set_ghost_mode"=>state.set_ghost_mode(crate::args::boolean(args,"enabled",true)?,account,args.get("chat_id")),
-        "safeguard_status"=>Ok(crate::safeguard::bot::status(&state, None)),
-        "revoke_always_approval"=>{
-            if let Some(folder)=args["folder"].as_str(){return Ok(json!({"revoked":state.revoke_folder(folder)?,"folder":folder}));}
-            let tool=crate::args::text(args,"tool")?;
-            let chat=crate::args::required(args,"chat_id")?;
-            Ok(json!({"revoked":state.revoke_approval(account.unwrap_or("default"),tool,chat)?,"account":account,"tool":tool,"chat_id":chat}))
-        }
-        "list_contact_aliases"=>{
-            let scope=account.context("An explicit account is required for aliases")?;
-            let aliases=state.aliases(scope)?;
-            let mut grouped=std::collections::BTreeMap::<String,Value>::new();
-            for (alias,record) in aliases.as_object().context("Invalid aliases record")? {
-                let peer=&record["peer"];
-                let id=crate::state::alias_peer_id(peer).or_else(||record.get("id").cloned()).unwrap_or(Value::Null);
-                let key=serde_json::to_string(&id)?;
-                let row=grouped.entry(key).or_insert_with(||json!({"id":id,"name":record["name"],"peer":peer,"account":scope,"aliases":[],"needs_migration":record["needs_migration"]}));
-                if row["name"].is_null(){row["name"]=record["name"].clone();}
-                row["aliases"].as_array_mut().expect("Alias list initialized").push(json!(alias));
+        "list_accounts" => accounts::list_accounts(api).await,
+        "check_account_session" => accounts::check_account_session(api, args).await,
+        "get_file_roots_status" => Ok(roots::get_file_roots_status(&state, None)),
+        "get_ghost_mode" => ghost::get_ghost_mode(api, &state, account, args).await,
+        "set_ghost_mode" => ghost::set_ghost_mode(api, &state, account, args).await,
+        "safeguard_status" => Ok(crate::safeguard::bot::status(
+            &state,
+            None,
+            account,
+            Default::default(),
+            Default::default(),
+        )),
+        "revoke_always_approval" => {
+            if let Some(folder) = args["folder"].as_str() {
+                use crate::safeguard::folders::{FolderGrants, FolderScope};
+                let store = FolderGrants::new(&state, state.installation_root())?;
+                let account = account.unwrap_or("default");
+                let path = std::path::Path::new(folder);
+                let mut revoked = false;
+                if path.is_absolute() {
+                    for scope in [
+                        FolderScope::Read,
+                        FolderScope::Write,
+                        FolderScope::ReadWrite,
+                    ] {
+                        revoked |= store.revoke(account, path, scope)?;
+                    }
+                }
+                revoked |= state.revoke_folder(folder)?;
+                return Ok(json!({"revoked":revoked}));
             }
-            Ok(json!(grouped.into_values().collect::<Vec<_>>()))
+            let tool = crate::args::text(args, "tool")?;
+            let chat = crate::args::required(args, "chat_id")?;
+            Ok(
+                json!({"revoked":state.revoke_approval(account.unwrap_or("default"),tool,chat)?,"account":account,"tool":tool,"chat_id":chat}),
+            )
         }
-        "set_contact_alias"=>{
-            let scope=account.context("An explicit account is required for aliases")?;
-            let alias=crate::args::text(args,"alias")?;
-            let input=crate::args::required(args,"chat_id")?;
-            let resolved=api.resolve_peer(input).await?;
-            state.alias_set(scope,alias,resolved,crate::args::boolean(args,"replace",false)?)
+        "list_contact_aliases" => aliases::list_contact_aliases(
+            &state,
+            account.context("An explicit account is required for aliases")?,
+        ),
+        "set_contact_alias" => {
+            aliases::set_contact_alias(
+                api,
+                &state,
+                account.context("An explicit account is required for aliases")?,
+                args,
+            )
+            .await
         }
-        "delete_contact_alias"=>{
-            let scope=account.context("An explicit account is required for aliases")?;
-            Ok(json!({"deleted":state.alias_remove(scope,crate::args::text(args,"alias")?)?}))
+        "delete_contact_alias" => aliases::delete_contact_alias(
+            &state,
+            account.context("An explicit account is required for aliases")?,
+            args,
+        ),
+        "incoming_feed_status" => feed::incoming_feed_status(&state),
+        "disable_incoming_feed" => feed::disable_incoming_feed(&state),
+        "enable_incoming_feed" => feed::enable_incoming_feed(&state, args),
+        "wait_for_new_message" | "wait_for_settled_message" => {
+            wait_incoming_with_policy(
+                api,
+                &state,
+                name,
+                args,
+                &crate::server::access::AccessPolicy::default(),
+            )
+            .await
         }
-        "incoming_feed_status"=>state.incoming_feed_status(),
-        "disable_incoming_feed"=>state.disable_incoming_feed(),
-        "enable_incoming_feed"=>state.enable_incoming_feed(crate::args::limit(args,"settle_ms",6000,50_000)? as u64),
-        "wait_for_new_message"|"wait_for_settled_message"=>wait_incoming_with_policy(api,&state,name,args,&crate::server::access::AccessPolicy::default()).await,
-        _=>bail!("Unknown local tool"),
+        _ => bail!("Unknown local tool"),
     }
 }
 

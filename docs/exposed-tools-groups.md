@@ -1,7 +1,7 @@
 # Native tool exposure and chat restrictions
 
-The server validates all 386 native tools before exposing them: 352 ordinary tools
-and 34 secret-chat tools. Startup fails if a configured tool name is unknown or a
+The server validates all 391 native tools before exposing them: 356 cloud tools
+and 35 secret-chat tools. Startup fails if a configured tool name is unknown or a
 catalogue entry has no native route.
 
 ## Exposure modes
@@ -10,7 +10,7 @@ catalogue entry has no native route.
 
 | Value | Result |
 | --- | --- |
-| `all` | All 386 native tools, including secret-chat tools |
+| `all` | All 391 native tools, including secret-chat tools |
 | `read-only` | Only tools annotated as read-only |
 | `read-only+send_message,reply_to_message` | Read-only tools plus the explicitly named additions |
 | `all-delete_message,clear_secret_history` | All tools except the named exclusions |
@@ -23,20 +23,21 @@ they do not grant owner approval, account access or Telegram administrator right
 
 ## Secret-chat groups
 
-The [secret-chat catalogue](COMMANDS.md#secret-chat-tools) lists all 34 native
+The [secret-chat catalogue](COMMANDS.md#secret-chat-tools) lists all 35 native
 MTProto 2.0 tools from `kiaro-secret-chat` 0.3.0:
 
 | Group | Tools |
 | --- | ---: |
-| [Lifecycle and status](COMMANDS.md#lifecycle-and-status-6) | 6 |
+| [Lifecycle and status](COMMANDS.md#lifecycle-and-status-7) | 7 |
 | [Messaging and media](COMMANDS.md#messaging-and-media-5) | 5 |
 | [Timed ephemeral messaging](COMMANDS.md#timed-ephemeral-messaging-2) | 2 |
 | [Actions and search](COMMANDS.md#actions-and-search-6) | 6 |
 | [Auto-save, deletion and export](COMMANDS.md#auto-save-deletion-and-export-6) | 6 |
 | [Custody, pause, delivery and backend control](COMMANDS.md#custody-pause-delivery-and-backend-control-9) | 9 |
 
-The same exposure filters apply to these tools. Hiding them does not turn off
-secret-chat ingress or migration. On first open, the server makes a read-only
+The same exposure filters apply to these tools. `read-only` hides the explicit
+`accept_secret_chat` mutation. Hiding it does not turn off automatic incoming
+handshakes, secret-chat ingress or migration. On first open, the server makes a read-only
 backup and migrates supported legacy stores losslessly before connecting. See
 [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
 

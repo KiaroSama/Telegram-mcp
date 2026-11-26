@@ -36,6 +36,58 @@ fn suffix(path: &Path) -> String {
         .to_string_lossy()
         .to_ascii_lowercase()
 }
+pub fn max_upload_bytes(tool_name: &str) -> Option<u64> {
+    match tool_name {
+        "send_file" | "send_album" | "upload_file" => Some(200 * 1024 * 1024),
+        "send_voice" => Some(100 * 1024 * 1024),
+        "send_sticker" => Some(10 * 1024 * 1024),
+        "set_profile_photo" | "edit_chat_photo" => Some(50 * 1024 * 1024),
+        _ => None,
+    }
+}
+pub fn ensure_size_within_limit(tool_name: &str, path: &Path) -> Result<()> {
+    if let Some(max_bytes) = max_upload_bytes(tool_name) {
+        let size = std::fs::metadata(path)
+            .with_context(|| format!("File is not readable: {}", path.display()))?
+            .len();
+        ensure!(
+            size <= max_bytes,
+            "File is too large for {tool_name}: {size} bytes (limit: {max_bytes} bytes)."
+        );
+    }
+    Ok(())
+}
+pub fn looks_like_voice(data: &[u8]) -> Option<bool> {
+    if !data.starts_with(b"OggS") || data.len() <= 4 {
+        return None;
+    }
+    let start = [b"OpusTags".as_slice(), b"\x03vorbis"]
+        .into_iter()
+        .filter_map(|header| {
+            data.windows(header.len())
+                .position(|s| s == header)
+                .map(|i| i + header.len())
+        })
+        .min()?;
+    let comment = &data[start..];
+    let has_music_tag = [
+        b"TITLE=".as_slice(),
+        b"ARTIST=",
+        b"ALBUM=",
+        b"ALBUMARTIST=",
+        b"TRACKNUMBER=",
+        b"GENRE=",
+        b"PERFORMER=",
+        b"COMPOSER=",
+    ]
+    .iter()
+    .any(|tag| {
+        comment.windows(tag.len()).enumerate().any(|(i, part)| {
+            part.eq_ignore_ascii_case(tag) && (i == 0 || !comment[i - 1].is_ascii_alphabetic())
+        })
+    });
+    Some(!has_music_tag)
+}
 pub fn infer_kind(path: &Path) -> String {
     let ext = suffix(path);
     match ext.as_str() {
@@ -50,16 +102,9 @@ pub fn infer_kind(path: &Path) -> String {
                 let _ = file.take(65536).read_to_end(&mut data);
                 data
             });
-            if data.is_some_and(|data| {
-                data.windows(6)
-                    .any(|part| part.eq_ignore_ascii_case(b"TITLE="))
-                    || data
-                        .windows(7)
-                        .any(|part| part.eq_ignore_ascii_case(b"ARTIST="))
-            }) {
-                "audio"
-            } else {
-                "voice_note"
+            match data.as_deref().and_then(looks_like_voice) {
+                Some(false) => "audio",
+                Some(true) | None => "voice_note",
             }
         }
         "gif" => "animation",
@@ -138,7 +183,7 @@ async fn probe(path: &Path) -> Result<Value> {
         operation = "media_probe",
         "Starting bounded media metadata probe"
     );
-    let mut child = super::child("ffprobe")
+    let (mut child, _tree) = crate::tools::visual::capture::containment::spawn(super::child("ffprobe")
         .args([
             "-v",
             "error",
@@ -151,8 +196,7 @@ async fn probe(path: &Path) -> Result<Value> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true))
         .context("ffprobe is required for audio/video metadata; install FFmpeg")?;
     let mut stdout = child
         .stdout
@@ -275,6 +319,7 @@ pub async fn run_with_state(
 ) -> Result<Value> {
     if name == "upload_file" {
         let path = state.resolve_file(Path::new(args::text(a, "file_path")?), FileAccess::Read)?;
+        ensure_size_within_limit(name, &path)?;
         return api.upload(&path).await;
     }
     let list = if name == "send_album" {
@@ -325,6 +370,7 @@ pub async fn run_with_state(
             Path::new(raw.as_str().context("file_path must be a path string")?),
             FileAccess::Read,
         )?;
+        ensure_size_within_limit(name, &path)?;
         let explicit = a
             .get("kind")
             .filter(|v| !v.is_null())

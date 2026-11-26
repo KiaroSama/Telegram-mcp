@@ -1,6 +1,7 @@
 //! Startup helpers that keep `src/backend.rs` concise and verify imported sessions
 //! before any secret-chat custody migration or update consumption starts.
-use crate::session::PersistentSession;
+use super::config::{self, ClientIdentity};
+use crate::{account_manager::ConfigSnapshot, session::PersistentSession, state::State};
 use anyhow::{Context, Result, bail};
 use grammers_client::Client;
 use grammers_mtsender::{ConnectionParams, NoRetries, SenderPool};
@@ -11,12 +12,115 @@ use grammers_session::{
 use grammers_tl_types as tl;
 use std::{sync::Arc, time::Duration};
 
+/// Acquire an exclusive session OS lease honoring `TELEGRAM_LOCK_GRACE_SECONDS`,
+/// selecting the first free deduplicated entry from `TELEGRAM_SESSION_STRINGS`
+/// when opening the default pooled slot.
+pub(super) async fn open_leased_session(
+    state: &Arc<State>,
+    label: &str,
+    snapshot: &ConfigSnapshot,
+    staged: bool,
+) -> Result<(Arc<PersistentSession>, Option<(String, String)>, String)> {
+    let grace = crate::account_manager::lock_grace_seconds(Some(snapshot))?;
+    let source = config::source_from(snapshot, label);
+    if !staged && source.is_none() {
+        bail!("Account is no longer configured; no authorization was opened");
+    }
+    if let Some((key, _)) = &source
+        && key == "TELEGRAM_SESSION_STRINGS"
+    {
+        let pool = config::pooled_sessions(snapshot);
+        if pool.is_empty() {
+            bail!("No eligible pooled sessions remain in TELEGRAM_SESSION_STRINGS");
+        }
+        let (session, chosen) = crate::account_manager::acquire_with_grace(grace, None, || {
+            for candidate in &pool {
+                if let Ok(session) = PersistentSession::open(Arc::clone(state), &candidate.slot_label)
+                {
+                    return Ok((Arc::new(session), candidate.clone()));
+                }
+            }
+            bail!(
+                "All pooled sessions in TELEGRAM_SESSION_STRINGS are currently locked by another process"
+            )
+        })
+        .await?;
+        if !state
+            .root()
+            .join(format!("{}.session.json", chosen.slot_label))
+            .exists()
+        {
+            session.import_telethon(&chosen.value)?;
+        }
+        return Ok((
+            session,
+            Some(("TELEGRAM_SESSION_STRINGS".into(), chosen.value)),
+            chosen.slot_label,
+        ));
+    }
+    PersistentSession::check_custody_identity(state, label, snapshot)?;
+    let session = Arc::new(
+        crate::account_manager::acquire_with_grace(grace, None, || {
+            PersistentSession::open(Arc::clone(state), label)
+        })
+        .await?,
+    );
+    if !state.root().join(format!("{label}.session.json")).exists()
+        && let Some((key, value)) = &source
+    {
+        import_legacy_session(state, snapshot, &session, key, value)?;
+    }
+    // Recheck the exact imported authorization before creating any sender;
+    // the selected legacy source could have changed after the first probe.
+    PersistentSession::check_custody_identity(state, label, snapshot)?;
+    Ok((session, source, label.to_owned()))
+}
+
+fn import_legacy_session(
+    state: &State,
+    snapshot: &ConfigSnapshot,
+    session: &PersistentSession,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    if key.starts_with("TELEGRAM_SESSION_STRING") {
+        return session.import_telethon(value);
+    }
+    let base = snapshot
+        .path
+        .parent()
+        .context("Configuration file has no parent")?;
+    let raw = std::path::PathBuf::from(value);
+    let mut candidates = vec![base.join(&raw), state.root().join(&raw)];
+    candidates.extend(
+        candidates
+            .clone()
+            .into_iter()
+            .map(|path| std::path::PathBuf::from(format!("{}.session", path.display()))),
+    );
+    let mut found = candidates
+        .into_iter()
+        .filter(|path| path.is_file())
+        .map(|path| path.canonicalize())
+        .collect::<std::io::Result<Vec<_>>>()?;
+    found.sort();
+    found.dedup();
+    match found.as_slice() {
+        [path] => session.import_telethon_sqlite(path),
+        [] => bail!(
+            "No native or legacy session exists for this account; use the account manager to log in"
+        ),
+        _ => bail!("Several legacy session files match this account; configure one absolute path"),
+    }
+}
+
 /// Verify and cache the authorization's live Telegram self user when an imported
 /// session lacks a cached `is_self` peer, without consuming updates.
 pub(super) async fn ensure_self_peer(
     session: &Arc<PersistentSession>,
     api_id: i32,
     route: &crate::proxy::Route,
+    identity: &ClientIdentity,
 ) -> Result<()> {
     if session.peer(PeerId::self_user()).await?.is_some() {
         return Ok(());
@@ -34,6 +138,7 @@ pub(super) async fn ensure_self_peer(
         retry_policy: Box::new(NoRetries),
         ..Default::default()
     };
+    identity.apply_to(&mut connection);
     route.configure(&mut connection);
     let SenderPool {
         runner,

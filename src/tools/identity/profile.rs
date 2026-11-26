@@ -335,62 +335,124 @@ pub async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
 }
 
+fn device(session: &Value) -> Value {
+    let api = session["api_id"].as_i64().filter(|n| *n > 0);
+    let app = session["app_name"]
+        .as_str()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let support = match api {
+        Some(2040 | 2496) => "not_supported",
+        Some(_) => "supported",
+        None if matches!(
+            app.as_str(),
+            "telegram desktop" | "telegram web" | "telegram webk" | "telegram weba"
+        ) =>
+        {
+            "not_supported"
+        }
+        None => "unknown",
+    };
+    json!({"hash":session["hash"],"api_id":api,"device_model":session["device_model"],"app_name":session["app_name"],"platform":session["platform"],"current":session["current"]==true,"accept_calls":session["call_requests_disabled"]!=true,"accept_secret_chats":session["encrypted_requests_disabled"]!=true,"secret_chat_support":support})
+}
 async fn authorizations(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
-    if name == "list_authorizations" {
-        return api.invoke("account.getAuthorizations", json!({})).await;
-    }
-    let hash = int_value(req(a, "hash")?, "hash")?.to_string();
-    if name == "set_authorization_calls" || name == "set_authorization_secret_chats" {
-        let key = if name == "set_authorization_calls" {
-            "accept_calls"
-        } else {
-            "accept_secret_chats"
-        };
-        let allowed = req(a, key)?
-            .as_bool()
-            .with_context(|| format!("{key} must be boolean"))?;
-        let mut p = json!({"hash":hash});
-        p[if name == "set_authorization_calls" {
-            "call_requests_disabled"
-        } else {
-            "encrypted_requests_disabled"
-        }] = json!(!allowed);
-        return api.invoke("account.changeAuthorizationSettings", p).await;
-    }
+    let hash = if name == "list_authorizations" {
+        None
+    } else {
+        Some(int_value(req(a, "hash")?, "hash")?)
+    };
+    let switch = match name {
+        "set_authorization_calls" => Some((
+            "call_requests_disabled",
+            boolean_required(a, "accept_calls")?,
+        )),
+        "set_authorization_secret_chats" => Some((
+            "encrypted_requests_disabled",
+            boolean_required(a, "accept_secret_chats")?,
+        )),
+        _ => None,
+    };
     let r = api.invoke("account.getAuthorizations", json!({})).await?;
-    let sessions = r
-        .get("authorizations")
-        .and_then(Value::as_array)
+    let sessions = r["authorizations"]
+        .as_array()
         .context("Telegram returned no authorization list")?;
+    let Some(hash) = hash else {
+        let mut r = r.clone();
+        r["authorizations"] = json!(
+            sessions
+                .iter()
+                .map(|s| {
+                    let mut row = s.clone();
+                    if let (Some(m), Some(fields)) = (row.as_object_mut(), device(s).as_object()) {
+                        m.extend(fields.clone());
+                    }
+                    row
+                })
+                .collect::<Vec<_>>()
+        );
+        return Ok(r);
+    };
     let target = sessions
         .iter()
-        .find(|s| {
-            int_value(&s["hash"], "authorization hash")
-                .ok()
-                .map(|n| n.to_string())
-                .as_deref()
-                == Some(hash.as_str())
-        })
+        .find(|s| int_value(&s["hash"], "hash").ok() == Some(hash))
         .context("No authorization matches this hash; nothing changed")?;
+    let summary = device(target);
     if name == "terminate_authorization" {
         ensure!(
             target["current"] != true || boolean(a, "include_current", false)?,
             "Refusing to terminate the current authorization without include_current=true"
         );
         return api
-            .invoke("account.resetAuthorization", json!({"hash":hash}))
+            .invoke(
+                "account.resetAuthorization",
+                json!({"hash":hash.to_string()}),
+            )
             .await;
     }
-    let mut results = Vec::new();
-    for session in sessions {
-        let keep = int_value(&session["hash"], "authorization hash")?.to_string() == hash;
+    if let Some((key, allow)) = switch {
+        if key == "encrypted_requests_disabled" && allow {
+            ensure!(
+                summary["secret_chat_support"] == "supported",
+                "Secret-chat support is unavailable or unknown for this device"
+            );
+        }
+        return api
+            .invoke(
+                "account.changeAuthorizationSettings",
+                json!({"hash":hash.to_string(),key:!allow}),
+            )
+            .await;
+    }
+    ensure!(
+        summary["secret_chat_support"] == "supported",
+        "Secret-chat support is unavailable or unknown for this device"
+    );
+    let mut results = vec![];
+    for (session, keep) in std::iter::once((target, true)).chain(
+        sessions
+            .iter()
+            .filter(|s| int_value(&s["hash"], "hash").ok() != Some(hash))
+            .map(|s| (s, false)),
+    ) {
+        let h = int_value(&session["hash"], "hash")?;
         let result = api
             .invoke(
                 "account.changeAuthorizationSettings",
-                json!({"hash":session["hash"],"encrypted_requests_disabled":!keep}),
+                json!({"hash":h.to_string(),"encrypted_requests_disabled":!keep}),
             )
             .await;
-        results.push(json!({"hash":session["hash"],"accept_secret_chats":keep,"accepted":result.as_ref().is_ok_and(|v|v==true)}));
+        let accepted = result.is_ok_and(|v| v == true);
+        results.push(json!({"hash":h.to_string(),"accept_secret_chats":keep,"accepted":accepted}));
+        if keep && !accepted {
+            break;
+        }
     }
-    Ok(json!({"results":results,"complete":results.iter().all(|v|v["accepted"]==true)}))
+    Ok(
+        json!({"device":summary,"complete":results.iter().all(|r|r["accepted"]==true),"results":results}),
+    )
+}
+fn boolean_required(a: &Value, key: &str) -> Result<bool> {
+    req(a, key)?
+        .as_bool()
+        .with_context(|| format!("{key} must be boolean"))
 }

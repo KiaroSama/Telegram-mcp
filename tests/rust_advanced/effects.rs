@@ -81,6 +81,9 @@ async fn effect_without_static_icon_reports_emoticon_fallback() {
         .unwrap();
     assert_eq!(r["icon_source"], "emoticon");
     assert!(r.get("static_icon").is_none());
+    assert_eq!(r["preview_sticker"]["document_id"], "20");
+    assert_eq!(r["preview_sticker"]["asset"], "preview_sticker");
+    assert!(r["preview_sticker"].get("access_hash").is_none());
 }
 #[tokio::test]
 async fn dangling_static_icon_is_not_reported_as_fallback() {
@@ -110,6 +113,7 @@ async fn account_sessions_do_not_share_effect_file_references() {
         .respond("messages.getAvailableEffects", catalogue());
     let mut c = catalogue();
     c["documents"][0]["file_reference"] = json!([99]);
+    c["documents"][0]["mime_type"] = json!("image/webp");
     let b = Mock::new()
         .cached("advanced-test-account-b")
         .respond("messages.getAvailableEffects", c);
@@ -119,8 +123,11 @@ async fn account_sessions_do_not_share_effect_file_references() {
     let second = run(&b, "get_message_effect", json!({"effect_id":"100"}))
         .await
         .unwrap();
-    assert_eq!(first["preview_sticker"]["file_reference"], json!([1]));
-    assert_eq!(second["preview_sticker"]["file_reference"], json!([99]));
+    assert!(first["preview_sticker"]["mime_type"].is_null());
+    assert_eq!(second["preview_sticker"]["mime_type"], "image/webp");
+    for r in [first, second] {
+        assert!(r["preview_sticker"].get("file_reference").is_none());
+    }
 }
 #[tokio::test]
 async fn simultaneous_effect_reads_share_one_catalogue_fetch() {

@@ -402,3 +402,52 @@ async fn a_failed_optional_preview_preserves_a_successful_disappearing_save() {
     assert!(result["preview_error"].is_string());
     assert_eq!(std::fs::read(out).unwrap(), png());
 }
+
+#[test]
+fn final_download_names_block_programs_and_reject_streams() {
+    let (_dir, state) = local_support::fixture();
+    let root = &state.file_roots()[0];
+    for suffix in ["ExE", "HtA", "msp", "cmd", "VBE", "lnk", "toolongext"] {
+        let p = root.join(format!("doc.{suffix}"));
+        assert_eq!(
+            downloads::destination_in(&state, p.to_str(), &Value::Null, 1).unwrap(),
+            root.join("doc.bin")
+        );
+    }
+    for leaf in ["a~b.txt", "a?.txt", "a:ads.txt", "a[b].txt"] {
+        assert!(
+            downloads::destination_in(&state, root.join(leaf).to_str(), &Value::Null, 1).is_err()
+        );
+    }
+}
+
+#[test]
+fn chosen_download_directory_numbers_collisions_without_overwrite() {
+    let (_dir, state) = local_support::fixture();
+    let root = &state.file_roots()[0];
+    std::fs::write(root.join("received.bin"), b"original").unwrap();
+    let p = downloads::destination_in(
+        &state,
+        root.to_str(),
+        &json!({"document":document(7,"received.EXE",4)}),
+        1,
+    )
+    .unwrap();
+    assert_eq!(p, root.join("received_1.bin"));
+    assert_eq!(
+        std::fs::read(root.join("received.bin")).unwrap(),
+        b"original"
+    );
+    for link in [
+        "https://t.me.evil.invalid/a",
+        "https://t.me@evil.invalid/a",
+        "http://t.me/a",
+        "tg://",
+        "https://example.org/a",
+    ] {
+        assert!(
+            telegram_mcp::tools::identity::invite_link_qr_in(&state, &json!({"link":link}))
+                .is_err()
+        );
+    }
+}

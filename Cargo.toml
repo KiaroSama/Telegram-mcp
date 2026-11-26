@@ -22,18 +22,19 @@ clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 flate2 = "1"
 futures-util = "0.3"
-grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d", features = ["markdown", "html", "proxy"] }
-grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d", features = ["proxy"] }
+grammers-client = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126", features = ["markdown", "html", "proxy"] }
+grammers-mtsender = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126", features = ["proxy"] }
 grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "02367f9711ca3589a8bbb02e4128aca1631c77c4" }
-grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d", default-features = false, features = ["serde"] }
+grammers-session = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126", default-features = false, features = ["serde"] }
 grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "02367f9711ca3589a8bbb02e4128aca1631c77c4" }
-kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "84f2b8e57f30af10218effb7cb58688a57431e0d" }
+kiaro-secret-chat = { git = "https://github.com/KiaroSama/Telethon-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126" }
 sha1 = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 hmac = "0.13"
 libc = "0.2"
 libloading = "0.9"
 md5 = "0.8"
+moxcms = "0.8"
 qrcode = { version = "0.15", default-features = false, features = ["std", "svg"] }
 lopdf = { version = "0.47", default-features = false }
 rand = "0.10"
@@ -41,7 +42,7 @@ regex = "1"
 reqwest = { version = "0.13", features = ["json", "query", "multipart"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
 rustls-platform-verifier = "=0.7.1"
-rmcp = { version = "3.10", features = ["server", "client", "transport-io", "transport-streamable-http-server", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "3.10", features = ["server", "client", "transport-io", "transport-streamable-http-server", "transport-streamable-http-client-reqwest", "elicitation"] }
 roxmltree = "0.21"
 rusqlite = { version = "0.43", default-features = false, features = ["bundled", "limits", "hooks"] }
 rpassword = "7"

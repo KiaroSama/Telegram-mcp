@@ -86,7 +86,33 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
         let mut content = vec![];
         let mut rows = vec![];
         let mut image_bytes = 0_usize;
-        for doc in docs {
+        let mut sets = std::collections::BTreeMap::<String, Value>::new();
+        for doc in docs.iter().take(24) {
+            let set = doc["attributes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find_map(|a| {
+                    a.get("stickerset").filter(|s| {
+                        s["_"] == "inputStickerSetID" || s["_"] == "inputStickerSetShortName"
+                    })
+                });
+            let mut pack = Value::Null;
+            if let Some(set) = set {
+                let key = set.to_string();
+                pack = match sets.entry(key) {
+                    std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        let value = api
+                            .invoke("messages.getStickerSet", json!({"stickerset":set,"hash":0}))
+                            .await
+                            .ok()
+                            .map(|r| r["set"].clone())
+                            .unwrap_or_default();
+                        e.insert(value).clone()
+                    }
+                };
+            }
             let preview_result: Result<_> = async {
                 ensure!(
                     downloads::declared_size(doc).is_none_or(|size| size <= cap as u64),
@@ -107,7 +133,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             let (images, preview) = match preview_result {
                 Ok(value) => value,
                 Err(_) => {
-                    rows.push(json!({"document_id":doc["id"],"error":"This custom emoji could not be downloaded or rendered within its byte and codec limits"}));
+                    rows.push(json!({"document_id":doc["id"],"set_short_name":pack["short_name"],"set_title":pack["title"],"error":"This custom emoji could not be downloaded or rendered within its byte and codec limits"}));
                     continue;
                 }
             };
@@ -121,7 +147,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 .checked_add(bytes)
                 .is_none_or(|total| total > 32 * 1024 * 1024)
             {
-                rows.push(json!({"document_id":doc["id"],"error":"This custom emoji would exceed the request preview byte budget"}));
+                rows.push(json!({"document_id":doc["id"],"set_short_name":pack["short_name"],"set_title":pack["title"],"error":"This custom emoji would exceed the request preview byte budget"}));
                 continue;
             }
             image_bytes += bytes;
@@ -131,7 +157,7 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
                 .iter()
                 .find(|attribute| attribute["_"] == "documentAttributeCustomEmoji")
                 .and_then(|attribute| attribute["alt"].as_str());
-            rows.push(json!({"document_id":doc["id"],"mime_type":doc["mime_type"],"attributes":attributes,"placeholder":placeholder,"preview":preview}));
+            rows.push(json!({"document_id":doc["id"],"set_short_name":pack["short_name"],"set_title":pack["title"],"mime_type":doc["mime_type"],"attributes":attributes,"placeholder":placeholder,"preview":preview}));
         }
         return Ok(json!({"content":content,"metadata":{"emoji":rows}}));
     } else {

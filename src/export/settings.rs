@@ -1,7 +1,40 @@
 use anyhow::{Context, Result, bail};
 use chrono::TimeZone;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+
+static ACTIVE_FOLDERS: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
+
+fn active_folders() -> &'static Mutex<BTreeSet<PathBuf>> {
+    ACTIVE_FOLDERS.get_or_init(|| Mutex::new(BTreeSet::new()))
+}
+
+fn try_claim_active(path: &Path) -> bool {
+    active_folders()
+        .lock()
+        .map(|mut set| set.insert(path.to_owned()))
+        .unwrap_or(false)
+}
+
+fn release_active(path: &Path) {
+    if let Ok(mut set) = active_folders().lock() {
+        set.remove(path);
+    }
+}
+
+fn create_dir_exclusive(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(path)
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir(path)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -16,39 +49,117 @@ pub struct Settings {
 impl Settings {
     pub(crate) fn reserve(&mut self) -> Result<Reservation> {
         let state = crate::state::State::from_environment()?;
+        let planned = state.resolve_file(&self.path, crate::state::FileAccess::Write)?;
+        let is_auto_child = planned
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("ChatExport_"));
+
+        if !is_auto_child {
+            let parent = state.resolve_file(
+                planned.parent().context("Export folder has no parent")?,
+                crate::state::FileAccess::Write,
+            )?;
+            if !parent.exists() {
+                crate::state::storage::private_directory(&parent)?;
+            }
+            let parent_guard = crate::transfer::files::Directory::open(&state, &parent)?;
+            parent_guard.verify(&state)?;
+
+            if !planned.exists() {
+                match create_dir_exclusive(&planned) {
+                    Ok(()) => {
+                        if try_claim_active(&planned) {
+                            let mut reservation = Reservation {
+                                state,
+                                parent: parent_guard,
+                                directory: None,
+                                path: planned.clone(),
+                                created_dir: true,
+                            };
+                            crate::state::storage::restrict(&planned, true)?;
+                            reservation.directory = Some(crate::transfer::files::Directory::open(
+                                &reservation.state,
+                                &planned,
+                            )?);
+                            self.path = planned;
+                            return Ok(reservation);
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {}
+                    Err(err) => return Err(err).context("Cannot reserve the export folder"),
+                }
+            }
+
+            if planned.is_dir()
+                && !super::files::directory_is_nonempty(&planned)?
+                && try_claim_active(&planned)
+            {
+                match crate::transfer::files::Directory::open(&state, &planned) {
+                    Ok(dir_guard) => {
+                        let reservation = Reservation {
+                            state,
+                            parent: parent_guard,
+                            directory: Some(dir_guard),
+                            path: planned.clone(),
+                            created_dir: false,
+                        };
+                        self.path = planned;
+                        return Ok(reservation);
+                    }
+                    Err(err) => {
+                        release_active(&planned);
+                        return Err(err);
+                    }
+                }
+            }
+            return self.reserve_child_under(state, &planned, &super::files::chat_export_stamp());
+        }
+
         let parent = state.resolve_file(
-            self.path.parent().context("Export folder has no parent")?,
+            planned.parent().context("Export folder has no parent")?,
             crate::state::FileAccess::Write,
         )?;
-        if !parent.exists() {
-            crate::state::storage::private_directory(&parent)?;
-        }
-        let parent_guard = crate::transfer::files::Directory::open(&state, &parent)?;
-        let base = self
-            .path
+        let base = planned
             .file_name()
             .context("Export folder has no name")?
-            .to_string_lossy();
+            .to_string_lossy()
+            .into_owned();
+        self.reserve_child_under(state, &parent, &base)
+    }
+
+    fn reserve_child_under(
+        &mut self,
+        state: crate::state::State,
+        parent: &Path,
+        base: &str,
+    ) -> Result<Reservation> {
+        if !parent.exists() {
+            crate::state::storage::private_directory(parent)?;
+        }
+        let parent_guard = crate::transfer::files::Directory::open(&state, parent)?;
         for suffix in 0..=10_000 {
             parent_guard.verify(&state)?;
             let path = parent.join(if suffix == 0 {
-                base.to_string()
+                base.to_owned()
             } else {
                 format!("{base}_{suffix}")
             });
             if state.resolve_file(&path, crate::state::FileAccess::Write)? != path {
                 bail!("Export folder changed before reservation");
             }
-            #[cfg(unix)]
-            let created = {
-                use std::os::unix::fs::DirBuilderExt;
-                std::fs::DirBuilder::new().mode(0o700).create(&path)
-            };
-            #[cfg(not(unix))]
-            let created = std::fs::create_dir(&path);
-            match created {
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error).context("Cannot reserve the export folder"),
+            if !try_claim_active(&path) {
+                continue;
+            }
+            match create_dir_exclusive(&path) {
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    release_active(&path);
+                    continue;
+                }
+                Err(error) => {
+                    release_active(&path);
+                    return Err(error).context("Cannot reserve the export folder");
+                }
                 Ok(()) => {}
             }
             let mut reservation = Reservation {
@@ -56,6 +167,7 @@ impl Settings {
                 parent: parent_guard,
                 directory: None,
                 path: path.clone(),
+                created_dir: true,
             };
             crate::state::storage::restrict(&path, true)?;
             reservation.directory = Some(crate::transfer::files::Directory::open(
@@ -104,33 +216,7 @@ impl Settings {
             bail!("date_to must be later than date_from");
         }
         let state = crate::state::State::from_environment()?;
-        let destination = match args["destination"].as_str().filter(|s| !s.is_empty()) {
-            Some(value) => {
-                state.resolve_file(std::path::Path::new(value), crate::state::FileAccess::Write)?
-            }
-            None => state.default_downloads()?,
-        };
-        let base = destination.join(format!(
-            "ChatExport_{}",
-            chrono::Local::now().format("%Y-%m-%d")
-        ));
-        let mut path = base.clone();
-        for suffix in 1..=10_000 {
-            if !path.exists() {
-                break;
-            }
-            path = base.with_file_name(format!(
-                "{}_{}",
-                base.file_name()
-                    .context("Export folder has no name")?
-                    .to_string_lossy(),
-                suffix
-            ));
-        }
-        if path.exists() {
-            bail!("No unused export folder is available");
-        }
-        let path = state.resolve_file(&path, crate::state::FileAccess::Write)?;
+        let path = super::files::plan_destination(&state, args["destination"].as_str())?;
         Ok(Self {
             format: format.to_owned(),
             media,
@@ -146,13 +232,15 @@ impl Settings {
     }
 }
 
-/// Owns only the newly created folder; rollback never removes partial output.
+/// Owns active reservation state; rollback removes only newly created empty folders.
 pub(crate) struct Reservation {
     state: crate::state::State,
     parent: crate::transfer::files::Directory,
     directory: Option<crate::transfer::files::Directory>,
     path: PathBuf,
+    created_dir: bool,
 }
+
 impl Drop for Reservation {
     fn drop(&mut self) {
         let intact = self.parent.verify(&self.state).is_ok()
@@ -164,12 +252,11 @@ impl Drop for Reservation {
                 .state
                 .resolve_file(&self.path, crate::state::FileAccess::Write)
                 .is_ok_and(|path| path == self.path);
-        // Windows denies directory replacement while the guard is held, so
-        // release it only after verification and immediately before removal.
         drop(self.directory.take());
-        if intact {
+        if self.created_dir && intact {
             let _ = std::fs::remove_dir(&self.path);
         }
+        release_active(&self.path);
     }
 }
 

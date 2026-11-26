@@ -134,8 +134,13 @@ async fn feed_appends_private_metadata_without_message_text() {
         .record_incoming(event("work", "42", "1", false))
         .unwrap();
     state.enable_incoming_feed(1).unwrap();
+    let feed_path = state.root().join("incoming_feed.jsonl");
+    assert!(feed_path.is_file());
     tokio::time::timeout(Duration::from_secs(2), async {
-        while !state.root().join("incoming_feed.jsonl").exists() {
+        while std::fs::metadata(&feed_path)
+            .map(|meta| meta.len() == 0)
+            .unwrap_or(true)
+        {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })

@@ -26,6 +26,9 @@ pub fn identifier_like(alias: &str) -> bool {
     if matches!(lower.as_str(), "me" | "self" | "saved" | "saved messages")
         || lower.contains("t.me/")
         || lower.starts_with("tg://")
+        || crate::permalinks::username_prefixes(None)
+            .iter()
+            .any(|prefix| lower.contains(&prefix.to_ascii_lowercase()))
     {
         return true;
     }
@@ -177,9 +180,47 @@ impl State {
         self.write_json_unlocked("aliases-v2.json", &migrated)
     }
 
-    pub fn aliases(&self, account: &str) -> Result<Value> {
+    fn read_live_alias_store_unlocked(&self, path: &std::path::Path) -> Result<Value> {
+        let raw = self.read_json_path_unlocked(path, json!({"accounts":{}}))?;
+        if !raw.is_object() {
+            bail!("Alias store is invalid; existing data was preserved");
+        }
+        if raw.get("accounts").is_some() {
+            if !raw["accounts"].is_object() {
+                bail!("Alias store is invalid; existing data was preserved");
+            }
+            return Ok(raw);
+        }
+        // Flat legacy map in live TELEGRAM_ALIASES_FILE: normalize in memory with account scope.
+        let mut normalized = json!({"accounts":{},"legacy_unscoped":{}});
+        let sole = sole_configured_account();
+        let rows = raw.as_object().context("Alias store must be an object")?;
+        for (key, record) in rows {
+            insert_legacy_row(&mut normalized, key, record, sole.as_deref())?;
+        }
+        Ok(normalized)
+    }
+
+    fn update_alias_store<T>(&self, edit: impl FnOnce(&mut Value) -> Result<T>) -> Result<T> {
+        if let Some(live_path) = self.resolved_live_alias_path()? {
+            let _lock = self.state_lock()?;
+            let mut store = self.read_live_alias_store_unlocked(&live_path)?;
+            let outcome = edit(&mut store)?;
+            self.write_json_path_unlocked(&live_path, &store)?;
+            return Ok(outcome);
+        }
         self.migrate_aliases()?;
-        let store = self.read_json("aliases-v2.json", json!({"accounts":{}}))?;
+        self.update_json("aliases-v2.json", json!({"accounts":{}}), edit)
+    }
+
+    pub fn aliases(&self, account: &str) -> Result<Value> {
+        let store = if let Some(live_path) = self.resolved_live_alias_path()? {
+            let _lock = self.state_lock()?;
+            self.read_live_alias_store_unlocked(&live_path)?
+        } else {
+            self.migrate_aliases()?;
+            self.read_json("aliases-v2.json", json!({"accounts":{}}))?
+        };
         if !store.is_object() || !store["accounts"].is_object() {
             bail!("Alias store is invalid; existing data was preserved");
         }
@@ -191,7 +232,9 @@ impl State {
             bail!("Account alias store is invalid");
         }
         if let Some(unscoped) = store["legacy_unscoped"].as_object() {
-            let own = rows.as_object_mut().expect("Alias object validated");
+            let own = rows
+                .as_object_mut()
+                .context("Account alias store is invalid")?;
             for (alias, record) in unscoped {
                 own.entry(alias.clone()).or_insert_with(|| record.clone());
             }
@@ -256,7 +299,17 @@ impl State {
         peer: Value,
         replace: bool,
     ) -> Result<Value> {
-        self.migrate_aliases()?;
+        self.alias_set_with_name(account, alias, peer, None, replace)
+    }
+
+    pub fn alias_set_with_name(
+        &self,
+        account: &str,
+        alias: &str,
+        peer: Value,
+        display_name: Option<&str>,
+        replace: bool,
+    ) -> Result<Value> {
         let key = alias_key(alias);
         if key.is_empty() || key.chars().count() > 256 {
             bail!("An alias must contain 1-256 characters");
@@ -268,7 +321,15 @@ impl State {
         if label.is_empty() {
             bail!("An alias requires an explicit account");
         }
-        self.update_json("aliases-v2.json", json!({"accounts":{}}), |store| {
+        let cleaned_name = display_name
+            .map(|raw| {
+                crate::sanitize::sanitize_name(
+                    Some(raw),
+                    crate::text_fidelity::DEFAULT_MAX_NAME_CHARS,
+                )
+            })
+            .filter(|name| !name.is_empty() && !crate::sanitize::is_empty_placeholder(name));
+        self.update_alias_store(|store| {
             if !store.is_object() || !store["accounts"].is_object() {
                 bail!("Alias store is invalid; existing data was preserved");
             }
@@ -279,12 +340,15 @@ impl State {
             let rows = rows
                 .as_object_mut()
                 .context("Account alias store is invalid; existing data was preserved")?;
-            let mut name = Value::Null;
+            let mut name = cleaned_name
+                .as_deref()
+                .map(|v| json!(v))
+                .unwrap_or(Value::Null);
             if let Some(previous) = rows.get(&key) {
                 let previous_id = alias_peer_id(&previous["peer"]);
                 let current_id = alias_peer_id(&peer);
                 let same_id = previous_id.is_some() && previous_id == current_id;
-                if same_id {
+                if same_id && name.is_null() {
                     name = previous["name"].clone();
                 }
                 if previous["peer"] != peer && !same_id && !replace {
@@ -293,17 +357,17 @@ impl State {
                     );
                 }
             }
+            let id = alias_peer_id(&peer);
             rows.insert(
                 key.clone(),
-                json!({"peer":peer,"id":alias_peer_id(&peer),"account":label,"name":name}),
+                json!({"peer":peer,"id":id,"account":label,"name":name}),
             );
-            Ok(json!({"saved":true,"alias":key,"account":label,"resolved":peer}))
+            Ok(json!({"saved":true,"alias":key,"account":label,"id":id,"name":name,"resolved":peer}))
         })
     }
 
     pub fn alias_remove(&self, account: &str, alias: &str) -> Result<bool> {
-        self.migrate_aliases()?;
-        self.update_json("aliases-v2.json", json!({"accounts":{}}), |store| {
+        self.update_alias_store(|store| {
             let accounts = store
                 .get_mut("accounts")
                 .and_then(Value::as_object_mut)
@@ -317,6 +381,76 @@ impl State {
             Ok(rows.remove(&alias_key(alias)).is_some())
         })
     }
+}
+
+fn sole_configured_account() -> Option<String> {
+    crate::account_manager::current_config()
+        .ok()
+        .and_then(|snapshot| {
+            let labels = snapshot
+                .values
+                .iter()
+                .filter(|(_, value)| !value.is_empty())
+                .filter_map(|(key, _)| crate::account_manager::label_for(key).ok())
+                .collect::<std::collections::BTreeSet<_>>();
+            if labels.len() == 1 {
+                labels.into_iter().next()
+            } else {
+                None
+            }
+        })
+}
+
+fn insert_legacy_row(
+    migrated: &mut Value,
+    key: &str,
+    record: &Value,
+    sole: Option<&str>,
+) -> Result<()> {
+    let (scoped, alias) = key
+        .split_once('\n')
+        .map(|(scope, alias)| (Some(scope.to_lowercase()), alias))
+        .unwrap_or((None, key));
+    let recorded = record["account"].as_str().map(str::to_lowercase);
+    if scoped
+        .as_ref()
+        .zip(recorded.as_ref())
+        .is_some_and(|(left, right)| left != right)
+    {
+        bail!("Legacy alias account scope conflicts; no migration was written");
+    }
+    let account = scoped.or(recorded).or_else(|| sole.map(str::to_owned));
+    let alias = alias_key(alias);
+    if alias.is_empty() {
+        bail!("Legacy alias has an empty normalized key");
+    }
+    let recipient = if record.is_object() {
+        &record["id"]
+    } else {
+        record
+    };
+    let id = recipient
+        .as_i64()
+        .or_else(|| recipient.as_str().and_then(|id| id.parse::<i64>().ok()))
+        .filter(|id| *id != 0)
+        .context("Legacy alias has an invalid recipient id; no migration was written")?;
+    let migrated_record = json!({"peer":id.to_string(),"id":id.to_string(),"name":record["name"],"account":account,"needs_migration":account.is_none()});
+    if let Some(account) = account {
+        crate::session::validate_label(&account)?;
+        if migrated["accounts"][&account].is_null() {
+            migrated["accounts"][&account] = json!({});
+        }
+        if !migrated["accounts"][&account][&alias].is_null() {
+            bail!("Normalized legacy aliases collide; confirm them before migration");
+        }
+        migrated["accounts"][&account][&alias] = migrated_record;
+    } else {
+        if !migrated["legacy_unscoped"][&alias].is_null() {
+            bail!("Normalized legacy aliases collide; confirm them before migration");
+        }
+        migrated["legacy_unscoped"][&alias] = migrated_record;
+    }
+    Ok(())
 }
 
 fn same_word(left: &str, right: &str) -> bool {

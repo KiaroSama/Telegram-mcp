@@ -17,6 +17,8 @@ fn account(a: &Value) -> String {
         .unwrap_or("default")
         .to_ascii_lowercase()
 }
+mod inspection;
+mod peer_request;
 fn label(s: &str) -> String {
     s.chars().filter(|c|!c.is_control()&&!matches!(*c,'\u{202A}'..='\u{202E}'|'\u{2066}'..='\u{2069}'|'\u{200B}'|'\u{200C}'|'\u{200D}'|'\u{FEFF}')).take(256).collect()
 }
@@ -63,7 +65,10 @@ async fn keyboard_message(api: &dyn Telegram, p: &Value, a: &Value) -> Result<(V
         return Ok((m.clone(), vec![m]));
     }
     let result = api
-        .invoke("messages.getHistory", history_request(p.clone(), 20, 0, 0))
+        .invoke(
+            "messages.getHistory",
+            history_request(p.clone(), args::limit(a, "limit", 20, 100)?, 0, 0),
+        )
         .await?;
     let recent = result_messages(&result);
     let message = recent
@@ -74,107 +79,99 @@ async fn keyboard_message(api: &dyn Telegram, p: &Value, a: &Value) -> Result<(V
 }
 pub async fn call(api: &dyn Telegram, name: &str, a: &Value) -> Option<Result<Value>> {
     match name {
-        "inspect_buttons" | "list_inline_buttons" => Some(inspect(api, a).await),
+        "inspect_buttons" | "list_inline_buttons" => Some(inspection::inspect(api, name, a).await),
         "click_button" | "press_inline_button" => Some(click(api, name, a).await),
         "inline_query" | "send_inline_result" => Some(inline(api, name, a).await),
         "press_reply_button" | "answer_reply_button" => Some(reply_keyboard(api, name, a).await),
         _ => None,
     }
 }
-async fn inspect(api: &dyn Telegram, a: &Value) -> Result<Value> {
-    let p = args::peer(api, a, "chat_id").await?;
-    let (message, recent) = keyboard_message(api, &p, a).await?;
-    let mid = message["id"].as_i64().unwrap_or(0);
-    let mut records = vec![];
-    for (index, button) in buttons(&message).into_iter().enumerate() {
-        let rendered = label(button["text"].as_str().unwrap_or(""));
-        let button_kind = kind(&button);
-        let mut row = json!({"index":index,"text":rendered,"kind":button_kind,"type":button["type"],"style":button["style"],"text_altered":button["text"].as_str()!=Some(rendered.as_str())});
-        if button_kind == "inlineButtonTypeCallback"
-            && !button["type"]["requires_password"]
-                .as_bool()
-                .unwrap_or(false)
-        {
-            row["press_token"] = json!(token(snapshot(api, a, &p, mid, index, &button))?);
-            row["press_with"] = json!("click_button");
-        }
-        copy_optional(
-            &mut row,
-            &button["type"],
-            &[
-                ("url", "url"),
-                ("copy_text", "copy_text"),
-                ("query", "query"),
-            ],
-        );
-        records.push(row);
-    }
-    let active = recent
-        .iter()
-        .find(|m| {
-            matches!(
-                m["reply_markup"]["_"].as_str(),
-                Some("replyKeyboardMarkup" | "replyKeyboardHide" | "replyKeyboardForceReply")
-            )
-        })
-        .cloned();
-    Ok(
-        json!({"message_id":mid,"buttons":records,"active_reply_keyboard":active.map(|m|json!({"message_id":m["id"],"markup":m["reply_markup"]}))}),
-    )
-}
 async fn click(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     let mid = id(a, "message_id")?;
-    let index = args::integer(a, "button_index", -1)?;
+    let strict = name == "click_button";
+    let optional = |key: &str| a.get(key).filter(|v| !v.is_null());
+    let index = optional("button_index")
+        .map(|_| args::integer(a, "button_index", -1))
+        .transpose()?
+        .map(usize::try_from)
+        .transpose()?;
+    let expected = optional(if strict { "expect_text" } else { "button_text" })
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| anyhow::anyhow!("Button text must be a string"))
+        })
+        .transpose()?;
+    let key = optional("press_token")
+        .map(|v| {
+            v.as_str()
+                .ok_or_else(|| anyhow::anyhow!("Invalid press_token"))
+        })
+        .transpose()?;
     ensure!(
-        index >= 0,
-        "button_index is required and must be nonnegative"
+        !strict || (index.is_some() && expected.is_some() && key.is_some()),
+        "click_button requires index, expect_text and press_token"
     );
-    let expected = args::text(
-        a,
-        if name == "press_inline_button" {
-            "button_text"
-        } else {
-            "expect_text"
-        },
-    )?;
-    let key = args::text(a, "press_token")?;
-    let binding = {
+    ensure!(
+        index.is_some() || expected.is_some() || key.is_some(),
+        "Choose a button by index, unique text or token"
+    );
+    let binding = if let Some(key) = key {
         let cache = bindings()
             .lock()
             .map_err(|_| anyhow::anyhow!("Button binding store unavailable"))?;
-        let (expiry, binding) = cache
+        let (expiry, b) = cache
             .get(key)
-            .ok_or_else(|| anyhow::anyhow!("Unknown press_token; inspect the buttons again"))?;
+            .ok_or_else(|| anyhow::anyhow!("Unknown press_token"))?;
+        ensure!(*expiry > unix_time(), "press_token expired");
         ensure!(
-            *expiry > unix_time(),
-            "press_token expired; inspect the buttons again"
+            b["account"] == account(a)
+                && b["message_id"] == mid
+                && b["session_key"] == json!(api.cache_key())
+                && index.is_none_or(|i| b["index"] == i),
+            "press_token belongs to a different account, message or index"
         );
-        binding.clone()
+        Some(b.clone())
+    } else {
+        None
     };
-    ensure!(
-        binding["account"] == account(a)
-            && binding["message_id"] == mid
-            && binding["index"] == index,
-        "press_token belongs to a different account, message or index"
-    );
-    ensure!(
-        binding["session_key"] == json!(api.cache_key()),
-        "The account session changed; inspect the keyboard again"
-    );
     let p = args::peer(api, a, "chat_id").await?;
-    ensure!(binding["peer"] == p, "press_token belongs to another chat");
+    ensure!(
+        binding.as_ref().is_none_or(|b| b["peer"] == p),
+        "press_token belongs to another chat"
+    );
     let message = fetch(api, &p, mid).await?;
     let list = buttons(&message);
+    let chosen = if let Some(i) =
+        index.or_else(|| binding.as_ref()?.get("index")?.as_u64().map(|i| i as usize))
+    {
+        i
+    } else {
+        let mut matches = list.iter().enumerate().filter(|(_, b)| {
+            Some(label(b["text"].as_str().unwrap_or_default())) == expected.map(str::to_owned)
+        });
+        let (i, _) = matches
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("No button matches that text"))?;
+        ensure!(matches.next().is_none(), "Button text is ambiguous");
+        i
+    };
     let button = list
-        .get(index as usize)
+        .get(chosen)
         .ok_or_else(|| anyhow::anyhow!("Button index no longer exists"))?;
+    let raw = button["text"].as_str().unwrap_or_default();
+    let display = label(raw);
     ensure!(
-        binding["button"] == *button,
+        binding.as_ref().is_none_or(|b| b["button"] == *button),
         "The keyboard changed; inspect it again before pressing"
     );
     ensure!(
-        label(button["text"].as_str().unwrap_or("")) == expected,
+        expected.is_none_or(|s| s == display),
         "The button label no longer matches expect_text"
+    );
+    ensure!(
+        !list.iter().any(|other| other["text"] != button["text"]
+            && label(other["text"].as_str().unwrap_or_default()) == display),
+        "Sanitized button labels collide"
     );
     ensure!(
         kind(button) == "inlineButtonTypeCallback",
@@ -186,10 +183,16 @@ async fn click(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
             .unwrap_or(false),
         "This callback requires the account password and cannot be pressed through this tool"
     );
-    bindings()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("Button binding store unavailable"))?
-        .remove(key);
+    if let Some(key) = key {
+        ensure!(
+            bindings()
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Button binding store unavailable"))?
+                .remove(key)
+                .is_some(),
+            "Button token already used"
+        );
+    }
     api.invoke(
         "messages.getBotCallbackAnswer",
         json!({"peer":p,"msg_id":mid,"data":button["type"]["data"]}),
@@ -277,10 +280,11 @@ async fn reply_keyboard(api: &dyn Telegram, name: &str, a: &Value) -> Result<Val
     let keyboard = messages
         .iter()
         .find(|m| {
-            matches!(
-                m["reply_markup"]["_"].as_str(),
-                Some("replyKeyboardMarkup" | "replyKeyboardHide" | "replyKeyboardForceReply")
-            )
+            inspection::visible(m)
+                && matches!(
+                    m["reply_markup"]["_"].as_str(),
+                    Some("replyKeyboardMarkup" | "replyKeyboardHide" | "replyKeyboardForceReply")
+                )
         })
         .ok_or_else(|| anyhow::anyhow!("No active reply keyboard was found"))?;
     ensure!(
@@ -365,7 +369,10 @@ async fn reply_keyboard(api: &dyn Telegram, name: &str, a: &Value) -> Result<Val
             );
             let mut peers = vec![];
             for peer in selected {
-                peers.push(api.resolve_peer(peer).await?);
+                let input = api.resolve_peer(peer).await?;
+                peer_request::validate(api, &input, &button["type"]["peer_type"], &p).await?;
+                ensure!(!peers.contains(&input), "Duplicate requested peer");
+                peers.push(input);
             }
             api.invoke("messages.sendBotRequestedPeer",json!({"peer":p,"msg_id":keyboard["id"],"button_id":button["type"]["button_id"],"requested_peers":peers})).await?
         }

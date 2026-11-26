@@ -15,8 +15,12 @@ mod media_edges;
 mod migrated_replies;
 #[path = "rust_visual_export/settings.rs"]
 mod settings_edges;
+#[path = "rust_visual_export/thumbnail.rs"]
+mod thumbnail;
 #[path = "rust_visual_export/upstream.rs"]
 mod upstream;
+#[path = "rust_visual_export/writer.rs"]
+mod writer;
 
 #[derive(Clone, Default)]
 struct Fixture {
@@ -117,23 +121,38 @@ impl Telegram for Fixture {
             } else {
                 vec![]
             };
-            let messages:Vec<Value>=ids.into_iter().map(|id|{
-                let mut message=json!({"_":"message","id":id,"date":1700000000,
-                "message":format!("سلام 😀 message {id}"),"from_id":{"_":"peerUser","user_id":"9007199254740993"},
-                "entities":[{"_":"messageEntityBold","offset":8,"length":7}],"new_layer_field":42});
-                if self.complex{message["rich_message"]=json!({"_":"richMessage","part":true});}
-                message
-            }).collect();
+            let messages: Vec<Value> = ids
+                .into_iter()
+                .map(|id| {
+                    let mut message = json!({
+                        "_":"message",
+                        "id":id,
+                        "date":1700000000,
+                        "message":format!("سلام 😀 message {id}"),
+                        "from_id":{"_":"peerUser","user_id":"9007199254740993"},
+                        "entities":[{"_":"messageEntityBold","offset":8,"length":7}],
+                        "new_layer_field":42
+                    });
+                    if self.complex {
+                        message["rich_message"] = json!({"_":"richMessage","part":true});
+                    }
+                    message
+                })
+                .collect();
             return Ok(
-                json!({"_":"messages.messages","messages":messages,"users":[{"_":"user","id":"9007199254740993","first_name":"Sara","last_name":null}],"chats":[{"id":"12","title":"تست <script>"}]}),
+                json!({"_":"messages.messages","messages":messages,"users":[{"_":"user","id":"9007199254740993","first_name":"Sara","last_name":null}],"chats":[{"_":"channel","id":"12","title":"تست <script>"}]}),
             );
         }
         if method == "channels.getAdminLog" {
             if params["max_id"].as_str() != Some("0") {
                 return Ok(json!({"events":[],"users":[],"chats":[]}));
             }
-            let mut response = json!({"events":[{"id":"8007199254740999","date":1700000000,"user_id":"9007199254740993",
-                "action":{"_":"channelAdminLogEventActionDeleteMessage","message":{"_":"message","id":12,"date":1700000000,"message":"Deleted text"}}}],"users":[],"chats":[]});
+            let mut response = json!({
+                "events":[{"id":"8007199254740999","date":1700000000,"user_id":"9007199254740993",
+                    "action":{"_":"channelAdminLogEventActionDeleteMessage","message":{"_":"message","id":12,"date":1700000000,"message":"Deleted text"}}}],
+                "users":[{"_":"user","id":"9007199254740993","first_name":"Sara"}],
+                "chats":[{"_":"channel","id":"12","title":"تست <script>","megagroup":true}]
+            });
             if self.admin_partial {
                 response["events"][0]["action"]["message"]["rich_message"] = json!({"part":true});
             }
@@ -141,12 +160,14 @@ impl Telegram for Fixture {
         }
         bail!("Unexpected fixture method: {method}")
     }
+
     async fn resolve_peer(&self, input: &Value) -> Result<Value> {
         if input.is_object() {
             return Ok(input.clone());
         }
         Ok(json!({"_":"inputPeerChannel","channel_id":"12","access_hash":"34"}))
     }
+
     async fn download(
         &self,
         location: Value,
@@ -163,6 +184,7 @@ impl Telegram for Fixture {
         std::fs::write(destination, b"downloaded fixture bytes")?;
         Ok(json!({"path":destination,"bytes":24}))
     }
+
     fn clone_handle(&self) -> Option<Arc<dyn Telegram>> {
         Some(Arc::new(self.clone()))
     }
@@ -229,57 +251,6 @@ fn isolated_with_allowlist(name: &str, allowlist: Option<&str>) -> bool {
         String::from_utf8_lossy(&output.stderr)
     );
     true
-}
-
-#[test]
-fn export_round_trip_preserves_oldest_order_and_utf8() {
-    if isolated("export_round_trip_preserves_oldest_order_and_utf8") {
-        return;
-    }
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let api = Fixture::default();
-        let settings = settings("roundtrip");
-        let (_sender, receiver) = tokio::sync::watch::channel(false);
-        let result = export::run(
-            &api,
-            "chat",
-            &json!({"chat_id":"@test"}),
-            &settings,
-            receiver,
-            "integration-roundtrip",
-        )
-        .await
-        .unwrap();
-        assert_eq!(result["messages"], 103);
-        assert_eq!(result["takeout"], true);
-        let value: Value =
-            serde_json::from_slice(&std::fs::read(settings.path.join("result.json")).unwrap())
-                .unwrap();
-        let messages = value["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 103);
-        assert_eq!(messages.first().unwrap()["id"], 98);
-        assert_eq!(messages.last().unwrap()["id"], 200);
-        assert_eq!(messages[0]["from_id"], "user9007199254740993");
-        assert_eq!(messages[0]["from"], "Sara");
-        assert_eq!(messages[0]["telegram_tl"]["new_layer_field"], 42);
-        let html = std::fs::read_to_string(settings.path.join("messages.html")).unwrap();
-        assert!(html.contains("سلام"));
-        assert!(html.contains("😀"));
-        assert!(!html.contains("<script>"));
-        let requests = api.requests.lock().unwrap();
-        assert!(
-            requests
-                .iter()
-                .all(|(method, _)| !method.contains("readHistory"))
-        );
-        assert!(
-            requests
-                .iter()
-                .any(|(method, params)| method == "invokeWithTakeout"
-                    && params["query"]["_"] == "account.finishTakeoutSession"
-                    && params["query"]["success"] == true)
-        );
-    });
 }
 
 #[test]
@@ -355,84 +326,6 @@ fn export_failed_job_reports_failed_without_success_result() {
 }
 
 #[test]
-fn export_existing_destination_is_never_overwritten() {
-    if isolated("export_existing_destination_is_never_overwritten") {
-        return;
-    }
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let settings = settings("existing");
-        std::fs::create_dir(&settings.path).unwrap();
-        std::fs::write(settings.path.join("result.json"), b"original owner data").unwrap();
-        let (_sender, receiver) = tokio::sync::watch::channel(false);
-        let result = export::run(
-            &Fixture::default(),
-            "chat",
-            &json!({"chat_id":"@test"}),
-            &settings,
-            receiver,
-            "existing",
-        )
-        .await;
-        assert!(result.is_err());
-        assert_eq!(
-            std::fs::read(settings.path.join("result.json")).unwrap(),
-            b"original owner data"
-        );
-    });
-}
-
-#[test]
-fn recent_action_export_rejects_nonuser_admin_before_rpc() {
-    if isolated("recent_action_export_rejects_nonuser_admin_before_rpc") {
-        return;
-    }
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let api=Fixture::default();let settings=settings("events");let (_sender,receiver)=tokio::sync::watch::channel(false);
-        let result=export::run(&api,"recent_actions",&json!({"chat_id":"@test","event_types":["deleted_messages"],"admins":["@admin"],"query":"search"}),&settings,receiver,"events").await;
-        assert!(result.is_err(),"An admin resolving to a channel must be refused before the network request");
-        assert!(api.requests.lock().unwrap().is_empty());
-    });
-}
-
-#[test]
-fn recent_action_export_preserves_deleted_message_and_filter() {
-    if isolated("recent_action_export_preserves_deleted_message_and_filter") {
-        return;
-    }
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let api = Fixture::default();
-        let settings = settings("events");
-        let (_sender, receiver) = tokio::sync::watch::channel(false);
-        let result = export::run(
-            &api,
-            "recent_actions",
-            &json!({"chat_id":"@test","event_types":["deleted_messages"],"query":"search"}),
-            &settings,
-            receiver,
-            "events",
-        )
-        .await
-        .unwrap();
-        assert_eq!(result["events"], 1);
-        let data: Value =
-            serde_json::from_slice(&std::fs::read(settings.path.join("result.json")).unwrap())
-                .unwrap();
-        assert_eq!(
-            data["messages"][0]["telegram_tl"]["admin_log_event"]["action"]["message"]["message"],
-            "Deleted text"
-        );
-        assert_eq!(data["messages"][0]["id"], "8007199254740999");
-        let requests = api.requests.lock().unwrap();
-        let (_, params) = requests
-            .iter()
-            .find(|(name, _)| name == "channels.getAdminLog")
-            .unwrap();
-        assert_eq!(params["events_filter"]["delete"], true);
-        assert_eq!(params["q"], "search");
-    });
-}
-
-#[test]
 fn export_unknown_job_is_an_explicit_error() {
     assert!(
         export::jobs::status(&json!({"job_id":"unknown-native-export"}))
@@ -444,51 +337,6 @@ fn export_unknown_job_is_an_explicit_error() {
         export::jobs::cancel(&json!({"job_id":"unknown-native-export"})).unwrap()["cancelled"],
         false
     );
-}
-
-#[test]
-fn export_walks_split_ranges_and_migrated_history_and_hydrates_rich_blocks() {
-    if isolated("export_walks_split_ranges_and_migrated_history_and_hydrates_rich_blocks") {
-        return;
-    }
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let api = Fixture {
-            complex: true,
-            ..Default::default()
-        };
-        let settings = settings("split-migrated-rich");
-        let (_sender, receiver) = tokio::sync::watch::channel(false);
-        let result = export::run(
-            &api,
-            "chat",
-            &json!({"chat_id":"@test"}),
-            &settings,
-            receiver,
-            "complex",
-        )
-        .await
-        .unwrap();
-        assert_eq!(result["messages"], 4);
-        let value: Value =
-            serde_json::from_slice(&std::fs::read(settings.path.join("result.json")).unwrap())
-                .unwrap();
-        let messages = value["messages"].as_array().unwrap();
-        assert_eq!(
-            messages
-                .iter()
-                .map(|m| m["id"].as_i64().unwrap())
-                .collect::<Vec<_>>(),
-            vec![-999999999, -999999998, 10, 11]
-        );
-        assert_eq!(messages[0]["source_peer"]["chat_id"], "42");
-        assert_eq!(messages[0]["source_message_id"], 1);
-        assert_eq!(messages[0]["rich_message"]["part"], false);
-        assert!(
-            std::fs::read_to_string(settings.path.join("messages.html"))
-                .unwrap()
-                .contains("Hydrated rich text")
-        );
-    });
 }
 
 fn document_message(size: u64) -> Value {
@@ -611,10 +459,18 @@ fn export_rich_files_are_downloaded_and_linked_by_original_document_id() {
         return;
     }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let api=Fixture::default();let mut settings=settings("rich-files");settings.media[6]=true;
-        let mut message=json!({"id":99,"rich_message":{"documents":[document_message(10)["media"]["document"].clone()]}});
-        assert_eq!(media::download_rich_media(&api,&mut message,&settings,&settings.path).await.unwrap(),1);
-        let relative=message["rich_files"]["9007199254740993"].as_str().unwrap();assert!(settings.path.join(relative).exists());
+        let api = Fixture::default();
+        let mut settings = settings("rich-files");
+        settings.media[6] = true;
+        let mut message = json!({"id":99,"rich_message":{"documents":[document_message(10)["media"]["document"].clone()]}});
+        assert_eq!(
+            media::download_rich_media(&api, &mut message, &settings, &settings.path)
+                .await
+                .unwrap(),
+            1
+        );
+        let relative = message["rich_files"]["9007199254740993"].as_str().unwrap();
+        assert!(settings.path.join(relative).exists());
     });
 }
 
@@ -653,13 +509,51 @@ fn export_custom_emoji_assets_are_fetched_once_and_linked_without_id_rounding() 
         return;
     }
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let api=Fixture::default();let mut settings=settings("emoji");settings.media[4]=true;let mut cache=std::collections::BTreeMap::new();
-        let make=|id|json!({"id":id,"message":"😀😀","entities":[{"_":"messageEntityCustomEmoji","offset":0,"length":2,"document_id":"9007199254740993"},{"_":"messageEntityCustomEmoji","offset":2,"length":2,"document_id":"9007199254740994"}]});
-        let mut first=make(99);assert_eq!(media::hydrate_custom_emoji(&api,&mut first,&settings,&settings.path,&mut cache).await.unwrap(),2);
-        let mut second=make(100);assert_eq!(media::hydrate_custom_emoji(&api,&mut second,&settings,&settings.path,&mut cache).await.unwrap(),0);
-        assert_eq!(first["custom_emoji_files"],second["custom_emoji_files"]);
-        for id in ["9007199254740993","9007199254740994"] {assert!(settings.path.join(first["custom_emoji_files"][id].as_str().unwrap()).exists());}
-        let html=export::render::html_message(&first,&std::collections::BTreeMap::new()).unwrap();assert_eq!(html.matches("class=\"custom-emoji\"").count(),2);assert_eq!(html.matches('😀').count(),2);
-        assert_eq!(api.requests.lock().unwrap().iter().filter(|(name,_)|name=="messages.getCustomEmojiDocuments").count(),1);
+        let api = Fixture::default();
+        let mut settings = settings("emoji");
+        settings.media[4] = true;
+        let mut cache = std::collections::BTreeMap::new();
+        let make = |id| {
+            json!({"id":id,"message":"😀😀","entities":[
+                {"_":"messageEntityCustomEmoji","offset":0,"length":2,"document_id":"9007199254740993"},
+                {"_":"messageEntityCustomEmoji","offset":2,"length":2,"document_id":"9007199254740994"}
+            ]})
+        };
+        let mut first = make(99);
+        assert_eq!(
+            media::hydrate_custom_emoji(&api, &mut first, &settings, &settings.path, &mut cache)
+                .await
+                .unwrap(),
+            2
+        );
+        let mut second = make(100);
+        assert_eq!(
+            media::hydrate_custom_emoji(&api, &mut second, &settings, &settings.path, &mut cache)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(first["custom_emoji_files"], second["custom_emoji_files"]);
+        for id in ["9007199254740993", "9007199254740994"] {
+            assert!(
+                settings
+                    .path
+                    .join(first["custom_emoji_files"][id].as_str().unwrap())
+                    .exists()
+            );
+        }
+        let html =
+            export::render::html_message(&first, &std::collections::BTreeMap::new()).unwrap();
+        assert_eq!(html.matches("class=\"custom-emoji\"").count(), 2);
+        assert_eq!(html.matches('😀').count(), 2);
+        assert_eq!(
+            api.requests
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(name, _)| name == "messages.getCustomEmojiDocuments")
+                .count(),
+            1
+        );
     });
 }

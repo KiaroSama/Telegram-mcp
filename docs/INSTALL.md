@@ -71,6 +71,9 @@ server makes a read-only backup of the original files, then migrates the store
 before connecting. If backup, migration or custody initialization fails, the
 server refuses to connect. Keep the original files and the backup private. Do
 not delete them to bypass an error. See [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
+Once connected, the backend automatically attempts incoming `ChatRequested`
+handshakes. The `accept_secret_chat` MCP tool can accept a known pending request
+by chat ID, subject to owner approval.
 
 When `TELEGRAM_ALLOWED_CHAT_IDS` is set, add `secret/123` to allow the secret
 chat with wire ID `123`. A bare `123` authorizes only the cloud peer. Copying
@@ -94,6 +97,10 @@ refuses active accounts and process-owned or ambiguous configuration sources.
 `telegram-mcp --config FILE bind-address` prints the same resolved address used by
 the shared service. Set `TELEGRAM_MCP_LOG_FILE=off` for stderr-only runtime logging;
 this explicit sentinel also works in PowerShell versions that remove empty values.
+
+For the approval bot setup and its `/accounts` and `/bypass` commands, see
+[Owner approvals](../README.md#owner-approvals). Bypass can skip approval prompts
+but cannot override hard refusals.
 
 ## Persistent private state
 

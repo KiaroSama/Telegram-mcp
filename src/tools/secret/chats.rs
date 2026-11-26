@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 pub const TOOL_NAMES: &[&str] = &[
     "secret_chat_status",
+    "accept_secret_chat",
     "create_secret_chat",
     "list_secret_chats",
     "set_secret_chat_timer",
@@ -28,13 +29,29 @@ async fn dispatch(api: &dyn Telegram, name: &str, args: &Value) -> Result<Value>
         );
         params["user_id"] = peer;
     }
-    api.secret_call(name, params).await
+    let response = api.secret_call(name, params).await;
+    if name == "accept_secret_chat" {
+        return Ok(
+            response.unwrap_or_else(|_| json!({"status":"refused","code":"backend_unavailable"}))
+        );
+    }
+    response
 }
 
 fn payload(name: &str, args: &Value) -> Result<Value> {
     let params = match name {
         "secret_chat_status" if args["chat_id"].is_null() => json!({}),
         "secret_chat_status" => json!({"chat_id": chat_id(args, "chat_id")?}),
+        "accept_secret_chat" => {
+            ensure!(
+                args["chat_id"].as_i64().is_some(),
+                "chat_id must be an integer"
+            );
+            if !args["account"].is_null() {
+                nonempty_text(args, "account")?;
+            }
+            json!({"chat_id":chat_id(args,"chat_id")?})
+        }
         "create_secret_chat" => {
             let user = args::required(args, "user_id")?;
             ensure!(

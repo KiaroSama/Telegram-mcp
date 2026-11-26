@@ -14,7 +14,7 @@
 [![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7)](docs/COMMANDS.md)
 [![Repository size](https://img.shields.io/github/repo-size/KiaroSama/Telegram-mcp?style=flat-square&color=ca8a04)](#development)
 [![grammers 0.12 on Telegram layer 234](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20234-15803d)](docs/MIGRATION.md)
-[![390 native MCP tools](https://img.shields.io/badge/tools-390%20native-7c3aed)](docs/api-coverage.md)
+[![391 native MCP tools](https://img.shields.io/badge/tools-391%20native-7c3aed)](docs/api-coverage.md)
 ![MCP Badge](https://badge.mcpx.dev)
 [![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
 [![M8ven Agent Verified](https://m8ven.ai/api/agent-verify/badge?score=75)](https://m8ven.ai/verified/verify?id=6bf8a0d29e8c8bae)
@@ -119,7 +119,7 @@ On Windows, the launchers write `logs/start-mcp_YYYY-MM-DD_HH-mm-ss_UTC.log` and
 
 ## Tools and access
 
-The server has 390 native tools: 356 ordinary tools, including standalone `transcribe_audio`, and 34 secret-chat tools. See the [command catalogue](docs/COMMANDS.md) and [API coverage](docs/api-coverage.md). Use [exposure filters](docs/exposed-tools-groups.md) to choose which tools a client can call. Telegram permissions, Premium requirements and server limits still apply.
+The server has 391 native tools: 356 cloud tools, including standalone `transcribe_audio`, and 35 secret-chat tools. See the [command catalogue](docs/COMMANDS.md) and [API coverage](docs/api-coverage.md). Use [exposure filters](docs/exposed-tools-groups.md) to choose which tools a client can call. Telegram permissions, Premium requirements and server limits still apply.
 
 `view_video` returns sampled frames with an optional local Whisper transcript. The stdio bridge reconnects after owner restart or session expiry. If the owner may have executed a mutation but its reply was lost, inspect the result before retrying.
 
@@ -129,7 +129,11 @@ Fetching content and marking it read are separate operations. The server returns
 
 To approve from Telegram, create a dedicated bot with BotFather. Set `TELEGRAM_APPROVAL_BOT_TOKEN` and the comma-separated Telegram user IDs in `TELEGRAM_APPROVAL_OWNER_IDS` in your private `.env`. `TELEGRAM_APPROVAL_OWNER_ID` is the fallback for one owner. Each owner must open the bot's private chat and send `/start`. Restart the service after changing these settings. Use one running service per bot token so another poller or webhook cannot take its updates.
 
-The bot offers **Approve once**, **Deny**, and **Always approve** when the request names a specific chat. Permanent approvals apply to that account, tool, and chat. `/pending` lists waiting requests, `/always` and `/folders` let owners review and revoke grants, and `/reset_always` removes permanent chat approvals after confirmation. Folder grants cannot widen configured file roots.
+The bot offers **Approve once**, **Deny**, and **Always approve** when the request names a specific chat. Permanent approvals apply to that account, tool, and chat. `/pending` lists waiting requests, `/always` and `/folders` let owners review and revoke grants, and `/reset_always` removes permanent chat approvals after confirmation. Folder grants can authorize specific paths outside configured roots. Protected paths stay blocked.
+
+`/accounts` lists configured account labels and their last observed connection status. It does not open a new session.
+
+Use `/bypass` to see the current setting and choose a duration. The presets are `1h`, `6h`, `1d`, `7d` and `30d` (30 days). Send `/bypass 2h30m` or `/bypass 90m` for a custom duration. `/bypass forever` keeps prompts off until you send `/bypass off`. Only a configured owner can change this setting. It skips approval prompts for otherwise permitted requests. Protected paths and approval chats stay blocked, sealed approval codes stay redacted, and chat allowlists and Telegram permissions still apply.
 
 The default wait is 300 seconds. Set `TELEGRAM_APPROVAL_TIMEOUT_SECONDS` to a value from 5 to 3,600 seconds, and give your MCP client enough time to wait. `TELEGRAM_APPROVAL_BOT_USERNAME` optionally supplies the bot's username so the service can protect it before the first Bot API lookup. The bot chat is off-limits to MCP tools.
 
@@ -137,7 +141,7 @@ If the bot is unset or the service cannot deliver a prompt to any owner, use `te
 
 ### Secret chats
 
-[`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat) provides native MTProto 2.0 secret chats over the same account connection as ordinary chats. The server commits incoming encrypted updates to durable storage before acknowledging them. All [34 secret-chat tools](docs/COMMANDS.md#secret-chat-tools) are available through MCP, subject to the same exposure filters and safeguards.
+[`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat) provides native MTProto 2.0 secret chats over the same account connection as ordinary chats. The server commits incoming encrypted updates to durable storage before acknowledging them. All [35 secret-chat tools](docs/COMMANDS.md#secret-chat-tools) are subject to the same MCP exposure filters and safeguards. When the connected backend receives a `ChatRequested` update, it automatically attempts the incoming handshake. Use `accept_secret_chat` with a known `chat_id` to accept a pending incoming request explicitly. This tool changes chat state and is subject to owner approval.
 
 On first open of an account with a supported legacy secret-chat store, the server verifies the authorization identity, makes a read-only backup and migrates the store before starting normal update consumption. An imported session without a cached self identity may first need a request that suppresses updates to verify its owner. See [secret-chat store migration](docs/MIGRATION.md#secret-chat-store-migration).
 

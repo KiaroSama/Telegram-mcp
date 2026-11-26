@@ -26,10 +26,9 @@ pub fn approve_from_terminal(state: Arc<State>, fingerprint: &str) -> Result<()>
     if request_fingerprint(tool, &request["arguments"])? != fingerprint {
         bail!("Approval request fingerprint does not match its contents");
     }
-    eprintln!(
-        "Review this exact operation:\n{}",
-        serde_json::to_string_pretty(request)?
-    );
+    let seals = super::sealed::SealedStore::new(Arc::clone(&state));
+    let display = super::approval_details::prompt_summary(&seals.redact_value(request));
+    eprintln!("Review this operation:\n{display}");
     eprint!(
         "Type APPROVE for this request once, ALWAYS for this tool/chat/account, or anything else to deny: "
     );
@@ -37,6 +36,7 @@ pub fn approve_from_terminal(state: Arc<State>, fingerprint: &str) -> Result<()>
     let mut reply = String::new();
     std::io::stdin().read_line(&mut reply)?;
     if !["APPROVE", "ALWAYS"].contains(&reply.trim()) {
+        remove_pending(&state, fingerprint)?;
         bail!("Approval denied; no grant was written");
     }
     let always = reply.trim() == "ALWAYS";
@@ -47,6 +47,29 @@ pub fn approve_from_terminal(state: Arc<State>, fingerprint: &str) -> Result<()>
         eprintln!("Approved once. Retry the exact operation within 60 seconds.");
     }
     Ok(())
+}
+
+pub(super) fn outcome(
+    state: &State,
+    fingerprint: &str,
+    tool: &str,
+    args: &serde_json::Value,
+) -> Result<super::channels::ChannelOutcome> {
+    use super::channels::ChannelOutcome;
+    Ok(if has_grant(state, fingerprint, tool, args)? {
+        ChannelOutcome::ApprovedOnce
+    } else {
+        ChannelOutcome::Unsupported
+    })
+}
+
+pub(super) fn remove_pending(state: &State, fingerprint: &str) -> Result<()> {
+    state.update_json("approval-pending.json", json!({}), |rows| {
+        rows.as_object_mut()
+            .context("Approval request record is invalid")?
+            .remove(fingerprint);
+        Ok(())
+    })
 }
 
 pub(super) fn has_grant(

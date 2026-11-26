@@ -525,3 +525,48 @@ async fn later_group_failure_keeps_completed_results_and_never_retries_a_send() 
     assert_eq!(w.0.calls().len(), 2);
     assert_eq!(w.1.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
+
+#[test]
+fn music_tags_require_a_comment_header_and_exact_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("input.ogg");
+    for (bytes, expected_voice, kind) in [
+        (b"".as_slice(), None, "voice_note"),
+        (b"OggS".as_slice(), None, "voice_note"),
+        (b"garbageTITLE=x".as_slice(), None, "voice_note"),
+        (b"OggS OpusHead TITLE=x", None, "voice_note"),
+        (b"OggS OpusTags MYALBUM=x", Some(true), "voice_note"),
+        (b"OggS OpusTags COMPOSER=x", Some(false), "audio"),
+        (b"OggS OpusTags ALBUMARTIST=x", Some(false), "audio"),
+        (b"OggS OpusTags GENRE=x", Some(false), "audio"),
+        (b"OggS\x03vorbis TRACKNUMBER=2", Some(false), "audio"),
+    ] {
+        assert_eq!(uploads::looks_like_voice(bytes), expected_voice);
+        std::fs::write(&p, bytes).unwrap();
+        assert_eq!(uploads::infer_kind(&p), kind);
+    }
+}
+
+#[tokio::test]
+async fn send_sticker_rejects_files_exceeding_10_mib_before_upload() {
+    let (_dir, state) = local_support::fixture();
+    let path = state.file_roots()[0].join("oversized.webp");
+    let file = std::fs::File::create(&path).unwrap();
+    file.set_len(10 * 1024 * 1024 + 1).unwrap();
+    let w = MediaWire::new(vec![], vec![]);
+    let err = send(
+        &w,
+        &state,
+        "send_sticker",
+        json!({"chat_id":7,"file_path":path}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("File is too large for send_sticker: 10485761 bytes (limit: 10485760 bytes)."),
+        "unexpected error: {err}"
+    );
+    assert!(w.calls().is_empty());
+    assert!(w.uploads.lock().unwrap().is_empty());
+}

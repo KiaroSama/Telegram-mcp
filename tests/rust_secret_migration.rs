@@ -40,6 +40,115 @@ fn restore_fixture_permissions(backup: &Path, original: &Path) {
 }
 
 #[test]
+fn consumer_receipts_are_validated_before_publication_and_deduplicated_on_restart() {
+    let (dir, original) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
+    let custody = dir.path().join("secret-chats");
+    let source = custody.join("offline-consumer.json");
+    let receipt = |seq, id, ttl, save| json!({"seq_no":seq,"message":{"message_id":id,"can_be_saved":save,"self_destructs_after_seconds":ttl,"text":"fixture","private":"never exposed"},"media_reference":null,"committed_at":100+seq});
+    let mut consumer = json!({"version":1,"chats":{"12":{"0":receipt(0,42,0,true),"1":receipt(1,42,0,true),"2":receipt(2,43,1,true),"3":receipt(4,44,0,false)}}});
+    use kiaro_secret_chat::{
+        files::FileKey,
+        media::{DocumentMediaInput, MediaKind, MediaReference, Metadata, document_media},
+    };
+    let key = FileKey::generate().unwrap();
+    let media = document_media(DocumentMediaInput {
+        kind: MediaKind::Document,
+        name: "sample",
+        mime: "application/octet-stream",
+        size: 16,
+        layer: 143,
+        key: &key,
+        caption: "",
+        metadata: &Metadata::default(),
+    })
+    .unwrap();
+    let file = grammers_tl_types::types::EncryptedFile {
+        id: 441,
+        access_hash: 99,
+        size: 16,
+        dc_id: 2,
+        key_fingerprint: key.fingerprint(),
+    };
+    let media = MediaReference::new(12, &file, &media)
+        .unwrap()
+        .to_json()
+        .unwrap();
+    for seq in ["0", "1", "2", "3"] {
+        consumer["chats"]["12"][seq]["media_reference"] = media.clone();
+    }
+    let broken = serde_json::to_vec_pretty(&consumer).unwrap();
+    fs::write(&source, &broken).unwrap();
+    assert!(migrate_legacy(dir.path(), LABEL, &binding()).is_err());
+    assert_eq!(fs::read(&source).unwrap(), broken);
+    assert_eq!(fs::read(custody.join(LABEL)).unwrap(), original);
+    assert!(!custody.join("offline.v1.enc").exists());
+    consumer["chats"]["12"]["3"]["seq_no"] = json!(3);
+    consumer["chats"]["12"]["0"]["media_reference"]["chat_id"] = json!(56);
+    fs::write(&source, consumer.to_string()).unwrap();
+    assert!(migrate_legacy(dir.path(), LABEL, &binding()).is_err());
+    consumer["chats"]["12"]["0"]["media_reference"] = media.clone();
+    let valid = serde_json::to_vec(&consumer).unwrap();
+    fs::write(&source, &valid).unwrap();
+    for _ in 0..2 {
+        drop(migrate_legacy(dir.path(), LABEL, &binding()).unwrap());
+        let read = |suffix: &str| -> Value {
+            serde_json::from_slice(&fs::read(custody.join(format!("offline{suffix}"))).unwrap())
+                .unwrap()
+        };
+        let history = read(".history.v1.json");
+        assert_eq!(history["12"].as_array().unwrap().len(), 1);
+        assert_eq!(history["12"][0]["message_id"], 42);
+        assert!(history["12"][0].get("private").is_none());
+        let refs = read(".media.v1.json");
+        assert_eq!(refs["12"].as_object().unwrap().len(), 1);
+        assert_eq!(refs["12"]["42"]["reference"], media);
+        let receipts = read(".archive.v1.json");
+        assert_eq!(receipts["delivery_receipts"]["12:0"], 42);
+        assert_eq!(receipts["delivery_receipts"]["12:1"], 42);
+        assert_eq!(fs::read(&source).unwrap(), valid);
+    }
+    #[cfg(windows)]
+    for entry in fs::read_dir(&backups(&custody)[0]).unwrap().flatten() {
+        restore_fixture_permissions(&entry.path(), &custody.join(entry.file_name()));
+    }
+}
+
+#[test]
+fn earlier_native_migration_imports_consumer_sidecar_once_without_replacing_newer_rows() {
+    let (dir, _) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
+    let custody = dir.path().join("secret-chats");
+    drop(migrate_legacy(dir.path(), LABEL, &binding()).unwrap());
+    let history = custody.join("offline.history.v1.json");
+    fs::write(
+        &history,
+        br#"{"12":[{"message_id":99,"text":"newer native row","date":"2026-01-01T00:00:00Z"}]}"#,
+    )
+    .unwrap();
+    let legacy=br#"{"version":1,"chats":{"12":{"0":{"seq_no":0,"committed_at":1546800000,"message":{"message_id":42,"text":"from legacy"},"media_reference":null}}}}"#;
+    fs::write(custody.join("offline-consumer.json"), legacy).unwrap();
+    let conflict = custody.join("offline.media.v1.json");
+    fs::write(&conflict, b"invalid").unwrap();
+    let original_history = fs::read(&history).unwrap();
+    let manifest = custody.join("offline.migration.json");
+    let original_manifest = fs::read(&manifest).unwrap();
+    assert!(migrate_legacy(dir.path(), LABEL, &binding()).is_err());
+    assert_eq!(fs::read(&history).unwrap(), original_history);
+    assert_eq!(fs::read(manifest).unwrap(), original_manifest);
+    fs::remove_file(conflict).unwrap();
+    for _ in 0..2 {
+        drop(migrate_legacy(dir.path(), LABEL, &binding()).unwrap());
+        let body: Value = serde_json::from_slice(&fs::read(&history).unwrap()).unwrap();
+        assert_eq!(body["12"].as_array().unwrap().len(), 2);
+        assert_eq!(body["12"][0]["message_id"], 42);
+        assert_eq!(body["12"][1]["message_id"], 99);
+    }
+    #[cfg(windows)]
+    for entry in fs::read_dir(&backups(&custody)[0]).unwrap().flatten() {
+        restore_fixture_permissions(&entry.path(), &custody.join(entry.file_name()));
+    }
+}
+
+#[test]
 fn empty_store_migrates_once_with_a_readonly_byte_identical_backup() {
     let (dir, bytes) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
     let custody = dir.path().join("secret-chats");
@@ -338,5 +447,56 @@ fn refuses_linked_legacy_sidecar_and_path_escape() {
     #[cfg(windows)]
     for name in [LABEL, "offline-history.json"] {
         restore_fixture_permissions(&backups(&custody)[0].join(name), &custody.join(name));
+    }
+}
+
+#[tokio::test]
+async fn deleted_chat_export_requires_choices_and_resolves_the_supplied_user() {
+    use telegram_mcp::{backend::Telegram, tools};
+    struct Archive;
+    #[async_trait::async_trait]
+    impl Telegram for Archive {
+        async fn invoke(&self, _: &str, args: Value) -> anyhow::Result<Value> {
+            Ok(args)
+        }
+        async fn resolve_peer(&self, value: &Value) -> anyhow::Result<Value> {
+            assert!(value == "@archive_fixture" || value == &json!(37));
+            Ok(json!({"_":"inputPeerUser","user_id":37,"access_hash":999}))
+        }
+    }
+    let mut args = json!({"secret_chat_id":42,"peer_user":"@archive_fixture"});
+    let response = tools::call(&Archive, "export_secret_chat", &args)
+        .await
+        .unwrap();
+    assert_eq!(response["status"], "choices_required");
+    assert!(
+        response["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("destination"))
+    );
+    for key in [
+        "photos",
+        "videos",
+        "voice_messages",
+        "video_messages",
+        "stickers",
+        "gifs",
+        "files",
+    ] {
+        args[key] = json!(false);
+    }
+    for key in ["date_from", "date_to", "destination"] {
+        args[key] = json!("");
+    }
+    args["format"] = json!("json");
+    args["size_limit_mb"] = json!(10);
+    for peer in [json!(37), json!("@archive_fixture")] {
+        args["peer_user"] = peer;
+        let result = tools::call(&Archive, "export_secret_chat", &args)
+            .await
+            .unwrap();
+        assert_eq!(result["peer_user"], 37);
+        assert!(!result.to_string().contains("access_hash"));
     }
 }

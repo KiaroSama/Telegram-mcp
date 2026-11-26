@@ -1,12 +1,138 @@
 use crate::{session::validate_label, state::State};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
+use base64::Engine;
 use serde::{Serialize, Serializer};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::Arc,
 };
+
+#[derive(Debug, Clone, Default, Eq, PartialEq)]
+pub struct ClientIdentity {
+    pub device_model: Option<String>,
+    pub system_version: Option<String>,
+    pub app_version: Option<String>,
+}
+
+fn validate_identity_field(name: &str, raw: Option<&str>) -> Result<Option<String>> {
+    let Some(value) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    ensure!(
+        value.len() <= 256 && !value.chars().any(char::is_control),
+        "{name} contains unsupported characters or exceeds 256 bytes"
+    );
+    Ok(Some(value.to_owned()))
+}
+
+impl ClientIdentity {
+    pub fn from_snapshot(snapshot: &crate::account_manager::ConfigSnapshot) -> Result<Self> {
+        let get = |key: &str| {
+            snapshot
+                .values
+                .get(key)
+                .cloned()
+                .or_else(|| std::env::var(key).ok())
+        };
+        Ok(Self {
+            device_model: validate_identity_field(
+                "TELEGRAM_DEVICE_MODEL",
+                get("TELEGRAM_DEVICE_MODEL").as_deref(),
+            )?,
+            system_version: validate_identity_field(
+                "TELEGRAM_SYSTEM_VERSION",
+                get("TELEGRAM_SYSTEM_VERSION").as_deref(),
+            )?,
+            app_version: validate_identity_field(
+                "TELEGRAM_APP_VERSION",
+                get("TELEGRAM_APP_VERSION").as_deref(),
+            )?,
+        })
+    }
+
+    pub fn apply_to(&self, params: &mut grammers_mtsender::ConnectionParams) {
+        if let Some(model) = &self.device_model {
+            params.device_model = model.clone();
+        }
+        if let Some(system) = &self.system_version {
+            params.system_version = system.clone();
+        }
+        if let Some(app) = &self.app_version {
+            params.app_version = app.clone();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct PooledSession {
+    pub index: usize,
+    pub slot_label: String,
+    pub auth_identity: String,
+    pub value: String,
+}
+
+/// Derive a private canonical auth-key fingerprint for deduplicating session strings
+/// without exposing key material.
+pub fn session_auth_key_identity(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Some(body) = trimmed.strip_prefix('1') {
+        let decoded = base64::engine::general_purpose::URL_SAFE
+            .decode(body)
+            .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body))
+            .or_else(|_| base64::engine::general_purpose::STANDARD.decode(body));
+        if let Ok(bytes) = decoded
+            && (bytes.len() == 263 || bytes.len() == 275)
+        {
+            let auth_key = &bytes[bytes.len() - 256..];
+            return crate::lowercase_hex(&Sha256::digest(auth_key));
+        }
+    }
+    crate::lowercase_hex(&Sha256::digest(trimmed.as_bytes()))
+}
+
+/// Parse `TELEGRAM_SESSION_STRINGS` (whitespace/comma/semicolon separated) into an
+/// ordered deduplicated pool, dropping collisions with named sessions or earlier items.
+pub fn pooled_sessions(snapshot: &crate::account_manager::ConfigSnapshot) -> Vec<PooledSession> {
+    let mut seen = BTreeSet::new();
+    for (key, value) in &snapshot.values {
+        if !value.trim().is_empty()
+            && (key == "TELEGRAM_SESSION_STRING" || key.starts_with("TELEGRAM_SESSION_STRING_"))
+        {
+            seen.insert(session_auth_key_identity(value));
+        }
+    }
+    let Some(raw) = snapshot
+        .values
+        .get("TELEGRAM_SESSION_STRINGS")
+        .map(String::as_str)
+        .filter(|s| !s.trim().is_empty())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for token in raw
+        .split(|c: char| c.is_ascii_whitespace() || c == ',' || c == ';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let auth_identity = session_auth_key_identity(token);
+        if !seen.insert(auth_identity.clone()) {
+            continue;
+        }
+        let slot_label = format!("pool_{}", &auth_identity[..12]);
+        let index = out.len();
+        out.push(PooledSession {
+            index,
+            slot_label,
+            auth_identity,
+            value: token.to_owned(),
+        });
+    }
+    out
+}
 
 /// A source revision is always a SHA-256 digest, never arbitrary source text.
 /// Keeping this representation separate prevents serialization from exposing
@@ -122,6 +248,11 @@ pub(super) fn source_from(
             }
         }
     }
+    if label == "default"
+        && let Some(first) = pooled_sessions(snapshot).into_iter().next()
+    {
+        return Some(("TELEGRAM_SESSION_STRINGS".into(), first.value));
+    }
     None
 }
 pub fn generation(label: &str) -> Result<Option<String>> {
@@ -133,8 +264,9 @@ pub fn generation(label: &str) -> Result<Option<String>> {
     }))
 }
 pub fn account_labels() -> Result<Vec<String>> {
+    let snapshot = crate::account_manager::current_config()?;
     let mut labels = BTreeSet::new();
-    for (key, value) in crate::account_manager::current_config()?.values {
+    for (key, value) in &snapshot.values {
         if value.is_empty() {
             continue;
         }
@@ -149,6 +281,9 @@ pub fn account_labels() -> Result<Vec<String>> {
             }
         }
     }
+    if !pooled_sessions(&snapshot).is_empty() {
+        labels.insert("default".into());
+    }
     Ok(labels
         .into_iter()
         .filter(|label| !label.starts_with("__login_"))
@@ -156,6 +291,54 @@ pub fn account_labels() -> Result<Vec<String>> {
 }
 pub fn accounts_snapshot() -> Result<Value> {
     Ok(serde_json::to_value(current_configuration_report()?)?)
+}
+
+/// Enrich configured accounts with live `get_me()` identity for already-connected clients
+/// without opening auxiliary logins. Reports `unavailable` separately from `disconnected`.
+pub async fn live_accounts_snapshot(
+    connected: &[(String, Arc<dyn crate::backend::Telegram>)],
+) -> Result<Value> {
+    let mut report = accounts_snapshot()?;
+    let Some(entries) = report["accounts"].as_array_mut() else {
+        return Ok(report);
+    };
+    let map: BTreeMap<&str, &Arc<dyn crate::backend::Telegram>> = connected
+        .iter()
+        .map(|(label, api)| (label.as_str(), api))
+        .collect();
+    for entry in entries.iter_mut() {
+        let label = entry["label"].as_str().unwrap_or("");
+        if let Some(api) = map.get(label) {
+            entry["connected"] = json!(true);
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                api.invoke("users.getUsers", json!({"id":[{"_":"inputUserSelf"}]})),
+            )
+            .await
+            {
+                Ok(Ok(Value::Array(users))) => {
+                    if let Some(me) = users.first() {
+                        let first = me["first_name"].as_str();
+                        let last = me["last_name"].as_str();
+                        let display = crate::sanitize::full_name(first, last);
+                        entry["status"] = json!("connected");
+                        entry["user_id"] = me["id"].clone();
+                        entry["display_name"] = json!(display);
+                        entry["username"] = me["username"].clone();
+                    } else {
+                        entry["status"] = json!("unavailable");
+                    }
+                }
+                _ => {
+                    entry["status"] = json!("unavailable");
+                }
+            }
+        } else {
+            entry["connected"] = json!(false);
+            entry["status"] = json!("disconnected");
+        }
+    }
+    Ok(report)
 }
 
 #[cfg(test)]

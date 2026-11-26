@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn approval_redaction_hides_nested_cross_account_requotes_and_only_matching_message_ids()
+-> anyhow::Result<()> {
+    let directory = tempfile::tempdir()?;
+    let state = std::sync::Arc::new(crate::state::State::at(
+        directory.path().to_owned(),
+        vec![],
+    )?);
+    state.write_json(
+        "sealed.json",
+        &json!({"codes":["A1BC"],"accounts":{"work":{"self_peer":7,"message_ids":[42]}}}),
+    )?;
+    let guard = crate::safeguard::Safeguard::new(state);
+    let input =
+        json!({"chat_id":"me","items":[{"id":42,"text":"private"},{"id":43,"text":"copy A1BC!"}]});
+    assert_eq!(
+        guard.redact_tool_result("work", &input),
+        json!({"chat_id":"me","items":["[approval request - hidden]",{"id":43,"text":"copy [hidden]!"}]})
+    );
+    assert_eq!(
+        guard.redact_tool_result("home", &input)["items"][0]["text"],
+        "private"
+    );
+    assert_eq!(
+        guard.redact_tool_result(
+            "home",
+            &json!("before Approval A1BC: details from another device. after")
+        ),
+        "before [approval request - hidden] after"
+    );
+    Ok(())
+}
+
+#[test]
 fn repeated_short_rendered_text_keeps_window_storage_bounded_and_preserves_fragments() {
     let mut memory = Memory::default();
     for _ in 0..20_000 {

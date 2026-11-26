@@ -246,6 +246,13 @@ impl Memory {
         }
         matches
     }
+
+    pub(super) fn remembered(&self) -> std::collections::BTreeMap<String, usize> {
+        self.accounts
+            .iter()
+            .map(|(account, memory)| (account.clone(), memory.fragments.len()))
+            .collect()
+    }
 }
 
 fn collect_strings<'a>(value: &'a Value, strings: &mut Vec<&'a str>) {

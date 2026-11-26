@@ -28,16 +28,9 @@ pub(crate) fn normalize_lookup_query(query: &Value) -> Result<Value> {
     };
     let trimmed = raw.trim();
     let lower = trimmed.to_ascii_lowercase();
-    let prefix = [
-        "https://t.me/",
-        "http://t.me/",
-        "t.me/",
-        "https://telegram.me/",
-        "http://telegram.me/",
-        "telegram.me/",
-    ]
-    .into_iter()
-    .find(|prefix| lower.starts_with(prefix));
+    let prefix = crate::permalinks::username_prefixes(None)
+        .into_iter()
+        .find(|prefix| lower.starts_with(prefix));
     let Some(prefix) = prefix else {
         return Ok(query.clone());
     };

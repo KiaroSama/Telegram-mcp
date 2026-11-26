@@ -160,7 +160,7 @@ pub(super) fn key_picture(state: &State, name: &str, hash: &[u8]) -> Result<Path
 pub(super) fn write_history(
     state: &State,
     label: &str,
-    chat: i32,
+    chat: (i32, Option<i64>),
     rows: &[Value],
     format: ExportFormat,
     destination: Option<&Path>,
@@ -197,22 +197,33 @@ pub(super) fn write_history(
 fn write_single(
     state: &State,
     label: &str,
-    chat: i32,
+    chat: (i32, Option<i64>),
     rows: &[Value],
     format: ExportFormat,
     destination: Option<&Path>,
 ) -> Result<PathBuf> {
+    let (chat, peer) = chat;
     let path = output(
         state,
         destination,
         &format!("secret-{label}-{chat}.{}", format.extension()),
     )?;
     let bytes = match format {
-        ExportFormat::Json => serde_json::to_vec_pretty(&json!({"chat_id":chat,"messages":rows}))?,
+        ExportFormat::Json => {
+            let mut body = json!({"chat_id":chat,"messages":rows});
+            if let Some(id) = peer {
+                body["peer_user_id"] = json!(id.to_string());
+            }
+            serde_json::to_vec_pretty(&body)?
+        }
         ExportFormat::Html | ExportFormat::HtmlAndJson => {
             let mut html = String::from(
-                "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Secret chat export</title><main><h1>Secret chat export</h1><ol>",
+                "<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><title>Secret chat export</title><main><h1>Secret chat export</h1>",
             );
+            if let Some(id) = peer {
+                html.push_str(&format!("<p>Peer: {id}</p>"));
+            }
+            html.push_str("<ol>");
             for row in rows {
                 html.push_str("<li><pre>");
                 for ch in display(row).chars() {
