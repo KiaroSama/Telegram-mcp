@@ -373,8 +373,15 @@ async fn malformed_media_fails_codec_validation_before_sending_an_rpc() {
 #[tokio::test]
 async fn sticker_uploads_carry_sticker_attributes_instead_of_file_forcing() {
     let (_dir, state) = local_support::fixture();
-    let path = state.file_roots()[0].join("sticker.png");
-    std::fs::write(&path, png()).unwrap();
+    let path = state.file_roots()[0].join("sticker.webp");
+    let mut webp = Vec::new();
+    image::DynamicImage::new_rgba8(1, 1)
+        .write_to(
+            &mut std::io::Cursor::new(&mut webp),
+            image::ImageFormat::WebP,
+        )
+        .unwrap();
+    std::fs::write(&path, webp).unwrap();
     let w = MediaWire::new(
         vec![("messages.sendMedia", json!({"_":"updates","updates":[]}))],
         vec![],
@@ -388,7 +395,7 @@ async fn sticker_uploads_carry_sticker_attributes_instead_of_file_forcing() {
     .await
     .unwrap();
     let media = &w.calls()[0].1["media"];
-    assert_eq!(media["mime_type"], "image/png");
+    assert_eq!(media["mime_type"], "image/webp");
     assert_eq!(media["force_file"], false);
     assert_eq!(media["attributes"][1]["_"], "documentAttributeSticker");
     assert_eq!(

@@ -526,3 +526,41 @@ fn service_projection_covers_all_desktop_service_actions() {
         assert!(!proj.html_body.contains("<notice>"));
     }
 }
+
+#[test]
+fn dual_writer_main_file_path_slice_and_finish_semantics_match_desktop() {
+    let temp_both = tempfile::tempdir().unwrap();
+    let opts_both = settings(temp_both.path(), "html_and_json");
+    let mut writer = Writer::new(
+        temp_both.path(),
+        &opts_both,
+        "Dual Slice",
+        &json!({"_":"inputPeerUser","user_id":"10"}),
+    )
+    .unwrap();
+    assert_eq!(
+        writer.main_file_path(),
+        temp_both.path().join("messages.html")
+    );
+    writer
+        .write_dialog_slice(&[message(1), message(2)], &BTreeMap::new())
+        .unwrap();
+    writer.finish().unwrap();
+    assert!(temp_both.path().join("messages.html").exists());
+    assert!(temp_both.path().join("result.json").exists());
+
+    let temp_json = tempfile::tempdir().unwrap();
+    let opts_json = settings(temp_json.path(), "json");
+    let writer_json = Writer::new(
+        temp_json.path(),
+        &opts_json,
+        "Json Only",
+        &json!({"_":"inputPeerUser","user_id":"11"}),
+    )
+    .unwrap();
+    assert_eq!(
+        writer_json.main_file_path(),
+        temp_json.path().join("result.json")
+    );
+    writer_json.finish().unwrap();
+}

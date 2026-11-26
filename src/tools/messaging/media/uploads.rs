@@ -36,6 +36,32 @@ fn suffix(path: &Path) -> String {
         .to_string_lossy()
         .to_ascii_lowercase()
 }
+pub fn allowed_extensions(tool_name: &str) -> Option<&'static [&'static str]> {
+    match tool_name {
+        "send_voice" => Some(&[".ogg", ".opus"]),
+        "send_sticker" => Some(&[".webp"]),
+        "set_profile_photo" | "edit_chat_photo" => Some(&[".jpg", ".jpeg", ".png", ".webp"]),
+        _ => None,
+    }
+}
+
+pub fn ensure_extension_allowed(tool_name: &str, path: &Path) -> Result<()> {
+    let Some(allowed) = allowed_extensions(tool_name) else {
+        return Ok(());
+    };
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{}", e.to_ascii_lowercase()))
+        .unwrap_or_default();
+    ensure!(
+        allowed.contains(&ext.as_str()),
+        "File extension is not allowed for {tool_name}. Allowed: {}.",
+        allowed.join(", ")
+    );
+    Ok(())
+}
+
 pub fn max_upload_bytes(tool_name: &str) -> Option<u64> {
     match tool_name {
         "send_file" | "send_album" | "upload_file" => Some(200 * 1024 * 1024),
@@ -319,6 +345,7 @@ pub async fn run_with_state(
 ) -> Result<Value> {
     if name == "upload_file" {
         let path = state.resolve_file(Path::new(args::text(a, "file_path")?), FileAccess::Read)?;
+        ensure_extension_allowed(name, &path)?;
         ensure_size_within_limit(name, &path)?;
         return api.upload(&path).await;
     }
@@ -370,6 +397,7 @@ pub async fn run_with_state(
             Path::new(raw.as_str().context("file_path must be a path string")?),
             FileAccess::Read,
         )?;
+        ensure_extension_allowed(name, &path)?;
         ensure_size_within_limit(name, &path)?;
         let explicit = a
             .get("kind")

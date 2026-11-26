@@ -72,15 +72,54 @@ fn safe_suffix_and_download_paths_enforce_denylist_windows_normalization_and_syn
             "windows trailing normalization for {name}"
         );
     }
-    assert_eq!(safe_suffix(".PNG"), ".png");
+    assert_eq!(safe_suffix(".PNG"), ".PNG");
+    assert_eq!(safe_suffix(".PDF"), ".PDF");
     assert_eq!(safe_suffix(".tar"), ".tar");
     assert_eq!(safe_suffix(".1234567"), ".1234567");
     assert_eq!(safe_suffix(".12345678"), ".bin");
     assert_eq!(safe_suffix(".bad-ext"), ".bin");
     assert_eq!(safe_suffix(""), ".bin");
+
+    let (replaced, old_ext) =
+        telegram_mcp::state::target_path(std::path::Path::new("notes.txt"), ".jpg");
+    assert_eq!(replaced, std::path::PathBuf::from("notes.jpg"));
+    assert_eq!(old_ext.as_deref(), Some(".txt"));
+    let (same, no_old) =
+        telegram_mcp::state::target_path(std::path::Path::new("photo.JPG"), ".jpg");
+    assert_eq!(same, std::path::PathBuf::from("photo.JPG"));
+    assert_eq!(no_old, None);
+
+    assert!(
+        telegram_mcp::tools::messaging::media::uploads::ensure_extension_allowed(
+            "send_voice",
+            std::path::Path::new("voice.ogg"),
+        )
+        .is_ok()
+    );
+    assert!(
+        telegram_mcp::tools::messaging::media::uploads::ensure_extension_allowed(
+            "send_voice",
+            std::path::Path::new("voice.oga"),
+        )
+        .is_err()
+    );
+    assert!(
+        telegram_mcp::tools::messaging::media::uploads::ensure_extension_allowed(
+            "send_sticker",
+            std::path::Path::new("s.webp"),
+        )
+        .is_ok()
+    );
+    assert!(
+        telegram_mcp::tools::messaging::media::uploads::ensure_extension_allowed(
+            "send_sticker",
+            std::path::Path::new("s.png"),
+        )
+        .is_err()
+    );
     assert_eq!(
         sanitize_download_filename("report.PDF").unwrap(),
-        "report.pdf"
+        "report.PDF"
     );
     assert_eq!(sanitize_download_filename("notes.").unwrap(), "notes.bin");
     assert_eq!(sanitize_download_filename("README").unwrap(), "README");
@@ -105,7 +144,7 @@ fn safe_suffix_and_download_paths_enforce_denylist_windows_normalization_and_syn
     let state = State::at(temp.path().join("state"), vec![root.clone()]).unwrap();
     let spaced = root.join("my folder").join("report 2026.PDF");
     let resolved = state.resolve_download_file(&spaced).unwrap();
-    assert!(resolved.ends_with(Path::new("my folder").join("report 2026.pdf")));
+    assert!(resolved.ends_with(Path::new("my folder").join("report 2026.PDF")));
     let blocked_resolved = state
         .resolve_download_file(&root.join("installer.EXE. "))
         .unwrap();

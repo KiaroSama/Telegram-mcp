@@ -74,7 +74,26 @@ pub fn safe_suffix(raw: &str) -> String {
     if DANGEROUS_SUFFIXES.contains(&lower.as_str()) {
         return ".bin".to_owned();
     }
-    lower
+    trimmed.to_owned()
+}
+
+/// Enforce a safe media extension over a caller-supplied destination path.
+/// Returns `(target_path, replaced_suffix)` where `replaced_suffix` is `None` when unchanged.
+pub fn target_path(out_path: &Path, suffix: &str) -> (PathBuf, Option<String>) {
+    let enforced = safe_suffix(suffix);
+    let current = out_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"));
+    if current
+        .as_deref()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(&enforced))
+    {
+        return (out_path.to_path_buf(), None);
+    }
+    let ext_no_dot = enforced.trim_start_matches('.');
+    let updated = out_path.with_extension(ext_no_dot);
+    (updated, current)
 }
 
 /// Apply `safe_suffix` to the final filename component, accounting for Windows
