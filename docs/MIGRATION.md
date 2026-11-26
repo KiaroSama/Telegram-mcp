@@ -17,12 +17,13 @@ The native secret-chat integration for `v3.1.0` has since merged into `main`.
   exact commit. Build success alone does not establish runtime behavior.
 - Review upstream changes and dependency documentation.
 - Use `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats, without the legacy
-  Python runtime. Version 3.2.0 exposes 390 native tools: 356 ordinary tools and all
-  34 [secret-chat tools](COMMANDS.md#secret-chat-tools).
+  Python runtime. Version 3.3.0 exposes 391 native tools: 356 ordinary tools and all
+  35 [secret-chat tools](COMMANDS.md#secret-chat-tools), including `accept_secret_chat`
+  and automatic incoming `ChatRequested` acceptance.
 
-## Approval channels in 3.2.0
+## Approval channels and owner controls in 3.3.0
 
-The native service can send approval prompts to a dedicated Telegram bot again. See [owner approvals](../README.md#owner-approvals) for setup. The bot uses the same private grant store as `telegram-mcp approve`; no grant migration is needed. The terminal workflow stays available when the bot is unset or cannot deliver a prompt. The bot's folder menu can revoke recorded grants and does not add new file roots.
+The native service sends approval prompts through the owner approval bot, MCP elicitation dialogs, Saved Messages, or `telegram-mcp approve`. See [owner approvals](../README.md#owner-approvals) for setup. The bot adds `/bypass` (`1h`, `6h`, `1d`, `7d`, `30d`, `inf`, `custom`, `off`) and `/accounts`, persists `bypass.json`, seals approval codes and prompts in tool output, and keeps hard refusals active even during bypass. The bot uses the same private grant store as `telegram-mcp approve`; no grant migration is needed. The terminal workflow stays available when the bot is unset or cannot deliver a prompt. The bot's folder menu can revoke recorded grants and does not add new file roots.
 
 ## Source revisions reviewed
 
@@ -181,7 +182,7 @@ establish that instrumentation works on a new target.
 
 ## Secret-chat store migration
 
-Version 3.2.0 uses [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat)
+Version 3.3.0 uses [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat)
 for native MTProto 2.0 secret chats. Ordinary and secret chats share one connection
 per authorization key. The server commits incoming encrypted updates to durable
 storage before acknowledging them.
