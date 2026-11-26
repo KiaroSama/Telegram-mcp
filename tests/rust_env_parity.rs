@@ -264,11 +264,12 @@ fn proxy_precedence_conflicts_rdns_and_mtproto_auth_are_enforced() {
     assert!(proxy::candidates(&state, &conflict_rdns, "default").is_err());
 
     // MTProto rejects username/password auth.
+    let synthetic_secret = "ab".repeat(16);
     let mt_auth = snapshot(&[
         ("TELEGRAM_PROXY_TYPE", "mtproto"),
         ("TELEGRAM_PROXY_HOST", "mt.example"),
         ("TELEGRAM_PROXY_PORT", "443"),
-        ("TELEGRAM_PROXY_SECRET", "0123456789abcdef0123456789abcdef"),
+        ("TELEGRAM_PROXY_SECRET", &synthetic_secret),
         ("TELEGRAM_PROXY_USERNAME", "alice"),
     ]);
     assert!(proxy::candidates(&state, &mt_auth, "default").is_err());
