@@ -127,6 +127,7 @@ pub struct LogChat {
     pub utc_offset_seconds: i32,
     pub users: BTreeMap<i64, Value>,
     pub chats: BTreeMap<i64, Value>,
+    pub basic_chats: BTreeMap<i64, Value>,
 }
 
 impl LogChat {
@@ -142,15 +143,15 @@ impl LogChat {
     }
 
     pub fn from_peers(channel_id: i64, peers: &BTreeMap<String, Value>, self_id: i64) -> Self {
-        let (mut users, mut chats) = (BTreeMap::new(), BTreeMap::new());
+        let (mut users, mut chats, mut basic_chats) =
+            (BTreeMap::new(), BTreeMap::new(), BTreeMap::new());
         for (k, v) in peers {
-            let cid = k
-                .strip_prefix("channel:")
-                .or_else(|| k.strip_prefix("chat:"));
             if let Some(Ok(id)) = k.strip_prefix("user:").map(str::parse::<i64>) {
                 users.insert(id, v.clone());
-            } else if let Some(Ok(id)) = cid.map(str::parse::<i64>) {
+            } else if let Some(Ok(id)) = k.strip_prefix("channel:").map(str::parse::<i64>) {
                 chats.insert(id, v.clone());
+            } else if let Some(Ok(id)) = k.strip_prefix("chat:").map(str::parse::<i64>) {
+                basic_chats.insert(id, v.clone());
             }
         }
         let ent = chats.get(&channel_id);
@@ -162,6 +163,7 @@ impl LogChat {
         chat.self_id = self_id;
         chat.users = users;
         chat.chats = chats;
+        chat.basic_chats = basic_chats;
         chat
     }
 
@@ -187,13 +189,7 @@ impl LogChat {
         if let Some(uid) = json_i64(peer).or_else(|| peer.get("user_id").and_then(json_i64)) {
             return self.user_name(uid);
         }
-        let cid = peer
-            .get("channel_id")
-            .or_else(|| peer.get("chat_id"))
-            .and_then(json_i64)
-            .unwrap_or(0);
-        self.chats
-            .get(&cid)
+        self.chat_peer(peer)
             .and_then(|c| c["title"].as_str())
             .unwrap_or("")
             .to_owned()
@@ -202,13 +198,7 @@ impl LogChat {
     pub fn peer_username(&self, peer: &Value) -> Option<String> {
         let ent = match json_i64(peer).or_else(|| peer.get("user_id").and_then(json_i64)) {
             Some(uid) => self.users.get(&uid)?,
-            None => {
-                let cid = peer
-                    .get("channel_id")
-                    .or_else(|| peer.get("chat_id"))
-                    .and_then(json_i64)?;
-                self.chats.get(&cid)?
-            }
+            None => self.chat_peer(peer)?,
         };
         if let Some(u) = ent["username"].as_str().filter(|s| !s.is_empty()) {
             return Some(u.to_owned());
@@ -220,6 +210,15 @@ impl LogChat {
             .as_str()
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
+    }
+
+    fn chat_peer(&self, peer: &Value) -> Option<&Value> {
+        if let Some(id) = peer.get("channel_id").and_then(json_i64) {
+            self.chats.get(&id)
+        } else {
+            self.basic_chats
+                .get(&peer.get("chat_id").and_then(json_i64)?)
+        }
     }
 
     pub fn participant_string(&self, peer: &Value) -> String {
@@ -450,6 +449,47 @@ pub fn link_lines(chat: &LogChat, names: &[String]) -> Vec<AdminTextPart> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn peer_tables_keep_basic_groups_and_channels_with_the_same_id_separate() {
+        let peers = BTreeMap::from([
+            (
+                "user:55".into(),
+                json!({"_":"user","id":"55","first_name":"Alice","username":"alice"}),
+            ),
+            (
+                "channel:55".into(),
+                json!({"_":"channel","id":"55","title":"Channel","username":"channel_name","megagroup":true}),
+            ),
+            (
+                "chat:55".into(),
+                json!({"_":"chat","id":"55","title":"Basic group"}),
+            ),
+        ]);
+        let chat = LogChat::from_peers(55, &peers, 0);
+        assert_eq!(
+            chat.peer_name(&json!({"_":"peerChannel","channel_id":"55"})),
+            "Channel"
+        );
+        assert_eq!(
+            chat.peer_name(&json!({"_":"peerChat","chat_id":"55"})),
+            "Basic group"
+        );
+        assert_eq!(
+            chat.peer_name(&json!({"_":"peerUser","user_id":"55"})),
+            "Alice"
+        );
+        assert_eq!(
+            chat.peer_username(&json!({"_":"peerChannel","channel_id":"55"})),
+            Some("channel_name".into())
+        );
+        assert_eq!(
+            chat.peer_username(&json!({"_":"peerChat","chat_id":"55"})),
+            None
+        );
+        assert!(chat.megagroup);
+        assert!(!chat.broadcast);
+    }
 
     #[test]
     fn formats_topics_rights_invites_and_edits() {

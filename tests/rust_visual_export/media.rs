@@ -188,6 +188,117 @@ fn unavailable_custom_emoji_is_recorded_once_and_never_retried_for_each_message(
     });
 }
 
+#[derive(Clone)]
+struct EmojiFailureFixture {
+    inner: Fixture,
+    failure: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Telegram for EmojiFailureFixture {
+    async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
+        if method == "messages.getCustomEmojiDocuments" {
+            self.inner
+                .requests
+                .lock()
+                .unwrap()
+                .push((method.into(), params));
+            match self.failure {
+                "lookup" => bail!("Synthetic emoji lookup failure"),
+                "missing" => return Ok(json!([])),
+                _ => {
+                    let mut document = document_message(1)["media"]["document"].clone();
+                    document["id"] = json!("9007199254740993");
+                    if self.failure == "size_limit" {
+                        document["size"] = json!(64 * 1024 * 1024);
+                    }
+                    return Ok(json!([document]));
+                }
+            }
+        }
+        let mut response = self.inner.invoke(method, params).await?;
+        if let Some(messages) = response.get_mut("messages").and_then(Value::as_array_mut) {
+            for message in messages {
+                message["entities"] = json!([{"_":"messageEntityCustomEmoji","offset":0,"length":1,"document_id":"9007199254740993"}]);
+            }
+        }
+        Ok(response)
+    }
+
+    async fn resolve_peer(&self, input: &Value) -> Result<Value> {
+        self.inner.resolve_peer(input).await
+    }
+
+    async fn download(
+        &self,
+        location: Value,
+        destination: &std::path::Path,
+        max_bytes: u64,
+    ) -> Result<Value> {
+        if self.failure == "download" {
+            bail!("Synthetic emoji download failure");
+        }
+        self.inner.download(location, destination, max_bytes).await
+    }
+}
+
+#[test]
+fn selected_custom_emoji_failures_make_exports_partial_but_size_exclusions_do_not() {
+    if isolated(
+        "media_edges::selected_custom_emoji_failures_make_exports_partial_but_size_exclusions_do_not",
+    ) {
+        return;
+    }
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        for failure in ["lookup", "missing", "download", "size_limit"] {
+            let api = EmojiFailureFixture {
+                inner: Fixture {
+                    short_page: true,
+                    ..Default::default()
+                },
+                failure,
+            };
+            let mut options = settings(&format!("emoji-{failure}"));
+            options.media[4] = true;
+            let (_sender, receiver) = tokio::sync::watch::channel(false);
+            let result = export::run(
+                &api,
+                "chat",
+                &json!({"chat_id":"@test"}),
+                &options,
+                receiver,
+                "",
+            )
+            .await
+            .unwrap();
+            let failed = failure != "size_limit";
+            assert_eq!(result["partial"], failed, "{failure}");
+            assert_eq!(result["complete"], !failed, "{failure}");
+            assert_eq!(
+                result["failed_files"],
+                if failed { 1 } else { 0 },
+                "{failure}"
+            );
+            assert_eq!(result["messages"], 2);
+            assert_eq!(result["files"], 0);
+            assert_eq!(
+                api.inner
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(name, _)| name == "messages.getCustomEmojiDocuments")
+                    .count(),
+                1
+            );
+            let doc: Value =
+                serde_json::from_slice(&std::fs::read(options.path.join("result.json")).unwrap())
+                    .unwrap();
+            assert_eq!(doc["messages"].as_array().unwrap().len(), 2);
+        }
+    });
+}
+
 #[test]
 fn rich_media_deduplicates_repeated_assets_and_keeps_successful_downloads_when_another_is_unselected()
  {

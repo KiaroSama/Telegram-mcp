@@ -199,6 +199,26 @@ fn configuration_report(
             );
         }
     }
+    let pool = pooled_sessions(snapshot);
+    if !entries.contains_key("default") && !pool.is_empty() {
+        let text = &snapshot.values["TELEGRAM_SESSION_STRINGS"];
+        entries.insert(
+            "default".into(),
+            PublicConfigurationEntry {
+                label: "default".into(),
+                selected_label: "default".into(),
+                config_key: "TELEGRAM_SESSION_STRINGS".into(),
+                revision: ConfigurationRevision(Sha256::digest(text.as_bytes()).into()),
+                native_session: pool.iter().any(|candidate| {
+                    root.join(format!("{}.session.json", candidate.slot_label))
+                        .is_file()
+                }),
+                source: "configuration",
+                backend: "grammers",
+                secret_chat_available: true,
+            },
+        );
+    }
     Ok(PublicConfigurationReport {
         entries: entries.into_values().collect(),
         backend: "grammers",
@@ -248,10 +268,11 @@ pub(super) fn source_from(
             }
         }
     }
-    if label == "default"
-        && let Some(first) = pooled_sessions(snapshot).into_iter().next()
-    {
-        return Some(("TELEGRAM_SESSION_STRINGS".into(), first.value));
+    if label == "default" && !pooled_sessions(snapshot).is_empty() {
+        return Some((
+            "TELEGRAM_SESSION_STRINGS".into(),
+            snapshot.values["TELEGRAM_SESSION_STRINGS"].clone(),
+        ));
     }
     None
 }

@@ -27,7 +27,11 @@ pub(super) fn push_document_fields(out: &mut Value, document: &Value) {
     let Some(attrs) = document["attributes"].as_array() else {
         return;
     };
-    if let Some(size) = document["size"].as_u64() {
+    if let Some(size) = document["size"].as_u64().or_else(|| {
+        document["size"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+    }) {
         out["file_size"] = json!(size);
     }
     if let Some(mime) = document["mime_type"].as_str().filter(|m| !m.is_empty()) {

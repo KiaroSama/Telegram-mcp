@@ -159,3 +159,380 @@ async fn opening_a_removed_configuration_never_touches_its_private_authorization
     );
     assert!(!state.root().join("retired.session.lock").exists());
 }
+
+fn pool_string(key: u8) -> String {
+    let mut bytes = vec![2, 127, 0, 0, 1, 1, 187];
+    bytes.extend([key; 256]);
+    format!(
+        "1{}",
+        base64::engine::general_purpose::URL_SAFE.encode(bytes)
+    )
+}
+
+fn pool_state() -> (tempfile::TempDir, Arc<State>) {
+    let temp = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let files = temp.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    let state = Arc::new(State::at(temp.path().join("state"), vec![files]).unwrap());
+    (temp, state)
+}
+
+#[test]
+fn pooled_configuration_reports_default_and_tracks_the_entire_pool_revision() {
+    let (temp, state) = pool_state();
+    let first = pool_string(0x41);
+    let second = pool_string(0x42);
+    let raw = format!(" ; {first},\n{second}; ");
+    let input = snapshot(&[("TELEGRAM_SESSION_STRINGS", &raw)]);
+    assert!(
+        source_from(&input, "default") == Some(("TELEGRAM_SESSION_STRINGS".into(), raw.clone())),
+        "The public pool revision must cover every configured token"
+    );
+    let pool = pooled_sessions(&input);
+    assert_eq!(pool.len(), 2);
+    std::fs::write(
+        state
+            .root()
+            .join(format!("{}.session.json", pool[1].slot_label)),
+        b"{}",
+    )
+    .unwrap();
+    let report = serde_json::to_value(configuration_report(&input, state.root()).unwrap()).unwrap();
+    let rows = report["accounts"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["label"], "default");
+    assert_eq!(rows[0]["config_key"], "TELEGRAM_SESSION_STRINGS");
+    assert_eq!(
+        rows[0]["config_digest"],
+        crate::account_manager::config_digest(&raw)
+    );
+    assert_eq!(rows[0]["native_session"], true);
+    for private in [&first, &second, &temp.path().display().to_string()] {
+        assert!(!report.to_string().contains(private));
+    }
+}
+
+#[tokio::test]
+async fn pooled_slots_keep_secret_custody_separate_and_reuse_their_authorization_binding() {
+    use crate::session::PersistentSession;
+    use grammers_session::{Session, types::PeerInfo};
+    let (_temp, state) = pool_state();
+    let first_value = pool_string(0x43);
+    let second_value = pool_string(0x44);
+    let raw = format!("{first_value};{second_value}");
+    let input = snapshot(&[
+        ("TELEGRAM_SESSION_STRINGS", &raw),
+        ("TELEGRAM_LOCK_GRACE_SECONDS", "0"),
+    ]);
+    let (first, first_source, first_slot) =
+        crate::backend::startup::open_leased_session(&state, "default", &input, false)
+            .await
+            .unwrap();
+    assert_eq!(first_source.as_ref().unwrap().1, first_value);
+    let binding = format!(
+        "TELEGRAM_SESSION_STRINGS:{}",
+        crate::account_manager::config_digest(&first_value)
+    );
+    first.bind_source(Some(binding.clone())).unwrap();
+    first
+        .cache_peer(PeerInfo::User {
+            id: 71,
+            auth: None,
+            bot: Some(false),
+            is_self: Some(true),
+        })
+        .await
+        .unwrap();
+    let prepared = crate::secret::SecretRuntime::prepare(Arc::clone(&state), "default", &first)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(prepared);
+    let (second, second_source, second_slot) =
+        crate::backend::startup::open_leased_session(&state, "default", &input, false)
+            .await
+            .unwrap();
+    assert_ne!(first_slot, second_slot);
+    assert_eq!(second_source.as_ref().unwrap().1, second_value);
+    second
+        .cache_peer(PeerInfo::User {
+            id: 72,
+            auth: None,
+            bot: Some(false),
+            is_self: Some(true),
+        })
+        .await
+        .unwrap();
+    let prepared = crate::secret::SecretRuntime::prepare(Arc::clone(&state), "default", &second)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(prepared);
+    let directory = state.root().join("secret-chats");
+    for slot in [&first_slot, &second_slot] {
+        assert!(directory.join(format!("{slot}.v1.enc")).is_file());
+    }
+    assert!(!directory.join("default.v1.enc").exists());
+    drop(first);
+    drop(second);
+    let reopened = PersistentSession::open(Arc::clone(&state), &first_slot).unwrap();
+    reopened.bind_source(Some(binding)).unwrap();
+    assert_eq!(
+        reopened
+            .peer(grammers_session::types::PeerId::self_user())
+            .await
+            .unwrap()
+            .unwrap()
+            .id()
+            .bare_id(),
+        Some(71)
+    );
+}
+
+#[tokio::test]
+async fn pooled_custody_refuses_another_labels_authorization_and_allows_distinct_keys() {
+    use crate::session::PersistentSession;
+    for owner in ["old", "default"] {
+        for same in [true, false] {
+            let (_temp, state) = pool_state();
+            let original = PersistentSession::open(Arc::clone(&state), owner).unwrap();
+            original.import_telethon(&pool_string(0x45)).unwrap();
+            drop(original);
+            let directory = state.root().join("secret-chats");
+            std::fs::create_dir(&directory).unwrap();
+            let custody = directory.join(format!("{owner}.v1.enc"));
+            std::fs::write(&custody, b"retained-custody-canary").unwrap();
+            let own_key = if owner == "default" {
+                "TELEGRAM_SESSION_NAME"
+            } else {
+                "TELEGRAM_SESSION_NAME_OLD"
+            };
+            let own = snapshot(&[(own_key, owner), ("TELEGRAM_LOCK_GRACE_SECONDS", "0")]);
+            drop(
+                crate::backend::startup::open_leased_session(&state, owner, &own, false)
+                    .await
+                    .unwrap(),
+            );
+            let value = pool_string(if same { 0x45 } else { 0x46 });
+            let input = snapshot(&[
+                ("TELEGRAM_SESSION_STRINGS", &value),
+                ("TELEGRAM_LOCK_GRACE_SECONDS", "0"),
+            ]);
+            let slot = &pooled_sessions(&input)[0].slot_label;
+            let result =
+                crate::backend::startup::open_leased_session(&state, "default", &input, false)
+                    .await;
+            if same {
+                let error = result
+                    .err()
+                    .expect("A pool alias must not split another label's custody");
+                assert!(error.to_string().contains("existing secret-chat custody"));
+                assert!(!error.to_string().contains(&value));
+                assert!(!state.root().join(format!("{slot}.session.json")).exists());
+            } else {
+                drop(result.unwrap());
+            }
+            assert_eq!(std::fs::read(custody).unwrap(), b"retained-custody-canary");
+        }
+    }
+}
+
+#[tokio::test]
+async fn pooled_invalid_tokens_are_refused_before_opening_any_slot() {
+    let first = pool_string(0x47);
+    let second = pool_string(0x48);
+    for raw in [
+        format!("invalid-source-canary;{first};{second}"),
+        format!("{first};invalid-source-canary;{second}"),
+        format!("{first};{second};invalid-source-canary"),
+    ] {
+        let (_temp, state) = pool_state();
+        let input = snapshot(&[
+            ("TELEGRAM_SESSION_STRINGS", &raw),
+            ("TELEGRAM_LOCK_GRACE_SECONDS", "0"),
+        ]);
+        let error = crate::backend::startup::open_leased_session(&state, "default", &input, false)
+            .await
+            .err()
+            .expect("Invalid pool tokens must fail validation");
+        assert!(!format!("{error:#}").contains("invalid-source-canary"));
+        assert!(
+            !std::fs::read_dir(state.root())
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().starts_with("pool_"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn pooled_health_recognizes_the_full_configuration_without_opening_a_session() {
+    let (temp, state) = pool_state();
+    let raw = format!("{};{}", pool_string(0x49), pool_string(0x4a));
+    let path = temp.path().join("pool.env");
+    std::fs::write(&path, format!("TELEGRAM_SESSION_STRINGS='{raw}'\n")).unwrap();
+    let result = crate::account_manager::session_health_with_state(
+        &state,
+        &path,
+        "TELEGRAM_SESSION_STRINGS",
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["status"], "unknown");
+    assert_eq!(
+        result["config_digest"],
+        crate::account_manager::config_digest(&raw)
+    );
+    assert!(
+        !std::fs::read_dir(state.root())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().starts_with("pool_"))
+    );
+}
+
+#[tokio::test]
+async fn pooled_first_import_skips_an_authorization_already_leased_by_another_label() {
+    let (_temp, state) = pool_state();
+    let first = pool_string(0x4b);
+    let second = pool_string(0x4c);
+    let owner = crate::session::PersistentSession::open(Arc::clone(&state), "active").unwrap();
+    owner.import_telethon(&first).unwrap();
+    let raw = format!("{first};{second}");
+    let input = snapshot(&[
+        ("TELEGRAM_SESSION_STRINGS", &raw),
+        ("TELEGRAM_LOCK_GRACE_SECONDS", "0"),
+    ]);
+    let (session, source, slot) =
+        crate::backend::startup::open_leased_session(&state, "default", &input, false)
+            .await
+            .unwrap();
+    assert_eq!(source.as_ref().unwrap().1, second);
+    assert_eq!(slot, pooled_sessions(&input)[1].slot_label);
+    drop(session);
+    drop(owner);
+}
+
+#[tokio::test]
+async fn pooled_legacy_default_custody_requires_verified_explicit_owner() {
+    use crate::{secret::SecretHistory, session::PersistentSession};
+    use grammers_session::{Session, types::PeerInfo};
+    use kiaro_secret_chat::{
+        chat::{Chat, ChatState},
+        crypto::SharedKey,
+        storage::{SecretRecord, Storage},
+    };
+
+    let (temp, state) = pool_state();
+    let original = pool_string(0x4d);
+    let other = pool_string(0x4e);
+    let raw = format!("{original};{other}");
+    let input = snapshot(&[
+        ("TELEGRAM_SESSION_STRINGS", &raw),
+        ("TELEGRAM_LOCK_GRACE_SECONDS", "0"),
+    ]);
+    let slot = pooled_sessions(&input)[0].slot_label.clone();
+    let original_session = PersistentSession::open(Arc::clone(&state), &slot).unwrap();
+    original_session.import_telethon(&original).unwrap();
+    original_session
+        .bind_source(Some(format!(
+            "TELEGRAM_SESSION_STRINGS:{}",
+            crate::account_manager::config_digest(&original)
+        )))
+        .unwrap();
+    let verified_self = PeerInfo::User {
+        id: 73,
+        auth: None,
+        bot: Some(false),
+        is_self: Some(true),
+    };
+    original_session
+        .cache_peer(verified_self.clone())
+        .await
+        .unwrap();
+    drop(original_session);
+
+    let binding = crate::secret::session_binding(73, 2, &[0x4d; 256]).unwrap();
+    let mut old_store = crate::secret::open_store(state.root(), "default", &binding, true)
+        .unwrap()
+        .unwrap();
+    let mut saved = old_store.load().unwrap().unwrap();
+    let mut chat = Chat::new(77, 123, 74, true, ChatState::Ready);
+    chat.key = Some(SharedKey::from_slice(&[0x4f; 256]).unwrap());
+    saved.chats.insert(77, chat);
+    saved.private_records.insert(
+        "ingress/journal-v1".into(),
+        SecretRecord::new(
+            serde_json::to_vec(
+                &json!({"version":1,"checkpoint":null,"next_id":1,"batches":[],"paused":false}),
+            )
+            .unwrap(),
+        ),
+    );
+    old_store.commit(&saved).unwrap();
+    drop(old_store);
+    let directory = state.root().join("secret-chats");
+    let history = SecretHistory::open(&directory, "default", &BTreeMap::new()).unwrap();
+    let row =
+        json!({"message_id":81,"text":"retained private fixture","date":"2026-01-01T00:00:00Z"});
+    history.append(77, row.clone(), None).unwrap();
+    drop(history);
+    let preserved = [
+        directory.join("default.v1.enc"),
+        directory.join("default.store.key"),
+        directory.join("default.history.v1.json"),
+        state.root().join(format!("{slot}.session.json")),
+    ]
+    .map(|path| {
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    });
+    let error = crate::backend::startup::open_leased_session(&state, "default", &input, false)
+        .await
+        .err()
+        .expect("A legacy default store without an identified owner must be preserved");
+    assert!(error.to_string().contains("Cannot identify an existing"));
+    assert!(!state.root().join("default.session.json").exists());
+    for (path, bytes) in &preserved {
+        assert_eq!(std::fs::read(path).unwrap(), *bytes);
+    }
+
+    let env = temp.path().join("recovery.env");
+    std::fs::write(
+        &env,
+        format!("TELEGRAM_SESSION_STRINGS='{raw}'\nTELEGRAM_LOCK_GRACE_SECONDS=0\n"),
+    )
+    .unwrap();
+    crate::account_manager::write_env_value(&env, "TELEGRAM_SESSION_STRING", &original, None)
+        .unwrap();
+    let selected = crate::account_manager::read_config(&env).unwrap();
+    assert!(selected.values.contains_key("TELEGRAM_SESSION_STRINGS"));
+    let (session, source, leased) =
+        crate::backend::startup::open_leased_session(&state, "default", &selected, false)
+            .await
+            .unwrap();
+    assert_eq!(leased, "default");
+    assert_eq!(source.as_ref().unwrap().0, "TELEGRAM_SESSION_STRING");
+    // This offline fixture supplies the verified self result that live startup obtains first.
+    session.cache_peer(verified_self).await.unwrap();
+    crate::session::check_deferred_custody_with_config(&state, "default", &selected).unwrap();
+    let prepared = crate::secret::SecretRuntime::prepare(Arc::clone(&state), "default", &session)
+        .await
+        .unwrap()
+        .unwrap();
+    drop(prepared);
+    let reopened = crate::secret::open_store(state.root(), "default", &binding, false)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        reopened.load().unwrap().unwrap().chats[&77].state,
+        ChatState::Ready
+    );
+    drop(reopened);
+    let history = SecretHistory::open(&directory, "default", &BTreeMap::new()).unwrap();
+    assert_eq!(history.read(77, 10).unwrap(), vec![row]);
+    for (path, bytes) in &preserved {
+        assert_eq!(std::fs::read(path).unwrap(), *bytes);
+    }
+    assert!(!directory.join(format!("{slot}.v1.enc")).exists());
+}

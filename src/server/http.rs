@@ -265,7 +265,13 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
     } else {
         format!("{scheme}://{actual}/mcp")
     };
-    state.write_json("http-service.json",&json!({"url":endpoint,"token":token,"certificate_pem":certificate_pem,"health_protocol":2,"pid":std::process::id(),"started":chrono::Utc::now().to_rfc3339()}))?;
+    let request_timeouts = json!({
+        "version": 1,
+        "ordinary_seconds": request_context::tool_budget("").map(|budget| budget.as_secs_f64()),
+        "export_seconds": request_context::tool_budget("export_").map(|budget| budget.as_secs_f64()),
+        "approval_seconds": crate::safeguard::bot::effective_timeout(bot.as_ref().map(|bot| bot.timeout())).as_secs_f64(),
+    });
+    state.write_json("http-service.json",&json!({"url":endpoint,"token":token,"certificate_pem":certificate_pem,"health_protocol":2,"request_timeouts":request_timeouts,"pid":std::process::id(),"started":chrono::Utc::now().to_rfc3339()}))?;
     let _approval_worker = bot.as_ref().map(crate::safeguard::bot::ApprovalBot::start);
     let outcome = if let Some(tls) = tls {
         async {

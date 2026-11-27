@@ -183,22 +183,15 @@ pub fn public_link(username: &str, domain: Option<&str>) -> Result<String, Perma
 
 /// Extracts the bare channel ID required for `/c/<bare_id>/<post_id>` permalinks.
 ///
-/// Strips the `-100` prefix from marked negative channel IDs without modulo
-/// truncation across 64-bit peer IDs; already-bare positive IDs (including those
-/// beginning with `100`) are returned unchanged.
+/// Reverses the Bot API mapping `marked = -(1_000_000_000_000 + bare)`.
+/// Already-bare positive IDs are unchanged; negative IDs outside the marked
+/// channel range return zero so callers can reject them.
 pub fn channel_link_id(chat_id: i64) -> u64 {
     let abs = chat_id.unsigned_abs();
     if chat_id >= 0 {
         return abs;
     }
-    let text = abs.to_string();
-    if let Some(stripped) = text.strip_prefix("100")
-        && !stripped.is_empty()
-        && let Ok(bare) = stripped.parse::<u64>()
-    {
-        return bare;
-    }
-    abs
+    abs.saturating_sub(1_000_000_000_000)
 }
 
 /// Builds a private channel/supergroup permalink `https://<domain>/c/<bare_id>/<message_id>`.
@@ -235,22 +228,19 @@ pub fn public_post_link(
 
 /// Builds the canonical message permalink when the chat supports one:
 /// public `https://<domain>/<username>/<id>`, or private channel/supergroup
-/// `https://<domain>/c/<bare_id>/<id>`. Returns `None` for DMs or basic groups
-/// without a public username.
+/// `https://<domain>/c/<bare_id>/<id>`. DMs and basic groups do not support
+/// message links, even when a user has a public username.
 pub fn message_permalink(
     target: MessagePermalinkTarget<'_>,
     domain: Option<&str>,
 ) -> Option<String> {
-    if target.message_id <= 0 {
+    if target.message_id <= 0 || !target.is_channel_or_supergroup {
         return None;
     }
     if let Some(username) = target.username
         && !username.trim().trim_start_matches('@').is_empty()
     {
         return public_post_link(username, target.message_id, domain).ok();
-    }
-    if !target.is_channel_or_supergroup {
-        return None;
     }
     let chat_id = target.chat_id?;
     post_link(chat_id, target.message_id, domain).ok()
@@ -362,14 +352,59 @@ mod tests {
     }
 
     #[test]
-    fn channel_link_id_strips_marked_prefix_only_and_preserves_64bit_ids() {
+    fn channel_link_id_converts_marked_ids_and_preserves_bare_ids() {
         assert_eq!(channel_link_id(-1001234567890), 1234567890);
-        assert_eq!(channel_link_id(-10012345678901234), 12345678901234);
+        assert_eq!(channel_link_id(-1_123_456_789_012), 123_456_789_012);
         assert_eq!(channel_link_id(1001234567), 1001234567);
         assert_eq!(channel_link_id(42), 42);
-        assert_eq!(channel_link_id(-100), 100);
-        assert_eq!(channel_link_id(-999888), 999888);
-        assert_eq!(channel_link_id(i64::MIN), 9_223_372_036_854_775_808_u64);
+        assert_eq!(channel_link_id(-100), 0);
+        assert_eq!(channel_link_id(-999888), 0);
+        assert_eq!(channel_link_id(i64::MIN), 9_223_371_036_854_775_808_u64);
+    }
+
+    #[test]
+    fn marked_channel_permalinks_reverse_bot_api_id_arithmetic() {
+        for bare in [
+            1_i64,
+            1_234_567_890,
+            12_345_678_901,
+            123_456_789_012,
+            997_852_516_352,
+            1_002_147_483_649,
+            3_000_000_000_000,
+        ] {
+            let marked = -1_000_000_000_000 - bare;
+            assert_eq!(channel_link_id(marked), bare as u64, "{marked}");
+            assert_eq!(
+                post_link(marked, 77, Some("t.me")),
+                Ok(format!("https://t.me/c/{bare}/77"))
+            );
+            assert_eq!(
+                post_link(marked, 77, Some("t.me")),
+                post_link(bare, 77, Some("t.me"))
+            );
+        }
+        for invalid in [-1_i64, -999_999_999_999, -1_000_000_000_000] {
+            assert!(post_link(invalid, 77, Some("t.me")).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn named_private_message_targets_do_not_receive_channel_post_links() {
+        for username in [Some("alice"), Some("@alice"), None] {
+            assert_eq!(
+                message_permalink(
+                    MessagePermalinkTarget {
+                        message_id: 9,
+                        username,
+                        chat_id: Some(55),
+                        is_channel_or_supergroup: false,
+                    },
+                    Some("t.me"),
+                ),
+                None,
+            );
+        }
     }
 
     #[test]
@@ -411,7 +446,7 @@ mod tests {
         let priv_target = MessagePermalinkTarget {
             message_id: 9,
             username: None,
-            chat_id: Some(-10055555),
+            chat_id: Some(-1_000_000_055_555),
             is_channel_or_supergroup: true,
         };
         assert_eq!(

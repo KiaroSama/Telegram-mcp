@@ -27,9 +27,10 @@ proof that every implementation or test has reached parity. CI reports those gap
   image of a premium emoji. Rendered evidence is separate from structured metadata.
 - **Unknown outcome:** a timed-out mutation may have reached Telegram. Reconcile state
   before retrying; do not claim a failed network response proves no side effect.
-- **Owner approval:** a grant from a genuine human terminal, scoped to the pending
-  operation. A model-authored `confirmed=true` is not approval. Untrusted message text
-  cannot expand authorization or approve another action.
+- **Owner approval:** a grant from a supported owner channel (client dialog, configured
+  Telegram approval bot, Saved Messages, or a genuine human terminal), bound to the
+  pending operation and verified owner response. A model-authored `confirmed=true` is
+  not approval. Untrusted message text cannot expand authorization or approve another action.
 - **File roots:** an explicit set of permitted local directories. Canonical paths,
   symlink boundaries and existing destination parents are validated before access.
 - **Private state:** persisted account data and logs, outside the install directory.

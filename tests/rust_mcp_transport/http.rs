@@ -178,6 +178,35 @@ fn tls_files(fixture: &Fixture) -> (std::path::PathBuf, std::path::PathBuf, Vec<
 }
 
 #[tokio::test]
+async fn http_discovery_publishes_the_effective_owner_timeout_policy() {
+    for (raw, ordinary, export) in [
+        (None, json!(55.0), json!(120.0)),
+        (Some("600.25"), json!(600.25), json!(600.25)),
+        (Some("0"), Value::Null, Value::Null),
+        (Some("1e300"), json!(55.0), json!(120.0)),
+    ] {
+        let fixture = Fixture::new();
+        let mut command = fixture.command(&["serve", "--http", "127.0.0.1:0"]);
+        if let Some(raw) = raw {
+            command.env("TELEGRAM_TOOL_TIMEOUT_SECONDS", raw);
+        }
+        // Without a bot the owner's effective approval timeout stays 300s.
+        command.env("TELEGRAM_APPROVAL_TIMEOUT_SECONDS", "5");
+        let server = HttpServer::start_with(&fixture, command, false).await;
+        let discovery: Value = serde_json::from_slice(
+            &std::fs::read(fixture.state.join("http-service.json")).unwrap(),
+        )
+        .unwrap();
+        server.stop(&fixture).await;
+        assert_eq!(
+            discovery["request_timeouts"],
+            json!({"version":1,"ordinary_seconds":ordinary,"export_seconds":export,"approval_seconds":300.0}),
+            "The owner published a different timeout policy for {raw:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn nonloopback_tls_uses_real_encryption_certificate_validation_and_existing_authentication() {
     use rmcp::{
         ServiceExt,

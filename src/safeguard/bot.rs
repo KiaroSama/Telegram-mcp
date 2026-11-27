@@ -100,8 +100,8 @@ pub(super) fn token_id(token: &str) -> Option<i64> {
         .filter(|id| *id > 0)
 }
 
-pub(crate) fn configured_timeout() -> Option<Duration> {
-    Config::from_environment().map(|config| config.timeout)
+pub(crate) fn effective_timeout(configured: Option<Duration>) -> Duration {
+    configured.unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT))
 }
 
 pub(crate) fn status(
@@ -197,7 +197,7 @@ impl ApprovalBot {
         Self::new(config, state, &format!("http://{address}"), false).unwrap()
     }
 
-    pub(super) fn timeout(&self) -> Duration {
+    pub(crate) fn timeout(&self) -> Duration {
         self.config.timeout
     }
 

@@ -3,7 +3,12 @@
   "categories": {
     "tool_surface": [
       "server::tests::all_catalogue_tools_have_native_implementations",
-      "server::tests::execute_read_dispatches_real_history_request_and_redacts_secrets"
+      "server::tests::execute_read_dispatches_real_history_request_and_redacts_secrets",
+      "server::tests::account_health::pooled_session_health_routes_the_public_tool_to_its_existing_default_owner",
+      "server::bridge::recovery_tests::tool_listing_refreshes_replaced_owner_before_any_tool_call",
+      "server::tests::ghost_scope::global_ghost_controls_keep_omitted_account_global",
+      "server::tests::ghost_scope::chat_ghost_controls_bind_the_selected_account_and_refuse_unknown_names",
+      "server::tests::ghost_scope::chat_ghost_controls_require_an_explicit_account"
     ],
     "protocol_codec": [
       "history_request_bytes_match_grammers",
@@ -13,7 +18,10 @@
     "message_behavior": [
       "reads_never_send_read_acknowledgements",
       "send_keeps_topic_and_reply_id_distinct",
-      "unchanged_edit_is_reported_without_retry"
+      "unchanged_edit_is_reported_without_retry",
+      "general_history_validates_the_forum_and_filters_the_chat_history",
+      "message_reads_only_link_channel_messages_when_usernames_overlap",
+      "permalinks::tests::marked_channel_permalinks_reverse_bot_api_id_arithmetic"
     ],
     "media_transfer": [
       "explicit_voice_kind_rejects_mp3",
@@ -27,7 +35,15 @@
     "account_state": [
       "identical_authorization_cannot_be_active_under_two_labels_and_lease_releases_on_drop",
       "failed_datacenter_key_write_does_not_install_undurable_authorization",
-      "rename_destination_conflict_leaves_every_source_unchanged"
+      "rename_destination_conflict_leaves_every_source_unchanged",
+      "backend::config::tests::pooled_custody_refuses_another_labels_authorization_and_allows_distinct_keys",
+      "backend::config::tests::pooled_slots_keep_secret_custody_separate_and_reuse_their_authorization_binding",
+      "backend::config::tests::pooled_configuration_reports_default_and_tracks_the_entire_pool_revision",
+      "backend::config::tests::pooled_first_import_skips_an_authorization_already_leased_by_another_label",
+      "backend::config::tests::pooled_invalid_tokens_are_refused_before_opening_any_slot",
+      "backend::config::tests::pooled_health_recognizes_the_full_configuration_without_opening_a_session",
+      "backend::config::tests::pooled_legacy_default_custody_requires_verified_explicit_owner",
+      "consumer_upgrade_preserves_existing_native_rows_with_the_same_message_id"
     ],
     "filesystem_boundaries": [
       "symlink_escape_for_existing_and_new_files_is_rejected",
@@ -36,7 +52,10 @@
     "human_approval": [
       "caller_confirmation_bool_cannot_approve",
       "private_approval_grant_is_single_use_and_exact",
-      "server::tests::destructive_call_requires_terminal_approval_before_rpc"
+      "server::tests::destructive_call_requires_terminal_approval_before_rpc",
+      "server::bridge::recovery_tests::bridge_wait_budget_preserves_approval_long_calls_and_disabled_timeout",
+      "server::bridge::recovery_tests::bridge_wait_budget_uses_the_attached_owner_policy",
+      "server::bridge::recovery_tests::bridge_cancellation_reaches_the_owner_without_replaying_the_call"
     ],
     "event_lifecycle": [
       "settled_wait_consumes_exact_burst",
@@ -50,7 +69,12 @@
     "chat_export": [
       "export_existing_destination_is_never_overwritten",
       "export_cancel_interrupts_pending_request_and_reports_cancelled",
-      "json_message_retains_unknown_layer_fields"
+      "json_message_retains_unknown_layer_fields",
+      "export::writer::tests::admin_writer_preserves_sender_namespaces_in_before_and_after_snapshots",
+      "export::admin_log_text::tests::peer_tables_keep_basic_groups_and_channels_with_the_same_id_separate",
+      "export::writer::tests::admin_writer_rotates_before_an_event_crosses_the_page_article_limit",
+      "export::writer::tests::document_exports_preserve_file_sizes_from_decoded_tl_longs",
+      "selected_custom_emoji_failures_make_exports_partial_but_size_exclusions_do_not"
     ],
     "publication_privacy": [
       "privacy::tests::credential_in_example_is_not_exempt_by_path",

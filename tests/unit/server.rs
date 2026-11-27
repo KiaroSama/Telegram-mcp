@@ -466,6 +466,12 @@ mod approval_bot;
 #[path = "server/approval_peers.rs"]
 mod approval_peers;
 
+#[path = "server/account_health.rs"]
+mod account_health;
+
+#[path = "server/ghost_scope.rs"]
+mod ghost_scope;
+
 #[tokio::test(start_paused = true)]
 async fn offline_presence_is_bounded_and_does_not_lock_other_account_access() {
     struct PendingPresence(Arc<tokio::sync::Notify>);
@@ -493,7 +499,9 @@ async fn offline_presence_is_bounded_and_does_not_lock_other_account_access() {
     let writer = mcp.clone();
     let task = tokio::spawn(async move {
         let mut saved = json!({"effective":true,"saved":true});
-        writer.restore_offline_presence("default", &mut saved).await;
+        writer
+            .restore_offline_presence(Some("default"), &mut saved)
+            .await;
         saved
     });
     entered.notified().await;

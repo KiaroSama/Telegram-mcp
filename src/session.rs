@@ -66,6 +66,10 @@ pub fn validate_label(name: &str) -> Result<()> {
     Ok(())
 }
 impl PersistentSession {
+    pub(crate) fn label(&self) -> &str {
+        &self.name
+    }
+
     pub fn open(state: Arc<State>, name: &str) -> Result<Self> {
         validate_label(name)?;
         let path = state.root().join(format!("{name}.session.lock"));

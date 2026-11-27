@@ -275,6 +275,27 @@ fn desktop_writer_renders_service_actions_vcards_thumbnails_and_scrubs_credentia
 }
 
 #[test]
+fn document_exports_preserve_file_sizes_from_decoded_tl_longs() {
+    let schema = crate::tl::Schema::global();
+    for size in [0_u64, 2048, 5_368_709_120, 9_007_199_254_740_993] {
+        let document = json!({
+            "_":"document","id":"7","access_hash":"9","file_reference":[],
+            "date":1700000000,"mime_type":"application/octet-stream","size":size.to_string(),"dc_id":2,
+            "attributes":[{"_":"documentAttributeFilename","file_name":"report.bin"}]
+        });
+        let decoded = schema
+            .decode("Document", &schema.encode_object(&document).unwrap())
+            .unwrap();
+        assert_eq!(decoded["size"], size.to_string());
+        let record = crate::export::render::json_message(
+            &json!({"_":"message","id":1,"date":1700000000,"media":{"_":"messageMediaDocument","document":decoded}}),
+            &BTreeMap::new(),
+        ).unwrap();
+        assert_eq!(record["file_size"], size);
+    }
+}
+
+#[test]
 fn admin_writer_renders_before_after_bubbles_without_inventing_missing_snapshots() {
     let temp = tempfile::tempdir().unwrap();
     let options = settings(temp.path(), "html_and_json");
@@ -328,6 +349,116 @@ fn admin_writer_renders_before_after_bubbles_without_inventing_missing_snapshots
     assert!(html.contains("href=\"photos/old.jpg\""));
     assert!(!html.contains("leak.jpg"));
     assert!(html.contains("FutureSpec"));
+}
+
+#[test]
+fn admin_writer_preserves_sender_namespaces_in_before_and_after_snapshots() {
+    let temp = tempfile::tempdir().unwrap();
+    let peers = BTreeMap::from([
+        (
+            "user:9".into(),
+            json!({"_":"user","id":"9","first_name":"Moderator"}),
+        ),
+        (
+            "user:55".into(),
+            json!({"_":"user","id":"55","first_name":"Alice"}),
+        ),
+        (
+            "channel:55".into(),
+            json!({"_":"channel","id":"55","title":"Channel author"}),
+        ),
+        (
+            "user:56".into(),
+            json!({"_":"user","id":"56","first_name":"Unrelated user"}),
+        ),
+    ]);
+    let chat = LogChat::from_peers(55, &peers, 0);
+    let mut writer = Writer::new_admin(
+        temp.path(),
+        &settings(temp.path(), "html_and_json"),
+        "Sender identity",
+        &json!({"_":"inputPeerChannel","channel_id":"55"}),
+    )
+    .unwrap();
+    for (id, old_sender, new_sender) in [
+        (
+            1,
+            json!({"_":"peerChannel","channel_id":"55"}),
+            json!({"_":"peerUser","user_id":"55"}),
+        ),
+        (2, json!({"_":"peerChannel","channel_id":"56"}), Value::Null),
+    ] {
+        let raw = json!({
+            "id":id,"date":1700000100,"user_id":"9",
+            "action":{"_":"channelAdminLogEventActionEditMessage",
+                "prev_message":{"_":"message","id":id,"date":1700000000,"from_id":old_sender,"peer_id":{"_":"peerChannel","channel_id":"55"},"message":"Before"},
+                "new_message":{"_":"message","id":id,"date":1700000100,"from_id":new_sender,"peer_id":{"_":"peerChannel","channel_id":"55"},"message":"After"}}
+        });
+        let (entry, parts) = map_event_parts(&raw, &chat);
+        writer.admin_event(&entry, &parts, &peers).unwrap();
+    }
+    writer.finish().unwrap();
+    let doc: Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("result.json")).unwrap()).unwrap();
+    let snapshot = |event: &str, role: &str| {
+        doc["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["event_id"] == event && m["snapshot_role"] == role)
+            .unwrap()
+    };
+    assert_eq!(snapshot("1", "before")["from_id"], "channel55");
+    assert_eq!(snapshot("1", "before")["from"], "Channel author");
+    assert_eq!(snapshot("1", "after")["from_id"], "user55");
+    assert_eq!(snapshot("1", "after")["from"], "Alice");
+    assert_eq!(snapshot("2", "before")["from_id"], "channel56");
+    assert_eq!(snapshot("2", "before")["from"], "channel56");
+    assert_eq!(snapshot("2", "after")["from_id"], "channel55");
+    let html = std::fs::read_to_string(temp.path().join("messages.html")).unwrap();
+    assert!(
+        html.contains("data-event-id=\"1\" data-snapshot=\"before\"><header><b>Channel author</b>")
+    );
+    assert!(html.contains("data-event-id=\"1\" data-snapshot=\"after\"><header><b>Alice</b>"));
+    assert!(!html.contains("Unrelated user"));
+}
+
+#[test]
+fn admin_writer_rotates_before_an_event_crosses_the_page_article_limit() {
+    let temp = tempfile::tempdir().unwrap();
+    let peers = BTreeMap::new();
+    let chat = LogChat::from_peers(55, &peers, 0);
+    let mut writer = Writer::new_admin(
+        temp.path(),
+        &settings(temp.path(), "html"),
+        "Admin pages",
+        &json!({"_":"inputPeerChannel","channel_id":"55"}),
+    )
+    .unwrap();
+    for id in 1..=2000 {
+        let action = if id == 1000 {
+            json!({"_":"channelAdminLogEventActionEditMessage",
+                "prev_message":{"_":"message","id":7,"message":"Before"},
+                "new_message":{"_":"message","id":7,"message":"After"}})
+        } else {
+            json!({"_":"channelAdminLogEventActionChangeTitle","prev_value":"Old","new_value":"New"})
+        };
+        let raw = json!({"id":id,"date":1700000000,"user_id":"9","action":action});
+        let (entry, parts) = map_event_parts(&raw, &chat);
+        writer.admin_event(&entry, &parts, &peers).unwrap();
+    }
+    writer.finish().unwrap();
+    let first = std::fs::read_to_string(temp.path().join("messages.html")).unwrap();
+    assert_eq!(first.matches("<article").count(), 999);
+    let second = std::fs::read_to_string(temp.path().join("messages2.html")).unwrap();
+    let third = std::fs::read_to_string(temp.path().join("messages3.html")).unwrap();
+    assert_eq!(second.matches("<article").count(), 1000);
+    assert_eq!(third.matches("<article").count(), 3);
+    assert!(second.contains("data-event-id=\"1000\" data-snapshot=\"before\""));
+    assert!(second.contains("data-event-id=\"1000\" data-snapshot=\"after\""));
+    assert!(first.contains("href=\"messages2.html\">Next messages"));
+    assert!(second.contains("href=\"messages3.html\">Next messages"));
+    assert!(third.contains("href=\"messages2.html\">Previous messages"));
 }
 
 #[test]

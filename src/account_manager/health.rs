@@ -109,13 +109,26 @@ pub async fn session_health(env_file: &Path, key: &str) -> Result<Value> {
 
 /// Explicit state ownership keeps health tests and embedders off ambient user data.
 pub async fn session_health_with_state(state: &State, env_file: &Path, key: &str) -> Result<Value> {
-    let label = label_for(key)?;
+    let label = if key == "TELEGRAM_SESSION_STRINGS" {
+        "default".to_owned()
+    } else {
+        label_for(key)?
+    };
     let snapshot = read_config(env_file)?;
     let Some(value) = snapshot.values.get(key).filter(|v| !v.is_empty()) else {
         return Ok(status("invalid"));
     };
     let digest = config_digest(value);
-    if key.starts_with("TELEGRAM_SESSION_STRING") && session_validate(value) != "valid" {
+    if key == "TELEGRAM_SESSION_STRINGS" {
+        let pool = crate::backend::pooled_sessions(&snapshot);
+        if pool.is_empty()
+            || pool
+                .iter()
+                .any(|candidate| session_validate(&candidate.value) != "valid")
+        {
+            return Ok(status("invalid"));
+        }
+    } else if key.starts_with("TELEGRAM_SESSION_STRING") && session_validate(value) != "valid" {
         return Ok(status("invalid"));
     }
     if key.starts_with("TELEGRAM_SESSION_NAME")

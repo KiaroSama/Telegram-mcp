@@ -299,7 +299,12 @@ async fn run(api: &dyn Telegram, name: &str, a: &Value) -> Result<Value> {
     }
     if a.get("topic_id").is_some_and(|v| !v.is_null()) {
         let topic = id(a, "topic_id")?;
-        if topic == 1 && matches!(name, "get_messages" | "list_messages" | "search_messages") {
+        if topic == 1
+            && matches!(
+                name,
+                "get_messages" | "get_history" | "list_messages" | "search_messages"
+            )
+        {
             let result = general::read(api, method, req, offset, bound).await?;
             if name == "get_messages" {
                 return Ok(

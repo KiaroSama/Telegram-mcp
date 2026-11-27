@@ -297,7 +297,7 @@ impl Safeguard {
             let map=pending.as_object_mut().context("Approval request record is invalid")?;
             map.retain(|_,value|value["expires"].as_u64().is_some_and(|expiry|expiry>=now));
             if map.len() >= 128 && !map.contains_key(&fingerprint) { bail!("Too many pending approval requests; resolve them in the owner terminal"); }
-            let timeout = self.bot.as_ref().map_or(bot::DEFAULT_TIMEOUT, |bot| bot.timeout().as_secs());
+            let timeout = bot::effective_timeout(self.bot.as_ref().map(|bot| bot.timeout())).as_secs();
             map.insert(fingerprint.clone(),json!({"tool":tool,"arguments":args,"reasons":decision.reasons,"expires":now+timeout}));
             Ok(())
         })?;
@@ -459,12 +459,7 @@ impl Safeguard {
             self.seals.redact_text(&target),
             reasons.join(", ")
         );
-        let timeout = self
-            .bot
-            .as_ref()
-            .map_or(Duration::from_secs(bot::DEFAULT_TIMEOUT), |bot| {
-                bot.timeout()
-            });
+        let timeout = bot::effective_timeout(self.bot.as_ref().map(|bot| bot.timeout()));
         let prompt = ApprovalPrompt {
             request_id,
             account,

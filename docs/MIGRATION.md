@@ -202,6 +202,66 @@ delete them to bypass an error. The automatic importer covers supported legacy
 layouts only. Use [`check_secret_custody`](COMMANDS.md#custody-pause-delivery-and-backend-control-9)
 to check custody status.
 
+### Recovering an older pooled account whose custody used `default`
+
+An earlier pooled-session startup stored its native authorization in
+`pool_<auth-key-fingerprint>.session.json` but opened secret-chat custody as
+`secret-chats/default.v1.enc`. Current startup keeps each pool authorization's
+custody under its own leased slot and checks existing custody before importing a
+candidate. If the older `default` store has no identifiable `default` authorization
+record, pooled startup refuses it and preserves the files. The pool's order and
+the presence of a native slot do not establish which authorization owns that
+encrypted store; the application cannot safely infer missing ownership.
+
+Use the following recovery only when trusted private records establish the exact
+original authorization. A new login, a different key for the same Telegram user,
+or an arbitrary pool entry cannot replace it.
+
+1. Stop every service or client process that owns this state directory. Make a
+   private backup of the selected configuration and the complete state directory,
+   including native sessions, `secret-chats`, store keys and all sidecars. Keep
+   those credential-bearing backups outside repositories, exports and support
+   attachments. `telegram-mcp --config PATH state-path` identifies the configured
+   state directory without printing authorization material.
+2. Inspect the original configuration or its private backup together with the
+   matching native pool record. The record's `authorization_source` identifies
+   the selected configuration key and SHA-256 revision; its cached self peer and
+   datacenter identify the authorization that was used. Match these to the
+   original source and the owner's known account history. A cached user ID alone
+   does not prove that two authorizations share a key. If the original source
+   cannot be established, preserve the state and stop here; do not guess, delete,
+   copy or rename encrypted stores or their keys to bypass the refusal.
+3. In the same private configuration, set the supported singular key
+   `TELEGRAM_SESSION_STRING` to that **existing original StringSession**. Keep the
+   original API settings and state directory. This selects the explicit account
+   label `default`, which retains the existing custody namespace. Leave
+   `TELEGRAM_SESSION_STRINGS` in place until validation finishes: the singular
+   default source takes precedence. Ensure the service's process environment
+   agrees, because process values override file values. Do not run the login or
+   repair flow to generate a replacement authorization for this recovery.
+4. Check `telegram-mcp --config PATH accounts --json`: the `default` entry must
+   name `TELEGRAM_SESSION_STRING`. Start the owned service with that same
+   configuration and state directory, then open `default` with the read-only
+   `get_secret_backend_status` tool. Startup verifies an uncached self identity
+   before normal update consumption and must successfully open the existing
+   authorization-bound store. After the account is connected, use
+   `telegram-mcp session-health --env-file PATH --key TELEGRAM_SESSION_STRING --json`
+   and `check_secret_custody`, and confirm the expected secret chats and retained
+   history. A syntax-only `session-validate` result or a disconnected `unknown`
+   health result is insufficient evidence of recovery.
+5. After those checks succeed, remove the retired `TELEGRAM_SESSION_STRINGS`
+   setting from the private file and service environment. Keep the explicit
+   original default source and the original encrypted files. This recovery
+   imports the selected authorization into native `default` session state; it
+   does not relocate, copy or delete the encrypted store or its history.
+
+The offline regression
+`pooled_legacy_default_custody_requires_verified_explicit_owner` exercises the
+old layout with synthetic authorization and verified-self fixtures. It verifies
+refusal without changing the old files, then reopens the original store and
+history through the supported singular default source. Live authorization
+validity and server responses still require the owner's checks above.
+
 ## Telegram Operator plugin upgrade
 
 `telegram-operator` 1.5.0 contains skills only. Upgrading removes obsolete bundled

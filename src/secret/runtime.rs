@@ -80,9 +80,10 @@ impl SecretRuntime {
         session: &PersistentSession,
     ) -> Result<Option<Prepared>> {
         let directory = super::custody_dir(state.root())?;
-        let legacy = super::has_legacy(&directory, label)?;
-        let existing = super::plain_file(&directory.join(format!("{label}.v1.enc")))?;
-        let owner = super::legacy_owner(&directory, label)?;
+        let custody_label = session.label();
+        let legacy = super::has_legacy(&directory, custody_label)?;
+        let existing = super::plain_file(&directory.join(format!("{custody_label}.v1.enc")))?;
+        let owner = super::legacy_owner(&directory, custody_label)?;
         let self_peer = session.peer(PeerId::self_user()).await?;
         let user = match self_peer {
             Some(PeerInfo::User {
@@ -110,12 +111,16 @@ impl SecretRuntime {
             return Ok(None);
         };
         let binding = session_binding(user, dc, &auth)?;
-        let store = super::open_store(state.root(), label, &binding, true)?
+        let store = super::open_store(state.root(), custody_label, &binding, true)?
             .context("Secret-chat custody store is unavailable")?;
         let snapshot = store
             .load()?
             .context("Secret-chat custody store has no state")?;
-        let history = Arc::new(SecretHistory::open(&directory, label, &snapshot.settings)?);
+        let history = Arc::new(SecretHistory::open(
+            &directory,
+            custody_label,
+            &snapshot.settings,
+        )?);
         let limits = IngressLimits::new(4096, MAX_BYTES, 30.0 * 86400.0)?;
         let ingress = DurableIngress::new(store, limits)?;
         let baseline = if ingress.checkpoint().is_ok() {
