@@ -59,12 +59,12 @@ permission state belongs to another. Login prompts are interactive. Keep the pho
 login code and two-factor password in the genuine local terminal; do not give them to
 an MCP client or paste them into chat.
 
-Native grammers and Telethon SQLite/string sessions have different storage formats.
-For an explicitly configured legacy source, the native runtime validates and imports
-supported Telethon SQLite schema7/8 or StringSession authorization into its own private
-store. SQLite input is read through a read-only copy; the source bytes are not upgraded
-or overwritten. An active owner, unexpected schema, WAL state, changed source generation
-or conflicting native authorization is refused rather than reset.
+The server uses a native grammers session store. If you configure a legacy SQLite
+session (schema 7 or 8) or a StringSession value, the server validates it and imports
+the authorization into its private store. It opens SQLite input read-only and leaves
+the original file unchanged. Import stops if another process owns the session, the
+schema is unsupported, WAL data is pending, the source changes during import or
+the authorization conflicts with native state.
 
 On the first open of an account with a supported legacy secret-chat store, the
 server makes a read-only backup of the original files, then migrates the store

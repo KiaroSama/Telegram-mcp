@@ -434,7 +434,7 @@ list contains distinct entity kinds and leaves the original text and UTF-16 offs
 
 ### Secret-chat tools
 
-[`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat) handles
+[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) handles
 native MTProto 2.0 secret chats on the existing account connection. On first open,
 the server makes a read-only backup and migrates supported legacy stores losslessly
 before connecting. See [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).

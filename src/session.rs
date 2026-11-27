@@ -177,10 +177,11 @@ impl PersistentSession {
                 SessionError
             })
     }
-    pub fn import_telethon(&self, text: &str) -> Result<()> {
+    /// Import authorization from a legacy v1 StringSession.
+    pub fn import_string_session(&self, text: &str) -> Result<()> {
         use base64::Engine;
         if !text.starts_with('1') {
-            bail!("Unsupported Telethon StringSession version");
+            bail!("Unsupported StringSession version");
         }
         let bytes = base64::engine::general_purpose::URL_SAFE
             .decode(&text[1..])

@@ -10,7 +10,7 @@ The native secret-chat integration for `v3.1.0` has since merged into `main`.
 - Retain `Manage-Accounts.ps1` and `start-mcp.ps1` as the only PowerShell launchers.
   The account manager helpers are native Rust, and the launcher tests are in
   `tests/rust_launchers.rs` and its modules.
-- Replace Telethon with grammers and implement missing application adapters locally.
+- Use grammers for Telegram access and implement missing application adapters locally.
 - Preserve verification types and CI quality; exact legacy test-count equality was
   explicitly waived in favor of meaningful tests appropriate to Rust.
 - Build Windows and Linux releases for x64 and arm64 and report checks against the
@@ -46,7 +46,7 @@ commits or releases. Historical byte-oracle versions remain distinct from curren
 
 The grammers GitHub mirror is stale relative to Codeberg; the live Codeberg source was
 read directly. Search excerpts that still named 0.10.0 were not used as version proof.
-The grammers and [native secret-chat](https://github.com/KiaroSama/Telethon-Secret-Chat/commit/84f2b8e57f30af10218effb7cb58688a57431e0d) pins now share Layer 234. The former Telethon source pin used layer 232.
+The grammers and [Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat/commit/84f2b8e57f30af10218effb7cb58688a57431e0d) pins used by v3.2.0 share Telegram API layer 234. The legacy client used layer 232.
 
 Version 3.2.0 implements General topic reads and video review as native tools. The public contracts were checked against [Chigwell #420](https://github.com/chigwell/telegram-mcp/pull/420) and [#412](https://github.com/chigwell/telegram-mcp/pull/412).
 
@@ -182,8 +182,8 @@ establish that instrumentation works on a new target.
 
 ## Secret-chat store migration
 
-Version 3.3.1 uses [`kiaro-secret-chat` 0.3.0](https://github.com/KiaroSama/Telethon-Secret-Chat)
-for native MTProto 2.0 secret chats. Ordinary and secret chats share one connection
+[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) provides
+native MTProto 2.0 secret chats through the `kiaro-secret-chat` crate. Ordinary and secret chats share one connection
 per authorization key. The server commits incoming encrypted updates to durable
 storage before acknowledging them.
 
@@ -274,12 +274,12 @@ separately](../README.md#connect-an-mcp-client).
 in constant time. The server zeroizes temporary comparison buffers and leaves
 original configuration and persisted session stores unchanged.
 
-**Session formats:** native grammers state is distinct from Telethon SQLite/string
-sessions. Configured supported StringSession and SQLite schema7/8 authorization is
-validated and imported into native state through a read-only source copy. The original
-bytes and opaque secret-chat sidecars remain unchanged. Active/WAL, incompatible,
-changed-generation or conflicting authorization refuses import rather than resetting
-it. Staged login/repair additionally binds the actual configuration key/digest and
+**Session formats:** the server can import a configured legacy StringSession value
+or a SQLite session with schema 7 or 8 into native grammers state. For SQLite, it
+reads a read-only snapshot and leaves the original bytes and secret-chat sidecars
+unchanged. It refuses the import if the source is active, has pending WAL data,
+uses an unsupported format, changes during import or conflicts with an existing
+authorization. Staged login/repair additionally binds the actual configuration key/digest and
 expected Telegram identity before committing a replacement.
 
 **Windows persistence:** directory barriers open a writable directory handle, verify
@@ -333,7 +333,7 @@ features, permissions, network routing and server responses remain untested.
 
 - [grammers source and README](https://codeberg.org/Lonami/grammers)
 - [grammers 0.12.0 source revision](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4)
-- [kiaro-secret-chat source](https://github.com/KiaroSama/Telethon-Secret-Chat)
+- [Grammers Secret Chat source](https://github.com/KiaroSama/Grammers-Secret-Chat)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
 - [Current upstream Telegram MCP](https://github.com/chigwell/telegram-mcp)
 - [CodeQL Rust build-mode support](https://docs.github.com/en/code-security/reference/code-scanning/codeql/build-options-for-compiled-languages#building-rust)

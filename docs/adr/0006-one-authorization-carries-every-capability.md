@@ -1,124 +1,71 @@
 # 6. One authorization carries every capability
 
-> Rust migration note: this is a historical decision record. Its original source
-> paths describe the former implementation; current native behavior and any
-> remaining limits are documented in [MIGRATION.md](../MIGRATION.md), including
-> the integrated native secret-chat backend and its custody migration contract.
+> Historical decision. The tool count, source paths and storage limits below
+> describe the 2026-09-21 migration. For the current Rust implementation, see
+> the [secret-chat store migration](../MIGRATION.md#secret-chat-store-migration).
 
-
-Date: 2026-09-21
-
-## Status
-
-Accepted. Supersedes the dependency this project carried for secret chats and rich
-messages; ADR 0005 recorded the rich-message half of the same removal.
+Date: 2026-09-21. Status: Accepted. ADR 0005 records the rich-message part of
+this decision.
 
 ## Context
 
-Until today this server ran on two clients. Telethon held the account's one
-authorization, and TDLib — Telegram's own C++ library, 1,826 lines of Python wrapper
-over a ~12 MB native binary — held a **second** one, with its own database, its own
-sign-in and its own copy of the account's identity.
+The ordinary client held one account authorization. TDLib, Telegram's C++
+client, held another for secret chats and rich messages. Its roughly 12 MB
+binary required 1,826 lines of Python wrapper code. Operators saw a second
+device in Telegram and had to sign in separately. The manylinux wheels ruled
+out a musl container and platforms without a wheel. Moving the state directory
+without TDLib's database left the secret-chat keys and history behind.
 
-That second authorization bought two things Telethon genuinely could not do: secret
-chats, because Telethon never implemented MTProto 2.0, and rich messages, whose body
-does not arrive on an ordinary message read. Everything else about it was cost:
-
-- **the account showed two devices.** Not a cosmetic wart: this project's first
-  principle is one auth key, one connection, and a second device on the account is
-  the exact shape that principle exists to prevent. It was tolerated because the
-  alternative was losing the features.
-- **a separate one-time login per account**, which every secret-chat tool had to
-  detect and explain, and which a script existed solely to perform.
-- **a platform floor.** The native wheels are manylinux-only, so the container could
-  not be built on a musl base and a platform without a wheel could not install this
-  project at all.
-- **an unrecoverable failure mode.** The secret-chat keys lived in that database, and
-  a database left behind by a moved state directory took its chats' history with it.
-
-Two measurements this month removed the reason to keep paying. Telethon 1.45
-announces TL layer 229 and carries `messages.GetRichMessageRequest`, the 58 page-block
-types and `Message.rich_message` — so the rich body was never unreachable, only in a
-different place (ADR 0005). And the owner's own `telethon-secret-chat` package
-implements MTProto 2.0 **on an existing Telethon client**, so the encryption needs no
-connection of its own.
+An ordinary message read did not return the rich body, but the legacy client's
+layer 229 schema exposed `messages.GetRichMessageRequest`, `Message.rich_message`
+and 58 page-block types. The server could fetch that body on the existing
+connection (ADR 0005). A separate secret-chat library also demonstrated MTProto
+2.0 secret chats over the same authorization. Neither feature needed a second
+Telegram device.
 
 ## Decision
 
-**TDLib is removed. Every capability this server offers runs on the one Telethon
-authorization, and nothing native is installed.**
-
-The twenty tools keep their names, arguments, defaults and answer shapes. A backend
-swap that a caller can see is a backend swap that broke something.
-
-The ordering was a safety property rather than a preference, and it held: the package
-was hardened and proved to carry a real encrypted conversation between two of this
-owner's accounts BEFORE anything here depended on it, and the previous backend's
-answers were captured while it was still installed, because a baseline cannot be taken
-afterwards.
+Remove TDLib and use the account's existing authorization for every capability.
+The twenty tools exposed at the time kept their names, arguments, defaults and
+response shapes. Before removing TDLib, the team captured its responses as a
+baseline and exchanged encrypted messages between two accounts using the new
+backend. There was no separate TDLib installation after the switch. The native
+Rust server now uses [Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat)
+on the shared grammers connection.
 
 ## Consequences
 
-**The account shows one device.** Principle I is now satisfied by construction rather
-than by tolerating a documented exception, and the constitution's sentence permitting
-an optional native component is deleted rather than reinterpreted (1.0.1).
-
-**Four things had to be built, because the package is a library and this is a
-server.** Each is a place the migration could have quietly lost something:
-
-1. **Two ids for one chat.** The published surface has `chat_id` and
-   `secret_chat_id`; the package has only the second. They turned out to be a fixed
-   offset apart — measured on this account's own chats, both pairs agreeing — so both
-   fields survive and an id written down before the migration still resolves.
-2. **Incoming chats are accepted automatically.** The previous backend completed the
-   handshake inside itself; the package hands the decision back, which is right for a
-   library. With the tool surface frozen there is no `accept_secret_chat` to reach
-   for, so an unanswered invitation would have sat at `pending` until it expired with
-   every tool correctly refusing to send into it.
-3. **History is this server's own, durable, and both directions.** The package keeps
-   arrivals in memory — the right scope for a library, which should not write
-   decrypted plaintext somewhere the operator never chose. This server published a
-   two-directional history that survived restarts, so the decision to keep one is made
-   here and the file lands beside the key store, owner-readable, and is emptied by
-   `clear_secret_history` and `delete_secret_message`.
-4. **Replies.** `decryptedMessage` has carried `reply_to_random_id` since layer 45 and
-   the package implemented the schema but passed neither send path, so every reply
-   would have arrived as an ordinary message. Fixed upstream, in the package, where it
-   belongs.
-
-**The layer is read at send time, and an unknown layer rounds down.** Measured during
-the proof: two sides of the same ready chat reported layer 46 and 144 seconds apart,
-because the layer is the PEER's capability and rises only when they announce it. A
-report built from the layer at open time would tell a caller their custom emoji was
-dropped from a chat that in fact carries it — a true-sounding statement that is false,
-which is worse than an error.
-
-**One capability is genuinely narrower, and it is stated rather than worked around.**
-A secret chat's file key travels inside its message. The previous backend had already
-downloaded the bytes into its database, so a save worked after a restart; here the
-message that carries the key is in memory, so `save_secret_media` works while the
-server that received the message is still running and reports the limit plainly
-afterwards. Keeping it working would mean writing per-file decryption keys to disk
-indefinitely — a materially worse posture for an end-to-end encrypted chat than the
-thing being removed — so it is the owner's call to make, not one to make silently.
-
-**Refusal wording changed.** A refusal used to quote TDLib's error text and now quotes
-the package's typed exceptions. The shapes are identical; the sentences are not, and
-nothing should match on them.
-
-**Updating the package is one edit.** `secret_backend.py` is the only module that
-imports it and a contract test pins what this server relies on, so a newer version is
-a line in `pyproject.toml` plus `uv lock --upgrade-package telethon-secret-chat`.
+- **Identifiers.** Callers could supply `chat_id` or `secret_chat_id`; the package
+  used only the latter. Two observed pairs had the same offset. The adapter kept
+  both public fields so callers could still use an ID they had saved.
+- **Incoming requests.** TDLib had completed the handshake itself. The server
+  took over automatic acceptance because the tool catalogue then had no explicit
+  `accept_secret_chat` call. Otherwise a request could stay pending until expiry.
+- **History.** The library held incoming messages in memory. To preserve history
+  across restarts, the server stored incoming and outgoing records beside the key
+  store with owner-only access. `clear_secret_history` and `delete_secret_message`
+  removed the corresponding records.
+- **Replies.** Layer 45 introduced `decryptedMessage.reply_to_random_id`. The
+  library already had the field in its schema, but its send paths did not pass it
+  through. The upstream fix preserved replies on the wire.
+- **Peer layer.** Measurements taken seconds apart in the same ready chat showed
+  layer 46 on one side and layer 144 on the other. The peer can announce a higher
+  layer after the chat opens, so the server reads the layer at send time and treats an unknown layer
+  conservatively when deciding which features to send.
+- **Media after restart.** TDLib had cached downloaded bytes. Its replacement at
+  the time held each file key in the received message in memory. If the receiving
+  process restarted, `save_secret_media` could no longer use that key. The server
+  reported the limit rather than keeping decryption keys on disk indefinitely.
+- **Errors and upgrades.** Refusals kept their response shapes, but the new
+  backend supplied different error text. Callers could not rely on the old
+  wording. `secret_backend.py` was the legacy client's sole import point, with
+  a contract test covering the calls it used. For current Cargo pins and checks,
+  see [Updating the native secret-chat backend](../updating-the-secret-chat-package.md).
 
 ## Alternatives considered
 
-**Keep TDLib for the four or five tools that were hardest to port.** Rejected: the
-second authorization is the whole cost, and paying all of it for a fraction of the
-surface is the worst of both.
-
-**Accept losing secret chats.** Rejected by the requirement the work was given, and
-unnecessary once the package carried a real conversation.
-
-**Persist file decryption keys so media survives a restart.** Deferred, not rejected —
-see above. It restores a real capability at a real cost, and the person whose account
-this is should decide which they want.
+Keeping TDLib for a few difficult tools would still require a second login and
+a second key store. Dropping secret chats would break existing tools despite a
+working replacement. Persisting file decryption keys would restore media access
+after restart but change what an operator keeps on disk. That choice was deferred
+rather than made on the operator's behalf.

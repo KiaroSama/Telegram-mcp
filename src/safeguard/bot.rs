@@ -411,7 +411,11 @@ impl ApprovalBot {
             if let Some(menu) = menu {
                 match menu {
                     CallbackMenu::Edit(body) => {
-                        let _ = self.edit_menu(owner, message_id, body).await;
+                        if !self.edit_menu(owner, message_id, body).await {
+                            tracing::warn!(
+                                "Approval bot menu refresh failed after persisting state"
+                            );
+                        }
                     }
                     CallbackMenu::EditOrSend(body) => {
                         if !self.edit_menu(owner, message_id, body.clone()).await {

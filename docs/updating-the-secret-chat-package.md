@@ -1,8 +1,9 @@
 # Updating the native secret-chat backend
 
-Version 3.1.0 integrates `kiaro-secret-chat` 0.3.0 from
-[KiaroSama/Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat).
-The package is native Rust. `Cargo.toml` pins the backend and its matching
+The server uses the `kiaro-secret-chat` crate from
+[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat), pinned at
+[`bf0fc26906f1`](https://github.com/KiaroSama/Grammers-Secret-Chat/commit/bf0fc26906f1).
+See the [upstream review](api-coverage.md#upstream-sync-2026-11-28) before upgrading. `Cargo.toml` pins the backend and its matching
 `grammers-client`, `grammers-mtsender` and `grammers-session` crates to the same exact
 repository revision. The upstream protocol crates retain their separate explicit
 Codeberg revision. Review both `Cargo.toml` and `Cargo.lock` when changing this graph.

@@ -296,7 +296,7 @@ async fn pooled_custody_refuses_another_labels_authorization_and_allows_distinct
         for same in [true, false] {
             let (_temp, state) = pool_state();
             let original = PersistentSession::open(Arc::clone(&state), owner).unwrap();
-            original.import_telethon(&pool_string(0x45)).unwrap();
+            original.import_string_session(&pool_string(0x45)).unwrap();
             drop(original);
             let directory = state.root().join("secret-chats");
             std::fs::create_dir(&directory).unwrap();
@@ -397,7 +397,7 @@ async fn pooled_first_import_skips_an_authorization_already_leased_by_another_la
     let first = pool_string(0x4b);
     let second = pool_string(0x4c);
     let owner = crate::session::PersistentSession::open(Arc::clone(&state), "active").unwrap();
-    owner.import_telethon(&first).unwrap();
+    owner.import_string_session(&first).unwrap();
     let raw = format!("{first};{second}");
     let input = snapshot(&[
         ("TELEGRAM_SESSION_STRINGS", &raw),
@@ -433,7 +433,7 @@ async fn pooled_legacy_default_custody_requires_verified_explicit_owner() {
     ]);
     let slot = pooled_sessions(&input)[0].slot_label.clone();
     let original_session = PersistentSession::open(Arc::clone(&state), &slot).unwrap();
-    original_session.import_telethon(&original).unwrap();
+    original_session.import_string_session(&original).unwrap();
     original_session
         .bind_source(Some(format!(
             "TELEGRAM_SESSION_STRINGS:{}",

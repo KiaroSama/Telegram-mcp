@@ -31,8 +31,8 @@ already running as the same OS user remains outside that guarantee.
 
 ## Backups, deletion and containers
 
-Preserve existing Telethon and secret-chat stores when installing the native version.
-Their formats are not interchangeable with grammers state. Supported legacy secret-chat
+Keep legacy authorization sessions and secret-chat stores when installing the native
+version. Neither can be used in place of a native grammers session. Supported legacy secret-chat
 stores are backed up and imported by the pinned native backend after authorization
 identity is verified; see [secret-chat store migration](MIGRATION.md#secret-chat-store-migration).
 Unsupported or conflicting custody is refused. Lost encryption keys cannot be recreated

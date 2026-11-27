@@ -47,7 +47,7 @@ fn snapshot(entries: &[(&str, &str)]) -> ConfigSnapshot {
     }
 }
 
-fn telethon_session(dc: u8, ip: [u8; 4], port: u16, key_byte: u8) -> String {
+fn legacy_string_session(dc: u8, ip: [u8; 4], port: u16, key_byte: u8) -> String {
     let mut raw = Vec::with_capacity(263);
     raw.push(dc);
     raw.extend_from_slice(&ip);
@@ -367,10 +367,10 @@ async fn lock_grace_bounds_monotonic_retry_and_cancellation() {
 
 #[test]
 fn pooled_sessions_parse_separators_and_deduplicate_auth_keys() {
-    let s1_a = telethon_session(2, [149, 154, 167, 50], 443, 0x11);
-    let s1_b = telethon_session(2, [149, 154, 167, 51], 443, 0x11);
-    let s2 = telethon_session(4, [149, 154, 167, 91], 443, 0x22);
-    let s3 = telethon_session(5, [91, 108, 56, 100], 443, 0x33);
+    let s1_a = legacy_string_session(2, [149, 154, 167, 50], 443, 0x11);
+    let s1_b = legacy_string_session(2, [149, 154, 167, 51], 443, 0x11);
+    let s2 = legacy_string_session(4, [149, 154, 167, 91], 443, 0x22);
+    let s3 = legacy_string_session(5, [91, 108, 56, 100], 443, 0x33);
     assert_eq!(
         session_auth_key_identity(&s1_a),
         session_auth_key_identity(&s1_b)

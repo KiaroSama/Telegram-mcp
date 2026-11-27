@@ -1,7 +1,5 @@
-//! Read-only migration of Telethon v7/v8 SQLite sessions into native state.
+//! Read-only migration of legacy v7/v8 SQLite sessions into native state.
 //!
-//! Schema source: Telethon sessions/sqlite.py at
-//! 8dcbd6bf4405325c6535d2069adafcaa5b01aaa2 (CURRENT_VERSION = 8).
 //! Temporary takeout/auth keys and the sent-file cache remain in the legacy
 //! database; only permanent authorization, peer capabilities and update cursors
 //! have a corresponding durable grammers representation.
@@ -26,7 +24,7 @@ impl PersistentSession {
     /// Import an already-authorized legacy file without opening a Telegram
     /// connection or modifying the source. Stop the legacy server first: a
     /// nonempty SQLite journal/WAL requires its owner to checkpoint and close it.
-    pub fn import_telethon_sqlite(&self, path: &Path) -> Result<()> {
+    pub fn import_legacy_sqlite(&self, path: &Path) -> Result<()> {
         let current = self.data().map_err(anyhow::Error::new)?;
         ensure!(
             !current.dc_options.values().any(|dc| dc.auth_key.is_some()),
@@ -289,7 +287,7 @@ fn validate_schema(transaction: &Transaction<'_>) -> Result<i64> {
     }
     ensure!(
         tables == expected,
-        "Legacy SQLite session is missing required Telethon tables"
+        "Legacy SQLite session is missing required tables"
     );
     columns(transaction, "version", &["version"])?;
     let versions = transaction
@@ -306,7 +304,7 @@ fn validate_schema(transaction: &Transaction<'_>) -> Result<i64> {
     let version = versions[0];
     ensure!(
         matches!(version, 7 | 8),
-        "Only Telethon SQLite session versions 7 and 8 can be imported"
+        "Only legacy SQLite session versions 7 and 8 can be imported"
     );
     let mut session_columns = vec!["dc_id", "server_address", "port", "auth_key", "takeout_id"];
     if version == 8 {

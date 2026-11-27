@@ -1,6 +1,5 @@
 //! Secret-aware MTProxy obfuscation and Full/padded-intermediate translation.
-//! Wire conventions are verified against Telegram's transport specification and
-//! Telethon's MTProxyIO at commit 8dcbd6bf4405325c6535d2069adafcaa5b01aaa2.
+//! Wire conventions follow Telegram's MTProto obfuscated2 and MTProxy transports.
 pub mod faketls;
 use super::*;
 use aes::cipher::{KeyIvInit, StreamCipher};

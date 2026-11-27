@@ -157,7 +157,7 @@ async fn response_stream(payload: Vec<u8>, padding: usize) -> (proxy::tunnel::St
 
 #[tokio::test]
 async fn all_sixteen_spec_padding_lengths_are_removed_from_plain_packets() {
-    // Telegram specifies0..15 bytes, rather than the old Telethon0..3 shortcut:
+    // Telegram specifies 0..15 bytes of padding:
     // https://core.telegram.org/mtproto/mtproto-transports#padded-intermediate
     let payload = plain(b"synthetic TL object!");
     assert_eq!(payload.len() % 4, 0);

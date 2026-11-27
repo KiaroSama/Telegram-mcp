@@ -77,7 +77,7 @@ pub(super) async fn open_leased_session(
                     .root()
                     .join(format!("{}.session.json", candidate.slot_label))
                     .exists()
-                    && let Err(error) = session.import_telethon(&candidate.value)
+                    && let Err(error) = session.import_string_session(&candidate.value)
                 {
                     // The authorization lease is acquired during first import, not slot creation.
                     last_error = Some(error);
@@ -128,7 +128,7 @@ fn import_legacy_session(
     value: &str,
 ) -> Result<()> {
     if key.starts_with("TELEGRAM_SESSION_STRING") {
-        return session.import_telethon(value);
+        return session.import_string_session(value);
     }
     let base = snapshot
         .path
@@ -150,7 +150,7 @@ fn import_legacy_session(
     found.sort();
     found.dedup();
     match found.as_slice() {
-        [path] => session.import_telethon_sqlite(path),
+        [path] => session.import_legacy_sqlite(path),
         [] => bail!(
             "No native or legacy session exists for this account; use the account manager to log in"
         ),

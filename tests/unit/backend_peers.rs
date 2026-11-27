@@ -294,7 +294,7 @@ async fn an_indeterminate_session_commit_fences_later_writes_until_reopening_dis
     );
     assert!(
         session
-            .import_telethon(&private_test_session_string())
+            .import_string_session(&private_test_session_string())
             .is_err()
     );
     assert_eq!(
@@ -314,7 +314,7 @@ async fn indeterminate_source_and_import_commits_preserve_the_installed_snapshot
         let session = PersistentSession::open(Arc::clone(&state), "work").unwrap();
         state.fail_next_directory_sync_for_test();
         let result = if import {
-            session.import_telethon(&private_test_session_string())
+            session.import_string_session(&private_test_session_string())
         } else {
             session.bind_source(Some("selected-revision".into()))
         };

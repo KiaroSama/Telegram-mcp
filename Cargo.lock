@@ -637,9 +637,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.5"
+version = "1.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
+checksum = "fd9ae8fcb3ea71b0b26338b4ffb13006bb175de8fd07921089a906ce7e5e6945"
 dependencies = [
  "cfg-if",
 ]
@@ -1173,7 +1173,7 @@ dependencies = [
 [[package]]
 name = "grammers-client"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
+source = "git+https://github.com/KiaroSama/Grammers-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "futures-util",
  "grammers-crypto",
@@ -1226,7 +1226,7 @@ dependencies = [
 [[package]]
 name = "grammers-mtsender"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
+source = "git+https://github.com/KiaroSama/Grammers-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "bytes",
  "grammers-mtproto",
@@ -1244,7 +1244,7 @@ dependencies = [
 [[package]]
 name = "grammers-session"
 version = "0.12.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
+source = "git+https://github.com/KiaroSama/Grammers-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "grammers-tl-types",
  "serde",
@@ -1948,7 +1948,7 @@ dependencies = [
 [[package]]
 name = "kiaro-secret-chat"
 version = "0.3.0"
-source = "git+https://github.com/KiaroSama/Telethon-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
+source = "git+https://github.com/KiaroSama/Grammers-Secret-Chat.git?rev=bf0fc26906f17b56ddb21634fa2b415d11de9126#bf0fc26906f17b56ddb21634fa2b415d11de9126"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3725,7 +3725,7 @@ checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "telegram-mcp"
-version = "3.4.0"
+version = "3.4.1"
 dependencies = [
  "aes",
  "anyhow",

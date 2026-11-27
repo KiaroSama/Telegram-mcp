@@ -220,18 +220,28 @@ fn identical_authorization_cannot_be_active_under_two_labels_and_lease_releases_
     let (_temp, state) = private_state();
     let first = PersistentSession::open(Arc::clone(&state), "first").unwrap();
     let second = PersistentSession::open(Arc::clone(&state), "second").unwrap();
-    first.import_telethon(&dummy_session_string()).unwrap();
-    assert!(second.import_telethon(&dummy_session_string()).is_err());
+    first
+        .import_string_session(&dummy_session_string())
+        .unwrap();
+    assert!(
+        second
+            .import_string_session(&dummy_session_string())
+            .is_err()
+    );
     assert!(second.dc_option(2).unwrap().unwrap().auth_key.is_none());
     drop(first);
-    second.import_telethon(&dummy_session_string()).unwrap();
+    second
+        .import_string_session(&dummy_session_string())
+        .unwrap();
     assert!(second.dc_option(2).unwrap().unwrap().auth_key.is_some());
 }
 #[test]
 fn copied_native_session_file_cannot_bypass_authorization_fingerprint_lease() {
     let (_temp, state) = private_state();
     let first = PersistentSession::open(Arc::clone(&state), "first").unwrap();
-    first.import_telethon(&dummy_session_string()).unwrap();
+    first
+        .import_string_session(&dummy_session_string())
+        .unwrap();
     std::fs::copy(
         state.root().join("first.session.json"),
         state.root().join("second.session.json"),
@@ -323,7 +333,9 @@ async fn login_commit_refuses_a_still_active_staged_session() {
     .unwrap();
     let stage_label = transaction.stage_label().to_owned();
     let staged = PersistentSession::open(Arc::clone(&state), transaction.stage_label()).unwrap();
-    staged.import_telethon(&dummy_session_string()).unwrap();
+    staged
+        .import_string_session(&dummy_session_string())
+        .unwrap();
     staged
         .cache_peer(PeerInfo::User {
             id: 8,

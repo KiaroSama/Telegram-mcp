@@ -10,8 +10,9 @@ proof that every implementation or test has reached parity. CI reports those gap
 
 - **Account label:** an explicit configured identity selected before an operation.
   Credentials, per-account aliases, events and storage must never bleed between labels.
-- **Authorization session:** private account credentials. A native grammers store and a
-  Telethon database are distinct formats. Neither belongs in fixtures or source control.
+- **Authorization session:** private account credentials. Native grammers sessions,
+  legacy SQLite sessions (schema 7 or 8) and StringSession values use different formats.
+  None belongs in fixtures or source control.
 - **Cloud chat:** ordinary Telegram conversation routed through grammers. Fetching a
   message does not automatically mark it read or prove a delivery/view acknowledgment.
 - **Secret chat:** end-to-end encrypted protocol state with independent key/counter

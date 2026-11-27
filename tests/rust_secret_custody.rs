@@ -404,7 +404,7 @@ fn unreadable_custody_metadata_refuses_without_changing_permissions() {
 async fn successful_string_import_persists_legacy_origin_across_reopen_and_checkpoint() {
     let f = Fixture::new();
     let session = PersistentSession::open(Arc::clone(&f.state), "work").unwrap();
-    session.import_telethon(&string_session()).unwrap();
+    session.import_string_session(&string_session()).unwrap();
     assert_eq!(f.read()["authorization_origin"], "legacy");
     drop(session);
     let session = PersistentSession::open(Arc::clone(&f.state), "work").unwrap();
@@ -434,7 +434,7 @@ async fn failed_import_rolls_origin_back_before_the_next_successful_persistence(
     let saved = f.state.root().join("saved-snapshot");
     std::fs::rename(&path, &saved).unwrap();
     std::fs::create_dir(&path).unwrap();
-    assert!(session.import_telethon(&string_session()).is_err());
+    assert!(session.import_string_session(&string_session()).is_err());
     assert!(session.dc_option(2).unwrap().unwrap().auth_key.is_none());
     std::fs::remove_dir(&path).unwrap();
     std::fs::rename(saved, &path).unwrap();
@@ -496,7 +496,7 @@ fn sqlite_import_persists_legacy_origin_and_preserves_the_source_database() {
     drop(db);
     let before = std::fs::read(&path).unwrap();
     let session = PersistentSession::open(Arc::clone(&f.state), "work").unwrap();
-    session.import_telethon_sqlite(&path).unwrap();
+    session.import_legacy_sqlite(&path).unwrap();
     assert_eq!(f.read()["authorization_origin"], "legacy");
     assert_eq!(std::fs::read(path).unwrap(), before);
     std::fs::write(

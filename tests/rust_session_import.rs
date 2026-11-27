@@ -1,4 +1,4 @@
-//! Synthetic Telethon schema fixtures: no credentials or binary databases are committed.
+//! Synthetic legacy SQLite schema fixtures: no credentials or binary databases are committed.
 use grammers_session::{
     Session,
     types::{PeerAuth, PeerId},
@@ -24,10 +24,16 @@ fn string_session(port: u16, key: u8) -> String {
 fn assert_invalid_string_session_preserves_empty_authorization(port: u16, key: u8) {
     let f = Fixture::new(8);
     let session = f.session();
-    assert!(session.import_telethon(&string_session(port, key)).is_err());
+    assert!(
+        session
+            .import_string_session(&string_session(port, key))
+            .is_err()
+    );
     assert!(!has_key(&session));
     assert!(!f.state.root().join("native.session.json").exists());
-    session.import_telethon(&string_session(443, 0x73)).unwrap();
+    session
+        .import_string_session(&string_session(443, 0x73))
+        .unwrap();
     assert_eq!(session.home_dc_id().unwrap(), 2);
     assert_eq!(
         session.dc_option(2).unwrap().unwrap().auth_key,
@@ -107,7 +113,7 @@ fn has_key(session: &PersistentSession) -> bool {
 fn version8_authorization_import_preserves_dc_endpoint_and_exact_key() {
     let f = Fixture::new(8);
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     assert_eq!(session.home_dc_id().unwrap(), 4);
     let dc = session.dc_option(4).unwrap().unwrap();
     assert_eq!(dc.auth_key, Some([42; 256]));
@@ -118,7 +124,7 @@ fn version8_authorization_import_preserves_dc_endpoint_and_exact_key() {
 fn version7_is_read_without_upgrading_the_source_database() {
     let f = Fixture::new(7);
     let before = std::fs::read(&f.path).unwrap();
-    f.session().import_telethon_sqlite(&f.path).unwrap();
+    f.session().import_legacy_sqlite(&f.path).unwrap();
     f.unchanged(&before);
     let db = Connection::open(&f.path).unwrap();
     assert_eq!(
@@ -132,7 +138,7 @@ fn version7_is_read_without_upgrading_the_source_database() {
 async fn peer_capabilities_keep_user_chat_and_channel_identity() {
     let f = Fixture::new(8);
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     assert_eq!(
         session
             .peer(PeerId::user(42).unwrap())
@@ -163,7 +169,7 @@ async fn peer_capabilities_keep_user_chat_and_channel_identity() {
 async fn primary_and_channel_update_cursors_survive_the_import() {
     let f = Fixture::new(8);
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     let state = session.updates_state().await.unwrap();
     assert_eq!(
         (state.pts, state.qts, state.date, state.seq),
@@ -176,7 +182,7 @@ async fn primary_and_channel_update_cursors_survive_the_import() {
 fn imported_authorization_survives_reopening_native_storage() {
     let f = Fixture::new(8);
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     drop(session);
     let reopened = f.session();
     assert_eq!(reopened.home_dc_id().unwrap(), 4);
@@ -189,12 +195,12 @@ fn imported_authorization_survives_reopening_native_storage() {
 fn importer_never_replaces_existing_native_authorization() {
     let f = Fixture::new(8);
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     let before = std::fs::read(f.state.root().join("native.session.json")).unwrap();
     f.change("UPDATE sessions SET auth_key=zeroblob(256)");
     assert!(
         session
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("overwrite")
@@ -210,7 +216,7 @@ fn future_sqlite_schema_is_refused_without_starting_a_new_login() {
     let session = f.session();
     assert!(
         session
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("versions 7 and 8")
@@ -221,7 +227,7 @@ fn future_sqlite_schema_is_refused_without_starting_a_new_login() {
 #[test]
 fn older_schema_with_potentially_stale_hashes_is_refused() {
     let f = Fixture::new(6);
-    assert!(f.session().import_telethon_sqlite(&f.path).is_err());
+    assert!(f.session().import_legacy_sqlite(&f.path).is_err());
 }
 #[test]
 fn unexpected_table_is_refused_without_reading_its_records() {
@@ -232,7 +238,7 @@ fn unexpected_table_is_refused_without_reading_its_records() {
     let before = std::fs::read(&f.path).unwrap();
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("unexpected")
@@ -245,7 +251,7 @@ fn unexpected_schema_column_is_refused() {
     f.change("ALTER TABLE sessions ADD COLUMN unexpected TEXT");
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("layout")
@@ -257,7 +263,7 @@ fn source_database_is_not_modified_and_no_sidecars_are_created() {
     let before = std::fs::read(&f.path).unwrap();
     let permissions = std::fs::metadata(&f.path).unwrap().permissions();
     let modified = std::fs::metadata(&f.path).unwrap().modified().unwrap();
-    f.session().import_telethon_sqlite(&f.path).unwrap();
+    f.session().import_legacy_sqlite(&f.path).unwrap();
     f.unchanged(&before);
     assert_eq!(
         std::fs::metadata(&f.path).unwrap().permissions(),
@@ -276,7 +282,7 @@ fn null_authorization_key_is_refused() {
     let f = Fixture::new(8);
     f.change("UPDATE sessions SET auth_key=NULL");
     let session = f.session();
-    assert!(session.import_telethon_sqlite(&f.path).is_err());
+    assert!(session.import_legacy_sqlite(&f.path).is_err());
     assert!(!has_key(&session));
 }
 #[test]
@@ -286,13 +292,13 @@ fn short_authorization_key_is_refused() {
         .unwrap()
         .execute("UPDATE sessions SET auth_key=?", [vec![42u8; 255]])
         .unwrap();
-    assert!(f.session().import_telethon_sqlite(&f.path).is_err());
+    assert!(f.session().import_legacy_sqlite(&f.path).is_err());
 }
 #[test]
 fn zero_authorization_key_is_refused() {
     let f = Fixture::new(8);
     f.change("UPDATE sessions SET auth_key=zeroblob(256)");
-    assert!(f.session().import_telethon_sqlite(&f.path).is_err());
+    assert!(f.session().import_legacy_sqlite(&f.path).is_err());
 }
 #[test]
 fn multiple_authorization_rows_are_refused() {
@@ -300,7 +306,7 @@ fn multiple_authorization_rows_are_refused() {
     Connection::open(&f.path).unwrap().execute("INSERT INTO sessions (dc_id,server_address,port,auth_key) VALUES (5,'149.154.171.5',443,?)",[vec![43u8;256]]).unwrap();
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("multiple")
@@ -312,7 +318,7 @@ fn malformed_ip_is_refused_without_dns_lookup() {
     f.change("UPDATE sessions SET server_address='attacker.example'");
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("literal")
@@ -324,7 +330,7 @@ fn invalid_port_is_refused() {
     f.change("UPDATE sessions SET port=70000");
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("port")
@@ -336,7 +342,7 @@ fn unsupported_datacenter_is_refused() {
     f.change("UPDATE sessions SET dc_id=99");
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("datacenter")
@@ -347,7 +353,7 @@ fn malformed_peer_id_aborts_the_entire_import() {
     let f = Fixture::new(8);
     f.change("INSERT INTO entities VALUES (0,13,NULL,NULL,NULL,0)");
     let session = f.session();
-    assert!(session.import_telethon_sqlite(&f.path).is_err());
+    assert!(session.import_legacy_sqlite(&f.path).is_err());
     assert!(!has_key(&session));
 }
 #[test]
@@ -357,7 +363,7 @@ fn active_wal_requires_legacy_owner_to_close_and_checkpoint_it() {
     let session = f.session();
     assert!(
         session
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("checkpoint")
@@ -370,7 +376,7 @@ fn malformed_database_bytes_are_refused() {
     std::fs::write(&f.path, vec![7u8; 1024]).unwrap();
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("SQLite 3")
@@ -387,7 +393,7 @@ fn oversized_database_is_refused_before_querying() {
         .unwrap();
     assert!(
         f.session()
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("128 MiB")
@@ -399,7 +405,7 @@ fn failed_native_persistence_leaves_in_memory_authorization_unchanged() {
     let session = f.session();
     std::fs::create_dir(f.state.root().join("native.session.json")).unwrap();
     let before = std::fs::read(&f.path).unwrap();
-    assert!(session.import_telethon_sqlite(&f.path).is_err());
+    assert!(session.import_legacy_sqlite(&f.path).is_err());
     assert!(!has_key(&session));
     f.unchanged(&before);
 }
@@ -415,7 +421,7 @@ fn temporary_auth_key_is_left_in_the_source_and_not_substituted() {
         .unwrap();
     let before = std::fs::read(&f.path).unwrap();
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     assert_eq!(
         session.dc_option(4).unwrap().unwrap().auth_key,
         Some([42; 256])
@@ -425,7 +431,7 @@ fn temporary_auth_key_is_left_in_the_source_and_not_substituted() {
 #[test]
 fn pii_is_not_copied_into_native_peer_capability_snapshot() {
     let f = Fixture::new(8);
-    f.session().import_telethon_sqlite(&f.path).unwrap();
+    f.session().import_legacy_sqlite(&f.path).unwrap();
     let native = std::fs::read_to_string(f.state.root().join("native.session.json")).unwrap();
     assert!(!native.contains("private_username"));
     assert!(!native.contains("Private Name"));
@@ -438,7 +444,7 @@ fn symlink_source_is_refused() {
     std::os::unix::fs::symlink(&f.path, &link).unwrap();
     assert!(
         f.session()
-            .import_telethon_sqlite(&link)
+            .import_legacy_sqlite(&link)
             .unwrap_err()
             .to_string()
             .contains("symlink")
@@ -453,7 +459,7 @@ fn symlink_parent_is_refused() {
     std::os::unix::fs::symlink(f.path.parent().unwrap(), &link).unwrap();
     assert!(
         f.session()
-            .import_telethon_sqlite(&link.join("legacy.session"))
+            .import_legacy_sqlite(&link.join("legacy.session"))
             .unwrap_err()
             .to_string()
             .contains("symlink")
@@ -464,7 +470,7 @@ fn ipv6_session_endpoint_is_restored() {
     let f = Fixture::new(8);
     f.change("UPDATE sessions SET server_address='2001:b28:f23f:f005::a',port=80");
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     let dc = session.dc_option(4).unwrap().unwrap();
     assert_eq!(dc.ipv6.ip().to_string(), "2001:b28:f23f:f005::a");
     assert_eq!(dc.ipv6.port(), 80);
@@ -481,7 +487,7 @@ fn checkpointed_closed_wal_database_is_read_without_recreating_sidecars() {
     drop(db);
     let before = std::fs::read(&f.path).unwrap();
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     f.unchanged(&before);
     assert_eq!(session.dc_option(4).unwrap().unwrap().ipv4.port(), 80);
     for suffix in ["-wal", "-shm", "-journal"] {
@@ -496,7 +502,7 @@ fn unicode_legacy_path_round_trips_through_read_only_sqlite_uri() {
     f.path = path;
     let before = std::fs::read(&f.path).unwrap();
     let session = f.session();
-    session.import_telethon_sqlite(&f.path).unwrap();
+    session.import_legacy_sqlite(&f.path).unwrap();
     f.unchanged(&before);
     assert!(has_key(&session));
 }
@@ -508,7 +514,7 @@ fn read_only_source_permissions_are_sufficient_and_preserved() {
     read_only.set_readonly(true);
     std::fs::set_permissions(&f.path, read_only).unwrap();
     let session = f.session();
-    let result = session.import_telethon_sqlite(&f.path);
+    let result = session.import_legacy_sqlite(&f.path);
     let retained = std::fs::metadata(&f.path).unwrap().permissions().readonly();
     std::fs::set_permissions(&f.path, original).unwrap();
     result.unwrap();
@@ -521,7 +527,7 @@ fn peer_row_budget_rejects_the_whole_import_instead_of_dropping_capabilities() {
     let session = f.session();
     assert!(
         session
-            .import_telethon_sqlite(&f.path)
+            .import_legacy_sqlite(&f.path)
             .unwrap_err()
             .to_string()
             .contains("100,000")

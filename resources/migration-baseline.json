@@ -638,7 +638,7 @@
     },
     {
       "suite": "test_admin_rights_coverage.py",
-      "name": "test_the_builder_knows_every_field_the_installed_telethon_has",
+      "name": "test_the_builder_knows_every_field_the_installed_legacy_client_has",
       "line": 88,
       "parameterized": false,
       "secret_related": false
@@ -708,7 +708,7 @@
     },
     {
       "suite": "test_admin_rights_coverage.py",
-      "name": "test_the_later_flags_survive_a_round_trip_through_telethons_reader",
+      "name": "test_the_later_flags_survive_a_round_trip_through_legacy_client_reader",
       "line": 209,
       "parameterized": false,
       "secret_related": false
@@ -743,7 +743,7 @@
     },
     {
       "suite": "test_admin_rights_coverage.py",
-      "name": "test_both_newest_rights_are_set_on_the_plain_telethon_path",
+      "name": "test_both_newest_rights_are_set_on_the_plain_legacy_client_path",
       "line": 367,
       "parameterized": false,
       "secret_related": false
@@ -827,7 +827,7 @@
     },
     {
       "suite": "test_admin_rights_sets.py",
-      "name": "test_every_field_is_a_real_telethon_right",
+      "name": "test_every_field_is_a_real_legacy_client_right",
       "line": 133,
       "parameterized": false,
       "secret_related": false
@@ -953,7 +953,7 @@
     },
     {
       "suite": "test_admin_rights_sets.py",
-      "name": "test_a_rights_dict_builds_a_telethon_object_carrying_only_those_rights",
+      "name": "test_a_rights_dict_builds_a_legacy_client_object_carrying_only_those_rights",
       "line": 263,
       "parameterized": true,
       "secret_related": false
@@ -6546,7 +6546,7 @@
     },
     {
       "suite": "test_edit_forum_topic.py",
-      "name": "test_the_live_requests_are_the_ones_telethon_ships",
+      "name": "test_the_live_requests_are_the_ones_legacy_client_ships",
       "line": 106,
       "parameterized": true,
       "secret_related": false
@@ -8856,7 +8856,7 @@
     },
     {
       "suite": "test_folders.py",
-      "name": "test_no_folder_tool_leaks_a_telethon_cast_message",
+      "name": "test_no_folder_tool_leaks_a_legacy_client_cast_message",
       "line": 133,
       "parameterized": false,
       "secret_related": false
@@ -9052,7 +9052,7 @@
     },
     {
       "suite": "test_full_user_fields.py",
-      "name": "test_the_gift_count_uses_telethons_own_field_name",
+      "name": "test_the_gift_count_uses_legacy_client_own_field_name",
       "line": 100,
       "parameterized": false,
       "secret_related": false
@@ -12111,7 +12111,7 @@
     },
     {
       "suite": "test_message_copy.py",
-      "name": "test_the_rebuild_knows_every_entity_kind_this_telethon_ships",
+      "name": "test_the_rebuild_knows_every_entity_kind_this_legacy_client_ships",
       "line": 84,
       "parameterized": false,
       "secret_related": false
@@ -15114,7 +15114,7 @@
     },
     {
       "suite": "test_profile_photo_and_forward_routing.py",
-      "name": "test_an_ordinary_forward_still_goes_through_telethons_helper",
+      "name": "test_an_ordinary_forward_still_goes_through_legacy_client_helper",
       "line": 195,
       "parameterized": false,
       "secret_related": false
@@ -15576,7 +15576,7 @@
     },
     {
       "suite": "test_proxy_route.py",
-      "name": "test_telethons_retry_count_message_becomes_a_plain_reason",
+      "name": "test_legacy_client_retry_count_message_becomes_a_plain_reason",
       "line": 407,
       "parameterized": false,
       "secret_related": false
@@ -16521,7 +16521,7 @@
     },
     {
       "suite": "test_reply_targets.py",
-      "name": "test_telethons_friendly_path_cannot_carry_an_input_reply_to",
+      "name": "test_legacy_client_friendly_path_cannot_carry_an_input_reply_to",
       "line": 61,
       "parameterized": false,
       "secret_related": false
@@ -16703,7 +16703,7 @@
     },
     {
       "suite": "test_retirement.py",
-      "name": "test_none_means_telethon_already_closed_it",
+      "name": "test_none_means_legacy_client_already_closed_it",
       "line": 92,
       "parameterized": false,
       "secret_related": false
@@ -17186,7 +17186,7 @@
     },
     {
       "suite": "test_round_trips.py",
-      "name": "test_each_mapped_name_resolves_to_a_real_telethon_type",
+      "name": "test_each_mapped_name_resolves_to_a_real_legacy_client_type",
       "line": 68,
       "parameterized": false,
       "secret_related": false
@@ -17886,7 +17886,7 @@
     },
     {
       "suite": "test_runtime.py",
-      "name": "test_every_refusal_in_the_table_names_a_real_telethon_error",
+      "name": "test_every_refusal_in_the_table_names_a_real_legacy_client_error",
       "line": 576,
       "parameterized": false,
       "secret_related": false
@@ -21330,7 +21330,7 @@
     },
     {
       "suite": "test_sending_entities.py",
-      "name": "test_a_custom_emoji_is_rebuilt_as_the_telethon_entity",
+      "name": "test_a_custom_emoji_is_rebuilt_as_the_legacy_client_entity",
       "line": 62,
       "parameterized": false,
       "secret_related": false
@@ -26774,7 +26774,7 @@
       "deferred": false
     },
     {
-      "id": "test_admin_rights_coverage.py::test_the_builder_knows_every_field_the_installed_telethon_has",
+      "id": "test_admin_rights_coverage.py::test_the_builder_knows_every_field_the_installed_legacy_client_has",
       "deferred": false
     },
     {
@@ -26814,7 +26814,7 @@
       "deferred": false
     },
     {
-      "id": "test_admin_rights_coverage.py::test_the_later_flags_survive_a_round_trip_through_telethons_reader",
+      "id": "test_admin_rights_coverage.py::test_the_later_flags_survive_a_round_trip_through_legacy_client_reader",
       "deferred": false
     },
     {
@@ -26834,7 +26834,7 @@
       "deferred": false
     },
     {
-      "id": "test_admin_rights_coverage.py::test_both_newest_rights_are_set_on_the_plain_telethon_path",
+      "id": "test_admin_rights_coverage.py::test_both_newest_rights_are_set_on_the_plain_legacy_client_path",
       "deferred": false
     },
     {
@@ -26882,7 +26882,7 @@
       "deferred": false
     },
     {
-      "id": "test_admin_rights_sets.py::test_every_field_is_a_real_telethon_right",
+      "id": "test_admin_rights_sets.py::test_every_field_is_a_real_legacy_client_right",
       "deferred": false
     },
     {
@@ -26954,7 +26954,7 @@
       "deferred": false
     },
     {
-      "id": "test_admin_rights_sets.py::test_a_rights_dict_builds_a_telethon_object_carrying_only_those_rights",
+      "id": "test_admin_rights_sets.py::test_a_rights_dict_builds_a_legacy_client_object_carrying_only_those_rights",
       "deferred": false
     },
     {
@@ -30150,7 +30150,7 @@
       "deferred": false
     },
     {
-      "id": "test_edit_forum_topic.py::test_the_live_requests_are_the_ones_telethon_ships",
+      "id": "test_edit_forum_topic.py::test_the_live_requests_are_the_ones_legacy_client_ships",
       "deferred": false
     },
     {
@@ -31470,7 +31470,7 @@
       "deferred": false
     },
     {
-      "id": "test_folders.py::test_no_folder_tool_leaks_a_telethon_cast_message",
+      "id": "test_folders.py::test_no_folder_tool_leaks_a_legacy_client_cast_message",
       "deferred": false
     },
     {
@@ -31582,7 +31582,7 @@
       "deferred": false
     },
     {
-      "id": "test_full_user_fields.py::test_the_gift_count_uses_telethons_own_field_name",
+      "id": "test_full_user_fields.py::test_the_gift_count_uses_legacy_client_own_field_name",
       "deferred": false
     },
     {
@@ -33330,7 +33330,7 @@
       "deferred": false
     },
     {
-      "id": "test_message_copy.py::test_the_rebuild_knows_every_entity_kind_this_telethon_ships",
+      "id": "test_message_copy.py::test_the_rebuild_knows_every_entity_kind_this_legacy_client_ships",
       "deferred": false
     },
     {
@@ -35046,7 +35046,7 @@
       "deferred": false
     },
     {
-      "id": "test_profile_photo_and_forward_routing.py::test_an_ordinary_forward_still_goes_through_telethons_helper",
+      "id": "test_profile_photo_and_forward_routing.py::test_an_ordinary_forward_still_goes_through_legacy_client_helper",
       "deferred": false
     },
     {
@@ -35310,7 +35310,7 @@
       "deferred": false
     },
     {
-      "id": "test_proxy_route.py::test_telethons_retry_count_message_becomes_a_plain_reason",
+      "id": "test_proxy_route.py::test_legacy_client_retry_count_message_becomes_a_plain_reason",
       "deferred": false
     },
     {
@@ -35850,7 +35850,7 @@
       "deferred": false
     },
     {
-      "id": "test_reply_targets.py::test_telethons_friendly_path_cannot_carry_an_input_reply_to",
+      "id": "test_reply_targets.py::test_legacy_client_friendly_path_cannot_carry_an_input_reply_to",
       "deferred": false
     },
     {
@@ -35954,7 +35954,7 @@
       "deferred": false
     },
     {
-      "id": "test_retirement.py::test_none_means_telethon_already_closed_it",
+      "id": "test_retirement.py::test_none_means_legacy_client_already_closed_it",
       "deferred": false
     },
     {
@@ -36230,7 +36230,7 @@
       "deferred": false
     },
     {
-      "id": "test_round_trips.py::test_each_mapped_name_resolves_to_a_real_telethon_type",
+      "id": "test_round_trips.py::test_each_mapped_name_resolves_to_a_real_legacy_client_type",
       "deferred": false
     },
     {
@@ -36630,7 +36630,7 @@
       "deferred": false
     },
     {
-      "id": "test_runtime.py::test_every_refusal_in_the_table_names_a_real_telethon_error",
+      "id": "test_runtime.py::test_every_refusal_in_the_table_names_a_real_legacy_client_error",
       "deferred": false
     },
     {
@@ -38598,7 +38598,7 @@
       "deferred": false
     },
     {
-      "id": "test_sending_entities.py::test_a_custom_emoji_is_rebuilt_as_the_telethon_entity",
+      "id": "test_sending_entities.py::test_a_custom_emoji_is_rebuilt_as_the_legacy_client_entity",
       "deferred": false
     },
     {
@@ -41719,7 +41719,7 @@
     "tests/test_admin_log_sentences.py::test_an_action_this_layer_does_not_know_draws_nothing",
     "tests/test_admin_patch.py::test_patch_preserves_unmentioned_rights_and_title",
     "tests/test_admin_patch.py::test_patch_refuses_demotion_nonadmin_and_noncreator_self",
-    "tests/test_admin_rights_coverage.py::test_the_builder_knows_every_field_the_installed_telethon_has",
+    "tests/test_admin_rights_coverage.py::test_the_builder_knows_every_field_the_installed_legacy_client_has",
     "tests/test_admin_rights_coverage.py::test_the_two_newest_rights_are_reachable_too",
     "tests/test_admin_rights_coverage.py::test_the_two_newest_rights_reach_telegram_as_the_right_bits",
     "tests/test_admin_rights_coverage.py::test_the_two_newest_bits_are_the_only_ones_a_bare_grant_sets",
@@ -41735,12 +41735,12 @@
     "tests/test_admin_rights_coverage.py::test_no_tool_hand_rolls_the_rights_object_any_more[edit_admin_rights_group]",
     "tests/test_admin_rights_coverage.py::test_no_tool_hand_rolls_the_rights_object_any_more[edit_admin_rights_channel]",
     "tests/test_admin_rights_coverage.py::test_no_tool_hand_rolls_the_rights_object_any_more[edit_admin_rights_community]",
-    "tests/test_admin_rights_coverage.py::test_the_later_flags_survive_a_round_trip_through_telethons_reader",
+    "tests/test_admin_rights_coverage.py::test_the_later_flags_survive_a_round_trip_through_legacy_client_reader",
     "tests/test_admin_rights_coverage.py::test_the_reported_rights_cover_exactly_what_can_be_set",
     "tests/test_admin_rights_coverage.py::test_a_session_too_new_to_promote_says_so_instead_of_looking_like_a_permission_gap",
     "tests/test_admin_rights_coverage.py::test_a_right_telegram_declined_is_read_back_not_assumed_applied",
     "tests/test_admin_rights_coverage.py::test_a_failed_read_back_does_not_turn_an_applied_change_into_an_error",
-    "tests/test_admin_rights_coverage.py::test_both_newest_rights_are_set_on_the_plain_telethon_path",
+    "tests/test_admin_rights_coverage.py::test_both_newest_rights_are_set_on_the_plain_legacy_client_path",
     "tests/test_admin_rights_coverage.py::test_the_description_lists_every_right_of_the_type[group]",
     "tests/test_admin_rights_coverage.py::test_the_description_lists_every_right_of_the_type[channel]",
     "tests/test_admin_rights_coverage.py::test_the_description_lists_every_right_of_the_type[community]",
@@ -41760,7 +41760,7 @@
     "tests/test_admin_rights_sets.py::test_a_channel_lists_desktops_channel_rights_in_its_order",
     "tests/test_admin_rights_sets.py::test_a_community_lists_desktops_four_rights",
     "tests/test_admin_rights_sets.py::test_the_welcome_label_and_the_invite_label_follow_the_chat_and_the_user",
-    "tests/test_admin_rights_sets.py::test_every_field_is_a_real_telethon_right",
+    "tests/test_admin_rights_sets.py::test_every_field_is_a_real_legacy_client_right",
     "tests/test_admin_rights_sets.py::test_full_admin_is_every_right_of_the_type_except_anonymous",
     "tests/test_admin_rights_sets.py::test_full_admin_of_a_plain_group_leaves_topics_out",
     "tests/test_admin_rights_sets.py::test_full_admin_of_a_channel_holds_no_group_only_right",
@@ -41778,9 +41778,9 @@
     "tests/test_admin_rights_sets.py::test_the_permissions_line_lists_only_granted_rights_and_drops_an_empty_parent",
     "tests/test_admin_rights_sets.py::test_the_permissions_line_of_nothing_says_so",
     "tests/test_admin_rights_sets.py::test_the_community_line_uses_its_own_words",
-    "tests/test_admin_rights_sets.py::test_a_rights_dict_builds_a_telethon_object_carrying_only_those_rights[group]",
-    "tests/test_admin_rights_sets.py::test_a_rights_dict_builds_a_telethon_object_carrying_only_those_rights[channel]",
-    "tests/test_admin_rights_sets.py::test_a_rights_dict_builds_a_telethon_object_carrying_only_those_rights[community]",
+    "tests/test_admin_rights_sets.py::test_a_rights_dict_builds_a_legacy_client_object_carrying_only_those_rights[group]",
+    "tests/test_admin_rights_sets.py::test_a_rights_dict_builds_a_legacy_client_object_carrying_only_those_rights[channel]",
+    "tests/test_admin_rights_sets.py::test_a_rights_dict_builds_a_legacy_client_object_carrying_only_those_rights[community]",
     "tests/test_admin_rights_tools.py::test_the_old_tools_are_gone_and_the_six_new_ones_exist",
     "tests/test_admin_rights_tools.py::test_each_tool_offers_only_the_rights_of_its_chat_type[group-promote_admin]",
     "tests/test_admin_rights_tools.py::test_each_tool_offers_only_the_rights_of_its_chat_type[group-edit_admin_rights]",
@@ -42830,9 +42830,9 @@
     "tests/test_download_suffix.py::test_download_media_routes_the_sender_suffix_through_the_guard",
     "tests/test_download_suffix.py::test_both_tools_share_one_rule",
     "tests/test_edit_forum_topic.py::test_the_module_no_longer_hand_rolls_any_request",
-    "tests/test_edit_forum_topic.py::test_the_live_requests_are_the_ones_telethon_ships[GetForumTopicsRequest-1000635391]",
-    "tests/test_edit_forum_topic.py::test_the_live_requests_are_the_ones_telethon_ships[CreateForumTopicRequest-798540757]",
-    "tests/test_edit_forum_topic.py::test_the_live_requests_are_the_ones_telethon_ships[EditForumTopicRequest-3469480244]",
+    "tests/test_edit_forum_topic.py::test_the_live_requests_are_the_ones_legacy_client_ships[GetForumTopicsRequest-1000635391]",
+    "tests/test_edit_forum_topic.py::test_the_live_requests_are_the_ones_legacy_client_ships[CreateForumTopicRequest-798540757]",
+    "tests/test_edit_forum_topic.py::test_the_live_requests_are_the_ones_legacy_client_ships[EditForumTopicRequest-3469480244]",
     "tests/test_edit_forum_topic.py::test_every_forum_request_addresses_a_peer_not_a_channel[GetForumTopicsRequest]",
     "tests/test_edit_forum_topic.py::test_every_forum_request_addresses_a_peer_not_a_channel[CreateForumTopicRequest]",
     "tests/test_edit_forum_topic.py::test_every_forum_request_addresses_a_peer_not_a_channel[EditForumTopicRequest]",
@@ -43232,7 +43232,7 @@
     "tests/test_folders.py::test_adding_saved_messages_twice_is_idempotent",
     "tests/test_folders.py::test_a_folder_that_already_holds_input_peer_self_does_not_break_other_chats",
     "tests/test_folders.py::test_removing_saved_messages_takes_it_out_of_the_folder",
-    "tests/test_folders.py::test_no_folder_tool_leaks_a_telethon_cast_message",
+    "tests/test_folders.py::test_no_folder_tool_leaks_a_legacy_client_cast_message",
     "tests/test_forum_topics.py::test_a_post_in_a_topic_is_not_a_reply_to_anything",
     "tests/test_forum_topics.py::test_a_reply_inside_a_topic_carries_both_ids",
     "tests/test_forum_topics.py::test_an_ordinary_reply_outside_a_forum_is_unchanged",
@@ -43267,7 +43267,7 @@
     "tests/test_forward_ids.py::test_the_reply_names_the_new_ids",
     "tests/test_full_user_fields.py::test_the_additional_usernames_are_reported",
     "tests/test_full_user_fields.py::test_the_pinned_message_names_which_chat_it_is_in",
-    "tests/test_full_user_fields.py::test_the_gift_count_uses_telethons_own_field_name",
+    "tests/test_full_user_fields.py::test_the_gift_count_uses_legacy_client_own_field_name",
     "tests/test_full_user_fields.py::test_no_business_profile_reports_none_not_an_empty_shell",
     "tests/test_full_user_fields.py::test_a_business_profile_is_summarised",
     "tests/test_full_user_fields.py::test_every_new_free_text_field_is_sanitized",
@@ -43815,7 +43815,7 @@
     "tests/test_member_tags.py::test_a_missing_last_name_is_not_printed_as_none",
     "tests/test_message_copy.py::test_a_premium_emoji_survives_the_round_trip",
     "tests/test_message_copy.py::test_formatting_beside_a_premium_emoji_no_longer_refuses_the_whole_message",
-    "tests/test_message_copy.py::test_the_rebuild_knows_every_entity_kind_this_telethon_ships",
+    "tests/test_message_copy.py::test_the_rebuild_knows_every_entity_kind_this_legacy_client_ships",
     "tests/test_message_copy.py::test_an_offset_past_the_end_of_the_text_is_refused",
     "tests/test_message_copy.py::test_a_raw_telegram_offset_is_refused_rather_than_placed",
     "tests/test_message_copy.py::test_a_value_the_viewer_cleaned_is_refused_because_it_is_not_the_original",
@@ -44652,7 +44652,7 @@
     "tests/test_profile_photo_and_forward_routing.py::test_a_forward_into_a_topic_carries_the_topic_id",
     "tests/test_profile_photo_and_forward_routing.py::test_a_forward_can_be_posted_under_a_channels_identity",
     "tests/test_profile_photo_and_forward_routing.py::test_every_forwarded_message_gets_its_own_random_id",
-    "tests/test_profile_photo_and_forward_routing.py::test_an_ordinary_forward_still_goes_through_telethons_helper",
+    "tests/test_profile_photo_and_forward_routing.py::test_an_ordinary_forward_still_goes_through_legacy_client_helper",
     "tests/test_profile_photo_and_forward_routing.py::test_drop_author_and_silent_reach_the_helper_too",
     "tests/test_profile_photo_and_forward_routing.py::test_defaults_are_omitted_rather_than_sent_as_false",
     "tests/test_profile_photo_and_forward_routing.py::test_hiding_captions_also_hides_the_sender_name",
@@ -44745,7 +44745,7 @@
     "tests/test_proxy_route.py::test_otherwise_a_new_client_starts_as_before[0123456789ab]",
     "tests/test_proxy_route.py::test_an_env_proxy_always_wins_at_start",
     "tests/test_proxy_route.py::test_probing_many_stops_at_its_total_bound_and_marks_the_rest_not_tested",
-    "tests/test_proxy_route.py::test_telethons_retry_count_message_becomes_a_plain_reason",
+    "tests/test_proxy_route.py::test_legacy_client_retry_count_message_becomes_a_plain_reason",
     "tests/test_proxy_tools.py::test_adding_pasted_text_reports_added_duplicates_and_invalid",
     "tests/test_proxy_tools.py::test_adding_needs_text_or_a_source",
     "tests/test_proxy_tools.py::test_a_source_is_read_by_its_last_200_posts_without_a_seen_signal[https://t.me/ProxyDaemi-ProxyDaemi]",
@@ -44917,7 +44917,7 @@
     "tests/test_reply_quote.py::test_message_to_dict_omits_reply_quote_for_plain_reply",
     "tests/test_reply_quote.py::test_format_message_line_shows_quote_preview",
     "tests/test_reply_quote.py::test_format_message_line_truncates_long_quote_and_flattens_newlines",
-    "tests/test_reply_targets.py::test_telethons_friendly_path_cannot_carry_an_input_reply_to",
+    "tests/test_reply_targets.py::test_legacy_client_friendly_path_cannot_carry_an_input_reply_to",
     "tests/test_reply_targets.py::test_a_topic_reply_really_does_produce_that_type",
     "tests/test_reply_targets.py::test_a_reply_inside_a_topic_goes_as_a_raw_request",
     "tests/test_reply_targets.py::test_send_message_into_a_topic_with_a_reply_takes_the_same_route",
@@ -44943,7 +44943,7 @@
     "tests/test_resolver_warm.py::test_two_clients_do_not_share_a_warm",
     "tests/test_retirement.py::test_a_future_returning_disconnect_is_retired_without_raising",
     "tests/test_retirement.py::test_a_coroutine_returning_disconnect_is_still_awaited",
-    "tests/test_retirement.py::test_none_means_telethon_already_closed_it",
+    "tests/test_retirement.py::test_none_means_legacy_client_already_closed_it",
     "tests/test_retirement.py::test_a_disconnect_that_raises_is_swallowed_not_propagated",
     "tests/test_retirement.py::test_retiring_without_a_running_loop_closes_it_now",
     "tests/test_retirement.py::test_shutdown_waits_for_a_retirement_that_is_still_closing",
@@ -45025,7 +45025,7 @@
     "tests/test_rich_quotes.py::test_invalid_public_quote_selection_sends_nothing[selection2]",
     "tests/test_rich_quotes.py::test_invalid_public_quote_selection_sends_nothing[selection3]",
     "tests/test_round_trips.py::test_every_kind_the_reader_reports_can_be_written_back",
-    "tests/test_round_trips.py::test_each_mapped_name_resolves_to_a_real_telethon_type",
+    "tests/test_round_trips.py::test_each_mapped_name_resolves_to_a_real_legacy_client_type",
     "tests/test_round_trips.py::test_the_rules_a_read_reported_go_back_out_in_order",
     "tests/test_round_trips.py::test_a_chat_rule_carries_its_chat_ids",
     "tests/test_round_trips.py::test_an_unknown_rule_kind_changes_nothing",
@@ -45154,7 +45154,7 @@
     "tests/test_runtime.py::test_an_error_code_names_the_same_function_after_a_restart",
     "tests/test_runtime.py::test_a_telegram_refusal_is_reported_as_a_sentence_not_a_code",
     "tests/test_runtime.py::test_an_unrecognised_error_still_gets_the_generic_message",
-    "tests/test_runtime.py::test_every_refusal_in_the_table_names_a_real_telethon_error",
+    "tests/test_runtime.py::test_every_refusal_in_the_table_names_a_real_legacy_client_error",
     "tests/test_runtime.py::test_every_kind_of_content_block_is_marked_as_user_data",
     "tests/test_runtime.py::test_an_explicit_annotation_is_left_alone",
     "tests/test_runtime.py::test_a_generic_error_tells_the_agent_why",
@@ -45529,32 +45529,32 @@
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[0-AWS access key-\\bAKIA[0-9A-Z]{16}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[0-GitHub token-\\bgh[pousr]_[A-Za-z0-9]{36,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[0-Telegram bot token-\\b\\d{8,10}:[A-Za-z0-9_-]{30,45}\\b]",
-    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[0-Telethon session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
+    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[0-Legacy session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[0-private key block------BEGIN [A-Z ]*PRIVATE KEY-----]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1-AWS access key-\\bAKIA[0-9A-Z]{16}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1-GitHub token-\\bgh[pousr]_[A-Za-z0-9]{36,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1-Telegram bot token-\\b\\d{8,10}:[A-Za-z0-9_-]{30,45}\\b]",
-    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1-Telethon session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
+    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1-Legacy session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1-private key block------BEGIN [A-Z ]*PRIVATE KEY-----]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[7-AWS access key-\\bAKIA[0-9A-Z]{16}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[7-GitHub token-\\bgh[pousr]_[A-Za-z0-9]{36,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[7-Telegram bot token-\\b\\d{8,10}:[A-Za-z0-9_-]{30,45}\\b]",
-    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[7-Telethon session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
+    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[7-Legacy session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[7-private key block------BEGIN [A-Z ]*PRIVATE KEY-----]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[64-AWS access key-\\bAKIA[0-9A-Z]{16}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[64-GitHub token-\\bgh[pousr]_[A-Za-z0-9]{36,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[64-Telegram bot token-\\b\\d{8,10}:[A-Za-z0-9_-]{30,45}\\b]",
-    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[64-Telethon session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
+    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[64-Legacy session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[64-private key block------BEGIN [A-Z ]*PRIVATE KEY-----]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[500-AWS access key-\\bAKIA[0-9A-Z]{16}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[500-GitHub token-\\bgh[pousr]_[A-Za-z0-9]{36,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[500-Telegram bot token-\\b\\d{8,10}:[A-Za-z0-9_-]{30,45}\\b]",
-    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[500-Telethon session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
+    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[500-Legacy session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[500-private key block------BEGIN [A-Z ]*PRIVATE KEY-----]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1020-AWS access key-\\bAKIA[0-9A-Z]{16}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1020-GitHub token-\\bgh[pousr]_[A-Za-z0-9]{36,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1020-Telegram bot token-\\b\\d{8,10}:[A-Za-z0-9_-]{30,45}\\b]",
-    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1020-Telethon session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
+    "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1020-Legacy session string-\\b1[A-Za-z0-9+/_-]{200,}\\b]",
     "tests/test_scan_boundaries.py::test_streaming_and_whole_input_agree_wherever_the_boundary_falls[1020-private key block------BEGIN [A-Z ]*PRIVATE KEY-----]",
     "tests/test_scan_boundaries.py::test_a_shape_that_is_not_a_credential_is_not_reported_at_a_boundary",
     "tests/test_scan_boundaries.py::test_a_real_credential_split_across_a_boundary_is_still_found",
@@ -46014,7 +46014,7 @@
     "tests/test_send_as.py::test_the_id_the_reader_gives_is_one_the_writer_can_use",
     "tests/test_send_as.py::test_a_numeric_send_as_is_normalised_the_way_chat_id_is",
     "tests/test_send_as.py::test_the_default_comes_from_the_chat_not_from_the_list_order",
-    "tests/test_sending_entities.py::test_a_custom_emoji_is_rebuilt_as_the_telethon_entity",
+    "tests/test_sending_entities.py::test_a_custom_emoji_is_rebuilt_as_the_legacy_client_entity",
     "tests/test_sending_entities.py::test_a_mixed_list_survives_whole",
     "tests/test_sending_entities.py::test_an_offset_past_the_end_refuses_the_whole_call",
     "tests/test_sending_entities.py::test_a_raw_offset_is_refused",
@@ -47639,5 +47639,5 @@
     "extras": "all",
     "locked": true
   },
-  "parameter_normalization": "Public hexadecimal fixture parameters in historical collected node IDs are represented by stable 12-digit SHA-256 labels. Original names and exact parameters remain recoverable from source_commit; these historical IDs are traceability, not native case-count gates."
+  "parameter_normalization": "Public hexadecimal fixture parameters in historical collected node IDs are represented by stable 12-digit SHA-256 labels. Client names in historical IDs use neutral labels. Original names and exact parameters remain recoverable from source_commit; these historical IDs are traceability, not native case-count gates."
 }
