@@ -6,12 +6,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const SKILLS: [(&str, &str); 5] = [
+pub const SKILLS: [(&str, &str); 6] = [
     ("telegram-bot-reconstruction", "behavior-contract.md"),
     ("telegram-chat-migration", "migration-ledger.md"),
     ("telegram-backup-restore", "verification.md"),
     ("telegram-access-audit", "audit-matrix.md"),
     ("telegram-format-reconstruction", "fidelity.md"),
+    ("bot-clone", "clone-blueprint.md"),
 ];
 pub const TREES: [&str; 6] = [
     "skills",

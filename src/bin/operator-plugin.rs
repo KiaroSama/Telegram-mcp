@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
-    /// Copy five complete skills to an explicitly chosen project/client or skills directory.
+    /// Copy six complete skills to an explicitly chosen project/client or skills directory.
     Install {
         #[arg(long, requires = "project")]
         client: Option<String>,
@@ -86,7 +86,7 @@ fn execute(cli: Cli) -> Result<()> {
             };
             install::install(&cli.source, &destination)?;
             println!(
-                "Installed five complete skills. Restart the client and verify discovery; MCP setup is separate."
+                "Installed six complete skills. Restart the client and verify discovery; MCP setup is separate."
             );
         }
         Action::Package { client, output } => {

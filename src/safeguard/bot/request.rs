@@ -99,10 +99,10 @@ impl Request {
         }
         let text = match outcome {
             Outcome::Approved => {
-                "Approved. The server will recheck the operation before running it."
+                "✅ Approved. The server will recheck the operation before running it."
             }
-            Outcome::Denied => "Denied. The operation did not run.",
-            Outcome::TimedOut => "Timed out. The operation did not run.",
+            Outcome::Denied => "❌ Denied. The operation did not run.",
+            Outcome::TimedOut => "⌛ Timed out. The operation did not run.",
             Outcome::Unavailable => return Ok(outcome.into()),
         };
         let completed = join_all(sent.into_iter().map(|(owner, message)| bot.api("editMessageText", json!({"chat_id":owner,"message_id":message,"text":text,"reply_markup":{"inline_keyboard":[]}}))));

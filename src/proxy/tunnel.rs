@@ -27,16 +27,18 @@ async fn connect_verified(
     tls_config: Option<Arc<rustls::ClientConfig>>,
 ) -> Result<Stream> {
     let Some(proxy) = proxy else {
-        return Ok(Box::new(
-            TcpStream::connect(target)
-                .await
-                .context("Direct Telegram connection failed")?,
-        ));
+        let socket = TcpStream::connect(target)
+            .await
+            .context("Direct Telegram connection failed")?;
+        // MTProto frames are small and latency-bound (grammers 11e13a98).
+        let _ = socket.set_nodelay(true);
+        return Ok(Box::new(socket));
     };
     super::pools::validate(proxy)?;
     let socket = TcpStream::connect((proxy.host.as_str(), proxy.port))
         .await
         .context("Proxy endpoint could not be reached")?;
+    let _ = socket.set_nodelay(true);
     let credentials = proxy.username.as_ref().is_some_and(|v| !v.is_empty())
         || proxy.password.as_ref().is_some_and(|v| !v.is_empty());
     ensure!(

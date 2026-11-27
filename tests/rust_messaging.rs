@@ -250,6 +250,23 @@ async fn clearing_draft_preserves_topic_address() {
     assert_eq!(w.calls()[0].1["reply_to"]["top_msg_id"], 10);
 }
 #[tokio::test]
+async fn topic_draft_reply_defaults_to_the_topic_root() {
+    // chigwell/telegram-mcp #422: Telegram Web addresses a topic draft by top_msg_id.
+    for (args, reply) in [
+        (json!({"chat_id":7,"message":"d","topic_id":10}), 10),
+        (
+            json!({"chat_id":7,"message":"d","topic_id":10,"reply_to_msg_id":12}),
+            12,
+        ),
+    ] {
+        let w = Wire::new(vec![]);
+        run(&w, "save_draft", args).await.unwrap();
+        let reply_to = &w.calls()[0].1["reply_to"];
+        assert_eq!(reply_to["top_msg_id"], 10);
+        assert_eq!(reply_to["reply_to_msg_id"], reply);
+    }
+}
+#[tokio::test]
 async fn history_deletion_repeats_positive_offset_until_zero() {
     let w = Wire::new(vec![
         json!({"offset":50}),

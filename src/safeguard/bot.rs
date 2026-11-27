@@ -255,8 +255,17 @@ impl ApprovalBot {
             .send()
             .await
             .map_err(|_| failure())?;
-        ensure!(response.status().is_success(), failure());
+        let success = response.status().is_success();
         let value: Value = response.json().await.map_err(|_| failure())?;
+        // Re-rendering an unchanged menu is a harmless no-op, not a failed edit.
+        if method == "editMessageText"
+            && value["description"]
+                .as_str()
+                .is_some_and(|text| text.contains("message is not modified"))
+        {
+            return Ok(Value::Bool(true));
+        }
+        ensure!(success, failure());
         if value["ok"] == false {
             return Err(RejectedRequest.into());
         }
@@ -318,8 +327,9 @@ impl ApprovalBot {
                                 continue;
                             }
                             offset = Some(next);
+                            // Room for one edit plus the callback answer on a slow link.
                             let _ =
-                                tokio::time::timeout(Duration::from_secs(2), self.update(update))
+                                tokio::time::timeout(Duration::from_secs(10), self.update(update))
                                     .await;
                         }
                     }
@@ -355,34 +365,32 @@ impl ApprovalBot {
                 .and_then(|body| body.split_once(':'))
             {
                 match self.decide(code, action, owner, message_id) {
-                    Ok(true) => "Decision recorded".to_owned(),
+                    Ok(true) => "✅ Decision recorded".to_owned(),
                     Ok(false) => "This request is no longer pending".to_owned(),
-                    Err(_) => "Could not save decision; no approval was issued".to_owned(),
+                    Err(_) => "⚠️ Could not save decision; no approval was issued".to_owned(),
                 }
+            } else if let Some(key) = data.strip_prefix("mn:bp:") {
+                // Bypass buttons are idempotent owner settings: they stay usable on
+                // every click and across restarts, so they skip the single-use menu.
+                self.bypass_callback(key, owner, message_id).await
+            } else if data == "mn:ac" {
+                let body = self.account_menu();
+                if !self.edit_menu(owner, message_id, body.clone()).await {
+                    self.send_menu(owner, body).await;
+                }
+                "🔄 Account list refreshed".to_owned()
             } else if data.starts_with("mn:") {
+                // Revocations stay single-use so a stale button cannot remove a newer grant.
                 let current = self
                     .menus
                     .lock()
                     .is_ok_and(|mut menus| menus.consume(owner, message_id, data));
-                if !current {
-                    return;
-                }
-                if let Some(key) = data.strip_prefix("mn:bp:") {
-                    let Some((_, preset)) = super::bypass::BypassPreset::MENU
-                        .iter()
-                        .find(|(selector, _)| *selector == key)
-                    else {
-                        return;
-                    };
-                    super::bot_bypass::change(&self.state, *preset, owner)
-                } else if data == "mn:ac" {
-                    let body = self.account_menu();
-                    self.send_menu(owner, body).await;
-                    "Account list refreshed".to_owned()
-                } else {
+                if current {
                     super::bot_menu::callback(&self.state, data)
-                        .unwrap_or("Could not update approvals")
+                        .unwrap_or("⚠️ Could not update approvals")
                         .to_owned()
+                } else {
+                    "This menu is outdated. Send the command again.".to_owned()
                 }
             } else {
                 return;
@@ -445,6 +453,42 @@ impl ApprovalBot {
 
     fn account_menu(&self) -> Value {
         super::bot_bypass::accounts(&self.observed_accounts())
+    }
+
+    async fn bypass_callback(&self, key: &str, owner: i64, message_id: i64) -> String {
+        use super::bypass::BypassPreset;
+        let Some((_, preset)) = BypassPreset::MENU
+            .iter()
+            .find(|(selector, _)| *selector == key)
+        else {
+            return "This menu is outdated. Send /bypass again.".to_owned();
+        };
+        match super::bot_bypass::apply(&self.state, *preset, owner) {
+            Ok(true) => {
+                // The state is saved either way; a failed edit only leaves an older view.
+                let _ = self
+                    .edit_menu(owner, message_id, super::bot_bypass::menu(&self.state))
+                    .await;
+                if *preset == BypassPreset::Off {
+                    "🔒 Bypass is off".to_owned()
+                } else {
+                    "🔓 Bypass is on".to_owned()
+                }
+            }
+            Ok(false) => {
+                self.send_menu(owner, super::bot_bypass::instructions())
+                    .await;
+                "✏️ Send a custom duration".to_owned()
+            }
+            Err(notice) => notice.to_owned(),
+        }
+    }
+
+    /// Replace a menu in place; returns false when Telegram refused the edit.
+    async fn edit_menu(&self, owner: i64, message_id: i64, mut body: Value) -> bool {
+        body["chat_id"] = json!(owner);
+        body["message_id"] = json!(message_id);
+        self.api("editMessageText", body).await.is_ok()
     }
 
     async fn send_menu(&self, owner: i64, mut body: Value) {
@@ -556,10 +600,11 @@ pub(crate) struct Request {
 
 fn prompt_buttons(code: &str, always: bool) -> Vec<Value> {
     let mut buttons =
-        vec![json!({"text":"Approve once","callback_data":format!("ap:{code}:once")})];
+        vec![json!({"text":"✅ Approve once","callback_data":format!("ap:{code}:once")})];
     if always {
-        buttons.push(json!({"text":"Always approve","callback_data":format!("ap:{code}:always")}));
+        buttons
+            .push(json!({"text":"♾️ Always approve","callback_data":format!("ap:{code}:always")}));
     }
-    buttons.push(json!({"text":"Deny","callback_data":format!("ap:{code}:deny")}));
+    buttons.push(json!({"text":"❌ Deny","callback_data":format!("ap:{code}:deny")}));
     buttons
 }

@@ -69,16 +69,37 @@ impl Mcp {
     }
     async fn account(&self, label: &str) -> Result<Arc<Account>> {
         crate::session::validate_label(label)?;
-        let mut accounts = self.runtime.accounts.lock().await;
-        let generation = crate::backend::account_generation(label)?;
-        if let Some(account) = accounts.get(label) {
-            if account.generation.is_some() && account.generation != generation {
-                bail!(
-                    "Account configuration changed; repair or restart its owned service before using the new authorization"
-                );
+        let mut accounts = loop {
+            let mut accounts = self.runtime.accounts.lock().await;
+            if let Some(account) = accounts.get(label).filter(|a| !a.api.is_closed()) {
+                let generation = crate::backend::account_generation(label)?;
+                if account.generation.is_some() && account.generation != generation {
+                    bail!(
+                        "Account configuration changed; repair or restart its owned service before using the new authorization"
+                    );
+                }
+                return Ok(Arc::clone(account));
             }
-            return Ok(Arc::clone(account));
-        }
+            // A dead sender pool never recovers; retire it outside the map lock
+            // so its session lease is released before a replacement opens.
+            let Some(stale) = accounts.remove(label) else {
+                break accounts;
+            };
+            drop(accounts);
+            if let Err(error) = stale.api.close_connection().await {
+                self.runtime
+                    .accounts
+                    .lock()
+                    .await
+                    .entry(label.into())
+                    .or_insert(stale);
+                return Err(error.context(
+                    "The disconnected account could not be shut down; it was not reopened",
+                ));
+            }
+            drop(stale);
+        };
+        let generation = crate::backend::account_generation(label)?;
         if generation.is_none() {
             bail!("Account is not configured; use the session manager or telegram-mcp login");
         }

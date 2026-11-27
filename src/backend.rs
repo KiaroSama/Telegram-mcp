@@ -24,7 +24,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
     },
     time::Duration,
 };
@@ -90,6 +90,14 @@ pub trait Telegram: Send + Sync {
     fn alias_matches(&self, _query: &str) -> Result<Value> {
         Ok(json!([]))
     }
+    /// True once the transport can no longer serve requests and must be replaced.
+    fn is_closed(&self) -> bool {
+        false
+    }
+    /// Stop every worker that holds the account so its session lease can be released.
+    async fn close_connection(&self) -> Result<()> {
+        Ok(())
+    }
 }
 struct RawRequest(Vec<u8>);
 struct RawResponse(Vec<u8>);
@@ -121,6 +129,7 @@ struct Inner {
     authorized_dcs: tokio::sync::Mutex<std::collections::HashSet<i32>>,
     route: crate::proxy::Route,
     secret: Option<Arc<crate::secret::SecretRuntime>>,
+    closed: Arc<AtomicBool>,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -193,8 +202,16 @@ impl Native {
         if let Some(prepared) = &mut prepared {
             prepared.attach(&handle).await?;
         }
-        let mut task = tokio::spawn(async move {
-            let _ = runner.run().await;
+        let closed = Arc::new(AtomicBool::new(false));
+        let mut task = tokio::spawn({
+            let closed = Arc::clone(&closed);
+            let label = label.to_owned();
+            async move {
+                let _ = runner.run().await;
+                // Every quit path (update stream, health watch, drop) ends here.
+                closed.store(true, Ordering::SeqCst);
+                tracing::warn!(account = %label, "Telegram sender pool exited");
+            }
         });
         let secret = startup::start_secret(
             prepared,
@@ -219,6 +236,7 @@ impl Native {
             stats_dc: AtomicI32::new(0),
             tasks: std::sync::Mutex::new(vec![task]),
             secret,
+            closed,
         }));
         let watched = Arc::clone(&native.0.session);
         let stop = native.0.handle.thin.clone();
@@ -256,6 +274,14 @@ impl Native {
             .context("Secret runtime unavailable for this account")
     }
     pub async fn shutdown(self) -> Result<()> {
+        self.stop_workers()
+            .await
+            .context("The staged authorization was not published")
+    }
+    /// Stop the secret manager, the sender pool and every owned task; the
+    /// session lease is released once the last `Native` clone is dropped.
+    async fn stop_workers(&self) -> Result<()> {
+        self.0.closed.store(true, Ordering::SeqCst);
         let secret = match self.0.secret.as_ref() {
             Some(secret) => secret.stop().await,
             None => Ok(()),
@@ -276,9 +302,7 @@ impl Native {
         for task in tasks {
             tokio::time::timeout(Duration::from_secs(5), task)
                 .await
-                .context(
-                    "A session worker did not stop; the staged authorization was not published",
-                )?
+                .context("A session worker did not stop")?
                 .ok();
         }
         secret
@@ -372,9 +396,17 @@ impl Native {
                 rpc.name,
                 rpc.value.map(|n| format!(" ({n})")).unwrap_or_default()
             ),
-            _ => anyhow::anyhow!(
-                "Telegram transport failed; operation outcome may be unknown and was not retried"
-            ),
+            error => {
+                // Variant only: message text may carry endpoints or payload detail.
+                tracing::warn!(
+                    account = %self.0.label,
+                    kind = transport_error_kind(&error),
+                    "Telegram request failed below the RPC layer"
+                );
+                anyhow::anyhow!(
+                    "Telegram transport failed; operation outcome may be unknown and was not retried"
+                )
+            }
         })?;
         let result = Schema::global().decode_response(method, &params, &bytes.0)?;
         peers::cache_rpc_outcome(self.0.session.as_ref(), result).await
@@ -384,6 +416,12 @@ impl Native {
 impl Telegram for Native {
     fn supports_saved_messages_approval(&self) -> bool {
         true
+    }
+    fn is_closed(&self) -> bool {
+        self.0.closed.load(Ordering::SeqCst)
+    }
+    async fn close_connection(&self) -> Result<()> {
+        self.stop_workers().await
     }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
         let result = match method {
@@ -609,6 +647,19 @@ async fn retry_auth<T>(
         }
     }
     bail!("{exhausted}")
+}
+
+fn transport_error_kind(error: &InvocationError) -> &'static str {
+    match error {
+        InvocationError::Rpc(_) => "rpc",
+        InvocationError::Io(_) => "io",
+        InvocationError::Transport(_) => "transport",
+        InvocationError::Deserialize(_) => "deserialize",
+        InvocationError::Session(_) => "session",
+        InvocationError::Authentication(_) => "authentication",
+        InvocationError::Dropped(_) => "dropped",
+        InvocationError::InvalidDc => "invalid_dc",
+    }
 }
 
 fn prompt(message: &str) -> Result<String> {

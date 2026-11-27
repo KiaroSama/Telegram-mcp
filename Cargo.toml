@@ -1,6 +1,6 @@
 [package]
 name = "telegram-mcp"
-version = "3.3.1"
+version = "3.4.0"
 edition = "2024"
 rust-version = "1.100"
 description = "Native Rust Telegram MCP server powered by grammers"

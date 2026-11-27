@@ -105,3 +105,87 @@ async fn pooled_session_health_routes_the_public_tool_to_its_existing_default_ow
     assert!(!mcp.runtime.accounts.lock().await.contains_key("default"));
     assert!(crate::account_manager::label_for("TELEGRAM_SESSION_STRINGS").is_err());
 }
+
+struct ClosingOwner {
+    closed: std::sync::atomic::AtomicBool,
+    closes: std::sync::atomic::AtomicUsize,
+    refuse_close: bool,
+}
+
+#[async_trait]
+impl Telegram for ClosingOwner {
+    async fn invoke(&self, _: &str, _: Value) -> Result<Value> {
+        bail!("A retired account must not be invoked")
+    }
+    async fn resolve_peer(&self, _: &Value) -> Result<Value> {
+        bail!("A retired account must not resolve peers")
+    }
+    fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+    async fn close_connection(&self) -> Result<()> {
+        self.closes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.refuse_close {
+            bail!("synthetic worker refused to stop");
+        }
+        Ok(())
+    }
+}
+
+fn closing_owner(closed: bool, refuse_close: bool) -> Arc<ClosingOwner> {
+    Arc::new(ClosingOwner {
+        closed: closed.into(),
+        closes: 0.into(),
+        refuse_close,
+    })
+}
+
+async fn insert_owner(mcp: &Mcp, label: &str, owner: Arc<ClosingOwner>) {
+    mcp.runtime.accounts.lock().await.insert(
+        label.into(),
+        Arc::new(Account {
+            api: owner,
+            serial: Arc::new(Mutex::new(())),
+            generation: None,
+        }),
+    );
+}
+
+#[tokio::test]
+async fn live_cached_account_is_reused_without_shutdown() {
+    let (mcp, _, _temp) = service(json!({}), access::AccessPolicy::default());
+    let owner = closing_owner(false, false);
+    insert_owner(&mcp, "zombie", owner.clone()).await;
+    mcp.account("zombie").await.unwrap();
+    assert_eq!(owner.closes.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(mcp.runtime.accounts.lock().await.contains_key("zombie"));
+}
+
+#[tokio::test]
+async fn closed_account_is_shut_down_evicted_and_reopened() {
+    let (mcp, _, _temp) = service(json!({}), access::AccessPolicy::default());
+    let owner = closing_owner(true, false);
+    insert_owner(&mcp, "zombie", owner.clone()).await;
+    // With no configuration the reopen step reports it, proving eviction reached it.
+    let error = mcp.account("zombie").await.err().unwrap().to_string();
+    assert!(error.contains("not configured"), "{error}");
+    assert_eq!(owner.closes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!mcp.runtime.accounts.lock().await.contains_key("zombie"));
+    assert_eq!(
+        Arc::strong_count(&owner),
+        1,
+        "the retired account was dropped"
+    );
+}
+
+#[tokio::test]
+async fn failed_shutdown_refuses_reopening_and_keeps_the_entry() {
+    let (mcp, _, _temp) = service(json!({}), access::AccessPolicy::default());
+    let owner = closing_owner(true, true);
+    insert_owner(&mcp, "zombie", owner.clone()).await;
+    let error = format!("{:#}", mcp.account("zombie").await.err().unwrap());
+    assert!(error.contains("was not reopened"), "{error}");
+    assert_eq!(owner.closes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(mcp.runtime.accounts.lock().await.contains_key("zombie"));
+}

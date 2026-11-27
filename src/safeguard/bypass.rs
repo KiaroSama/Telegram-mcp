@@ -202,20 +202,24 @@ impl BypassState {
             Self::Timed {
                 expires_at_unix, ..
             } => {
-                let left = (expires_at_unix - now) as u64;
-                // Preserve the legacy hours-and-minutes format through the 7-day preset.
-                if left >= 8 * 86_400 {
-                    format!(
-                        "ON for {} d {} h {} min more",
-                        left / 86_400,
-                        left % 86_400 / 3_600,
-                        left % 3_600 / 60
-                    )
-                } else {
-                    format!("ON for {} h {} min more", left / 3_600, left % 3_600 / 60)
-                }
+                format!("ON for {} more", span((expires_at_unix - now) as u64))
             }
         }
+    }
+}
+
+/// Remaining time as shown to owners, e.g. `88 h 17 min` or `30 d 0 h 0 min`.
+pub fn span(left: u64) -> String {
+    // Preserve the legacy hours-and-minutes format through the 7-day preset.
+    if left >= 8 * 86_400 {
+        format!(
+            "{} d {} h {} min",
+            left / 86_400,
+            left % 86_400 / 3_600,
+            left % 3_600 / 60
+        )
+    } else {
+        format!("{} h {} min", left / 3_600, left % 3_600 / 60)
     }
 }
 

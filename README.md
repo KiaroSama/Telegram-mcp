@@ -148,7 +148,7 @@ On first open of an account with a supported legacy secret-chat store, the serve
 
 ## Telegram Operator plugin
 
-`telegram-operator` 1.5.0 ships five workflow skills in five formats: Portable Agent Plugins 1.0.0, Claude Code, Codex, Cursor and Antigravity. The skills cover chat migration, backup and restore, access audits, bot and Mini App reconstruction, and reproducing message formatting and custom emoji. The plugin bundles no MCP server configuration. [Configure the MCP server separately](#connect-an-mcp-client) and authorize the account. For plugin setup, see [installation](docs/operator-plugin.md).
+`telegram-operator` 1.6.0 ships six workflow skills in five formats: Portable Agent Plugins 1.0.0, Claude Code, Codex, Cursor and Antigravity. The skills cover chat migration, backup and restore, access audits, bot and Mini App reconstruction, full bot cloning with parity checks, and reproducing message formatting and custom emoji. The plugin bundles no MCP server configuration. [Configure the MCP server separately](#connect-an-mcp-client) and authorize the account. For plugin setup, see [installation](docs/operator-plugin.md).
 
 ## Docker
 

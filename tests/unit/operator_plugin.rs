@@ -65,7 +65,7 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
     for (index, name) in manifests.iter().enumerate() {
         let manifest = read_json(name);
         assert_eq!(manifest["name"], "telegram-operator", "{name}");
-        assert_eq!(manifest["version"], "1.5.0", "{name}");
+        assert_eq!(manifest["version"], "1.6.0", "{name}");
         for field in ["mcpServers", "logo", "icon", "composerIcon"] {
             assert!(manifest.get(field).is_none(), "{name}: {field}");
             assert!(
@@ -91,7 +91,7 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
             marketplace["plugins"][0]["name"], "telegram-operator",
             "{name}"
         );
-        assert_eq!(marketplace["plugins"][0]["version"], "1.5.0", "{name}");
+        assert_eq!(marketplace["plugins"][0]["version"], "1.6.0", "{name}");
         for object in [&marketplace, &marketplace["plugins"][0]] {
             for field in ["mcpServers", "logo", "icon", "composerIcon"] {
                 assert!(object.get(field).is_none(), "{name}: {field}");
@@ -100,7 +100,7 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
     }
     assert_eq!(
         read_json(".claude-plugin/marketplace.json")["metadata"]["version"],
-        "1.5.0"
+        "1.6.0"
     );
     for name in obsolete {
         let path = format!("telegram-operator/{name}");
@@ -112,14 +112,14 @@ fn package_flavors_preserve_skills_and_omit_runtime_credentials() {
     let ag: serde_json::Value =
         serde_json::from_slice(&special["telegram-operator/plugin.json"]).unwrap();
     assert_eq!(ag, expected);
-    assert_eq!(normal.len(), 21);
-    assert_eq!(special.len(), 14);
+    assert_eq!(normal.len(), 23);
+    assert_eq!(special.len(), 16);
     assert!(!special.contains_key("telegram-operator/.agents/plugins/marketplace.json"));
     let skills: Vec<_> = normal
         .keys()
         .filter(|name| name.contains("/skills/"))
         .collect();
-    assert_eq!(skills.len(), 10);
+    assert_eq!(skills.len(), 12);
     for name in skills {
         assert_eq!(normal[name], special[name]);
     }
@@ -182,11 +182,11 @@ fn package_refuses_invalid_utf8_before_creating_archive() {
 }
 
 #[test]
-fn installer_copies_all_five_complete_skills_and_refuses_collision() {
+fn installer_copies_all_six_complete_skills_and_refuses_collision() {
     let (root, source) = fixture();
     let destination = root.path().join("project with spaces/.hermes/skills");
     install::install(&source, &destination).unwrap();
-    assert_eq!(fs::read_dir(&destination).unwrap().count(), 5);
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 6);
     for (name, reference) in payload::SKILLS {
         for path in ["SKILL.md".to_owned(), format!("references/{reference}")] {
             assert_eq!(
@@ -196,7 +196,7 @@ fn installer_copies_all_five_complete_skills_and_refuses_collision() {
         }
     }
     assert!(install::install(&source, &destination).is_err());
-    assert_eq!(fs::read_dir(destination).unwrap().count(), 5);
+    assert_eq!(fs::read_dir(destination).unwrap().count(), 6);
 }
 
 fn write_legacy_configs(destination: &Path) {
@@ -226,7 +226,7 @@ fn installer_removes_legacy_configs_on_install_and_upgrade() {
         for name in ["mcp.json", ".mcp.json", "mcp_config.json"] {
             assert!(!destination.join(name).exists(), "{name}");
         }
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 6);
+        assert_eq!(fs::read_dir(&destination).unwrap().count(), 7);
         assert_eq!(fs::read(&keep).unwrap(), b"owner data");
     }
 }

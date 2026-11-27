@@ -46,10 +46,10 @@ fn native_installer_cli_uses_explicit_source_and_preserves_collision() {
     assert!(
         String::from_utf8(run.stdout)
             .unwrap()
-            .contains("Installed five complete skills")
+            .contains("Installed six complete skills")
     );
     assert!(!stale.exists());
-    assert_eq!(fs::read_dir(&skills).unwrap().count(), 5);
+    assert_eq!(fs::read_dir(&skills).unwrap().count(), 6);
     let again = command(root.path())
         .args(["install", "--client", "opencode", "--project"])
         .arg(&project)
@@ -65,7 +65,7 @@ fn native_installer_cli_uses_explicit_source_and_preserves_collision() {
         fs::read_dir(project.join(".opencode/skills"))
             .unwrap()
             .count(),
-        5
+        6
     );
     let log = fs::read_to_string(root.path().join("private-state/mcp.log")).unwrap();
     assert!(log.contains("Operator guidance operation completed"));
@@ -87,7 +87,7 @@ fn native_packager_cli_creates_a_real_archive_without_runtime_state() {
         String::from_utf8_lossy(&run.stderr)
     );
     let mut archive = zip::ZipArchive::new(fs::File::open(output).unwrap()).unwrap();
-    assert_eq!(archive.len(), 21);
+    assert_eq!(archive.len(), 23);
     for name in [
         ".agents/plugins/marketplace.json",
         ".cursor-plugin/marketplace.json",

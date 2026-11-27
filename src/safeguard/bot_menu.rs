@@ -17,7 +17,7 @@ const MENU: &[(&str, &str)] = &[
 ];
 const PAGE_SIZE: usize = 8;
 
-fn html(text: &str, limit: usize) -> String {
+pub(super) fn html(text: &str, limit: usize) -> String {
     let mut output = String::new();
     for ch in text.chars().take(limit) {
         match ch {
@@ -65,7 +65,7 @@ pub(super) fn prompt_text(
         format!("\n\n<pre>{}</pre>", field(details, 600))
     };
     format!(
-        "<b>Telegram MCP approval</b>\nAccount: <code>{account}</code>\nTool: <code>{}</code>\nTarget: <code>{target}</code>\nReasons: {}\nRequest: <code>{}</code>\n\n<pre>{summary}</pre>{truncation}{details}",
+        "🔐 <b>Telegram MCP approval</b>\nAccount: <code>{account}</code>\nTool: <code>{}</code>\nTarget: <code>{target}</code>\nReasons: {}\nRequest: <code>{}</code>\n\n<pre>{summary}</pre>{truncation}{details}",
         field(tool, 100),
         field(&reasons.join(", "), 280),
         field(code, 16)
@@ -126,24 +126,24 @@ pub(super) fn message(
         .unwrap_or(1)
         .max(1);
     Some(match command {
-        "help" | "start" => text(
-            &MENU
-                .iter()
+        "help" | "start" => text(&format!(
+            "🤖 <b>Approval bot commands</b>\n{}",
+            MENU.iter()
                 .map(|(command, description)| format!("/{command} - {description}"))
                 .collect::<Vec<_>>()
-                .join("\n"),
-        ),
+                .join("\n")
+        )),
         "pending" => match pending(state) {
-            Ok(rows) if rows.is_empty() => text("No pending approval requests."),
+            Ok(rows) if rows.is_empty() => text("📭 No pending approval requests."),
             Ok(rows) => {
-                let mut body = format!("<b>Pending requests ({})</b>", rows.len());
+                let mut body = format!("⏳ <b>Pending requests ({})</b>", rows.len());
                 for row in rows.iter().take(PAGE_SIZE) {
                     let args = &row["arguments"];
                     let account = field(args["account"].as_str().unwrap_or("default"), 64);
                     let tool = field(row["tool"].as_str().unwrap_or("Unknown tool"), 100);
                     let chat = chat_target(args)
                         .map_or_else(|| "No specific chat".into(), |v| field(&v.to_string(), 120));
-                    body.push_str(&format!("\n{account}: <code>{tool}</code> ({chat})"));
+                    body.push_str(&format!("\n• {account}: <code>{tool}</code> ({chat})"));
                 }
                 if rows.len() > PAGE_SIZE {
                     body.push_str("\nUse the original prompts or the owner terminal to review individual requests.");
@@ -171,7 +171,7 @@ pub(super) fn message(
             token,
         ),
         "reset_always" => {
-            json!({"text":"Remove every permanent chat approval? This does not change folder grants.","reply_markup":{"inline_keyboard":[[{"text":"Remove all chat approvals","callback_data":"mn:ra:y"},{"text":"Cancel","callback_data":"mn:ra:n"}]]}})
+            json!({"text":"⚠️ Remove every permanent chat approval? This does not change folder grants.","reply_markup":{"inline_keyboard":[[{"text":"🗑️ Remove all chat approvals","callback_data":"mn:ra:y"},{"text":"↩️ Cancel","callback_data":"mn:ra:n"}]]}})
         }
         "status" => {
             let grants = state.always_approvals();
@@ -179,7 +179,7 @@ pub(super) fn message(
                 text("The permanent approval store is unreadable.")
             } else if let Ok(pending) = pending(state) {
                 text(&format!(
-                    "Pending requests: {}\nPermanent chat approvals: {}\nRecorded folder grants: {}",
+                    "📊 <b>Approval status</b>\n⏳ Pending requests: {}\n♾️ Permanent chat approvals: {}\n📁 Recorded folder grants: {}",
                     pending.len(),
                     rows(&grants, "grants").len(),
                     rows(&grants, "folders").len()
@@ -215,7 +215,7 @@ fn grant_list(
     }
     let entries = rows(&store, key);
     if entries.is_empty() {
-        return text(&format!("{label}: none."));
+        return text(&format!("📭 {label}: none."));
     }
     let pages = entries.len().div_ceil(PAGE_SIZE);
     let page = page.min(pages);
@@ -240,10 +240,10 @@ fn grant_list(
             "\n{number}. <code>{}</code>",
             html(&display.replace(token, "[REDACTED]"), 180)
         ));
-        buttons.push([json!({"text":format!("Revoke {number}"), "callback_data":format!("mn:rm:{kind}:{}", row_key(row))})]);
+        buttons.push([json!({"text":format!("🗑️ Revoke {number}"), "callback_data":format!("mn:rm:{kind}:{}", row_key(row))})]);
     }
     if page < pages {
-        body.push_str(&format!("\nNext page: /{command} {}", page + 1));
+        body.push_str(&format!("\n➡️ Next page: /{command} {}", page + 1));
     }
     let mut body = text(&body);
     body["reply_markup"] = json!({"inline_keyboard":buttons});
@@ -256,7 +256,7 @@ fn row_key(row: &Value) -> String {
 
 pub(super) fn callback(state: &State, data: &str) -> Result<&'static str> {
     let (key, target) = match data {
-        "mn:ra:n" => return Ok("Cancelled"),
+        "mn:ra:n" => return Ok("↩️ Cancelled"),
         "mn:ra:y" => ("grants", None),
         _ => match data
             .strip_prefix("mn:rm:")
@@ -281,7 +281,7 @@ pub(super) fn callback(state: &State, data: &str) -> Result<&'static str> {
         },
     )?;
     Ok(if removed {
-        "Approval removed"
+        "🗑️ Approval removed"
     } else {
         "No matching approval"
     })

@@ -87,3 +87,12 @@ claim those checks ran.
 | [Lonami/grammers](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4) | `02367f9711ca` (HEAD `11e13a989a75` checked) | Retain pinned layer 234 revision `02367f9711ca` for v3.3.1. |
 | [KiaroSama/Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat/commit/bf0fc26906f1) | `bf0fc26906f1` | Adopt the layer 234 revision with refreshed export integrity hashes and the corrected synthetic layer 234 fixture. |
 | [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/commit/519899cca9) | `519899cca9` (`v3.3.31`) | [#412](https://github.com/chigwell/telegram-mcp/pull/412) (`view_video`) and [#420](https://github.com/chigwell/telegram-mcp/pull/420) (explicit forum `topic_id`) are ported. Open PRs [#421](https://github.com/chigwell/telegram-mcp/pull/421) (webhook draft), [#422](https://github.com/chigwell/telegram-mcp/pull/422) (draft forum topic), and [#411](https://github.com/chigwell/telegram-mcp/pull/411) (Python test speed) are deferred or not applicable. |
+
+## Upstream recheck for v3.4.0 (2026-11-27)
+
+| Upstream | Revision | Decision |
+| --- | --- | --- |
+| [Lonami/grammers](https://codeberg.org/Lonami/grammers/commit/11e13a989a75) | `11e13a989a75` (pin `02367f9711ca`) | `TCP_NODELAY` adopted in `src/proxy/tunnel.rs`. `grammers-mtproto` and `grammers-tl-types` remain pinned to `02367f9711ca` (layer 234) so Cargo resolves a single `grammers` crate graph alongside `kiaro-secret-chat` `bf0fc26906f1`. |
+| [KiaroSama/Telethon-Secret-Chat](https://github.com/KiaroSama/Telethon-Secret-Chat/commit/c166c65) | `v0.3.1` (`c166c65`) | Evaluated, not bumped directly. `kiaro-secret-chat` stays on `bf0fc26906f1` so all 35 secret-chat tools and existing `.v1.enc` stores keep working, because `v0.3.1` narrowed the crate API and removed `StrongSecretChatManager` and `DurableIngress`. |
+| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/pull/421) | PR #421 (`752f375754c6`) | `ALREADY_HAVE` and `NOT_APPLICABLE`: incoming event feeds and authenticated HTTP bearer transport already exist, and inbound webhook endpoints were not requested. |
+| [chigwell/telegram-mcp](https://github.com/chigwell/telegram-mcp/pull/422) | PR #422 | `ALREADY_HAVE`: `save_draft` and `clear_draft` already send forum `topic_id` as `top_msg_id`; added regression test `topic_draft_reply_defaults_to_the_topic_root`. |

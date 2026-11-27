@@ -133,7 +133,7 @@ impl Fixture {
                     && body["text"]
                         .as_str()
                         .unwrap_or("")
-                        .starts_with("<b>Telegram MCP approval")
+                        .starts_with("🔐 <b>Telegram MCP approval")
             })
             .await
     }
@@ -214,7 +214,7 @@ async fn bypass_menu_is_bound_to_its_owner_chat_and_message() {
         .message("sendMessage", |body| {
             body["text"]
                 .as_str()
-                .is_some_and(|s| s.starts_with("Approval bypass: off"))
+                .is_some_and(|s| s.starts_with("🔒 Bypass mode: <b>OFF</b>"))
         })
         .await;
     let buttons: Vec<_> = menu["reply_markup"]["inline_keyboard"]
@@ -225,14 +225,14 @@ async fn bypass_menu_is_bound_to_its_owner_chat_and_message() {
         .collect();
     assert_eq!(buttons.len(), 8);
     for (name, key) in [
-        ("1 hour", "1h"),
-        ("6 hours", "6h"),
-        ("1 day", "1d"),
-        ("7 days", "7d"),
-        ("30 days", "30d"),
-        ("Custom time", "custom"),
-        ("Until I turn it off", "inf"),
-        ("Turn bypass off", "off"),
+        ("⏱️ 1 hour", "1h"),
+        ("⏱️ 6 hours", "6h"),
+        ("📅 1 day", "1d"),
+        ("📅 7 days", "7d"),
+        ("🗓️ 30 days", "30d"),
+        ("✏️ Custom time", "custom"),
+        ("♾️ Until I turn it off", "inf"),
+        ("🔒 Turn bypass off", "off"),
     ] {
         assert!(
             buttons
@@ -256,14 +256,13 @@ async fn bypass_menu_is_bound_to_its_owner_chat_and_message() {
         + 1;
     f.callback_from(2, 303, 101, "private", message, "mn:bp:inf");
     f.callback_from(3, 101, 101, "group", message, "mn:bp:inf");
-    f.callback_from(4, 101, 101, "private", message + 10, "mn:bp:inf");
     f.callback_from(5, 101, 101, "private", message, &"é".repeat(33));
     f.command(6, 101, "/status");
     f.wire
         .message("sendMessage", |body| {
             body["text"]
                 .as_str()
-                .is_some_and(|s| s.starts_with("Pending requests:"))
+                .is_some_and(|s| s.contains("Pending requests: "))
         })
         .await;
     assert_eq!(
@@ -285,16 +284,24 @@ async fn bypass_menu_is_bound_to_its_owner_chat_and_message() {
         .message("sendMessage", |body| {
             body["text"]
                 .as_str()
-                .is_some_and(|s| s.starts_with("Approval bypass: ON for 36 h"))
+                .is_some_and(|s| s.contains("⏳ For 36 h"))
         })
         .await;
     assert!(state.read_json("bypass.json", json!({})).unwrap()["until"].is_number());
     f.command(9, 101, "/bypass off");
     f.wire
         .message("sendMessage", |body| {
-            body["text"] == "Approval bypass: off."
+            body["text"] == OFF_MENU && body["reply_markup"]["inline_keyboard"].is_array()
         })
         .await;
+    // The first /bypass menu has the same body; wait for the reply to /bypass off.
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while f.count("sendMessage", |b| b["text"] == OFF_MENU) < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(
         state.read_json("bypass.json", json!({})).unwrap(),
         json!({"on":false})
@@ -307,6 +314,155 @@ async fn bypass_menu_is_bound_to_its_owner_chat_and_message() {
         })
         .await;
     assert!(accounts["text"].is_string());
+    assert_eq!(accounts["parse_mode"], "HTML");
+    assert_eq!(
+        accounts["reply_markup"]["inline_keyboard"][0][0]["text"],
+        "🔄 Refresh accounts"
+    );
+}
+
+const OFF_MENU: &str = "🔒 Bypass mode: <b>OFF</b>\n🛡️ Protected actions remain blocked.";
+
+impl Fixture {
+    fn count(&self, method: &str, predicate: impl Fn(&Value) -> bool) -> usize {
+        let sent = self.wire.sent.lock().unwrap();
+        sent.iter()
+            .filter(|(m, v)| m == method && predicate(v))
+            .count()
+    }
+}
+
+#[tokio::test]
+async fn bypass_buttons_edit_in_place_on_every_click_and_after_restart() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    let state = &f.server.runtime.state;
+    // A menu message the running bot never recorded, as after a restart.
+    let message = 4242;
+    for (id, key) in [(1, "1h"), (2, "inf"), (3, "inf"), (4, "off")] {
+        f.callback_from(id, 101, 101, "private", message, &format!("mn:bp:{key}"));
+        let tag = id.to_string();
+        f.wire
+            .message("answerCallbackQuery", |body| {
+                body["callback_query_id"] == tag.as_str()
+            })
+            .await;
+    }
+    let edits: Vec<Value> = f
+        .wire
+        .sent
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(m, _)| m == "editMessageText")
+        .map(|(_, v)| v.clone())
+        .collect();
+    assert_eq!(edits.len(), 4, "every click re-renders the menu");
+    for edit in &edits {
+        assert_eq!(edit["chat_id"], 101);
+        assert_eq!(edit["message_id"], message);
+        assert_eq!(edit["parse_mode"], "HTML");
+        assert_eq!(
+            edit["reply_markup"]["inline_keyboard"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|row| row.as_array().unwrap())
+                .count(),
+            8
+        );
+    }
+    assert_eq!(
+        edits[0]["text"],
+        "🔓 Bypass mode: <b>ON</b>\n⏳ For 1 h 0 min.\n🛡️ Protected actions remain blocked."
+    );
+    assert_eq!(
+        edits[1]["text"],
+        "🔓 Bypass mode: <b>ON</b>\n♾️ Until you turn it off.\n🛡️ Protected actions remain blocked."
+    );
+    assert_eq!(edits[3]["text"], OFF_MENU);
+    assert_eq!(
+        f.count("answerCallbackQuery", |b| b["text"] == "🔓 Bypass is on"),
+        3
+    );
+    assert_eq!(
+        f.count("answerCallbackQuery", |b| b["text"] == "🔒 Bypass is off"),
+        1
+    );
+    assert_eq!(
+        state.read_json("bypass.json", json!({})).unwrap(),
+        json!({"on":false})
+    );
+}
+
+#[tokio::test]
+async fn bypass_custom_button_answers_and_sends_instructions() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    f.callback_from(1, 101, 101, "private", 77, "mn:bp:custom");
+    f.wire
+        .message("answerCallbackQuery", |body| {
+            body["callback_query_id"] == "1" && body["text"] == "✏️ Send a custom duration"
+        })
+        .await;
+    f.wire
+        .message("sendMessage", |body| {
+            body["chat_id"] == 101
+                && body["text"]
+                    == "✏️ Send /bypass 2h30m or /bypass 90m to set a custom time. Send /bypass off to restore prompts."
+        })
+        .await;
+    assert_eq!(f.count("editMessageText", |_| true), 0);
+}
+
+#[tokio::test]
+async fn bypass_thirty_day_command_shows_days_and_a_keyboard() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    f.command(1, 101, "/bypass 30d");
+    let reply = f
+        .wire
+        .message("sendMessage", |body| {
+            body["text"]
+                .as_str()
+                .is_some_and(|s| s.contains("<b>ON</b>"))
+        })
+        .await;
+    assert_eq!(reply["parse_mode"], "HTML");
+    assert_eq!(
+        reply["text"],
+        "🔓 Bypass mode: <b>ON</b>\n⏳ For 30 d 0 h 0 min.\n🛡️ Protected actions remain blocked."
+    );
+    assert!(reply["reply_markup"]["inline_keyboard"].is_array());
+}
+
+#[tokio::test]
+async fn stale_revocation_callback_is_still_answered() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    f.callback_from(1, 101, 101, "private", 55, "mn:ra:y");
+    f.wire
+        .message("answerCallbackQuery", |body| {
+            body["callback_query_id"] == "1"
+                && body["text"] == "This menu is outdated. Send the command again."
+        })
+        .await;
+}
+
+#[tokio::test]
+async fn accounts_refresh_edits_in_place_and_stays_clickable() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    for id in [1, 2] {
+        f.callback_from(id, 101, 101, "private", 66, "mn:ac");
+        let tag = id.to_string();
+        f.wire
+            .message("answerCallbackQuery", |body| {
+                body["callback_query_id"] == tag.as_str()
+                    && body["text"] == "🔄 Account list refreshed"
+            })
+            .await;
+    }
+    assert_eq!(
+        f.count("editMessageText", |b| b["message_id"] == 66
+            && b["parse_mode"] == "HTML"),
+        2
+    );
 }
 
 fn delete_args() -> Value {
@@ -329,7 +485,7 @@ async fn owner_once_wait_releases_account_lock_and_ignores_non_owner() {
                 && body["text"]
                     .as_str()
                     .unwrap_or("")
-                    .starts_with("Pending requests: 1")
+                    .contains("⏳ Pending requests: 1")
         })
         .await;
     assert_eq!(f.calls("channels.deleteMessages"), 0);

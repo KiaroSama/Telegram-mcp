@@ -2,8 +2,8 @@
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "telegram-operator",
   "displayName": "Telegram Operator",
-  "version": "1.5.0",
-  "description": "Authorized Telegram reconstruction, migration, backup, access review and formatting workflows.",
+  "version": "1.6.0",
+  "description": "Authorized Telegram reconstruction, bot cloning, migration, backup, access review and formatting workflows.",
   "suggestedPrompts": [
     "Audit the administrators and invite settings of a Telegram channel I manage without changing anything.",
     "Build a migration checklist for my Telegram group, including how to verify copied messages and media.",

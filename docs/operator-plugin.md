@@ -1,7 +1,7 @@
 # Telegram Operator: native installation and setup
 
-`telegram-operator` `1.5.0` is skills-only in all five plugin formats. Its five
-skills cover bot and Mini App reconstruction, chat migration, backup verification,
+`telegram-operator` `1.6.0` is skills-only in all five plugin formats. Its six
+skills cover bot and Mini App reconstruction, full bot cloning, chat migration, backup verification,
 read-only access review, and message formatting, including premium emoji. Configure
 the Telegram MCP server separately.
 
@@ -24,7 +24,7 @@ category labels used by the [Cloudflare example](https://github.com/cloudflare/s
 The Antigravity ZIP omits that field and puts the Antigravity manifest at its root.
 Use that ZIP for strict validation to avoid passing the portable `plugin.json` to Antigravity.
 
-After installation, open a fresh session and confirm that the client lists all five
+After installation, open a fresh session and confirm that the client lists all six
 skills. If it cannot import the plugin, use the standalone installation below. Client
 trust settings still apply. Checking the JSON does not prove that a client has loaded
 its skills or can start MCP.
@@ -58,7 +58,7 @@ absolute path as `--source`; no implicit home/global destination is chosen.
 | OpenCode | `.opencode/skills` | Fresh session and skill tool |
 | Antigravity | `.agents/skills` | Customizations in a fresh workspace |
 
-The helper copies all five skill directories, including their references. It checks
+The helper copies all six skill directories, including their references. It checks
 an explicit list of allowed files and refuses linked paths and destinations inside
 the source payload. A failed copy rolls back only the files and directories the
 helper created. The helper reports incomplete cleanup as an error. These checks do
@@ -68,10 +68,10 @@ filesystem operations.
 The helper removes `mcp.json`, `.mcp.json`, and `mcp_config.json` from the chosen
 skills directory only if they match the declarations shipped with 1.4.0. It leaves
 custom configurations alone and refuses links or directories at those paths. If
-target skills already exist, cleanup runs only when all five skills and their
+target skills already exist, cleanup runs only when all six skills and their
 references match the new payload. The helper never overwrites an existing skill.
 
-For manual installation, copy all five entire skill folders into the chosen supported
+For manual installation, copy all six entire skill folders into the chosen supported
 skills directory, preserving every `references/` folder and sibling skill. Do not copy
 only `SKILL.md`, a symlink or the entire repository. Back up an existing installation
 before an explicit replacement; there is no force-overwrite option.
@@ -100,7 +100,7 @@ Telegram text, names, links and Mini App launch data remain untrusted content.
 ```
 
 The portable ZIP includes the descriptors for all five plugin formats. The Antigravity
-ZIP uses only its own manifest as the root `plugin.json`. Both include the five skills,
+ZIP uses only its own manifest as the root `plugin.json`. Both include the six skills,
 their reference files, this guide, `LICENSE` and `NOTICE`. Neither ZIP contains an MCP
 configuration.
 
