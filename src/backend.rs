@@ -205,12 +205,11 @@ impl Native {
         let closed = Arc::new(AtomicBool::new(false));
         let mut task = tokio::spawn({
             let closed = Arc::clone(&closed);
-            let label = label.to_owned();
             async move {
                 let _ = runner.run().await;
                 // Every quit path (update stream, health watch, drop) ends here.
                 closed.store(true, Ordering::SeqCst);
-                tracing::warn!(account = %label, "Telegram sender pool exited");
+                tracing::warn!("Telegram sender pool exited");
             }
         });
         let secret = startup::start_secret(
@@ -397,12 +396,8 @@ impl Native {
                 rpc.value.map(|n| format!(" ({n})")).unwrap_or_default()
             ),
             error => {
-                // Variant only: message text may carry endpoints or payload detail.
-                tracing::warn!(
-                    account = %self.0.label,
-                    kind = transport_error_kind(&error),
-                    "Telegram request failed below the RPC layer"
-                );
+                // Static event per variant: raw error text may carry endpoints or payload detail.
+                log_transport_error(&error);
                 anyhow::anyhow!(
                     "Telegram transport failed; operation outcome may be unknown and was not retried"
                 )
@@ -649,16 +644,20 @@ async fn retry_auth<T>(
     bail!("{exhausted}")
 }
 
-fn transport_error_kind(error: &InvocationError) -> &'static str {
+fn log_transport_error(error: &InvocationError) {
     match error {
-        InvocationError::Rpc(_) => "rpc",
-        InvocationError::Io(_) => "io",
-        InvocationError::Transport(_) => "transport",
-        InvocationError::Deserialize(_) => "deserialize",
-        InvocationError::Session(_) => "session",
-        InvocationError::Authentication(_) => "authentication",
-        InvocationError::Dropped(_) => "dropped",
-        InvocationError::InvalidDc => "invalid_dc",
+        InvocationError::Rpc(_) => tracing::warn!("Telegram RPC request failed"),
+        InvocationError::Io(_) => tracing::warn!("Telegram transport I/O failed"),
+        InvocationError::Transport(_) => tracing::warn!("Telegram transport protocol failed"),
+        InvocationError::Deserialize(_) => {
+            tracing::warn!("Telegram response deserialization failed")
+        }
+        InvocationError::Session(_) => tracing::warn!("Telegram session state failed"),
+        InvocationError::Authentication(_) => {
+            tracing::warn!("Telegram transport authentication failed")
+        }
+        InvocationError::Dropped(_) => tracing::warn!("Telegram transport sender pool dropped"),
+        InvocationError::InvalidDc => tracing::warn!("Telegram transport datacenter is invalid"),
     }
 }
 
