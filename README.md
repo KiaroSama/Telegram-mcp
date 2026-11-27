@@ -4,22 +4,23 @@
 
 **Use your own Telegram account from an MCP client.**
 
-[![CI status on main](https://img.shields.io/github/actions/workflow/status/KiaroSama/Telegram-mcp/tests.yml?branch=main&style=flat-square&color=16a34a&label=CI)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml)
-[![GPL-3.0-or-later license](https://img.shields.io/github/license/KiaroSama/Telegram-mcp?style=flat-square&color=2563eb)](#license)
+[![CI status on main](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/KiaroSama/Telegram-mcp/actions/workflows/tests.yml)
+[![GPL-3.0-or-later license](https://img.shields.io/badge/license-GPL--3.0--or--later-2563eb?style=flat-square)](#license)
 [![Latest release tag](https://img.shields.io/github/v/tag/KiaroSama/Telegram-mcp?style=flat-square&color=ea580c&label=tag)](#releases-and-tags)
-[![Core test coverage floor 85 percent](https://img.shields.io/badge/coverage-85%25%2B%20core-0d9488)](docs/api-coverage.md)
-[![Built with Rust 1.100.0](https://img.shields.io/badge/rust-1.100.0-8b5cf6)](Cargo.toml)
-[![Runs on Windows and Linux 64-bit](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%2064--bit-0891b2)](.github/workflows/release.yml)
-[![Install from GitHub releases or Cargo](https://img.shields.io/badge/install-release%20%7C%20cargo-4f46e5)](docs/INSTALL.md)
-[![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7)](docs/COMMANDS.md)
-[![Repository size](https://img.shields.io/github/repo-size/KiaroSama/Telegram-mcp?style=flat-square&color=ca8a04)](#development)
-[![grammers 0.12 on Telegram layer 234](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20234-15803d)](docs/MIGRATION.md)
-[![391 native MCP tools](https://img.shields.io/badge/tools-391%20native-7c3aed)](docs/api-coverage.md)
-![MCP Badge](https://badge.mcpx.dev)
+[![Core test coverage floor 85 percent](https://img.shields.io/badge/coverage-85%25%2B%20core-0d9488?style=flat-square)](docs/api-coverage.md)
+[![Built with Rust 1.100.0](https://img.shields.io/badge/rust-1.100.0-8b5cf6?style=flat-square)](Cargo.toml)
+[![Runs on Windows and Linux 64-bit](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%2064--bit-0891b2?style=flat-square)](.github/workflows/release.yml)
+[![Install from GitHub releases or Cargo](https://img.shields.io/badge/install-release%20%7C%20cargo-4f46e5?style=flat-square)](docs/INSTALL.md)
+[![Command and migration documentation](https://img.shields.io/badge/docs-commands%20%7C%20migration-0284c7?style=flat-square)](docs/COMMANDS.md)
+[![Repository size](https://img.shields.io/badge/repo%20size-8.3%20MiB-ca8a04?style=flat-square)](#development)
+[![grammers 0.12 on Telegram layer 234](https://img.shields.io/badge/grammers-0.12%20%7C%20layer%20234-15803d?style=flat-square)](docs/MIGRATION.md)
+[![391 native MCP tools](https://img.shields.io/badge/tools-391%20native-7c3aed?style=flat-square)](docs/api-coverage.md)
+
+[![MCP Badge](https://badge.mcpx.dev)](https://modelcontextprotocol.io)
 [![M8ven Score](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
 [![M8ven Agent Verified](https://m8ven.ai/api/agent-verify/badge?score=75)](https://m8ven.ai/verified/verify?id=6bf8a0d29e8c8bae)
 [![M8ven Verified](https://m8ven.ai/badge/mcp/kiarosama/telegram-mcp?variant=verified)](https://m8ven.ai/mcp/kiarosama/telegram-mcp)
-[![Support donations](https://img.shields.io/badge/Support-donations-d04a9a)](#donate)
+[![Support donations](https://img.shields.io/badge/Support-donations-d04a9a?style=flat-square)](#donate)
 
 </div>
 
