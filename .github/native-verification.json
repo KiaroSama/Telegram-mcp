@@ -43,7 +43,12 @@
       "backend::config::tests::pooled_invalid_tokens_are_refused_before_opening_any_slot",
       "backend::config::tests::pooled_health_recognizes_the_full_configuration_without_opening_a_session",
       "backend::config::tests::pooled_legacy_default_custody_requires_verified_explicit_owner",
-      "consumer_upgrade_preserves_existing_native_rows_with_the_same_message_id"
+      "consumer_upgrade_preserves_existing_native_rows_with_the_same_message_id",
+      "backend::login_tests::disconnected_native_refuses_recovery_after_an_indeterminate_session_commit",
+      "server::tests::account_health::account_configuration_is_rechecked_after_retirement_before_eviction",
+      "server::tests::account_health::cancelled_account_retirement_preserves_the_owner_and_lease_for_retry",
+      "server::tests::account_health::closed_account_retirement_serializes_waiters_without_blocking_other_accounts",
+      "server::tests::account_health::disconnected_accounts_still_refuse_changed_authorization_configuration"
     ],
     "filesystem_boundaries": [
       "symlink_escape_for_existing_and_new_files_is_rejected",
@@ -55,7 +60,9 @@
       "server::tests::destructive_call_requires_terminal_approval_before_rpc",
       "server::bridge::recovery_tests::bridge_wait_budget_preserves_approval_long_calls_and_disabled_timeout",
       "server::bridge::recovery_tests::bridge_wait_budget_uses_the_attached_owner_policy",
-      "server::bridge::recovery_tests::bridge_cancellation_reaches_the_owner_without_replaying_the_call"
+      "server::bridge::recovery_tests::bridge_cancellation_reaches_the_owner_without_replaying_the_call",
+      "server::tests::approval_bot::failed_bypass_change_answers_without_claiming_success_or_refreshing",
+      "server::tests::approval_bot::owner_callbacks_are_answered_while_menu_delivery_is_stalled"
     ],
     "event_lifecycle": [
       "settled_wait_consumes_exact_burst",
@@ -90,7 +97,8 @@
       "evidence::tests::both_architectures_require_complete_native_and_renderer_identity_evidence",
       "evidence::tests::release_package_refuses_an_image_with_another_native_architecture",
       "status::tests::concurrent_push_and_pull_request_statuses_cannot_overwrite_each_other",
-      "coverage::tests::coverage_refuses_stale_object_lines_outside_current_source"
+      "coverage::tests::coverage_refuses_stale_object_lines_outside_current_source",
+      "server::http::shutdown_signal_tests::interrupt_is_retained_before_the_shutdown_waiter_is_polled"
     ],
     "advanced_api": [
       "polls::minimal_poll_results_are_refetched",

@@ -23,6 +23,23 @@ pub(super) fn session_manager(keep_alive: Duration) -> LocalSessionManager {
     manager
 }
 
+fn shutdown_signal() -> std::io::Result<impl std::future::Future<Output = ()>> {
+    // The portable async ctrl_c() only installs its handler on first poll.
+    // Register synchronously so discovery never advertises a service whose
+    // first interrupt can still take the operating system's default action.
+    #[cfg(unix)]
+    let mut signal = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    #[cfg(windows)]
+    let mut signal = tokio::signal::windows::ctrl_c()?;
+    Ok(async move {
+        let _ = signal.recv().await;
+    })
+}
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/rust_mcp_transport/shutdown_signal.rs"]
+mod shutdown_signal_tests;
+
 #[derive(Clone)]
 struct ServiceAuthentication {
     local: String,
@@ -271,6 +288,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
         "export_seconds": request_context::tool_budget("export_").map(|budget| budget.as_secs_f64()),
         "approval_seconds": crate::safeguard::bot::effective_timeout(bot.as_ref().map(|bot| bot.timeout())).as_secs_f64(),
     });
+    let interrupt = shutdown_signal().context("Cannot register the HTTP shutdown signal")?;
     state.write_json("http-service.json",&json!({"url":endpoint,"token":token,"certificate_pem":certificate_pem,"health_protocol":2,"request_timeouts":request_timeouts,"pid":std::process::id(),"started":chrono::Utc::now().to_rfc3339()}))?;
     let _approval_worker = bot.as_ref().map(crate::safeguard::bot::ApprovalBot::start);
     let outcome = if let Some(tls) = tls {
@@ -281,7 +299,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
             let sessions = shutdown.clone();
             let _signal = ShutdownSignal::new(
                 tokio::spawn(async move {
-                    let _ = tokio::signal::ctrl_c().await;
+                    interrupt.await;
                     sessions.cancel();
                     drain.graceful_shutdown(Some(Duration::from_secs(15)));
                 }),
@@ -297,7 +315,7 @@ pub(super) async fn serve(server: Mcp, address: std::net::SocketAddr) -> Result<
     } else {
         axum::serve(listener, router)
             .with_graceful_shutdown(async move {
-                let _ = tokio::signal::ctrl_c().await;
+                interrupt.await;
                 shutdown.cancel();
             })
             .await

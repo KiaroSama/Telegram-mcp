@@ -69,8 +69,10 @@ async fn video_decodes_one_silent_download_and_removes_private_work_files() {
     let temp = tempfile::tempdir().unwrap();
     let fixture = temp.path().join("fixture.mp4");
     let state = State::at(temp.path().join("state"), vec![temp.path().to_owned()]).unwrap();
-    let status = tokio::time::timeout(
-        Duration::from_secs(8),
+    // Fixture encoding has its own bounded startup budget: instrumented native
+    // ARM64 runners can take longer than eight seconds to start FFmpeg.
+    // The real decoder's production limits and assertions below remain intact.
+    let (mut child, _tree) = crate::tools::visual::capture::containment::spawn(
         decoder()
             .args([
                 "-nostdin",
@@ -82,14 +84,26 @@ async fn video_decodes_one_silent_download_and_removes_private_work_files() {
                 "color=c=red:s=64x64:r=10:d=0.4",
                 "-c:v",
                 "mpeg4",
+                "-threads",
+                "1",
             ])
             .arg(&fixture)
-            .kill_on_drop(true)
-            .status(),
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true),
     )
-    .await
-    .unwrap()
     .unwrap();
+    let status = match tokio::time::timeout(Duration::from_secs(60), child.wait()).await {
+        Ok(result) => result.expect("FFmpeg fixture process could not be reaped"),
+        Err(_) => {
+            tokio::time::timeout(Duration::from_secs(5), child.kill())
+                .await
+                .expect("FFmpeg fixture cleanup exceeded its budget")
+                .expect("FFmpeg fixture process could not be killed and reaped");
+            panic!("FFmpeg fixture encoding exceeded its 60-second setup budget");
+        }
+    };
     assert!(status.success());
     let api = VideoApi {
         bytes: std::fs::read(&fixture).unwrap(),

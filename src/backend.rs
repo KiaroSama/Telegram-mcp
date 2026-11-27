@@ -416,7 +416,10 @@ impl Telegram for Native {
         self.0.closed.load(Ordering::SeqCst)
     }
     async fn close_connection(&self) -> Result<()> {
-        self.stop_workers().await
+        self.stop_workers().await?;
+        self.0.session.check_health().context(
+            "Account recovery refused after uncertain session persistence; inspect the saved state before explicit repair",
+        )
     }
     async fn invoke(&self, method: &str, params: Value) -> Result<Value> {
         let result = match method {

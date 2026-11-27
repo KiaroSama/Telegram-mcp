@@ -143,6 +143,12 @@ struct Pending {
     messages: HashMap<i64, i64>,
 }
 
+enum CallbackMenu {
+    Edit(Value),
+    EditOrSend(Value),
+    Send(Value),
+}
+
 pub(crate) struct ApprovalBot {
     config: Config,
     state: Arc<State>,
@@ -327,7 +333,7 @@ impl ApprovalBot {
                                 continue;
                             }
                             offset = Some(next);
-                            // Room for one edit plus the callback answer on a slow link.
+                            // Bound the callback answer and its subsequent menu refresh.
                             let _ =
                                 tokio::time::timeout(Duration::from_secs(10), self.update(update))
                                     .await;
@@ -360,6 +366,7 @@ impl ApprovalBot {
             if !super::bot_bypass::valid_callback(data) {
                 return;
             }
+            let mut menu = None;
             let notice = if let Some((code, action)) = data
                 .strip_prefix("ap:")
                 .and_then(|body| body.split_once(':'))
@@ -372,13 +379,12 @@ impl ApprovalBot {
             } else if let Some(key) = data.strip_prefix("mn:bp:") {
                 // Bypass buttons are idempotent owner settings: they stay usable on
                 // every click and across restarts, so they skip the single-use menu.
-                self.bypass_callback(key, owner, message_id).await
+                let (notice, next) = self.bypass_callback(key, owner);
+                menu = next;
+                notice
             } else if data == "mn:ac" {
-                let body = self.account_menu();
-                if !self.edit_menu(owner, message_id, body.clone()).await {
-                    self.send_menu(owner, body).await;
-                }
-                "🔄 Account list refreshed".to_owned()
+                menu = Some(CallbackMenu::EditOrSend(self.account_menu()));
+                "🔄 Refreshing account list".to_owned()
             } else if data.starts_with("mn:") {
                 // Revocations stay single-use so a stale button cannot remove a newer grant.
                 let current = self
@@ -401,6 +407,20 @@ impl ApprovalBot {
                     json!({"callback_query_id":id,"text":notice}),
                 )
                 .await;
+            // Acknowledge the recorded action before awaiting optional menu delivery.
+            if let Some(menu) = menu {
+                match menu {
+                    CallbackMenu::Edit(body) => {
+                        let _ = self.edit_menu(owner, message_id, body).await;
+                    }
+                    CallbackMenu::EditOrSend(body) => {
+                        if !self.edit_menu(owner, message_id, body.clone()).await {
+                            self.send_menu(owner, body).await;
+                        }
+                    }
+                    CallbackMenu::Send(body) => self.send_menu(owner, body).await,
+                }
+            }
         } else if let Some(message) = update.get("message") {
             let from = message["from"]["id"].as_i64();
             let Some(owner) = from.filter(|owner| self.config.owners.contains(owner)) else {
@@ -455,32 +475,35 @@ impl ApprovalBot {
         super::bot_bypass::accounts(&self.observed_accounts())
     }
 
-    async fn bypass_callback(&self, key: &str, owner: i64, message_id: i64) -> String {
+    fn bypass_callback(&self, key: &str, owner: i64) -> (String, Option<CallbackMenu>) {
         use super::bypass::BypassPreset;
         let Some((_, preset)) = BypassPreset::MENU
             .iter()
             .find(|(selector, _)| *selector == key)
         else {
-            return "This menu is outdated. Send /bypass again.".to_owned();
+            return (
+                "This menu is outdated. Send /bypass again.".to_owned(),
+                None,
+            );
         };
         match super::bot_bypass::apply(&self.state, *preset, owner) {
             Ok(true) => {
                 // The state is saved either way; a failed edit only leaves an older view.
-                let _ = self
-                    .edit_menu(owner, message_id, super::bot_bypass::menu(&self.state))
-                    .await;
-                if *preset == BypassPreset::Off {
+                let notice = if *preset == BypassPreset::Off {
                     "🔒 Bypass is off".to_owned()
                 } else {
                     "🔓 Bypass is on".to_owned()
-                }
+                };
+                (
+                    notice,
+                    Some(CallbackMenu::Edit(super::bot_bypass::menu(&self.state))),
+                )
             }
-            Ok(false) => {
-                self.send_menu(owner, super::bot_bypass::instructions())
-                    .await;
-                "✏️ Send a custom duration".to_owned()
-            }
-            Err(notice) => notice.to_owned(),
+            Ok(false) => (
+                "✏️ Send a custom duration".to_owned(),
+                Some(CallbackMenu::Send(super::bot_bypass::instructions())),
+            ),
+            Err(notice) => (notice.to_owned(), None),
         }
     }
 

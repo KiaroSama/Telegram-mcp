@@ -14,6 +14,8 @@ struct Wire {
     changed: Notify,
     updates: Notify,
     fail_send: bool,
+    held_method: StdMutex<Option<String>>,
+    release_held: tokio_util::sync::CancellationToken,
 }
 
 impl Wire {
@@ -59,6 +61,15 @@ async fn bot_api(
         sent.len()
     };
     wire.changed.notify_waiters();
+    let hold = wire
+        .held_method
+        .lock()
+        .unwrap()
+        .as_deref()
+        .is_some_and(|held| held == method);
+    if hold {
+        wire.release_held.cancelled().await;
+    }
     let result = match method.as_str() {
         "getMe" => json!({"id":7,"is_bot":true,"username":"Resolved_Helper_Bot"}),
         "getUpdates" => {
@@ -189,6 +200,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        self.wire.release_held.cancel();
         self.http.abort();
     }
 }
@@ -347,6 +359,9 @@ async fn bypass_buttons_edit_in_place_on_every_click_and_after_restart() {
             })
             .await;
     }
+    f.wire
+        .message("editMessageText", |body| body["text"] == OFF_MENU)
+        .await;
     let edits: Vec<Value> = f
         .wire
         .sent
@@ -454,15 +469,91 @@ async fn accounts_refresh_edits_in_place_and_stays_clickable() {
         f.wire
             .message("answerCallbackQuery", |body| {
                 body["callback_query_id"] == tag.as_str()
-                    && body["text"] == "🔄 Account list refreshed"
+                    && body["text"] == "🔄 Refreshing account list"
             })
             .await;
     }
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while f.count("editMessageText", |body| body["message_id"] == 66) < 2 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(
         f.count("editMessageText", |b| b["message_id"] == 66
             && b["parse_mode"] == "HTML"),
         2
     );
+}
+
+#[tokio::test]
+async fn owner_callbacks_are_answered_while_menu_delivery_is_stalled() {
+    for (data, method, notice, expected_on) in [
+        ("mn:bp:inf", "editMessageText", "🔓 Bypass is on", true),
+        ("mn:bp:off", "editMessageText", "🔒 Bypass is off", false),
+        (
+            "mn:ac",
+            "editMessageText",
+            "🔄 Refreshing account list",
+            false,
+        ),
+        (
+            "mn:bp:custom",
+            "sendMessage",
+            "✏️ Send a custom duration",
+            false,
+        ),
+    ] {
+        let f = Fixture::new(false, Duration::from_secs(4)).await;
+        if data == "mn:bp:off" {
+            crate::safeguard::bypass::BypassState::Indefinite { owner_id: 101 }
+                .write(&f.server.runtime.state)
+                .unwrap();
+        }
+        *f.wire.held_method.lock().unwrap() = Some(method.to_owned());
+        f.callback_from(1, 101, 101, "private", 77, data);
+        f.wire.message(method, |_| true).await;
+        f.wire
+            .message("answerCallbackQuery", |body| {
+                body["callback_query_id"] == "1" && body["text"] == notice
+            })
+            .await;
+        assert!(!f.wire.release_held.is_cancelled());
+        assert_eq!(
+            f.server
+                .runtime
+                .state
+                .read_json("bypass.json", json!({"on": false}))
+                .unwrap()["on"],
+            expected_on,
+            "The acknowledgement must describe the persisted setting: {data}"
+        );
+        f.wire.release_held.cancel();
+    }
+}
+
+#[tokio::test]
+async fn failed_bypass_change_answers_without_claiming_success_or_refreshing() {
+    let f = Fixture::new(false, Duration::from_secs(4)).await;
+    let state = &f.server.runtime.state;
+    let prior = crate::safeguard::bypass::BypassState::Indefinite { owner_id: 101 };
+    prior.write(state).unwrap();
+    std::fs::create_dir(state.root().join("account-rename-transaction.json")).unwrap();
+    f.callback_from(1, 101, 101, "private", 77, "mn:bp:off");
+    f.wire
+        .message("answerCallbackQuery", |body| {
+            body["callback_query_id"] == "1"
+                && body["text"]
+                    == "⚠️ Could not save bypass state. Check /bypass before relying on it."
+        })
+        .await;
+    assert_eq!(
+        crate::safeguard::bypass::BypassState::read(state, crate::safeguard::unix_time()),
+        prior
+    );
+    assert_eq!(f.count("editMessageText", |_| true), 0);
+    assert_eq!(f.count("sendMessage", |_| true), 0);
 }
 
 fn delete_args() -> Value {

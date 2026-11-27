@@ -40,6 +40,17 @@ struct Account {
     serial: Arc<Mutex<()>>,
     generation: Option<String>,
 }
+impl Account {
+    fn check_generation(&self, label: &str) -> Result<()> {
+        let generation = crate::backend::account_generation(label)?;
+        if self.generation.is_some() && self.generation != generation {
+            bail!(
+                "Account configuration changed; repair or restart its owned service before using the new authorization"
+            );
+        }
+        Ok(())
+    }
+}
 struct Runtime {
     accounts: Mutex<HashMap<String, Arc<Account>>>,
     state: Arc<State>,
@@ -70,34 +81,48 @@ impl Mcp {
     async fn account(&self, label: &str) -> Result<Arc<Account>> {
         crate::session::validate_label(label)?;
         let mut accounts = loop {
-            let mut accounts = self.runtime.accounts.lock().await;
-            if let Some(account) = accounts.get(label).filter(|a| !a.api.is_closed()) {
-                let generation = crate::backend::account_generation(label)?;
-                if account.generation.is_some() && account.generation != generation {
-                    bail!(
-                        "Account configuration changed; repair or restart its owned service before using the new authorization"
-                    );
-                }
-                return Ok(Arc::clone(account));
-            }
-            // A dead sender pool never recovers; retire it outside the map lock
-            // so its session lease is released before a replacement opens.
-            let Some(stale) = accounts.remove(label) else {
+            let accounts = self.runtime.accounts.lock().await;
+            let Some(account) = accounts.get(label) else {
                 break accounts;
             };
-            drop(accounts);
-            if let Err(error) = stale.api.close_connection().await {
-                self.runtime
-                    .accounts
-                    .lock()
-                    .await
-                    .entry(label.into())
-                    .or_insert(stale);
-                return Err(error.context(
-                    "The disconnected account could not be shut down; it was not reopened",
-                ));
+            account.check_generation(label)?;
+            if !account.api.is_closed() {
+                return Ok(Arc::clone(account));
             }
+            // Wait only on the account lock, not a clone of its leased owner.
+            // Existing operation cleanup must finish before worker shutdown.
+            let serial = Arc::clone(&account.serial);
+            drop(accounts);
+            let retirement = Arc::clone(&serial).lock_owned().await;
+            let accounts = self.runtime.accounts.lock().await;
+            let Some(stale) = accounts
+                .get(label)
+                .filter(|account| Arc::ptr_eq(&account.serial, &serial))
+            else {
+                continue;
+            };
+            stale.check_generation(label)?;
+            if !stale.api.is_closed() {
+                return Ok(Arc::clone(stale));
+            }
+            let stale = Arc::clone(stale);
+            drop(accounts);
+            // Keep the owner cached across cancellation and failed shutdown.
+            // Other accounts remain available while this one retires.
+            stale.api.close_connection().await.context(
+                "The disconnected account could not be retired safely; it was not reopened",
+            )?;
+            let mut accounts = self.runtime.accounts.lock().await;
+            if accounts
+                .get(label)
+                .is_some_and(|account| Arc::ptr_eq(account, &stale))
+            {
+                stale.check_generation(label)?;
+                accounts.remove(label);
+            }
+            drop(accounts);
             drop(stale);
+            drop(retirement);
         };
         let generation = crate::backend::account_generation(label)?;
         if generation.is_none() {
