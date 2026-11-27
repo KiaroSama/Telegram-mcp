@@ -2,6 +2,26 @@ use super::support::*;
 use serde_json::{Value, json};
 
 #[tokio::test]
+async fn message_reads_only_link_channel_messages_when_usernames_overlap() {
+    let response = json!({"messages":[
+        {"_":"message","id":9,"peer_id":{"_":"peerUser","user_id":"7"},"message":"Direct message"},
+        {"_":"message","id":10,"peer_id":{"_":"peerChannel","channel_id":"7"},"message":"Channel post"}
+    ],"users":[{"_":"user","id":"7","username":"alice"}],"chats":[{"_":"channel","id":"7","username":"channel_name"}]});
+    let api = Api::new(vec![("messages.getHistory", response)]);
+    let result = run(&api, "get_messages", json!({"chat_id":7}))
+        .await
+        .unwrap();
+    assert!(result["messages"][0].get("permalink").is_none());
+    assert_eq!(
+        result["messages"][1]["permalink"],
+        format!(
+            "https://{}/channel_name/10",
+            telegram_mcp::permalinks::link_domain()
+        )
+    );
+}
+
+#[tokio::test]
 async fn disappearing_listing_requires_a_positive_decoded_media_ttl() {
     let schema = telegram_mcp::tl::Schema::global();
     let mut rows = Vec::new();

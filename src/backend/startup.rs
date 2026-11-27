@@ -2,7 +2,7 @@
 //! before any secret-chat custody migration or update consumption starts.
 use super::config::{self, ClientIdentity};
 use crate::{account_manager::ConfigSnapshot, session::PersistentSession, state::State};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use grammers_client::Client;
 use grammers_mtsender::{ConnectionParams, NoRetries, SenderPool};
 use grammers_session::{
@@ -33,25 +33,69 @@ pub(super) async fn open_leased_session(
         if pool.is_empty() {
             bail!("No eligible pooled sessions remain in TELEGRAM_SESSION_STRINGS");
         }
-        let (session, chosen) = crate::account_manager::acquire_with_grace(grace, None, || {
-            for candidate in &pool {
-                if let Ok(session) = PersistentSession::open(Arc::clone(state), &candidate.slot_label)
-                {
-                    return Ok((Arc::new(session), candidate.clone()));
-                }
-            }
-            bail!(
-                "All pooled sessions in TELEGRAM_SESSION_STRINGS are currently locked by another process"
-            )
-        })
-        .await?;
-        if !state
-            .root()
-            .join(format!("{}.session.json", chosen.slot_label))
-            .exists()
-        {
-            session.import_telethon(&chosen.value)?;
+        ensure!(
+            pool.iter().all(
+                |candidate| crate::account_manager::session_validate(&candidate.value) == "valid"
+            ),
+            "TELEGRAM_SESSION_STRINGS contains an invalid session; no authorization was opened"
+        );
+        let mut custody_config = ConfigSnapshot {
+            values: snapshot.values.clone(),
+            digest: snapshot.digest.clone(),
+            path: snapshot.path.clone(),
+            process_keys: snapshot.process_keys.clone(),
+        };
+        for candidate in &pool {
+            custody_config.values.insert(
+                format!(
+                    "TELEGRAM_SESSION_STRING_{}",
+                    candidate.slot_label.to_ascii_uppercase()
+                ),
+                candidate.value.clone(),
+            );
         }
+        // Resolve each candidate's authorization before creating or importing a slot.
+        for candidate in &pool {
+            PersistentSession::check_custody_identity(
+                state,
+                &candidate.slot_label,
+                &custody_config,
+            )?;
+        }
+        let (session, chosen) = crate::account_manager::acquire_with_grace(grace, None, || {
+            let mut last_error = None;
+            for candidate in &pool {
+                let session =
+                    match PersistentSession::open(Arc::clone(state), &candidate.slot_label) {
+                        Ok(session) => session,
+                        Err(error) => {
+                            last_error = Some(error);
+                            continue;
+                        }
+                    };
+                if !state
+                    .root()
+                    .join(format!("{}.session.json", candidate.slot_label))
+                    .exists()
+                    && let Err(error) = session.import_telethon(&candidate.value)
+                {
+                    // The authorization lease is acquired during first import, not slot creation.
+                    last_error = Some(error);
+                    continue;
+                }
+                PersistentSession::check_custody_identity(
+                    state,
+                    &candidate.slot_label,
+                    &custody_config,
+                )?;
+                return Ok((Arc::new(session), candidate.clone()));
+            }
+            Err(last_error.unwrap_or_else(|| {
+                anyhow::anyhow!("No eligible pooled authorization is available")
+            }))
+        })
+        .await
+        .context("No eligible pooled authorization could be opened")?;
         return Ok((
             session,
             Some(("TELEGRAM_SESSION_STRINGS".into(), chosen.value)),

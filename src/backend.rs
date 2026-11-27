@@ -159,9 +159,7 @@ impl Native {
         if !staged {
             startup::ensure_self_peer(&session, api_id, &route, &identity).await?;
         }
-        if leased_label == label {
-            crate::session::check_deferred_custody_with_config(&state, label, snapshot)?;
-        }
+        crate::session::check_deferred_custody_with_config(&state, &leased_label, snapshot)?;
         let source =
             source.map(|(key, value)| (key, crate::account_manager::config_digest(&value)));
         session.bind_source(
@@ -169,6 +167,10 @@ impl Native {
                 .as_ref()
                 .map(|(key, digest)| format!("{key}:{digest}")),
         )?;
+        // A pool's public revision covers every configured candidate, while each
+        // persistent slot remains bound only to its selected authorization source.
+        let source = config::source_from(snapshot, label)
+            .map(|(key, value)| (key, crate::account_manager::config_digest(&value)));
         let mut connection = ConnectionParams {
             app_version: format!("telegram-mcp/{}", env!("CARGO_PKG_VERSION")),
             retry_policy: Box::new(NoRetries),

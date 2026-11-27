@@ -13,12 +13,13 @@ pub(super) fn eligible(row: &Value) -> bool {
 }
 
 pub(super) fn retain_history(rows: &mut Vec<Value>) {
+    // Existing native rows precede imported receipts and keep their persisted contents.
+    let mut seen = HashSet::new();
+    rows.retain(|row| eligible(row) && message_id(row).is_none_or(|id| seen.insert(id)));
     rows.sort_by_cached_key(|row| {
         row["date"]
             .as_str()
             .and_then(|date| chrono::DateTime::parse_from_rfc3339(date).ok())
     });
-    let mut seen = HashSet::new();
-    rows.retain(|row| eligible(row) && message_id(row).is_none_or(|id| seen.insert(id)));
     rows.drain(..rows.len().saturating_sub(500));
 }

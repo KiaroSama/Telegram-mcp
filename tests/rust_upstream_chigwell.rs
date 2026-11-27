@@ -84,7 +84,7 @@ async fn message_read_rebases_utf16_and_links_the_message_peer() {
         "messages.getHistory",
         json!({"messages":[
         row(json!({"_":"peerChannel","channel_id":"7"})),
-        row(json!({"_":"peerChannel","channel_id":"-10012345678901"})),
+        row(json!({"_":"peerChannel","channel_id":"12345678901"})),
         row(json!({"_":"peerChat","chat_id":"7"}))],
         "chats":[{"_":"channel","id":7,"username":"publicchat"}]}),
     )]);

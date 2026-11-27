@@ -74,6 +74,38 @@ async fn general_list_and_search_do_not_pass_a_fake_thread_root() {
 }
 
 #[tokio::test]
+async fn general_history_validates_the_forum_and_filters_the_chat_history() {
+    let api = forum(vec![
+        ("channels.getChannels", peers(true)),
+        (
+            "messages.getHistory",
+            json!({"messages":[row(9, Some(5)),row(8,None),row(7,None),row(6,None)]}),
+        ),
+    ]);
+    let value = tools::call(
+        &api,
+        "get_history",
+        &json!({"chat_id":"forum","topic_id":1,"limit":2}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        value["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_i64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![8, 7]
+    );
+    assert_eq!(value["has_more"], true);
+    assert_eq!(value["scan_limit_reached"], false);
+    assert_eq!(value["metadata"]["effective_limit"], 2);
+    assert!(api.calls()[1].1.get("msg_id").is_none());
+    assert!(api.calls()[1].1.get("top_msg_id").is_none());
+}
+
+#[tokio::test]
 async fn general_refuses_non_forum_and_reports_a_stalled_cursor() {
     let api = forum(vec![("channels.getChannels", peers(false))]);
     let args = json!({"chat_id":"forum","topic_id":1});

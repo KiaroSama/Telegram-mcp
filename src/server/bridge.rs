@@ -29,6 +29,13 @@ const REQUEST_FAILED: &str =
     "Shared service request failed; inspect operation state before retrying a mutation";
 const REQUEST_TIMED_OUT: &str =
     "Shared service request timed out; inspect operation state before retrying a mutation";
+const REQUEST_CANCELLED: &str =
+    "Shared service request cancelled; inspect operation state before retrying a mutation";
+// Startup, authenticated health, initialization, and catalogue discovery each
+// have their own bounds. Also bound their combined wait and the reconnect lock.
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(90);
+const MAX_FORWARD_ATTEMPTS: u32 = 2;
+const RESPONSE_GRACE: Duration = Duration::from_secs(10);
 
 // Retain the whole record so a change to the trusted certificate also reconnects.
 #[derive(PartialEq, Eq)]
@@ -49,6 +56,31 @@ struct Bridge {
 }
 
 impl BridgeSession {
+    fn request_budget(&self, name: &str) -> Option<Duration> {
+        let policy = self.identity.0.get("request_timeouts")?;
+        if policy.get("version")?.as_u64()? != 1 {
+            return None;
+        }
+        let ordinary = owner_tool_budget(policy.get("ordinary_seconds")?)?;
+        let export = owner_tool_budget(policy.get("export_seconds")?)?;
+        let approval = policy.get("approval_seconds")?.as_f64()?;
+        if !(5.0..=3600.0).contains(&approval) {
+            return None;
+        }
+        let approval = Duration::try_from_secs_f64(approval).ok()?;
+        let budget = if name.starts_with("export_") {
+            export?
+        } else {
+            ordinary?
+        };
+        // The owner can spend one ordinary budget before approval and start a
+        // fresh budget afterward. Attachment has its own independent bound.
+        budget
+            .checked_mul(2)?
+            .checked_add(approval)?
+            .checked_add(RESPONSE_GRACE)
+    }
+
     async fn attach(state: &State) -> Result<Self> {
         let record = startup::ensure_service(state).await?;
         let (_, _, pid) = descriptor(&record, None)?;
@@ -76,6 +108,23 @@ impl BridgeSession {
     }
 }
 
+fn owner_tool_budget(value: &Value) -> Option<Option<Duration>> {
+    if value.is_null() {
+        return Some(None);
+    }
+    let seconds = value.as_f64()?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    if seconds == 0.0 {
+        return Some(Some(Duration::ZERO));
+    }
+    // Reuse the owner's finite range validation, with zero as an invalid-value
+    // sentinel. Missing or invalid metadata delegates deadlines to the owner.
+    let budget = request_context::parse_tool_timeout(Some(&seconds.to_string()), 0.0)?;
+    (!budget.is_zero()).then_some(Some(budget))
+}
+
 impl Bridge {
     fn new(state: Arc<State>, session: BridgeSession) -> Self {
         Self {
@@ -101,41 +150,59 @@ impl Bridge {
             .then_some(session))
     }
 
-    async fn connection(&self) -> Result<Arc<BridgeSession>> {
-        if let Some(session) = self.current()? {
-            return Ok(session);
-        }
-        let _reconnect = self.reconnect.lock().await;
-        if let Some(session) = self.current()? {
-            return Ok(session);
-        }
-        let session = Arc::new(BridgeSession::attach(&self.state).await?);
-        *self
-            .session
-            .write()
-            .map_err(|_| anyhow::anyhow!("Shared MCP connection cache is unavailable"))? =
-            Arc::clone(&session);
-        Ok(session)
+    async fn connection(&self) -> std::result::Result<Arc<BridgeSession>, rmcp::ErrorData> {
+        let connect = async {
+            if let Some(session) = self.current()? {
+                return Ok(session);
+            }
+            let _reconnect = self.reconnect.lock().await;
+            if let Some(session) = self.current()? {
+                return Ok(session);
+            }
+            let session = Arc::new(BridgeSession::attach(&self.state).await?);
+            *self
+                .session
+                .write()
+                .map_err(|_| anyhow::anyhow!("Shared MCP connection cache is unavailable"))? =
+                Arc::clone(&session);
+            Ok::<_, anyhow::Error>(session)
+        };
+        tokio::time::timeout(CONNECTION_TIMEOUT, connect)
+            .await
+            .map_err(|_| request_error(REQUEST_TIMED_OUT))?
+            .map_err(|_| request_error(REQUEST_FAILED))
     }
 
     async fn forward(
         &self,
         request: CallToolRequestParams,
-        deadline: tokio::time::Instant,
+        caller_deadline: Option<tokio::time::Instant>,
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
         let connect = || async {
-            tokio::time::timeout_at(deadline, self.connection())
+            with_optional_deadline(caller_deadline, self.connection(), REQUEST_TIMED_OUT)
                 .await
                 .map_err(|_| request_error(REQUEST_TIMED_OUT))?
-                .map_err(|_| request_error(REQUEST_FAILED))
         };
         let mut session = connect().await?;
-        for attempt in 0..=1 {
-            if tokio::time::Instant::now() >= deadline {
+        for attempt in 0..MAX_FORWARD_ATTEMPTS {
+            // Use the attached owner's policy, including after a proven
+            // pre-dispatch retry to a replacement with different settings.
+            let owner_deadline = session
+                .request_budget(&request.name)
+                .and_then(|budget| tokio::time::Instant::now().checked_add(budget));
+            let deadline = match (caller_deadline, owner_deadline) {
+                (Some(caller), Some(owner)) => Some(caller.min(owner)),
+                (caller, owner) => caller.or(owner),
+            };
+            if deadline.is_some_and(|limit| tokio::time::Instant::now() >= limit) {
                 return Err(request_error(REQUEST_TIMED_OUT));
             }
-            match tokio::time::timeout_at(deadline, session.remote.call_tool_once(request.clone()))
-                .await
+            match with_optional_deadline(
+                deadline,
+                session.remote.call_tool_once(request.clone()),
+                REQUEST_TIMED_OUT,
+            )
+            .await
             {
                 Ok(Ok(response)) => return Ok(response),
                 Ok(Err(ServiceError::McpError(error))) => return Err(error),
@@ -220,7 +287,7 @@ impl ServerHandler for Bridge {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> std::result::Result<ListToolsResult, rmcp::ErrorData> {
-        let session = self.cached().map_err(|_| request_error(REQUEST_FAILED))?;
+        let session = self.connection().await?;
         Ok(ListToolsResult {
             tools: session.tools.clone(),
             ..Default::default()
@@ -229,15 +296,13 @@ impl ServerHandler for Bridge {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> std::result::Result<CallToolResponse, rmcp::ErrorData> {
-        self.forward(
-            request,
-            tokio::time::Instant::now()
-                + Duration::from_secs(130)
-                + crate::safeguard::bot::configured_timeout().unwrap_or_default(),
-        )
-        .await
+        tokio::select! {
+            biased;
+            () = context.ct.cancelled() => Err(request_error(REQUEST_CANCELLED)),
+            result = self.forward(request, None) => result,
+        }
     }
 }
 pub async fn connect_shared() -> Result<RunningService<RoleClient, ()>> {

@@ -129,10 +129,10 @@ impl Writer {
         super::files::write_contact_vcard(&self.path, self.contacts_written, vcard, self.max_bytes)
     }
 
-    fn rotate_html_if_needed(&mut self) -> Result<()> {
+    fn rotate_html_if_needed(&mut self, incoming_articles: usize) -> Result<()> {
         if let Some(writer) = &mut self.html
             && self.html_articles > 0
-            && self.html_articles.is_multiple_of(1000)
+            && self.html_articles.saturating_add(incoming_articles) > 1000
         {
             let next = self.html_page + 1;
             writer.write_all(
@@ -144,6 +144,7 @@ impl Writer {
             )?;
             writer.flush()?;
             self.html_page = next;
+            self.html_articles = 0;
             *writer = open_html(&self.path, &self.title, next)?;
             writer.write_all(
                 format!(
@@ -183,7 +184,7 @@ impl Writer {
             self.json_count += 1;
         }
         if let Some(chunk) = html_chunk {
-            self.rotate_html_if_needed()?;
+            self.rotate_html_if_needed(1)?;
             if let Some(writer) = &mut self.html {
                 writer.write_all(chunk.as_bytes())?;
             }
@@ -220,7 +221,7 @@ impl Writer {
         }
         if self.html.is_some() {
             let (chunk, articles) = super::html_admin::render_event_html(entry, parts, peers);
-            self.rotate_html_if_needed()?;
+            self.rotate_html_if_needed(articles.max(1))?;
             if let Some(writer) = &mut self.html {
                 writer.write_all(chunk.as_bytes())?;
             }

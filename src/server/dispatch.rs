@@ -158,7 +158,11 @@ impl Telegram for LocalApi {
                 let key = params["config_key"]
                     .as_str()
                     .context("config_key is required")?;
-                let label = crate::account_manager::label_for(key)?;
+                let label = if key == "TELEGRAM_SESSION_STRINGS" {
+                    "default".to_owned()
+                } else {
+                    crate::account_manager::label_for(key)?
+                };
                 let account = self.0.runtime.accounts.lock().await.get(&label).cloned();
                 if let Some(slot) = account {
                     let health = slot.api.invoke(method, params).await;
@@ -216,12 +220,15 @@ pub(super) fn is_local_only(name: &str, args: &Value) -> bool {
             | "get_invite_link_qr"
             | "transcribe_audio"
     ) && !(name == "add_proxies" && args.get("source").is_some_and(|v| !v.is_null()))
+        && !(matches!(name, "get_ghost_mode" | "set_ghost_mode")
+            && args.get("chat_id").is_some_and(|chat| !chat.is_null()))
 }
 
 pub(super) fn multi_account_defaults_to_default(name: &str, args: &Value) -> bool {
     matches!(
         name,
         "list_accounts"
+            | "check_account_session"
             | "get_file_roots_status"
             | "safeguard_status"
             | "list_proxies"

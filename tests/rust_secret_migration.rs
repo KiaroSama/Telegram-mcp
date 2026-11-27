@@ -149,6 +149,31 @@ fn earlier_native_migration_imports_consumer_sidecar_once_without_replacing_newe
 }
 
 #[test]
+fn consumer_upgrade_preserves_existing_native_rows_with_the_same_message_id() {
+    let (dir, _) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
+    let custody = dir.path().join("secret-chats");
+    drop(migrate_legacy(dir.path(), LABEL, &binding()).unwrap());
+    let history = custody.join("offline.history.v1.json");
+    let native =
+        json!({"message_id":42,"text":"retained native row","date":"2026-01-01T00:00:00Z"});
+    fs::write(&history, json!({"12":[native.clone()]}).to_string()).unwrap();
+    fs::write(custody.join("offline-consumer.json"), br#"{"version":1,"chats":{"12":{"0":{"seq_no":0,"committed_at":1546800000,"message":{"message_id":42,"text":"older legacy copy"},"media_reference":null}}}}"#).unwrap();
+    for _ in 0..2 {
+        drop(migrate_legacy(dir.path(), LABEL, &binding()).unwrap());
+        let body: Value = serde_json::from_slice(&fs::read(&history).unwrap()).unwrap();
+        assert_eq!(body["12"], json!([native.clone()]));
+        let receipts: Value =
+            serde_json::from_slice(&fs::read(custody.join("offline.archive.v1.json")).unwrap())
+                .unwrap();
+        assert_eq!(receipts["delivery_receipts"]["12:0"], 42);
+    }
+    #[cfg(windows)]
+    for entry in fs::read_dir(&backups(&custody)[0]).unwrap().flatten() {
+        restore_fixture_permissions(&entry.path(), &custody.join(entry.file_name()));
+    }
+}
+
+#[test]
 fn empty_store_migrates_once_with_a_readonly_byte_identical_backup() {
     let (dir, bytes) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
     let custody = dir.path().join("secret-chats");

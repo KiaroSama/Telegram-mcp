@@ -27,7 +27,7 @@ seconds. It has no hosted-engine or Telegram fallback.
 
 Telegram uses topic ID `1` to scope General, but General has no ordinary message to use as a send root. `send_message`, `reply_to_message`, `send_gif` and forwards use the ordinary chat route; a reply still names the message it replies to. Typing and mark-read operations keep the explicit topic scope.
 
-`get_messages`, `list_messages` and `search_messages` verify the forum, filter General locally and count only matching messages toward page offsets. `scan_limit_reached` means the scan could not finish; it does not prove that no further General messages exist. See the [Telegram forum reference](https://core.telegram.org/api/forum), [reader regressions](../tests/rust_messaging_branches/general_and_layer234.rs), and [send regressions](../tests/rust_messaging_branches/send.rs).
+`get_messages`, `get_history`, `list_messages` and `search_messages` verify the forum, filter General locally and count only matching messages toward page offsets. `scan_limit_reached` means the scan could not finish; it does not prove that no further General messages exist. See the [Telegram forum reference](https://core.telegram.org/api/forum), [reader regressions](../tests/rust_messaging_branches/general_and_layer234.rs), and [send regressions](../tests/rust_messaging_branches/send.rs).
 
 ## Verification boundaries
 

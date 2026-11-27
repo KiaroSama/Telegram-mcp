@@ -378,6 +378,15 @@ pub fn build_export_choice_schema(missing: &[&str]) -> Result<ElicitationSchema>
 
 /// Tool-specific preflight checks that must run BEFORE Ghost Mode or Telegram peer I/O.
 pub fn preflight_validate_tool(name: &str, args: &Value) -> Result<()> {
+    if matches!(name, "get_ghost_mode" | "set_ghost_mode")
+        && args.get("chat_id").is_some_and(|chat| !chat.is_null())
+        && args
+            .get("account")
+            .and_then(Value::as_str)
+            .is_none_or(|account| account.trim().is_empty())
+    {
+        bail!("A Ghost Mode chat setting requires an explicit account");
+    }
     if name == "send_typing" {
         crate::tools::messaging::helpers::validate_typing(args)?;
     }

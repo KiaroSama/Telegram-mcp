@@ -87,6 +87,9 @@ fn sanitize_snapshot_json(snapshot: &MessageSnapshot) -> Value {
     if let Some(ref sid) = snapshot.sender_id {
         obj.insert("sender_id".into(), Value::String(sid.clone()));
     }
+    if let Some(ref kind) = snapshot.sender_kind {
+        obj.insert("sender_kind".into(), Value::String(kind.clone()));
+    }
     if let Some(ts) = snapshot.date {
         obj.insert("date".into(), json!(ts));
     }
@@ -164,23 +167,26 @@ pub fn serialize_admin_entry(entry: &AdminLogEntry) -> Value {
     Value::Object(obj)
 }
 
-fn sender_pair(
+pub(super) fn sender_pair(
     snapshot: &MessageSnapshot,
     fallback_actor: &AdminLogEntry,
     peers: &BTreeMap<String, Value>,
 ) -> (String, String) {
     if let Some(ref sid) = snapshot.sender_id {
-        if let Some(user) = peers.get(&format!("user:{sid}")).or_else(|| peers.get(sid)) {
-            return (person_name(user), format!("user{sid}"));
+        let kind = snapshot.sender_kind.as_deref().unwrap_or("user");
+        let from_id = format!("{kind}{sid}");
+        let entity = peers
+            .get(&format!("{kind}:{sid}"))
+            .or_else(|| peers.get(sid).filter(|peer| peer["_"] == kind));
+        if let Some(entity) = entity {
+            let name = if kind == "user" {
+                person_name(entity)
+            } else {
+                display_name(entity["title"].as_str(), DEFAULT_MAX_NAME_CHARS)
+            };
+            return (name, from_id);
         }
-        if let Some(chan) = peers.get(&format!("channel:{sid}")) {
-            let title = chan["title"].as_str().unwrap_or("Channel");
-            return (
-                display_name(Some(title), DEFAULT_MAX_NAME_CHARS),
-                format!("channel{sid}"),
-            );
-        }
-        return (format!("user{sid}"), format!("user{sid}"));
+        return (from_id.clone(), from_id);
     }
     (
         display_name(Some(&fallback_actor.actor.name), DEFAULT_MAX_NAME_CHARS),

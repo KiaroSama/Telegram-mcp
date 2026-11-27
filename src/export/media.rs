@@ -408,6 +408,7 @@ pub async fn hydrate_custom_emoji(
         .collect();
     let mut downloaded = 0;
     let mut refreshed_add = 0_u64;
+    let mut failed = false;
     for chunk in missing.chunks(100) {
         for id in chunk {
             cache.insert(id.clone(), None);
@@ -419,13 +420,16 @@ pub async fn hydrate_custom_emoji(
             )
             .await
         else {
+            failed = true;
             continue;
         };
+        let mut found = BTreeSet::new();
         for document in response.as_array().into_iter().flatten() {
             let id = identifier(&document["id"]);
             if !chunk.contains(&id) {
                 continue;
             }
+            found.insert(id.clone());
             let mut item = json!({
                 "id": message["id"],
                 "custom_emoji_asset": true,
@@ -437,9 +441,20 @@ pub async fn hydrate_custom_emoji(
                     Some(item["export_file"].as_str().unwrap_or_default().to_owned()),
                 );
                 downloaded += 1;
+            } else if item["export_file_failed"] == true
+                || item.get("export_file_skipped").is_none()
+            {
+                failed = true;
             }
             refreshed_add += item["export_refreshed"].as_u64().unwrap_or(0);
         }
+        failed |= chunk.iter().any(|id| !found.contains(id));
+    }
+    if failed {
+        if message["export_file_failed"] != true {
+            message["export_file_skipped"] = json!("selected custom emoji could not be downloaded");
+        }
+        message["export_file_failed"] = json!(true);
     }
     if refreshed_add > 0 {
         let prev = message["export_refreshed"].as_u64().unwrap_or(0);

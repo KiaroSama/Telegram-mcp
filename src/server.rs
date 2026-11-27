@@ -131,12 +131,16 @@ impl Mcp {
         let mut deadline = budget.map(|limit| tokio::time::Instant::now() + limit);
         let global_event_wait =
             name == "wait_for_events" && args.get("account").and_then(Value::as_str).is_none();
+        let global_ghost = matches!(name, "get_ghost_mode" | "set_ghost_mode")
+            && args.get("account").and_then(Value::as_str).is_none();
         let account = if let Some(account) = args.get("account").and_then(Value::as_str) {
             account.to_ascii_lowercase()
-        } else if matches!(
-            name,
-            "export_status" | "cancel_export" | "get_invite_link_qr" | "transcribe_audio"
-        ) {
+        } else if global_ghost
+            || matches!(
+                name,
+                "export_status" | "cancel_export" | "get_invite_link_qr" | "transcribe_audio"
+            )
+        {
             "default".into()
         } else {
             let labels = crate::backend::account_labels()?;
@@ -167,6 +171,7 @@ impl Mcp {
             }
         };
         if !global_event_wait
+            && !global_ghost
             && name != "safeguard_status"
             && tool
                 .input_schema
@@ -428,7 +433,8 @@ impl Mcp {
             crate::transfer::attach_download(&mut value);
         }
         if name == "set_ghost_mode" && value["effective"] == true {
-            self.restore_offline_presence(&account, &mut value).await;
+            self.restore_offline_presence((!global_ghost).then_some(account.as_str()), &mut value)
+                .await;
         }
         if self
             .runtime
@@ -469,22 +475,42 @@ impl Mcp {
         );
         Ok(value)
     }
-    async fn restore_offline_presence(&self, account: &str, value: &mut Value) {
-        let active = self.runtime.accounts.lock().await.get(account).cloned();
-        if let Some(active) = active {
-            let status = tokio::time::timeout(
-                Duration::from_secs(10),
-                active
-                    .api
-                    .invoke("account.updateStatus", json!({"offline":true})),
-            )
-            .await;
-            if !matches!(status, Ok(Ok(_))) {
-                completed_warning(
-                    value,
-                    "Ghost mode was saved, but the offline status update was not confirmed. Inspect presence before continuing.",
-                );
+    async fn restore_offline_presence(&self, account: Option<&str>, value: &mut Value) {
+        let connected: Vec<_> = self
+            .runtime
+            .accounts
+            .lock()
+            .await
+            .iter()
+            .filter(|(label, _)| account.is_none_or(|selected| selected == label.as_str()))
+            .map(|(label, active)| (label.clone(), Arc::clone(active)))
+            .collect();
+        let updates = connected.into_iter().filter_map(|(label, active)| {
+            // A global change preserves explicit account overrides and never opens sessions.
+            if account.is_none()
+                && self.runtime.state.ghost_mode(Some(&label), None)["effective"] != true
+            {
+                return None;
             }
+            Some(async move {
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    active
+                        .api
+                        .invoke("account.updateStatus", json!({"offline":true})),
+                )
+                .await
+            })
+        });
+        if futures_util::future::join_all(updates)
+            .await
+            .iter()
+            .any(|status| !matches!(status, Ok(Ok(_))))
+        {
+            completed_warning(
+                value,
+                "Ghost mode was saved, but the offline status update was not confirmed. Inspect presence before continuing.",
+            );
         }
     }
 }

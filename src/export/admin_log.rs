@@ -53,6 +53,8 @@ pub struct MessageSnapshot {
     pub message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sender_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub date: Option<i64>,
     pub text: String,
@@ -204,9 +206,22 @@ pub fn extract_message_snapshot(message: &Value) -> Option<MessageSnapshot> {
             .then(|| sanitize_action_type(mt));
         (None, other)
     };
+    let sender = message
+        .get("from_id")
+        .filter(|p| peer_dec(p).is_some())
+        .unwrap_or(&message["peer_id"]);
+    let sender_kind = [
+        ("user", "user_id"),
+        ("channel", "channel_id"),
+        ("chat", "chat_id"),
+    ]
+    .into_iter()
+    .find(|(_, key)| sender.get(key).and_then(json_i64).is_some())
+    .map(|(kind, _)| kind.to_owned());
     Some(MessageSnapshot {
         message_id: str_id(message, "id"),
-        sender_id: peer_dec(&message["from_id"]).or_else(|| peer_dec(&message["peer_id"])),
+        sender_id: peer_dec(sender),
+        sender_kind,
         date: message.get("date").and_then(json_i64),
         text: message["message"].as_str().unwrap_or("").to_owned(),
         entities,

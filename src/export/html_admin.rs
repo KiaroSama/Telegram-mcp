@@ -4,7 +4,7 @@ use super::admin_log::{AdminLogEntry, FieldChange, MessageSnapshot};
 use super::admin_log_text::{AdminLogPart, AdminTextKind, AdminTextPart};
 use super::files::clean_relative_path;
 use super::json_admin::project_snapshot_text;
-use super::render::{html_escape, person_name, relative_href, render_entities, safe_href};
+use super::render::{html_escape, relative_href, render_entities, safe_href};
 use crate::text_fidelity::{DEFAULT_MAX_NAME_CHARS, display_name};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -65,16 +65,7 @@ fn sender_display(
     entry: &AdminLogEntry,
     peers: &BTreeMap<String, Value>,
 ) -> String {
-    if let Some(ref sid) = snapshot.sender_id {
-        if let Some(user) = peers.get(&format!("user:{sid}")).or_else(|| peers.get(sid)) {
-            return person_name(user);
-        }
-        if let Some(chan) = peers.get(&format!("channel:{sid}")) {
-            let title = chan["title"].as_str().unwrap_or("Channel");
-            return display_name(Some(title), DEFAULT_MAX_NAME_CHARS);
-        }
-    }
-    display_name(Some(&entry.actor.name), DEFAULT_MAX_NAME_CHARS)
+    super::json_admin::sender_pair(snapshot, entry, peers).0
 }
 
 fn render_snapshot_media(snapshot: &MessageSnapshot) -> String {
