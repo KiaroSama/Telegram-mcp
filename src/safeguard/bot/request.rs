@@ -27,6 +27,18 @@ impl Request {
             details,
         );
         seals.seal_prompt(&self.code, &text)?;
+        {
+            let mut pending = bot
+                .pending
+                .lock()
+                .map_err(|_| anyhow::anyhow!("Approval bot request lock is unavailable"))?;
+            let request = pending
+                .get_mut(&self.code)
+                .context("Approval request is no longer pending")?;
+            // The effective policy must be fixed before any owner can answer.
+            request.always = allow_always;
+        }
+        let code = self.code.as_str();
         let send_all = async {
             if !matches!(
                 tokio::time::timeout_at(delivery_deadline, bot.identify()).await,
@@ -43,36 +55,30 @@ impl Request {
                         _ => return Err(()),
                     };
                     let id = result["message_id"].as_i64().filter(|id| *id > 0).ok_or(())?;
+                    {
+                        let mut pending = bot.pending.lock().map_err(|_| ())?;
+                        let request = pending.get_mut(code).ok_or(())?;
+                        // A confirmed owner can answer while another delivery is pending.
+                        request.messages.insert(owner, id);
+                    }
+                    #[cfg(test)]
+                    bot.note_prompt_acknowledgment_for_test(code, owner, id);
                     Ok(Some((owner, id)))
                 }
             })).await
         };
         let deliveries = send_all.await;
-        if deliveries.iter().any(Result::is_err) {
-            crate::safeguard::terminal::remove_pending(&bot.state, fingerprint)?;
-            return Ok(ChannelOutcome::AmbiguousDelivery);
-        }
+        let ambiguous = deliveries.iter().any(Result::is_err);
         let sent: Vec<_> = deliveries
             .into_iter()
             .filter_map(|delivery| delivery.ok().flatten())
             .collect();
-        if !sent.is_empty() {
-            let mut pending = bot
-                .pending
-                .lock()
-                .map_err(|_| anyhow::anyhow!("Approval bot request lock is unavailable"))?;
-            let request = pending
-                .get_mut(&self.code)
-                .context("Approval request is no longer pending")?;
-            request.messages.extend(sent.iter().copied());
-            request.always = allow_always;
-        }
         let mut ticket = tokio::time::interval(Duration::from_millis(250));
         let outcome = loop {
             if let Ok(outcome) = self.outcome.try_recv() {
                 break outcome;
             }
-            if sent.is_empty() {
+            if ambiguous || sent.is_empty() {
                 break Outcome::Unavailable;
             }
             tokio::select! {
@@ -89,12 +95,22 @@ impl Request {
                 .pending
                 .lock()
                 .map_err(|_| anyhow::anyhow!("Approval bot request lock is unavailable"))?;
+            // Serialize finalization with decide(): a recorded decision wins, but
+            // no late callback can issue a grant after a refusal is finalized.
             if let Some(request) = map.get_mut(&self.code) {
                 request.reply.take();
             }
             self.outcome.try_recv().unwrap_or(outcome)
         };
-        if outcome == Outcome::TimedOut {
+        let final_outcome = if outcome == Outcome::Unavailable && ambiguous {
+            ChannelOutcome::AmbiguousDelivery
+        } else {
+            outcome.into()
+        };
+        if matches!(
+            final_outcome,
+            ChannelOutcome::TimedOut | ChannelOutcome::AmbiguousDelivery
+        ) {
             bot.remove_pending(fingerprint)?;
         }
         let text = match outcome {
@@ -103,11 +119,14 @@ impl Request {
             }
             Outcome::Denied => "❌ Denied. The operation did not run.",
             Outcome::TimedOut => "⌛ Timed out. The operation did not run.",
-            Outcome::Unavailable => return Ok(outcome.into()),
+            Outcome::Unavailable if ambiguous => {
+                "⚠️ Delivery could not be confirmed. The operation did not run."
+            }
+            Outcome::Unavailable => return Ok(final_outcome),
         };
         let completed = join_all(sent.into_iter().map(|(owner, message)| bot.api("editMessageText", json!({"chat_id":owner,"message_id":message,"text":text,"reply_markup":{"inline_keyboard":[]}}))));
         let _ = tokio::time::timeout(Duration::from_secs(2), completed).await;
-        Ok(outcome.into())
+        Ok(final_outcome)
     }
 }
 

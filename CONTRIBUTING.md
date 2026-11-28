@@ -50,6 +50,15 @@ target. The runner applies a three-minute stalled-test
 ceiling. Tests that exercise external processes must also prove cleanup of their owned
 children; stopping a test process alone is not proof its descendants exited.
 
+Approval Bot API tests must distinguish an observed HTTP request from a consumed,
+validated delivery acknowledgment. Exercise partial delivery with one owner's
+response held, and keep owner, private-chat and message bindings enforced. For
+approval-deadline assertions, use controlled Tokio time with an owned blocking gate
+to prevent automatic advancement during real loopback I/O, plus an independent
+wall-clock watchdog that releases on completion or unwinding. Poll the actual
+operation at the boundary; preserve the semantic approval budget and verify the
+decision, dispatch count, persisted grants, pending state and terminal prompt edits.
+
 ## Preserve verification types
 
 `resources/migration-baseline.json` records the pre-migration commit, suite inventory

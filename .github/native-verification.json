@@ -61,8 +61,12 @@
       "server::bridge::recovery_tests::bridge_wait_budget_preserves_approval_long_calls_and_disabled_timeout",
       "server::bridge::recovery_tests::bridge_wait_budget_uses_the_attached_owner_policy",
       "server::bridge::recovery_tests::bridge_cancellation_reaches_the_owner_without_replaying_the_call",
+      "server::tests::approval_bot::ambiguous_prompt_delivery_refuses_late_approval_before_returning",
+      "server::tests::approval_bot::cancelling_partial_prompt_delivery_clears_requests_and_one_shot_grants",
+      "server::tests::approval_bot::delivered_owner_decision_survives_another_owner_delivery_failure",
       "server::tests::approval_bot::failed_bypass_change_answers_without_claiming_success_or_refreshing",
-      "server::tests::approval_bot::owner_callbacks_are_answered_while_menu_delivery_is_stalled"
+      "server::tests::approval_bot::owner_callbacks_are_answered_while_menu_delivery_is_stalled",
+      "server::tests::approval_bot::restricted_prompt_rejects_forged_always_before_all_deliveries_finish"
     ],
     "event_lifecycle": [
       "settled_wait_consumes_exact_burst",

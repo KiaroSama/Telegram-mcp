@@ -16,6 +16,9 @@ struct Wire {
     fail_send: bool,
     held_method: StdMutex<Option<String>>,
     release_held: tokio_util::sync::CancellationToken,
+    held_owner: StdMutex<Option<i64>>,
+    release_owner: tokio_util::sync::CancellationToken,
+    ambiguous_owner: StdMutex<Option<i64>>,
 }
 
 impl Wire {
@@ -70,6 +73,21 @@ async fn bot_api(
     if hold {
         wire.release_held.cancelled().await;
     }
+    let held_owner = method == "sendMessage"
+        && wire
+            .held_owner
+            .lock()
+            .unwrap()
+            .is_some_and(|owner| body["chat_id"].as_i64() == Some(owner));
+    if held_owner {
+        wire.release_owner.cancelled().await;
+    }
+    let ambiguous_owner = method == "sendMessage"
+        && wire
+            .ambiguous_owner
+            .lock()
+            .unwrap()
+            .is_some_and(|owner| body["chat_id"].as_i64() == Some(owner));
     let result = match method.as_str() {
         "getMe" => json!({"id":7,"is_bot":true,"username":"Resolved_Helper_Bot"}),
         "getUpdates" => {
@@ -79,6 +97,7 @@ async fn bot_api(
         "sendMessage" if wire.fail_send => {
             return Json(json!({"ok":false,"description":"7:fixture-only"}));
         }
+        "sendMessage" if ambiguous_owner => json!({"message_id":0}),
         "sendMessage" => json!({"message_id":count}),
         "editMessageText" | "answerCallbackQuery" | "setMyCommands" => json!(true),
         other => panic!("Unexpected Bot API method: {other}"),
@@ -201,7 +220,126 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.wire.release_held.cancel();
+        self.wire.release_owner.cancel();
         self.http.abort();
+    }
+}
+
+/// Keep semantic Tokio time stationary while real loopback I/O runs. The owned
+/// blocking gate prevents automatic advancement; its independent wall watchdog
+/// bounds every await and is released on success or assertion unwinding.
+async fn with_manual_clock<T>(body: impl std::future::Future<Output = T>) -> T {
+    let (release, blocked) = std::sync::mpsc::channel::<()>();
+    let (started, ready) = tokio::sync::oneshot::channel();
+    let (expired, mut deadline) = tokio::sync::oneshot::channel();
+    let blocker = tokio::task::spawn_blocking(move || {
+        let _ = started.send(());
+        let result = blocked.recv_timeout(Duration::from_secs(30));
+        if matches!(result, Err(std::sync::mpsc::RecvTimeoutError::Timeout)) {
+            let _ = expired.send(());
+        }
+        result
+    });
+    ready.await.unwrap();
+    let result = tokio::select! {
+        biased;
+        _ = &mut deadline => panic!("Controlled approval fixture exceeded its wall-clock budget"),
+        result = body => result,
+    };
+    drop(release);
+    assert!(matches!(
+        blocker.await.unwrap(),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+    ));
+    result
+}
+
+fn prompt_code(prompt: &Value) -> String {
+    button(prompt, ":once")
+        .strip_prefix("ap:")
+        .unwrap()
+        .strip_suffix(":once")
+        .unwrap()
+        .to_owned()
+}
+
+impl Fixture {
+    fn hold_owner(&self, owner: i64, ambiguous: bool) {
+        *self.wire.held_owner.lock().unwrap() = Some(owner);
+        if ambiguous {
+            *self.wire.ambiguous_owner.lock().unwrap() = Some(owner);
+        }
+    }
+
+    fn delivery(&self, code: &str) -> Option<crate::safeguard::bot::PromptDeliverySnapshot> {
+        self.server
+            .runtime
+            .guard
+            .bot
+            .as_ref()
+            .unwrap()
+            .prompt_delivery_for_test(code)
+    }
+
+    async fn wait_delivery(
+        &self,
+        code: &str,
+        ready: impl Fn(&crate::safeguard::bot::PromptDeliverySnapshot) -> bool,
+    ) -> crate::safeguard::bot::PromptDeliverySnapshot {
+        let began = std::time::Instant::now();
+        loop {
+            if let Some(snapshot) = self.delivery(code)
+                && ready(&snapshot)
+            {
+                return snapshot;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "Expected the actual Bot API response-consumption milestone"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn answer(&self, id: i64, expected: &str) {
+        let id = id.to_string();
+        let body = self
+            .wire
+            .message("answerCallbackQuery", |body| {
+                body["callback_query_id"] == id
+            })
+            .await;
+        assert_eq!(body["text"], expected);
+    }
+
+    fn assert_pending_and_once_cleared(&self, code: &str) {
+        assert!(self.delivery(code).is_none());
+        for file in ["approval-pending.json", "approval-grants.json"] {
+            assert_eq!(
+                self.server
+                    .runtime
+                    .state
+                    .read_json(file, json!({}))
+                    .unwrap(),
+                json!({}),
+                "The completed request retained state in {file}"
+            );
+        }
+    }
+
+    fn assert_terminal_edits(&self, owners: &[i64], expected: &str) {
+        assert_eq!(self.count("editMessageText", |_| true), owners.len());
+        for owner in owners {
+            assert_eq!(
+                self.count("editMessageText", |body| {
+                    body["chat_id"] == *owner
+                        && body["text"] == expected
+                        && body["reply_markup"]["inline_keyboard"] == json!([])
+                }),
+                1,
+                "Each confirmed owner prompt must have exactly one terminal edit"
+            );
+        }
     }
 }
 
@@ -696,44 +834,309 @@ async fn owner_always_is_scoped_and_menu_revokes_chat_and_folder_grants() {
     assert_eq!(state.always_approvals()["folders"], json!([]));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn deny_and_timeout_never_dispatch_or_leave_a_pending_request() {
-    for deny in [true, false] {
-        let f = Fixture::new(false, Duration::from_millis(800)).await;
-        let pending = f.execute("delete_message", delete_args());
-        let prompt = f.prompt().await;
-        if deny {
-            f.callback(1, 101, &button(&prompt, ":deny"));
+    with_manual_clock(async {
+        for deny in [true, false] {
+            let f = Fixture::new(false, Duration::from_millis(800)).await;
+            let mut pending = Box::pin(tokio::time::timeout(
+                Duration::from_secs(6),
+                f.server.execute("delete_message", delete_args()),
+            ));
+            let prompt = tokio::select! {
+                result = &mut pending => panic!("Approval completed before its prompt: {result:?}"),
+                prompt = f.prompt() => prompt,
+            };
+            let code = prompt_code(&prompt);
+            let delivered = tokio::select! {
+                result = &mut pending => panic!("Approval completed before both deliveries: {result:?}"),
+                delivered = f.wait_delivery(&code, |row| row.registered.len() == 2) => delivered,
+            };
+            assert_eq!(
+                delivered.deadline.duration_since(tokio::time::Instant::now()),
+                Duration::from_millis(800),
+                "Real fixture I/O consumed the controlled approval budget"
+            );
+            assert!(futures_util::poll!(pending.as_mut()).is_pending());
+            if deny {
+                f.callback(1, 101, &button(&prompt, ":deny"));
+                f.answer(1, "✅ Decision recorded").await;
+            } else {
+                tokio::time::advance(Duration::from_millis(799)).await;
+                // Poll the actual operation, not its JoinHandle: this processes
+                // its woken timers before claiming the deadline has not fired.
+                assert!(
+                    futures_util::poll!(pending.as_mut()).is_pending(),
+                    "Approval expired before its exact deadline"
+                );
+                tokio::time::advance(Duration::from_millis(1)).await;
+            }
+            let expected = if deny { "denied" } else { "timed out" };
+            assert!(pending.await.unwrap().unwrap_err().to_string().contains(expected));
+            assert_eq!(f.calls("channels.deleteMessages"), 0);
+            f.assert_pending_and_once_cleared(&code);
+            let terminal = if deny {
+                "❌ Denied. The operation did not run."
+            } else {
+                "⌛ Timed out. The operation did not run."
+            };
+            f.assert_terminal_edits(&[101, 202], terminal);
         }
-        let expected = if deny { "denied" } else { "timed out" };
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn delivered_owner_decision_survives_another_owner_delivery_failure() {
+    with_manual_clock(async {
+        // A successful peer delivery and an ambiguous peer response must both
+        // preserve the first verified decision from an already-confirmed owner.
+        for ambiguous in [false, true] {
+            for deny in [false, true] {
+                let f = Fixture::new(false, Duration::from_secs(60)).await;
+                f.hold_owner(202, ambiguous);
+                let pending = f.execute("delete_message", delete_args());
+                let prompt = f.prompt().await;
+                let code = prompt_code(&prompt);
+                f.wire
+                    .message("sendMessage", |body| body["chat_id"] == 202)
+                    .await;
+                let delivered = f
+                    .wait_delivery(&code, |row| row.acknowledged.contains_key(&101))
+                    .await;
+                assert!(!delivered.acknowledged.contains_key(&202));
+                assert!(!f.wire.release_owner.is_cancelled());
+                let action = button(&prompt, if deny { ":deny" } else { ":once" });
+
+                // Keep owner, private-chat and message binding checks active
+                // when a confirmed owner is eligible during partial delivery.
+                let message_id = usize::try_from(delivered.acknowledged[&101]).unwrap();
+                f.callback_from(1, 303, 303, "private", message_id, &action);
+                f.callback_from(2, 101, 202, "private", message_id, &action);
+                f.callback_from(3, 101, 101, "group", message_id, &action);
+                // A sent-but-unconfirmed owner cannot borrow that authority.
+                f.callback(4, 202, &action);
+                f.answer(4, "This request is no longer pending").await;
+                for id in ["1", "2", "3"] {
+                    assert_eq!(
+                        f.count("answerCallbackQuery", |body| body["callback_query_id"]
+                            == id),
+                        0,
+                        "An untrusted owner/chat callback must not be acknowledged"
+                    );
+                }
+                f.callback_from(
+                    5,
+                    101,
+                    101,
+                    "private",
+                    usize::try_from(delivered.acknowledged[&101] + 1000).unwrap(),
+                    &action,
+                );
+                f.answer(5, "This request is no longer pending").await;
+                assert!(f.delivery(&code).unwrap().accepting_reply);
+                assert_eq!(f.calls("channels.deleteMessages"), 0);
+
+                assert_eq!(
+                    f.server
+                        .runtime
+                        .state
+                        .read_json("approval-grants.json", json!({}))
+                        .unwrap(),
+                    json!({})
+                );
+                f.callback(6, 101, &action);
+                f.answer(6, "✅ Decision recorded").await;
+                assert!(!f.delivery(&code).unwrap().accepting_reply);
+                assert!(!pending.is_finished());
+                f.callback(7, 101, &action);
+                f.answer(7, "This request is no longer pending").await;
+                assert_eq!(f.calls("channels.deleteMessages"), 0);
+
+                f.wire.release_owner.cancel();
+                let result = pending.await.unwrap();
+                let terminal = if deny {
+                    assert!(result.unwrap_err().to_string().contains("Approval denied"));
+                    "❌ Denied. The operation did not run."
+                } else {
+                    let result = result.unwrap();
+                    assert!(result.get("approval_required").is_none());
+                    "✅ Approved. The server will recheck the operation before running it."
+                };
+                assert_eq!(f.calls("channels.deleteMessages"), usize::from(!deny));
+                f.assert_pending_and_once_cleared(&code);
+                let owners: &[i64] = if ambiguous { &[101] } else { &[101, 202] };
+                f.assert_terminal_edits(owners, terminal);
+                f.callback(8, 101, &action);
+                f.answer(8, "This request is no longer pending").await;
+                assert_eq!(f.calls("channels.deleteMessages"), usize::from(!deny));
+                f.assert_pending_and_once_cleared(&code);
+            }
+        }
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn ambiguous_prompt_delivery_refuses_late_approval_before_returning() {
+    with_manual_clock(async {
+        let f = Fixture::new(false, Duration::from_secs(60)).await;
+        f.hold_owner(202, true);
+        *f.wire.held_method.lock().unwrap() = Some("editMessageText".to_owned());
+        let mut pending = f.execute("delete_message", delete_args());
+        let prompt = f.prompt().await;
+        let code = prompt_code(&prompt);
+        f.wire.message("sendMessage", |body| body["chat_id"] == 202).await;
+        f.wait_delivery(&code, |row| row.acknowledged.contains_key(&101)).await;
+        f.wire.release_owner.cancel();
+        let terminal = "⚠️ Delivery could not be confirmed. The operation did not run.";
+        tokio::select! {
+            result = &mut pending => panic!("Ambiguous delivery returned without clearing its confirmed prompt: {result:?}"),
+            _ = f.wire.message("editMessageText", |body| body["chat_id"] == 101 && body["text"] == terminal) => {},
+        }
+        // The request still exists while its terminal edit is held, so rejection
+        // here proves finalization, rather than relying on Request::drop later.
+        assert!(!f.delivery(&code).unwrap().accepting_reply);
+        let once = button(&prompt, ":once");
+        f.callback(1, 101, &once);
+        f.answer(1, "This request is no longer pending").await;
+        assert_eq!(f.calls("channels.deleteMessages"), 0);
+        assert_eq!(
+            f.server.runtime.state.read_json("approval-grants.json", json!({})).unwrap(),
+            json!({})
+        );
+        assert!(!pending.is_finished());
+        f.wire.release_held.cancel();
+        assert!(pending.await.unwrap().unwrap_err().to_string().contains("Approval delivery was ambiguous"));
+        f.assert_pending_and_once_cleared(&code);
+        f.assert_terminal_edits(&[101], terminal);
+        assert_eq!(f.calls("channels.deleteMessages"), 0);
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn cancelling_partial_prompt_delivery_clears_requests_and_one_shot_grants() {
+    with_manual_clock(async {
+        for approve_first in [false, true] {
+            let f = Fixture::new(false, Duration::from_secs(60)).await;
+            f.hold_owner(202, false);
+            let pending = f.execute("delete_message", delete_args());
+            let prompt = f.prompt().await;
+            let code = prompt_code(&prompt);
+            f.wire
+                .message("sendMessage", |body| body["chat_id"] == 202)
+                .await;
+            f.wait_delivery(&code, |row| row.acknowledged.contains_key(&101))
+                .await;
+            let once = button(&prompt, ":once");
+            if approve_first {
+                f.callback(1, 101, &once);
+                f.answer(1, "✅ Decision recorded").await;
+                assert_eq!(
+                    f.server
+                        .runtime
+                        .state
+                        .read_json("approval-grants.json", json!({}))
+                        .unwrap()
+                        .as_object()
+                        .unwrap()
+                        .len(),
+                    1,
+                    "This branch must cancel a real recorded one-shot grant"
+                );
+            }
+            assert!(!pending.is_finished());
+            pending.abort();
+            assert!(pending.await.unwrap_err().is_cancelled());
+            f.assert_pending_and_once_cleared(&code);
+            f.wire.release_owner.cancel();
+            f.callback(2, 101, &once);
+            f.answer(2, "This request is no longer pending").await;
+            f.assert_pending_and_once_cleared(&code);
+            assert_eq!(f.calls("channels.deleteMessages"), 0);
+            f.assert_terminal_edits(&[], "");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn restricted_prompt_rejects_forged_always_before_all_deliveries_finish() {
+    with_manual_clock(async {
+        let f = Fixture::new(false, Duration::from_secs(60)).await;
+        f.hold_owner(202, false);
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("unapproved.bin");
+        assert!(!target.starts_with(f.server.runtime.state.installation_root()));
+        let pending = f.execute(
+            "download_media",
+            json!({
+                "account":"default", "chat_id":42, "message_id":20, "file_path":target,
+            }),
+        );
+        let prompt = f.prompt().await;
+        let code = prompt_code(&prompt);
+        assert!(!prompt["reply_markup"].to_string().contains(":always"));
+        f.wire
+            .message("sendMessage", |body| body["chat_id"] == 202)
+            .await;
+        let delivered = f
+            .wait_delivery(&code, |row| row.acknowledged.contains_key(&101))
+            .await;
+        // Forge only the action, retaining the real confirmed owner/message binding.
+        f.callback_from(
+            1,
+            101,
+            101,
+            "private",
+            usize::try_from(delivered.acknowledged[&101]).unwrap(),
+            &format!("ap:{code}:always"),
+        );
+        f.answer(1, "This request is no longer pending").await;
+        assert!(f.delivery(&code).unwrap().accepting_reply);
+        assert_eq!(
+            f.server.runtime.state.always_approvals()["grants"],
+            json!([])
+        );
+        assert_eq!(
+            f.server
+                .runtime
+                .state
+                .read_json("approval-grants.json", json!({}))
+                .unwrap(),
+            json!({})
+        );
+        f.callback(2, 101, &button(&prompt, ":deny"));
+        f.answer(2, "✅ Decision recorded").await;
+        assert!(!f.delivery(&code).unwrap().allow_always);
+        f.wire.release_owner.cancel();
         assert!(
             pending
                 .await
                 .unwrap()
                 .unwrap_err()
                 .to_string()
-                .contains(expected)
+                .contains("Approval denied")
         );
-        assert_eq!(f.calls("channels.deleteMessages"), 0);
+        f.assert_pending_and_once_cleared(&code);
+        f.assert_terminal_edits(&[101, 202], "❌ Denied. The operation did not run.");
+        assert!(!target.exists());
+        assert!(f.api.calls.lock().unwrap().is_empty());
+        assert_eq!(
+            f.server.runtime.state.always_approvals()["grants"],
+            json!([])
+        );
         assert_eq!(
             f.server
                 .runtime
                 .state
-                .read_json("approval-pending.json", json!({}))
+                .read_json("folder-grants.json", json!({"folders":[]}))
                 .unwrap(),
-            json!({})
+            json!({"folders":[]})
         );
-        assert_eq!(
-            f.wire
-                .sent
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(m, _)| m == "editMessageText")
-                .count(),
-            2
-        );
-    }
+    })
+    .await;
 }
 
 #[tokio::test]

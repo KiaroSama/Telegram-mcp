@@ -135,12 +135,24 @@ impl From<Outcome> for super::channels::ChannelOutcome {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct PromptDeliverySnapshot {
+    pub(crate) deadline: Instant,
+    pub(crate) acknowledged: HashMap<i64, i64>,
+    pub(crate) registered: HashMap<i64, i64>,
+    pub(crate) accepting_reply: bool,
+    pub(crate) allow_always: bool,
+}
+
 struct Pending {
     fingerprint: String,
     deadline: Instant,
     always: bool,
     reply: Option<oneshot::Sender<Outcome>>,
     messages: HashMap<i64, i64>,
+    #[cfg(test)]
+    acknowledged_messages: HashMap<i64, i64>,
 }
 
 enum CallbackMenu {
@@ -201,6 +213,28 @@ impl ApprovalBot {
         let mut config = Config::parse("7:fixture-only", Some("101,202"), None, None).unwrap();
         config.timeout = timeout;
         Self::new(config, state, &format!("http://{address}"), false).unwrap()
+    }
+
+    #[cfg(test)]
+    fn note_prompt_acknowledgment_for_test(&self, code: &str, owner: i64, message_id: i64) {
+        if let Ok(mut pending) = self.pending.lock()
+            && let Some(request) = pending.get_mut(code)
+        {
+            request.acknowledged_messages.insert(owner, message_id);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn prompt_delivery_for_test(&self, code: &str) -> Option<PromptDeliverySnapshot> {
+        let pending = self.pending.lock().ok()?;
+        let request = pending.get(code)?;
+        Some(PromptDeliverySnapshot {
+            deadline: request.deadline,
+            acknowledged: request.acknowledged_messages.clone(),
+            registered: request.messages.clone(),
+            accepting_reply: request.reply.is_some(),
+            allow_always: request.always,
+        })
     }
 
     pub(crate) fn timeout(&self) -> Duration {
@@ -607,6 +641,8 @@ impl ApprovalBot {
                 always: chat_target(args).is_some(),
                 reply: Some(reply),
                 messages: HashMap::new(),
+                #[cfg(test)]
+                acknowledged_messages: HashMap::new(),
             },
         );
         Ok(Some(Request {
