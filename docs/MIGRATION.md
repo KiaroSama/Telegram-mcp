@@ -16,12 +16,12 @@ The native secret-chat integration for `v3.1.0` has since merged into `main`.
 - Build Windows and Linux releases for x64 and arm64 and report checks against the
   exact commit. Build success alone does not establish runtime behavior.
 - Review upstream changes and dependency documentation.
-- Use `kiaro-secret-chat` 0.5.0 for native MTProto 2.0 secret chats, without the legacy
-  Python runtime. Version 3.3.1 exposes 391 native tools: 356 ordinary tools and all
+- Use the [locked `kiaro-secret-chat` backend](../Cargo.lock) for native MTProto 2.0 secret chats, without the legacy
+  Python runtime. The native server exposes 391 tools: 356 ordinary tools and all
   35 [secret-chat tools](COMMANDS.md#secret-chat-tools), including `accept_secret_chat`
   and automatic incoming `ChatRequested` acceptance.
 
-## Approval channels and owner controls in 3.3.1
+## Approval channels and owner controls
 
 The native service sends approval prompts through the owner approval bot, MCP elicitation dialogs, Saved Messages, or `telegram-mcp approve`. See [owner approvals](../README.md#owner-approvals) for setup. The bot adds `/bypass` (`1h`, `6h`, `1d`, `7d`, `30d`, `inf`, `custom`, `off`) and `/accounts`, persists `bypass.json`, seals approval codes and prompts in tool output, and keeps hard refusals active even during bypass. The bot uses the same private grant store as `telegram-mcp approve`; no grant migration is needed. The terminal workflow stays available when the bot is unset or cannot deliver a prompt. The bot's folder menu can revoke recorded grants and does not add new file roots.
 
@@ -30,6 +30,10 @@ The native service sends approval prompts through the owner approval bot, MCP el
 The core upstream review took place on 2026-11-15 and 2026-11-16. The selected
 Chigwell changes through #419 were reviewed on 2026-11-24. Table dates refer to
 commits or releases. Historical byte-oracle versions remain distinct from current sources.
+The table retains those review snapshots. For the current checkout's package versions
+and exact Git pins, use [Cargo.lock](../Cargo.lock); the
+[2026-11-28 adoption review](api-coverage.md#upstream-sync-2026-11-28-v350)
+records the dependency changes shipped in v3.5.0.
 
 | Source | Reviewed revision | Source date | Review and adaptation scope |
 | --- | --- | --- | --- |
@@ -290,7 +294,7 @@ validity and server responses still require the owner's checks above.
 
 ## Telegram Operator plugin upgrade
 
-`telegram-operator` 1.5.0 contains skills only. Upgrading removes obsolete bundled
+[`telegram-operator`](../plugin.json) contains skills only. Upgrading removes obsolete bundled
 MCP configuration. If your client used that configuration, [add the MCP server
 separately](../README.md#connect-an-mcp-client).
 
@@ -358,7 +362,7 @@ features, permissions, network routing and server responses remain untested.
 ## Official references
 
 - [grammers source and README](https://codeberg.org/Lonami/grammers)
-- [grammers 0.12.0 source revision](https://codeberg.org/Lonami/grammers/commit/02367f9711ca3589a8bbb02e4128aca1631c77c4)
+- [Locked dependency versions and exact grammers and secret-chat revisions](../Cargo.lock)
 - [Grammers Secret Chat source](https://github.com/KiaroSama/Grammers-Secret-Chat)
 - [Official Rust MCP SDK](https://github.com/modelcontextprotocol/rust-sdk)
 - [Current upstream Telegram MCP](https://github.com/chigwell/telegram-mcp)
