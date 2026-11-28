@@ -1,3 +1,4 @@
+mod binding_upgrade;
 mod receipts;
 use receipts::validate_backup;
 
@@ -6,7 +7,7 @@ use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use kiaro_secret_chat::{
     binding::AuthorizationBinding,
-    binding_migration::{LegacyAuthorizationBinding, migrate_v1_enc_store_to_v2},
+    binding_migration::LegacyAuthorizationBinding,
     chat::{Chat, ChatState, DhRecord, Envelope, Exchange, Outgoing, ServiceDelivery},
     crypto::SharedKey,
     custody::{CustodyLimits, CustodyStorage},
@@ -33,7 +34,7 @@ const SOURCES: [&str; 5] = [
     "-consumer.json",
 ];
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipt {
     version: u32,
@@ -176,18 +177,18 @@ pub fn open_store_with_legacy(
             "Existing encrypted secret-chat store has no migration receipt for the legacy data"
         );
 
+        // Validate every known prerequisite before rebinding the custody file.
+        if let Some(saved) = &saved_receipt {
+            receipts::preflight_upgrade(&directory, label, saved)?;
+        }
         let bytes = key_bytes(&key, false)?;
         if let Some(old) = legacy_binding {
-            migrate_v1_enc_store_to_v2(&encrypted, *bytes, old, binding, MAX_BYTES)
+            binding_upgrade::upgrade(&directory, label, &encrypted, *bytes, old, binding)
                 .context("Cannot upgrade legacy encrypted secret-chat custody binding to v2")?;
         }
         let store = EncryptedIngressStorage::open(encrypted, *bytes, binding.clone(), MAX_BYTES)?;
-        if let Some(mut saved) = saved_receipt {
-            if saved.authorization != binding.digest() {
-                saved.authorization = binding.digest();
-                write_atomic(&receipt, &serde_json::to_vec_pretty(&saved)?, true)?;
-            }
-            receipts::upgrade(&directory, label, &receipt, &mut saved)?;
+        if let Some(saved) = saved_receipt {
+            receipts::apply_upgrade(&directory, label, &receipt, &saved, &binding.digest())?;
         }
         crate::state::storage::sync_directory(&directory)?;
         return Ok(Some(store));
@@ -261,7 +262,7 @@ pub fn open_store_with_legacy(
     };
     let base = directory.join("legacy-backups");
     private_directory(&base)?;
-    let saved_receipt = match saved_receipt {
+    let mut saved_receipt = match saved_receipt {
         Some(saved) => {
             let original = validate_backup(&base, &saved)?;
             ensure!(
@@ -314,6 +315,10 @@ pub fn open_store_with_legacy(
         if !plain_file(&output)? {
             write_atomic(&output, bytes, false)?;
         }
+    }
+    if saved_receipt.authorization != binding.digest() {
+        saved_receipt.authorization = binding.digest();
+        write_atomic(&receipt, &serde_json::to_vec(&saved_receipt)?, true)?;
     }
     // Publish the complete store last; the receipt permits an interrupted migration to resume.
     fs::hard_link(staged_store, &encrypted).context("Cannot publish migrated secret-chat state")?;

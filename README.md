@@ -24,7 +24,7 @@
 
 </div>
 
-Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. Version 3.3.1 uses [`grammers`](https://codeberg.org/Lonami/grammers) 0.12.0 (Telegram API layer 234), [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) 3.11, and `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats. The server does not need Python or a virtual environment.
+Telegram MCP reads and searches chats, sends messages, handles media, and manages groups and channels within your account's Telegram permissions. It uses [`grammers`](https://codeberg.org/Lonami/grammers) for Telegram API layer 234, [`rmcp`](https://github.com/modelcontextprotocol/rust-sdk) for MCP, and [`kiaro-secret-chat`](https://github.com/KiaroSama/Grammers-Secret-Chat) for native MTProto 2.0 secret chats. The [tag badge](#releases-and-tags) tracks the published version; [Cargo.lock](Cargo.lock) records the exact dependency versions and Git revisions for this checkout. The server does not need Python or a virtual environment.
 
 ## Releases and tags
 
@@ -142,7 +142,7 @@ If the bot is unset or the service cannot deliver a prompt to any owner, use `te
 
 ### Secret chats
 
-[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) (`kiaro-secret-chat` 0.5.0) provides native MTProto 2.0 secret chats over the same account connection as ordinary chats. The server commits incoming encrypted updates to durable storage before acknowledging them. All [35 secret-chat tools](docs/COMMANDS.md#secret-chat-tools) are subject to the same MCP exposure filters and safeguards. When the connected backend receives a `ChatRequested` update, it automatically attempts the incoming handshake. Use `accept_secret_chat` with a known `chat_id` to accept a pending incoming request explicitly. This tool changes chat state and is subject to owner approval.
+[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) provides native MTProto 2.0 secret chats over the same account connection as ordinary chats. The server commits incoming encrypted updates to durable storage before acknowledging them. All [35 secret-chat tools](docs/COMMANDS.md#secret-chat-tools) are subject to the same MCP exposure filters and safeguards. When the connected backend receives a `ChatRequested` update, it automatically attempts the incoming handshake. Use `accept_secret_chat` with a known `chat_id` to accept a pending incoming request explicitly. This tool changes chat state and is subject to owner approval.
 
 On first open of an account with a supported legacy secret-chat store, the server verifies the authorization identity, makes a read-only backup and migrates the store before starting normal update consumption. An imported session without a cached self identity may first need a request that suppresses updates to verify its owner. See [secret-chat store migration](docs/MIGRATION.md#secret-chat-store-migration).
 

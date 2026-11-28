@@ -31,8 +31,8 @@ Telegram permissions and file-root restrictions apply regardless of tool annotat
 | `operator-plugin --source PATH install ...` | Explicit standalone skill copy |
 | `operator-plugin --source PATH package ...` | Allowlisted guidance-only ZIP |
 
-Check the installed binary's `--help` for CLI arguments. The `telegram-operator`
-1.5.0 plugin installs skills only. [Configure the MCP server separately](../README.md#connect-an-mcp-client).
+Check the installed binary's `--help` for CLI arguments. The
+[`telegram-operator` plugin](../plugin.json) installs skills only. [Configure the MCP server separately](../README.md#connect-an-mcp-client).
 
 ## MCP tools
 

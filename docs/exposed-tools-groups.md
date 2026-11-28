@@ -24,7 +24,7 @@ they do not grant owner approval, account access or Telegram administrator right
 ## Secret-chat groups
 
 The [secret-chat catalogue](COMMANDS.md#secret-chat-tools) lists all 35 native
-MTProto 2.0 tools from `kiaro-secret-chat` 0.3.0:
+MTProto 2.0 tools from the [locked `kiaro-secret-chat` backend](../Cargo.lock):
 
 | Group | Tools |
 | --- | ---: |

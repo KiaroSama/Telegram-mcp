@@ -78,6 +78,7 @@
     "src/secret/history.rs": "Native secret-chat decrypted history, media and archive store corresponding to legacy measured telegram_mcp.secret_history and secret_media_refs contracts; full file retained.",
     "src/secret/history/receipts.rs": "Native Secret Chat runtime acceptance, history, receipt, and migration module; full file retained.",
     "src/secret/migration.rs": "Native exclusive-locked legacy secret-chat read-only backup and v1 migration core corresponding to legacy measured telegram_mcp.secret_custody and secret_activation contracts; full file retained.",
+    "src/secret/migration/binding_upgrade.rs": "Native secret-chat authorization binding upgrade transaction, authenticated staging, immutable ciphertext backup, and durable replacement; full file retained as migration core.",
     "src/secret/migration/receipts.rs": "Native Secret Chat runtime acceptance, history, receipt, and migration module; full file retained.",
     "src/secret/mod.rs": "Native secret-chat module root and shared path/identity helpers corresponding to legacy measured telegram_mcp.secret_common contracts; full file retained.",
     "src/secret/receipts.rs": "Native Secret Chat runtime acceptance, history, receipt, and migration module; full file retained.",
