@@ -8,6 +8,9 @@ use serde_json::{Value, json};
 use std::{fs, path::Path};
 use telegram_mcp::secret::migrate_legacy;
 
+#[path = "rust_secret_migration/binding_upgrade.rs"]
+mod binding_upgrade;
+
 const LABEL: &str = "offline";
 
 const AUTH: [u8; 256] = [0x3c; 256];
@@ -560,4 +563,61 @@ fn auth_key_tag_matches_grammers_client_vector_and_v2_reopen_is_idempotent() {
             .unwrap()
             .unwrap();
     assert_eq!(second.load().unwrap().unwrap().authorization, v2.digest());
+}
+
+#[test]
+fn interrupted_v1_receipt_resumes_to_v2_in_one_open() {
+    use kiaro_secret_chat::binding_migration::LegacyAuthorizationBinding;
+    use sha1::{Digest, Sha1};
+
+    for create in [false, true] {
+        let (dir, original) =
+            fixture(&json!({"chats":{},"in":{},"out":{},"settings":{"retained":true}}));
+        let custody = dir.path().join("secret-chats");
+        let v2 = binding();
+        drop(migrate_legacy(dir.path(), LABEL, &v2).unwrap().unwrap());
+        let manifest = custody.join("offline.migration.json");
+        let encrypted = custody.join("offline.v1.enc");
+        let backup_dirs = backups(&custody);
+        let legacy_id = i64::from_le_bytes(Sha1::digest(AUTH)[12..].try_into().unwrap());
+        let v1 = LegacyAuthorizationBinding::from_session_parts(17, legacy_id, 2, "migration-test")
+            .unwrap();
+
+        // An older release may stop after its valid backup and v1 receipt, before publication.
+        let mut receipt: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        receipt["authorization"] = json!(v1.fingerprint());
+        fs::write(&manifest, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        fs::remove_file(&encrypted).unwrap();
+
+        let store =
+            telegram_mcp::secret::open_store_with_legacy(dir.path(), LABEL, &v2, Some(&v1), create)
+                .expect("a valid interrupted v1 migration must complete in one open")
+                .unwrap();
+        let state = store.load().unwrap().unwrap();
+        assert_eq!(state.authorization, v2.digest());
+        assert_eq!(state.settings["retained"], true);
+        drop(store);
+        let updated: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        assert_eq!(updated["authorization"], v2.digest());
+        let ciphertext = fs::read(&encrypted).unwrap();
+        let receipt_bytes = fs::read(&manifest).unwrap();
+        drop(
+            telegram_mcp::secret::open_store_with_legacy(dir.path(), LABEL, &v2, Some(&v1), create)
+                .unwrap()
+                .unwrap(),
+        );
+        assert_eq!(fs::read(&encrypted).unwrap(), ciphertext);
+        assert_eq!(fs::read(&manifest).unwrap(), receipt_bytes);
+        assert_eq!(backups(&custody), backup_dirs);
+        assert_eq!(fs::read(custody.join(LABEL)).unwrap(), original);
+        assert_eq!(fs::read(backup_dirs[0].join(LABEL)).unwrap(), original);
+        assert!(
+            fs::metadata(backup_dirs[0].join(LABEL))
+                .unwrap()
+                .permissions()
+                .readonly()
+        );
+        #[cfg(windows)]
+        restore_fixture_permissions(&backup_dirs[0].join(LABEL), &custody.join(LABEL));
+    }
 }

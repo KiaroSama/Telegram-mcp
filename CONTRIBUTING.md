@@ -59,6 +59,14 @@ wall-clock watchdog that releases on completion or unwinding. Poll the actual
 operation at the boundary; preserve the semantic approval budget and verify the
 decision, dispatch count, persisted grants, pending state and terminal prompt edits.
 
+Secret-chat binding migrations must be tested with an authenticated historical v1
+ciphertext fixture, not only an already-v2 reopen. Assert one-open recovery,
+preservation of native keys/counters/ingress checkpoints, preflight refusals with
+unchanged original files, a byte-identical read-only ciphertext backup before
+replacement, and interrupted v2-store/v1-receipt recovery. Exercise backup resumption
+and conflicts on both Windows and Linux; a Windows flush needs a write-capable
+handle even when the retained file is made read-only before flushing.
+
 ## Preserve verification types
 
 `resources/migration-baseline.json` records the pre-migration commit, suite inventory

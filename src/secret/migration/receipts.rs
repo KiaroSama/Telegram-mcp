@@ -279,34 +279,79 @@ fn import_consumer(
 
 pub(super) fn backup_file(path: &Path, bytes: &[u8]) -> Result<()> {
     write_atomic(path, bytes, false)?;
+    finish_backup(path)
+}
+
+pub(super) fn retain_backup_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(existing) = read_private(path, bytes.len())? {
+        ensure!(
+            existing == bytes,
+            "Existing secret-chat backup differs from the snapshot"
+        );
+        finish_backup(path)
+    } else {
+        backup_file(path, bytes)
+    }
+}
+
+fn finish_backup(path: &Path) -> Result<()> {
+    crate::state::storage::restrict(path, false)?;
+    let mut readonly = fs::metadata(path)?.permissions();
+    readonly.set_readonly(true);
     #[cfg(windows)]
-    let handle = OpenOptions::new().read(true).write(true).open(path)?;
-    let mut permissions = fs::metadata(path)?.permissions();
-    permissions.set_readonly(true);
-    fs::set_permissions(path, permissions)?;
+    let handle = {
+        // FlushFileBuffers requires a write-capable handle. A resumed backup may
+        // already be read-only, so restore that attribute even if opening fails.
+        let mut writable = readonly.clone();
+        writable.set_readonly(false);
+        fs::set_permissions(path, writable)?;
+        let opened = OpenOptions::new().read(true).write(true).open(path);
+        fs::set_permissions(path, readonly)?;
+        opened?
+    };
+    #[cfg(unix)]
+    fs::set_permissions(path, readonly)?;
     #[cfg(windows)]
     handle.sync_all()?;
     #[cfg(unix)]
     File::open(path)?.sync_all()?;
+    crate::state::storage::sync_directory(
+        path.parent()
+            .context("Secret-chat backup has no parent directory")?,
+    )?;
     Ok(())
 }
 
+struct PreparedUpgrade {
+    name: String,
+    backup: PathBuf,
+    raw: Zeroizing<Vec<u8>>,
+    before: Sidecars,
+    after: Sidecars,
+}
+
+// Discard the preflight snapshot: a current owner can still update native sidecars
+// before we acquire custody, including the release/reopen gap during rebinding.
+pub(super) fn preflight_upgrade(directory: &Path, label: &str, saved: &Receipt) -> Result<()> {
+    prepare_upgrade(directory, label, saved).map(|_| ())
+}
+
 // Older native releases published the encrypted store without importing consumer receipts.
-pub(super) fn upgrade(
+// Preparation must stay read-only: the caller may not have authenticated/rebound custody yet.
+fn prepare_upgrade(
     directory: &Path,
     label: &str,
-    receipt: &Path,
-    saved: &mut Receipt,
-) -> Result<()> {
+    saved: &Receipt,
+) -> Result<Option<PreparedUpgrade>> {
     let base = directory.join("legacy-backups");
     let original = validate_backup(&base, saved)?;
     let name = format!("{original}-consumer.json");
     if saved.sha256.contains_key(&name) {
-        return Ok(());
+        return Ok(None);
     }
     let Some(raw) = read_private(&directory.join(format!("{label}-consumer.json")), MAX_BYTES)?
     else {
-        return Ok(());
+        return Ok(None);
     };
     let raw = Zeroizing::new(raw);
     let mut before = Sidecars::new();
@@ -327,16 +372,44 @@ pub(super) fn upgrade(
             *raw == bytes,
             "Legacy consumer file changed during migration"
         );
-        let mut perm = fs::metadata(&backup)?.permissions();
-        if !perm.readonly() {
-            perm.set_readonly(true);
-            fs::set_permissions(&backup, perm)?;
-        }
-    } else {
-        backup_file(&backup, &raw)?;
     }
+    Ok(Some(PreparedUpgrade {
+        name,
+        backup,
+        raw,
+        before,
+        after,
+    }))
+}
+
+pub(super) fn apply_upgrade(
+    directory: &Path,
+    label: &str,
+    receipt: &Path,
+    original: &Receipt,
+    authorization: &str,
+) -> Result<()> {
+    // The caller now holds the authenticated store lease. Rebuild the plan from
+    // current files so a stale preflight cannot overwrite another owner's rows.
+    let prepared = prepare_upgrade(directory, label, original)?;
+    let mut saved = original.clone();
+    saved.authorization = authorization.to_owned();
+    let Some(PreparedUpgrade {
+        name,
+        backup,
+        raw,
+        before,
+        after,
+    }) = prepared
+    else {
+        if saved != *original {
+            write_atomic(receipt, &serde_json::to_vec(&saved)?, true)?;
+        }
+        return Ok(());
+    };
+    retain_backup_file(&backup, &raw)?;
     saved.sha256.insert(name, hash(&raw));
-    validate_backup(&base, saved)?;
+    validate_backup(&directory.join("legacy-backups"), &saved)?;
     let mut changed = Vec::new();
     let commit = (|| -> Result<()> {
         for (suffix, bytes) in &after {
@@ -347,12 +420,12 @@ pub(super) fn upgrade(
             changed.push((*suffix, path.clone()));
             write_atomic(&path, bytes, before.contains_key(suffix))?;
         }
-        write_atomic(receipt, &serde_json::to_vec(saved)?, true)
+        write_atomic(receipt, &serde_json::to_vec(&saved)?, true)
     })();
     if let Err(error) = commit {
         // A directory-sync error may follow a successful atomic receipt rename.
         if read_private(receipt, 16 * 1024)?.is_some_and(|bytes| {
-            serde_json::from_slice::<Receipt>(&bytes).is_ok_and(|r| r.sha256 == saved.sha256)
+            serde_json::from_slice::<Receipt>(&bytes).is_ok_and(|r| r == saved)
         }) {
             return Err(error);
         }
@@ -367,4 +440,110 @@ pub(super) fn upgrade(
         return Err(error);
     }
     Ok(())
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secret::SecretHistory;
+    use kiaro_secret_chat::storage::FileStorage;
+
+    #[test]
+    fn consumer_upgrade_reloads_native_history_after_preflight() {
+        let temporary = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let directory = temporary.path().join("secret-chats");
+        private_directory(&directory).unwrap();
+        let label = "freshness";
+        let binding =
+            AuthorizationBinding::v2(17, 2, [0x42; 32], "consumer-freshness-test").unwrap();
+        write_atomic(
+            &directory.join(label),
+            br#"{"chats":{},"in":{},"out":{},"settings":{}}"#,
+            false,
+        )
+        .unwrap();
+        drop(crate::secret::migrate_legacy(temporary.path(), label, &binding).unwrap());
+
+        let receipt = directory.join(format!("{label}.migration.json"));
+        let saved: Receipt = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+        let pending = json!({
+            "version": 1,
+            "chats": {"12": {"0": {
+                "seq_no": 0,
+                "committed_at": 1546800000,
+                "message": {"message_id": 42, "text": "pending legacy delivery"},
+                "media_reference": null
+            }}}
+        });
+        let consumer = directory.join(format!("{label}-consumer.json"));
+        write_atomic(&consumer, &serde_json::to_vec(&pending).unwrap(), false).unwrap();
+        let pending_bytes = fs::read(&consumer).unwrap();
+        let encrypted = directory.join(format!("{label}.v1.enc"));
+        let key = key_bytes(&directory.join(format!("{label}.store.key")), false).unwrap();
+
+        // A current owner may finish one native delivery after the read-only
+        // preflight but before the upgrading caller obtains the custody lease.
+        let current_owner =
+            EncryptedIngressStorage::open(&encrypted, *key, binding.clone(), MAX_BYTES).unwrap();
+        let history = SecretHistory::open(&directory, label, &BTreeMap::new()).unwrap();
+        let earlier = json!({
+            "message_id": 90, "text": "earlier native row",
+            "date": "2026-11-28T12:00:00Z"
+        });
+        history.append(12, earlier.clone(), None).unwrap();
+        preflight_upgrade(&directory, label, &saved).unwrap();
+        let arrived = json!({
+            "message_id": 99, "text": "native delivery after preflight",
+            "date": "2026-11-28T13:00:00Z"
+        });
+        history.append(12, arrived.clone(), None).unwrap();
+        drop(history);
+        drop(current_owner);
+
+        let applying_owner =
+            EncryptedIngressStorage::open(&encrypted, *key, binding.clone(), MAX_BYTES).unwrap();
+        assert!(
+            FileStorage::open(&encrypted).is_err(),
+            "The apply phase must own the store lease"
+        );
+        apply_upgrade(&directory, label, &receipt, &saved, &binding.digest()).unwrap();
+
+        let outputs = [
+            ".history.v1.json",
+            ".media.v1.json",
+            ".archive.v1.json",
+            ".migration.json",
+        ]
+        .map(|suffix| directory.join(format!("{label}{suffix}")));
+        let first = outputs.each_ref().map(|path| fs::read(path).unwrap());
+        let actual: Value = serde_json::from_slice(&first[0]).unwrap();
+        let rows = actual["12"].as_array().unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows.contains(&earlier));
+        assert!(
+            rows.contains(&arrived),
+            "A native row committed after preflight must survive"
+        );
+        assert_eq!(rows.iter().filter(|row| row["message_id"] == 42).count(), 1);
+        let archive: Value = serde_json::from_slice(&first[2]).unwrap();
+        assert_eq!(archive["delivery_receipts"]["12:0"], 42);
+
+        let committed: Receipt = serde_json::from_slice(&first[3]).unwrap();
+        apply_upgrade(&directory, label, &receipt, &committed, &binding.digest()).unwrap();
+        assert_eq!(
+            outputs.each_ref().map(|path| fs::read(path).unwrap()),
+            first
+        );
+        assert_eq!(fs::read(&consumer).unwrap(), pending_bytes);
+        drop(applying_owner);
+
+        // Only this test's read-only fixture backups are made removable.
+        #[cfg(windows)]
+        for entry in fs::read_dir(directory.join("legacy-backups").join(&saved.backup)).unwrap() {
+            let path = entry.unwrap().path();
+            let mut permissions = fs::metadata(&path).unwrap().permissions();
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+        temporary.close().unwrap();
+    }
 }

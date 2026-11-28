@@ -48,11 +48,20 @@
       "server::tests::account_health::account_configuration_is_rechecked_after_retirement_before_eviction",
       "server::tests::account_health::cancelled_account_retirement_preserves_the_owner_and_lease_for_retry",
       "server::tests::account_health::closed_account_retirement_serializes_waiters_without_blocking_other_accounts",
-      "server::tests::account_health::disconnected_accounts_still_refuse_changed_authorization_configuration"
+      "server::tests::account_health::disconnected_accounts_still_refuse_changed_authorization_configuration",
+      "rust_secret_migration::binding_upgrade::authentic_v1_binding_upgrade_preserves_state_receipt_and_readonly_ciphertext_backup",
+      "rust_secret_migration::binding_upgrade::interrupted_v2_store_with_v1_receipt_recovers_without_reencrypting_or_duplicate_backups",
+      "rust_secret_migration::binding_upgrade::v1_binding_backup_recovery_reuses_exact_files_and_refuses_conflicting_entries",
+      "rust_secret_migration::binding_upgrade::v1_binding_upgrade_preflights_backup_and_pending_sidecars_before_mutation",
+      "rust_secret_migration::binding_upgrade::v1_binding_upgrade_refuses_wrong_proof_key_active_owner_and_corruption",
+      "rust_secret_migration::interrupted_v1_receipt_resumes_to_v2_in_one_open",
+      "secret::migration::receipts::tests::consumer_upgrade_reloads_native_history_after_preflight"
     ],
     "filesystem_boundaries": [
       "symlink_escape_for_existing_and_new_files_is_rejected",
-      "private_state_is_protected_even_under_broad_root"
+      "private_state_is_protected_even_under_broad_root",
+      "rust_secret_migration::binding_upgrade::v1_binding_upgrade_preflights_backup_and_pending_sidecars_before_mutation",
+      "rust_secret_migration::binding_upgrade::v1_binding_backup_recovery_reuses_exact_files_and_refuses_conflicting_entries"
     ],
     "human_approval": [
       "caller_confirmation_bool_cannot_approve",

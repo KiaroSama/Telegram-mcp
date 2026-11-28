@@ -202,6 +202,32 @@ delete them to bypass an error. The automatic importer covers supported legacy
 layouts only. Use [`check_secret_custody`](COMMANDS.md#custody-pause-delivery-and-backend-control-9)
 to check custody status.
 
+### Upgrading historical encrypted authorization bindings
+
+The native file keeps its `.v1.enc` suffix when its authorization binding advances
+to v2. The verified original session establishes both bindings; a different login
+for the same user is not a migration proof. Before changing custody, the importer
+validates the existing receipt, its read-only legacy backups, and any pending
+consumer import together with the native sidecars that it will update.
+
+For an actual v1 ciphertext, the importer holds the upstream store lease while it
+authenticates and rebinds a private staged copy. Before replacing the live file,
+it durably retains the exact current ciphertext as
+`legacy-backups/<label>-binding-v1-<sha256>.enc`. This independent, read-only copy
+includes native state newer than the original plaintext import. It never includes
+the `.store.key` file. An identical backup can be reused after interruption; a
+conflicting, nonregular or linked backup is refused. Keep the existing storage key
+in its private state directory: the ciphertext backup alone cannot recover it.
+
+A valid historical receipt without a published encrypted store completes in one
+open. Its binding is normalized before the complete staged store is published.
+If an older process already published v2 ciphertext but left a v1 receipt, the
+importer authenticates that v2 file and finishes the receipt without reencrypting
+it or inventing a v1 backup from v2 bytes. After an I/O or durability error, stop
+using that attempt and reopen from disk; do not retry a poisoned handle or roll
+custody back automatically. The ciphertext, sidecars and receipt are separate
+files, so interruption recovery does not imply a cross-file atomic transaction.
+
 ### Recovering an older pooled account whose custody used `default`
 
 An earlier pooled-session startup stored its native authorization in

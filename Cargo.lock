@@ -3729,6 +3729,7 @@ name = "telegram-mcp"
 version = "3.5.0"
 dependencies = [
  "aes",
+ "aes-gcm",
  "anyhow",
  "async-trait",
  "axum",
