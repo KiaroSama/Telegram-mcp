@@ -16,7 +16,7 @@ The native secret-chat integration for `v3.1.0` has since merged into `main`.
 - Build Windows and Linux releases for x64 and arm64 and report checks against the
   exact commit. Build success alone does not establish runtime behavior.
 - Review upstream changes and dependency documentation.
-- Use `kiaro-secret-chat` 0.3.0 for native MTProto 2.0 secret chats, without the legacy
+- Use `kiaro-secret-chat` 0.5.0 for native MTProto 2.0 secret chats, without the legacy
   Python runtime. Version 3.3.1 exposes 391 native tools: 356 ordinary tools and all
   35 [secret-chat tools](COMMANDS.md#secret-chat-tools), including `accept_secret_chat`
   and automatic incoming `ChatRequested` acceptance.

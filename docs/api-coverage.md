@@ -50,7 +50,7 @@ reviewing the assertions or for authorized live Telegram checks.
 
 ## Secret chats
 
-[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) (`kiaro-secret-chat` 0.3.0) handles
+[Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) (`kiaro-secret-chat` 0.5.0) handles
 native MTProto 2.0 secret chats over the existing account connection. The server
 commits incoming encrypted updates to durable storage before acknowledging them.
 On first open, it creates a read-only backup of a supported legacy secret-chat store
@@ -79,7 +79,16 @@ Live Telegram sign-in, Premium-only features, administrator permissions, proxy r
 and server-side acceptance need real authorized credentials/inputs. Offline CI does not
 claim those checks ran.
 
-## Upstream sync (2026-11-28)
+## Upstream sync (2026-11-28, v3.5.0)
+
+- [Lonami/grammers `11e13a989a75`](https://codeberg.org/Lonami/grammers/commit/11e13a989a754f9cf01a798480a2e20ce9e5b1fd): adopted for `grammers-mtproto` and `grammers-tl-types` alongside the unified vendored `grammers-client`, `grammers-mtsender`, and `grammers-session` tree (layer 234, `TCP_NODELAY`, and `Client::authorization_key_tag()`).
+- [Grammers Secret Chat `v0.5.0`](https://github.com/KiaroSama/Grammers-Secret-Chat/releases/tag/v0.5.0) ([`8af7500d8b26`](https://github.com/KiaroSama/Grammers-Secret-Chat/commit/8af7500d8b26dc5aa3b7209ced8a8173bef7ae61)): adopted across all 35 secret-chat tools with `AuthorizationBinding::v2` and automatic idempotent `v1` to `v2` `.v1.enc` custody migration (`binding_migration::migrate_v1_enc_store_to_v2`).
+- [chigwell/telegram-mcp #428](https://github.com/chigwell/telegram-mcp/pull/428) (`view_video` demuxer restriction): `ALREADY_HAVE` (`-format_whitelist` already enforced on both `ffprobe` and `ffmpeg`).
+- [chigwell/telegram-mcp #427](https://github.com/chigwell/telegram-mcp/pull/427) (duplicate/empty `Origin` headers): `ALREADY_HAVE` (case-insensitive `Origin` rejection and strict validation already enforced in `src/server/http.rs`).
+- [chigwell/telegram-mcp #426](https://github.com/chigwell/telegram-mcp/pull/426) (`download_media` content protection): `ALREADY_HAVE` (`ttl_seconds` and channel `noforwards` checks already enforced).
+- [chigwell/telegram-mcp #424](https://github.com/chigwell/telegram-mcp/pull/424) (`download_media` opt-in JSON metadata): deferred; the native tool already returns structured JSON metadata.
+
+## Upstream sync (2026-11-28, v3.4.1)
 
 - [Lonami/grammers `11e13a989a75`](https://codeberg.org/Lonami/grammers/commit/11e13a989a754f9cf01a798480a2e20ce9e5b1fd) uses Telegram API layer 234 and sets `TCP_NODELAY` on connections to Telegram. The local proxy tunnel already sets that option. Keep the protocol crates at `02367f9711ca` to match the pinned secret-chat backend.
 - [Grammers Secret Chat](https://github.com/KiaroSama/Grammers-Secret-Chat) stays pinned at [`bf0fc26906f1`](https://github.com/KiaroSama/Grammers-Secret-Chat/commit/bf0fc26906f17b56ddb21634fa2b415d11de9126) for all 35 tools and existing `.v1.enc` stores. The review covered [v0.4.0](https://github.com/KiaroSama/Grammers-Secret-Chat/releases/tag/v0.4.0) and the subsequent [`aeb38f93`](https://github.com/KiaroSama/Grammers-Secret-Chat/commit/aeb38f9311e144f18dbc07cffc501733d253cc15). An upgrade still needs compatible manager methods for media and service actions, the generated layer 202 secret-chat TL types, durable storage of incoming updates before acknowledgment, and a migration path for existing `.v1.enc` stores.

@@ -23,9 +23,11 @@ use grammers_session::{
 use grammers_tl_types as tl;
 use kiaro_secret_chat::{
     binding::AuthorizationBinding,
+    binding_migration::LegacyAuthorizationBinding,
     chat::{ChatSnapshot, ChatState},
     custody::{CustodyLimits, IngressLimits},
     error::Error as SecretError,
+    grammers_crypto::aes::ige_encrypt,
     ingress::DurableIngress,
     manager::{Event, SendFileOptions, StrongSecretChatManager},
     media::{FileSource, MediaReference},
@@ -58,18 +60,48 @@ pub(crate) struct Prepared {
     label: String,
 }
 
+pub fn auth_key_tag(key: &[u8; 256]) -> [u8; 32] {
+    let (chunks, _) = key.as_chunks::<32>();
+    let (first, second) = (&chunks[0], &chunks[1]);
+    let mut blocks = Zeroizing::new([0u8; 256]);
+    blocks[..16].copy_from_slice(b"grammers.dc.tag1");
+    blocks[16..208].copy_from_slice(&key[64..]);
+    ige_encrypt(&mut *blocks, first, second);
+
+    let mut fold = Zeroizing::new([0u8; 48]);
+    fold[..16].copy_from_slice(b"grammers.dc.tag2");
+    fold[16..].copy_from_slice(&blocks[224..]);
+    ige_encrypt(&mut *fold, second, first);
+    let mut tag = [0u8; 32];
+    tag.copy_from_slice(&fold[16..]);
+    tag
+}
+
 pub(crate) fn session_binding(
     user: i64,
     dc: i32,
     auth: &[u8; 256],
 ) -> Result<AuthorizationBinding> {
+    Ok(AuthorizationBinding::v2(
+        user,
+        dc,
+        auth_key_tag(auth),
+        "telegram-mcp-secret-v1",
+    )?)
+}
+
+pub(crate) fn legacy_session_binding(
+    user: i64,
+    dc: i32,
+    auth: &[u8; 256],
+) -> Result<LegacyAuthorizationBinding> {
     let digest = Zeroizing::new(<[u8; 20]>::from(Sha1::digest(auth)));
     let id = i64::from_le_bytes(digest[12..].try_into()?);
-    Ok(AuthorizationBinding::from_session_parts(
+    Ok(LegacyAuthorizationBinding::from_session_parts(
         user,
         id,
         dc,
-        "telegram-mcp-secret-v1".into(),
+        "telegram-mcp-secret-v1",
     )?)
 }
 
@@ -111,8 +143,15 @@ impl SecretRuntime {
             return Ok(None);
         };
         let binding = session_binding(user, dc, &auth)?;
-        let store = super::open_store(state.root(), custody_label, &binding, true)?
-            .context("Secret-chat custody store is unavailable")?;
+        let legacy_binding = legacy_session_binding(user, dc, &auth)?;
+        let store = super::open_store_with_legacy(
+            state.root(),
+            custody_label,
+            &binding,
+            Some(&legacy_binding),
+            true,
+        )?
+        .context("Secret-chat custody store is unavailable")?;
         let snapshot = store
             .load()?
             .context("Secret-chat custody store has no state")?;

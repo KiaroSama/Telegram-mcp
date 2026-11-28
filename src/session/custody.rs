@@ -98,10 +98,12 @@ pub fn check_deferred_custody_with_config(
         bail!("Fresh native authorization cannot adopt unverified legacy secret-chat custody");
     }
     let binding = crate::secret::session_binding(user, snapshot.home_dc, &key)?;
-    drop(crate::secret::migrate_legacy(
+    let legacy_binding = crate::secret::legacy_session_binding(user, snapshot.home_dc, &key)?;
+    drop(crate::secret::migrate_legacy_with_v1(
         state.root(),
         label,
         &binding,
+        Some(&legacy_binding),
     )?);
     Ok(())
 }

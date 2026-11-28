@@ -1,6 +1,6 @@
 [package]
 name = "telegram-mcp"
-version = "3.4.1"
+version = "3.5.0"
 edition = "2024"
 rust-version = "1.100"
 description = "Native Rust Telegram MCP server powered by grammers"
@@ -22,12 +22,12 @@ clap = { version = "4", features = ["derive", "env"] }
 fs2 = "0.4"
 flate2 = "1"
 futures-util = "0.3"
-grammers-client = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126", features = ["markdown", "html", "proxy"] }
-grammers-mtsender = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126", features = ["proxy"] }
-grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "02367f9711ca3589a8bbb02e4128aca1631c77c4" }
-grammers-session = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126", default-features = false, features = ["serde"] }
-grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "02367f9711ca3589a8bbb02e4128aca1631c77c4" }
-kiaro-secret-chat = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "bf0fc26906f17b56ddb21634fa2b415d11de9126" }
+grammers-client = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "8af7500d8b26dc5aa3b7209ced8a8173bef7ae61", features = ["markdown", "html", "proxy"] }
+grammers-mtsender = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "8af7500d8b26dc5aa3b7209ced8a8173bef7ae61", features = ["proxy"] }
+grammers-mtproto = { git = "https://codeberg.org/Lonami/grammers.git", rev = "11e13a989a754f9cf01a798480a2e20ce9e5b1fd" }
+grammers-session = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "8af7500d8b26dc5aa3b7209ced8a8173bef7ae61", default-features = false, features = ["serde"] }
+grammers-tl-types = { git = "https://codeberg.org/Lonami/grammers.git", rev = "11e13a989a754f9cf01a798480a2e20ce9e5b1fd" }
+kiaro-secret-chat = { git = "https://github.com/KiaroSama/Grammers-Secret-Chat.git", rev = "8af7500d8b26dc5aa3b7209ced8a8173bef7ae61" }
 sha1 = "0.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 hmac = "0.13"

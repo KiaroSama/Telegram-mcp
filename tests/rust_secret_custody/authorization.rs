@@ -48,15 +48,13 @@ fn native_custody(f: &Fixture, key: u8) -> std::path::PathBuf {
         ingress::EncryptedIngressStorage,
         storage::Storage,
     };
-    use sha1::{Digest, Sha1};
 
     snapshot(f, "old", Some(key), "native");
-    let digest = Sha1::digest([key; 256]);
-    let binding = AuthorizationBinding::from_session_parts(
+    let binding = AuthorizationBinding::v2(
         91,
-        i64::from_le_bytes(digest[12..].try_into().unwrap()),
         2,
-        "telegram-mcp-secret-v1".into(),
+        telegram_mcp::secret::auth_key_tag(&[key; 256]),
+        "telegram-mcp-secret-v1",
     )
     .unwrap();
     let path = f.directory().join("old.v1.enc");

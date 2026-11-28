@@ -8,10 +8,12 @@ mod runtime;
 
 pub use export::ExportFormat;
 pub use history::SecretHistory;
-pub use migration::migrate_legacy;
-pub(crate) use migration::{custody_dir, has_legacy, legacy_owner, open_store};
-pub use runtime::SecretRuntime;
-pub(crate) use runtime::{Prepared, session_binding};
+#[cfg(test)]
+pub(crate) use migration::open_store;
+pub(crate) use migration::{custody_dir, has_legacy, legacy_owner, migrate_legacy_with_v1};
+pub use migration::{migrate_legacy, open_store_with_legacy};
+pub(crate) use runtime::{Prepared, legacy_session_binding, session_binding};
+pub use runtime::{SecretRuntime, auth_key_tag};
 
 use anyhow::{Context, Result, ensure};
 use std::{

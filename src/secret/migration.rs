@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use kiaro_secret_chat::{
     binding::AuthorizationBinding,
+    binding_migration::{LegacyAuthorizationBinding, migrate_v1_enc_store_to_v2},
     chat::{Chat, ChatState, DhRecord, Envelope, Exchange, Outgoing, ServiceDelivery},
     crypto::SharedKey,
     custody::{CustodyLimits, CustodyStorage},
@@ -91,13 +92,33 @@ pub fn migrate_legacy(
     label: &str,
     binding: &AuthorizationBinding,
 ) -> Result<Option<EncryptedIngressStorage>> {
-    open_store(root, label, binding, false)
+    open_store_with_legacy(root, label, binding, None, false)
 }
 
+pub(crate) fn migrate_legacy_with_v1(
+    root: &Path,
+    label: &str,
+    binding: &AuthorizationBinding,
+    legacy_binding: Option<&LegacyAuthorizationBinding>,
+) -> Result<Option<EncryptedIngressStorage>> {
+    open_store_with_legacy(root, label, binding, legacy_binding, false)
+}
+
+#[cfg(test)]
 pub(crate) fn open_store(
     root: &Path,
     label: &str,
     binding: &AuthorizationBinding,
+    create: bool,
+) -> Result<Option<EncryptedIngressStorage>> {
+    open_store_with_legacy(root, label, binding, None, create)
+}
+
+pub fn open_store_with_legacy(
+    root: &Path,
+    label: &str,
+    binding: &AuthorizationBinding,
+    legacy_binding: Option<&LegacyAuthorizationBinding>,
     create: bool,
 ) -> Result<Option<EncryptedIngressStorage>> {
     crate::session::validate_label(label)?;
@@ -142,8 +163,10 @@ pub(crate) fn open_store(
         })
         .transpose()?;
     if let Some(saved) = &saved_receipt {
+        let matches_v2 = saved.authorization == binding.digest();
+        let matches_v1 = legacy_binding.is_some_and(|old| saved.authorization == old.fingerprint());
         ensure!(
-            saved.version == 1 && saved.authorization == binding.digest(),
+            saved.version == 1 && (matches_v2 || matches_v1),
             "Secret-chat migration receipt does not match the authorization"
         );
     }
@@ -154,8 +177,16 @@ pub(crate) fn open_store(
         );
 
         let bytes = key_bytes(&key, false)?;
+        if let Some(old) = legacy_binding {
+            migrate_v1_enc_store_to_v2(&encrypted, *bytes, old, binding, MAX_BYTES)
+                .context("Cannot upgrade legacy encrypted secret-chat custody binding to v2")?;
+        }
         let store = EncryptedIngressStorage::open(encrypted, *bytes, binding.clone(), MAX_BYTES)?;
         if let Some(mut saved) = saved_receipt {
+            if saved.authorization != binding.digest() {
+                saved.authorization = binding.digest();
+                write_atomic(&receipt, &serde_json::to_vec_pretty(&saved)?, true)?;
+            }
             receipts::upgrade(&directory, label, &receipt, &mut saved)?;
         }
         crate::state::storage::sync_directory(&directory)?;

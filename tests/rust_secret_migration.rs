@@ -13,9 +13,13 @@ const LABEL: &str = "offline";
 const AUTH: [u8; 256] = [0x3c; 256];
 
 fn binding() -> AuthorizationBinding {
-    use sha1::{Digest, Sha1};
-    let fingerprint = i64::from_le_bytes(Sha1::digest(AUTH)[12..].try_into().unwrap());
-    AuthorizationBinding::from_session_parts(17, fingerprint, 2, "migration-test".into()).unwrap()
+    AuthorizationBinding::v2(
+        17,
+        2,
+        telegram_mcp::secret::auth_key_tag(&AUTH),
+        "migration-test",
+    )
+    .unwrap()
 }
 
 fn fixture(legacy: &Value) -> (tempfile::TempDir, Vec<u8>) {
@@ -524,4 +528,36 @@ async fn deleted_chat_export_requires_choices_and_resolves_the_supplied_user() {
         assert_eq!(result["peer_user"], 37);
         assert!(!result.to_string().contains("access_hash"));
     }
+}
+
+#[test]
+fn auth_key_tag_matches_grammers_client_vector_and_v2_reopen_is_idempotent() {
+    use kiaro_secret_chat::binding_migration::LegacyAuthorizationBinding;
+    use sha1::{Digest, Sha1};
+
+    let key: [u8; 256] = std::array::from_fn(|i| i as u8);
+    assert_eq!(
+        telegram_mcp::secret::auth_key_tag(&key),
+        [
+            0x75, 0x61, 0xe9, 0x28, 0x04, 0xb6, 0x93, 0x58, 0x48, 0xbd, 0x6b, 0x8b, 0xc3, 0x68,
+            0x37, 0xa4, 0xd3, 0x0c, 0xe6, 0x31, 0x9f, 0x19, 0xb4, 0xc3, 0x21, 0x9c, 0x9c, 0x29,
+            0xc6, 0x1d, 0x2b, 0x65,
+        ]
+    );
+
+    let (dir, _) = fixture(&json!({"chats":{},"in":{},"out":{},"settings":{}}));
+    let v2 = binding();
+    let legacy_id = i64::from_le_bytes(Sha1::digest(AUTH)[12..].try_into().unwrap());
+    let v1 =
+        LegacyAuthorizationBinding::from_session_parts(17, legacy_id, 2, "migration-test").unwrap();
+    let first =
+        telegram_mcp::secret::open_store_with_legacy(dir.path(), LABEL, &v2, Some(&v1), true)
+            .unwrap()
+            .unwrap();
+    drop(first);
+    let second =
+        telegram_mcp::secret::open_store_with_legacy(dir.path(), LABEL, &v2, Some(&v1), true)
+            .unwrap()
+            .unwrap();
+    assert_eq!(second.load().unwrap().unwrap().authorization, v2.digest());
 }
